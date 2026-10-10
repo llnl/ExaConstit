@@ -129,6 +129,17 @@ public:
      */
     bool ShouldOutputAtStep(int step) const;
 
+    /**
+     * @brief Check if visualization data collections should be output at current step
+     *
+     * @param step Current time step number
+     * @return true if output should occur, false otherwise
+     *
+     * Determines output timing based on the visualization output frequency
+     * in ExaOptions, which is independent of the volume average output frequency.
+     */
+    bool ShouldOutputVisualizationAtStep(int step) const;
+
     // Returns a pointer to a ParFiniteElementSpace (PFES) that's ordered according to VDIMs
     // and makes use of an L2 FiniteElementCollection
     // If the vdim is not in the internal mapping than a new PFES will be created
@@ -972,6 +983,14 @@ private:
      * reducing memory usage for simulations that only need volume averaging.
      */
     bool m_enable_visualization;
+
+    /**
+     * @brief Visualization output frequency (every N time steps)
+     *
+     * Taken from the visualization options and kept separate from the
+     * volume average output frequency used by the file manager.
+     */
+    int m_viz_output_frequency;
 
     /**
      * @brief Active LightUp analysis instances

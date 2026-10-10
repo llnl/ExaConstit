@@ -367,7 +367,8 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
     : m_sim_state(sim_state), m_mpi_rank(0), m_num_regions(sim_state->GetNumberOfRegions()),
       m_aggregation_mode(AggregationMode::BOTH),
       m_enable_visualization(options.visualization.visit || options.visualization.conduit ||
-                             options.visualization.paraview || options.visualization.adios2) {
+                             options.visualization.paraview || options.visualization.adios2),
+      m_viz_output_frequency(options.visualization.output_frequency) {
     MPI_Comm_rank(MPI_COMM_WORLD, &m_mpi_rank);
 
     MPI_Comm_size(MPI_COMM_WORLD, &m_num_mpi_rank);
@@ -533,11 +534,14 @@ void PostProcessingDriver::Update(const int step, const double time) {
     UpdateFields(step, time);
 
     // Update data collections for visualization
-    if (ShouldOutputAtStep(step) && m_enable_visualization) {
+    if (ShouldOutputVisualizationAtStep(step) && m_enable_visualization) {
         UpdateDataCollections(step, time);
     }
 
-    PrintVolValues(time, m_aggregation_mode);
+    // Check if we should output volume averages at this step
+    if (ShouldOutputAtStep(step)) {
+        PrintVolValues(time, m_aggregation_mode);
+    }
     ClearVolumeAverageCache();
 
     if (m_light_up_instances.size() > 0) {
@@ -1017,6 +1021,10 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
 
 bool PostProcessingDriver::ShouldOutputAtStep(int step) const {
     return m_file_manager->ShouldOutputAtStep(step);
+}
+
+bool PostProcessingDriver::ShouldOutputVisualizationAtStep(int step) const {
+    return (step % m_viz_output_frequency == 0);
 }
 
 void PostProcessingDriver::VolumeAvgStress(const int region, const double time) {
