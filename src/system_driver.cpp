@@ -408,6 +408,8 @@ const mfem::Array<int>& SystemDriver::GetEssTDofList() {
 void SystemDriver::Solve() {
     mfem::Vector zero;
     auto x = m_sim_state->GetPrimalField();
+    // Global convergence status across all ranks
+    bool converged = false;
     if (auto_time) {
         // This would only happen on the last time step
         const auto x_prev = m_sim_state->GetPrimalFieldPrev();
@@ -446,23 +448,29 @@ void SystemDriver::Solve() {
                 MPI_Allreduce(&succeed_t, &succeed, 1, MPI_C_BOOL, MPI_LAND, MPI_COMM_WORLD);
                 state = m_sim_state->UpdateDeltaTime(newton_solver->GetNumIterations(), succeed);
             } // Do final converge check outside of this while loop
+            if (state == TimeStep::FAILED) {
+                MFEM_WARNING_0("Solution did not converge and the minimum dt or maximum number "
+                               "of retries has been reached");
+            }
         }
+        converged = succeed;
     } else {
         // We provide an initial guess for what our current coordinates will look like
         // based on what our last time steps solution was for our velocity field.
         // The end nodes are updated before the 1st step of the solution here so we're good.
         newton_solver->Mult(zero, *x);
         m_sim_state->UpdateDeltaTime(newton_solver->GetNumIterations(), true);
+        converged = newton_solver->GetConverged();
     }
 
     // Just gotta be safe incase something in the solver wasn't playing nice and didn't swap things
     // back to the current configuration...
     // Once the system has finished solving, our current coordinates configuration are based on what
     // our converged velocity field ended up being equal to.
-    if (m_sim_state->GetMPIID() == 0 && newton_solver->GetConverged()) {
+    if (m_sim_state->GetMPIID() == 0 && converged) {
         ess_bdr_func->SetTime(m_sim_state->GetTime());
     }
-    MFEM_VERIFY_0(newton_solver->GetConverged(), "Newton Solver did not converge.");
+    MFEM_VERIFY_0(converged, "Newton Solver did not converge.");
 }
 
 // Solve the Newton system for the 1st time step

@@ -287,6 +287,10 @@ TimeStep TimeManagement::UpdateDeltaTime(const int nr_steps, const bool success)
         if (internal_tracker == TimeStep::SUBSTEP) {
             return TimeStep::FAILED;
         }
+        // If we're already at the smallest allowable dt then there's nothing left to try
+        if (dt <= dt_min) {
+            return TimeStep::FAILED;
+        }
         // For the very first failure we want to save off the initial guessed time step
         if (num_failures == 0) {
             dt_orig = dt;
