@@ -457,7 +457,17 @@ grain_file = "grains.txt"
         # Nonlinear solver type:
         # - "NR" = standard Newton-Raphson (usually sufficient)
         # - "NRLS" = Newton with line search (for difficult convergence)
+        # - "TRDOG" = trust-region dogleg (for difficult convergence)
         nl_solver = "NR"
+
+        # Output verbosity of the nonlinear solver:
+        # - 0 = only print a one line summary (iterations, final residual, and
+        #       final relative residual) once the solver converges or fails
+        # - 1 = print the residual and the scale applied to the Newton step
+        #       every iteration (default)
+        # - 2 = also print detailed information about each trust-region step
+        #       (only used by "TRDOG", same as 1 for the other solvers)
+        print_info = 1
 
 # =====================================
 # VISUALIZATION OUTPUT

@@ -76,7 +76,6 @@ struct TrDeltaControl {
      * @param[in,out] delta Current radius, modified on output
      * @param[in] norm_full Norm of the full Newton step
      * @param[in] took_full Whether the full Newton step was used at the last iteration
-     * @param[in] print_level Verbosity level for output
      * @return true if delta is still above deltaMin, false if solver should fail
      *
      * @details If the full Newton step was taken, uses a geometric mean blend of
@@ -84,7 +83,7 @@ struct TrDeltaControl {
      * just multiplies delta by xiDecDelta. Returns false (and sets delta to deltaMin)
      * if the resulting delta drops below the minimum allowed value.
      */
-    bool DecrDelta(double& delta, double norm_full, bool took_full, int print_level = 0) const {
+    bool DecrDelta(double& delta, double norm_full, bool took_full) const {
         if (took_full) {
             double tempa = delta * xiDecDelta;
             double tempb = norm_full * xiDecDelta;
@@ -95,14 +94,7 @@ struct TrDeltaControl {
 
         if (delta < deltaMin) {
             delta = deltaMin;
-            if (print_level >= 0) {
-                mfem::out << "TR: delta at minimum " << delta << "\n";
-            }
             return false;
-        }
-
-        if (print_level > 0) {
-            mfem::out << "TR: decreased delta to " << delta << "\n";
         }
         return true;
     }
@@ -111,19 +103,13 @@ struct TrDeltaControl {
      * @brief Increase the trust-region radius after a successful step.
      *
      * @param[in,out] delta Current radius, modified on output
-     * @param[in] print_level Verbosity level for output
      *
      * @details Multiplies delta by xiIncDelta and clamps at deltaMax.
      */
-    void IncrDelta(double& delta, int print_level = 0) const {
+    void IncrDelta(double& delta) const {
         delta *= xiIncDelta;
         if (delta > deltaMax) {
             delta = deltaMax;
-            if (print_level > 0) {
-                mfem::out << "TR: delta at maximum " << delta << "\n";
-            }
-        } else if (print_level > 0) {
-            mfem::out << "TR: increased delta to " << delta << "\n";
         }
     }
 
@@ -137,8 +123,8 @@ struct TrDeltaControl {
      * @param[out] reject Whether the step should be rejected (residual increased)
      * @param[in] took_full Whether the full Newton step was taken
      * @param[in] norm_full Norm of the full Newton step
-     * @param[out] rho Actual / predicted reduction ratio (output for diagnostics)
-     * @param[in] print_level Verbosity level for output
+     * @param[out] rho Actual / predicted reduction ratio (output for diagnostics).
+     *                 Left untouched if the predicted change is zero.
      * @return true if the delta update succeeded, false if the solver should fail
      *
      * @details Algorithm (ported from SNLS TrDeltaControl::updateDelta):
@@ -149,6 +135,9 @@ struct TrDeltaControl {
      *      increase delta (unless the full Newton step was already taken)
      *   5. If rho is outside the "ok" band [xiLO, xiUO], decrease delta
      *   6. If the residual increased and rejectResIncrease is set, mark for rejection
+     *   7. If a rejected step was the full Newton step, keep decreasing delta until
+     *      the full Newton step no longer fits in the trust region. Otherwise, the
+     *      retried step would be identical to the rejected one. (Not in SNLS)
      */
     bool UpdateDelta(double& delta,
                      double res,
@@ -157,38 +146,28 @@ struct TrDeltaControl {
                      bool& reject,
                      bool took_full,
                      double norm_full,
-                     double& rho,
-                     int print_level = 0) const {
+                     double& rho) const {
         bool success = true;
         double actual_change = res - res_0;
         double pred_change = pred_resid - res_0;
 
         if (pred_change == 0.0) {
             if (delta >= deltaMax) {
-                if (print_level >= 0) {
-                    mfem::out << "TR: predicted change is zero and delta at max\n";
-                }
                 success = false;
             } else {
-                if (print_level > 0) {
-                    mfem::out << "TR: predicted change is zero, forcing delta larger\n";
-                }
                 delta = std::min(delta * xiForcedIncDelta, deltaMax);
             }
         } else {
             rho = actual_change / pred_change;
-            if (print_level > 0) {
-                mfem::out << "TR: rho = " << rho << "\n";
-            }
 
             if ((rho > xiLG) && (actual_change < 0.0) && (rho < xiUG)) {
                 // Step is in the "good" band and residual actually decreased
                 if (!took_full) {
-                    IncrDelta(delta, print_level);
+                    IncrDelta(delta);
                 }
             } else if ((rho < xiLO) || (rho > xiUO)) {
                 // Step quality is outside the acceptable band; shrink delta
-                success = DecrDelta(delta, norm_full, took_full, print_level);
+                success = DecrDelta(delta, norm_full, took_full);
             }
         }
 
@@ -198,8 +177,34 @@ struct TrDeltaControl {
             reject = true;
         }
 
+        // A rejected full Newton step is retried from the same state with the same
+        // Newton step. If delta is still >= norm_full, the full Newton step still fits
+        // inside the trust region and the retry would be identical to the step that was
+        // just rejected, wasting a residual evaluation only to be rejected again. The
+        // took_full branch of DecrDelta does not guarantee delta < norm_full after a
+        // single call, since it uses the geometric mean of delta and norm_full.
+        // So, keep decreasing delta until the retried step actually differs. This
+        // results in the same delta as evaluating those identical retries would have,
+        // just without the wasted residual evaluations. DecrDelta strictly decreases
+        // delta here and its repeated application converges to xiDecDelta^2 * norm_full,
+        // so this loop always terminates.
+        if (reject && took_full) {
+            while (success && (delta >= norm_full)) {
+                success = DecrDelta(delta, norm_full, took_full);
+            }
+        }
+
         return success;
     }
+};
+
+/**
+ * @brief Which part of the dogleg path a trust-region step was taken along.
+ */
+enum class DoglegStep {
+    NEWTON,           ///< Full Newton step fit inside the trust region
+    STEEPEST_DESCENT, ///< Step along the steepest descent direction to the trust-region boundary
+    DOGLEG            ///< Step between the Cauchy point and the Newton point (second leg)
 };
 
 /**
@@ -311,7 +316,8 @@ public:
      * @pre The gradient operator must support MultTranspose (EA/FA mode, or
      *      PA mode with native transpose kernels)
      *
-     * @post final_iter contains the number of iterations performed
+     * @post final_iter contains the number of accepted iterations performed
+     *       (rejected trial steps are retries of the same iteration and do not count)
      * @post final_norm contains the final residual norm
      * @post converged flag indicates whether the solver converged
      */
@@ -329,7 +335,9 @@ private:
      * @param[in] nrStep Full Newton step
      * @param[out] delx The computed dogleg step
      * @param[out] pred_resid Predicted residual norm after the step
-     * @param[out] use_nr Whether the full Newton step was taken
+     * @param[out] step Which part of the dogleg path the step was taken along
+     * @param[out] beta Interpolation factor along the second leg (only meaningful
+     *                  when step == DoglegStep::DOGLEG)
      *
      * @details Ported from SNLS's dogleg() kernel. The dogleg path interpolates
      * between the steepest descent direction (Cauchy point) and the full Newton
@@ -347,7 +355,33 @@ private:
                 const mfem::Vector& nrStep,
                 mfem::Vector& delx,
                 double& pred_resid,
-                bool& use_nr) const;
+                DoglegStep& step,
+                double& beta) const;
+
+    /**
+     * @brief Print the detailed trust-region information for an iteration
+     *
+     * @param step Which part of the dogleg path the step was taken along
+     * @param beta Interpolation factor along the second leg of the dogleg path
+     * @param pred_resid Predicted residual norm from the dogleg model
+     * @param trial_resid Actual residual norm at the trial point
+     * @param rho Actual / predicted reduction ratio (NaN if it was not computed)
+     * @param delta_old Trust-region radius used for this step
+     * @param delta_new Trust-region radius for the next step
+     * @param outcome Short description of what happened to the step
+     *
+     * @details Only prints when print_level > 1. Everything about a trial step,
+     * including rejected ones, is provided on a single line. These lines are printed
+     * after the residual line of the iteration the trial steps are taken from.
+     */
+    void PrintStepDetails(DoglegStep step,
+                          double beta,
+                          double pred_resid,
+                          double trial_resid,
+                          double rho,
+                          double delta_old,
+                          double delta_new,
+                          const char* outcome) const;
 
     /// @brief Trust-region control parameters (mutable to allow tuning)
     mutable TrDeltaControl delta_ctrl;

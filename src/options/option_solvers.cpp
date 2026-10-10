@@ -116,6 +116,10 @@ NonlinearSolverOptions NonlinearSolverOptions::from_toml(const toml::value& toml
             toml::find<std::string>(toml_input, "nl_solver"));
     }
 
+    if (toml_input.contains("print_info")) {
+        options.print_info = toml::find<int>(toml_input, "print_info");
+    }
+
     // Parse the optional trust-region sub-table when using the dogleg solver.
     // We always parse the table if present (regardless of nl_solver) so that
     // options validation can flag inconsistent configurations later.
@@ -271,6 +275,11 @@ bool NonlinearSolverOptions::validate() const {
 
     if (rel_tol < 0) {
         WARNING_0_OPT("Error: NonLinearSolver table provided a negative relative tolerance");
+        return false;
+    }
+
+    if (print_info < 0) {
+        WARNING_0_OPT("Error: NonLinearSolver table provided a negative print_info value");
         return false;
     }
 

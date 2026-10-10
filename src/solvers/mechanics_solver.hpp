@@ -41,6 +41,50 @@ protected:
     /** @brief Pointer to the preconditioner */
     std::shared_ptr<mfem::Solver> prec_mech;
 
+    /**
+     * @brief Print the residual information for a single nonlinear iteration
+     *
+     * @param it Current nonlinear iteration number
+     * @param norm Current residual norm
+     * @param norm0 Initial residual norm
+     *
+     * @details Only prints when print_level >= 1. All nonlinear solvers use this so
+     * that the per-iteration output has the same format regardless of the solver.
+     */
+    void PrintIterationInfo(int it, double norm, double norm0) const;
+
+    /**
+     * @brief Print the scale applied to the Newton step taken from an iteration
+     *
+     * @param it Nonlinear iteration number the step is being taken from
+     * @param scale Fraction of the full Newton step that is being taken
+     *
+     * @details Only prints when print_level >= 1. Each solver provides its own
+     * notion of the scale (relaxation factor for NR, line search factor for NRLS,
+     * and the trust-region limited fraction of the Newton step for TRDOG), but it is
+     * always printed in the same format so the output can be parsed the same way
+     * regardless of the solver. A scale that is small and stays small is a sign
+     * that the solver is struggling.
+     */
+    void PrintStepScaleInfo(int it, double scale) const;
+
+    /**
+     * @brief Print a one line summary of the nonlinear solve
+     *
+     * @param it Number of nonlinear iterations that were run
+     * @param norm Final residual norm
+     * @param norm0 Initial residual norm
+     * @param did_converge Whether the nonlinear solve converged
+     * @param num_rejected Number of rejected trial steps for solvers that have them
+     *                     (e.g. trust-region). Not printed if negative.
+     *
+     * @details Only prints when print_level == 0. In this mode the per-iteration
+     * output is turned off, so this provides the basic information of the number of
+     * iterations, the final residual, and the final relative residual.
+     */
+    void PrintSummaryInfo(
+        int it, double norm, double norm0, bool did_converge, int num_rejected = -1) const;
+
 public:
     /**
      * @brief Default constructor

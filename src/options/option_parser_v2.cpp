@@ -832,6 +832,7 @@ void ExaOptions::print_solver_options() const {
     std::cout << "    Maximum iterations: " << solvers.nonlinear_solver.iter << "\n";
     std::cout << "    Relative tolerance: " << solvers.nonlinear_solver.rel_tol << "\n";
     std::cout << "    Absolute tolerance: " << solvers.nonlinear_solver.abs_tol << "\n";
+    std::cout << "    Print info level: " << solvers.nonlinear_solver.print_info << "\n";
 
     // Trust-region parameters: print if either the solver is TRDOG or the user
     // supplied a [trust_region] sub-table. The latter case is informational —

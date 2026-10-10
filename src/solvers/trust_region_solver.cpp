@@ -16,6 +16,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 
 /**
  * @brief Compute the Powell dogleg step inside the trust region.
@@ -56,19 +57,15 @@ void ExaTrustRegionSolver::Dogleg(double delta,
                                   const mfem::Vector& nrStep,
                                   mfem::Vector& delx,
                                   double& pred_resid,
-                                  bool& use_nr) const {
-    use_nr = false;
+                                  DoglegStep& step,
+                                  double& beta) const {
+    beta = 0.0;
 
     // --- Case 1: Full Newton step fits inside the trust region ---
     if (nr_norm <= delta) {
-        use_nr = true;
+        step = DoglegStep::NEWTON;
         delx = nrStep;
         pred_resid = 0.0;
-
-        if (print_level > 0) {
-            mfem::out << "TR dogleg: taking full Newton step (||s_N|| = " << nr_norm
-                      << " <= delta = " << delta << ")\n";
-        }
         return;
     }
 
@@ -92,10 +89,7 @@ void ExaTrustRegionSolver::Dogleg(double delta,
         const double val = -(delta * norm_grad) +
                            0.5 * delta * delta * Jg_2 * (norm_grad_inv * norm_grad_inv);
         pred_resid = std::sqrt(std::max(2.0 * val + res_0 * res_0, 0.0));
-
-        if (print_level > 0) {
-            mfem::out << "TR dogleg: stepping along first leg (steepest descent)\n";
-        }
+        step = DoglegStep::STEEPEST_DESCENT;
     }
     // --- Case 3: Cauchy inside, Newton outside; interpolate along the second leg ---
     else {
@@ -109,7 +103,7 @@ void ExaTrustRegionSolver::Dogleg(double delta,
         double qc = norm_s_sd_opt * norm_s_sd_opt - delta * delta;
 
         double discriminant = qb * qb - qa * qc;
-        double beta = (qa > 0.0) ? (qb + std::sqrt(std::max(discriminant, 0.0))) / qa : 0.0;
+        beta = (qa > 0.0) ? (qb + std::sqrt(std::max(discriminant, 0.0))) / qa : 0.0;
 
         // Clamp beta to [0, 1] to handle any roundoff at the boundary
         beta = std::max(0.0, std::min(1.0, beta));
@@ -124,11 +118,53 @@ void ExaTrustRegionSolver::Dogleg(double delta,
                                       ? std::sqrt(std::max(res_0 * res_0 - alpha * norm2_grad, 0.0))
                                       : res_0;
         pred_resid = omb * res_cauchy;
-
-        if (print_level > 0) {
-            mfem::out << "TR dogleg: stepping along second leg (beta = " << beta << ")\n";
-        }
+        step = DoglegStep::DOGLEG;
     }
+}
+
+/**
+ * @brief Detailed per-iteration trust-region output (print_level > 1)
+ *
+ * @details Example output line:
+ *    TR step: dogleg (beta = 0.42), predicted ||r|| = 1.2e-03, trial ||r|| = 1.3e-03,
+ *             rho = 0.83, delta = 0.5 -> 1, accepted
+ * (printed as a single line)
+ */
+void ExaTrustRegionSolver::PrintStepDetails(DoglegStep step,
+                                            double beta,
+                                            double pred_resid,
+                                            double trial_resid,
+                                            double rho,
+                                            double delta_old,
+                                            double delta_new,
+                                            const char* outcome) const {
+    if (print_level < 2) {
+        return;
+    }
+    mfem::out << "    TR step: ";
+    switch (step) {
+    case DoglegStep::NEWTON:
+        mfem::out << "Newton";
+        break;
+    case DoglegStep::STEEPEST_DESCENT:
+        mfem::out << "steepest descent";
+        break;
+    case DoglegStep::DOGLEG:
+        mfem::out << "dogleg (beta = " << beta << ")";
+        break;
+    }
+    mfem::out << ", predicted ||r|| = " << pred_resid << ", trial ||r|| = " << trial_resid
+              << ", rho = ";
+    if (std::isnan(rho)) {
+        mfem::out << "n/a";
+    } else {
+        mfem::out << rho;
+    }
+    mfem::out << ", delta = " << delta_old;
+    if (delta_new != delta_old) {
+        mfem::out << " -> " << delta_new;
+    }
+    mfem::out << ", " << outcome << '\n';
 }
 
 /**
@@ -145,7 +181,7 @@ void ExaTrustRegionSolver::Dogleg(double delta,
  *   4. Set the convergence threshold norm_max = max(rel_tol * res, abs_tol)
  *   5. Initialize trust-region radius delta from delta_ctrl.deltaInit
  *
- * **Main iteration loop** (until convergence or max_iter):
+ * **Main iteration loop** (until convergence or max_iter accepted iterations):
  *   1. If the previous step was *not* rejected, recompute Newton machinery:
  *      a. Get Jacobian J = oper_mech->GetGradient(x). The material state is
  *         consistent with x because Mult(x, r) was just evaluated.
@@ -169,6 +205,12 @@ void ExaTrustRegionSolver::Dogleg(double delta,
  *      The material state inside the model handles itself analogously to the
  *      ExaNewtonLSSolver line-search behavior — when Mult() is called again at
  *      the next trial point, the model recomputes from the beginning-step state.
+ *      Rejected steps do not count as iterations (unlike SNLS) since they are
+ *      retries of the same iteration, much like the trial evaluations of a line
+ *      search. An internal cap on consecutive rejections guards against an
+ *      endless loop, although deltaMin should normally be reached first.
+ *   9. If accepted: the iteration count is incremented and the step scale and
+ *      new residual are printed in the same format as the other solvers.
  *
  * **Performance Profiling**:
  *   - "TR_dogleg_solver" scope for overall trust-region solver performance
@@ -209,17 +251,20 @@ void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
     }
 
     double res = Norm(r);
+    // Residual norm at the start of the solve used for the relative residual
+    const double norm0 = res;
+    // Residual norm at the last accepted state
     double res_0 = res;
     const double norm_max = std::max(rel_tol * res, abs_tol);
 
-    if (print_level >= 0) {
-        mfem::out << "TR dogleg: initial ||r|| = " << res << "\n";
-    }
+    MFEM_ASSERT_0(mfem::IsFinite(res), "norm = " << res);
+    PrintIterationInfo(0, res, norm0);
 
     if (res <= norm_max) {
         converged = true;
         final_iter = 0;
         final_norm = res;
+        PrintSummaryInfo(0, res, norm0, true, 0);
         return;
     }
 
@@ -232,13 +277,22 @@ void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
     double Jg_2 = 0.0;
     double nr_norm = 0.0;
 
+    // Only accepted steps count as iterations. A rejected trial step is retried from
+    // the same state with a smaller trust region, reusing the Jacobian and Newton step,
+    // so it is treated like the extra residual evaluations of a line search rather than
+    // a full iteration. This keeps max_iter, final_iter, and the per-iteration output
+    // consistent with the other nonlinear solvers. Note, this differs from SNLS where
+    // rejected steps also count towards the iteration count.
     int it = 0;
+    int num_rejected = 0;
+    int num_consecutive_rejected = 0;
+    // Internal safeguard against endlessly rejecting steps. In practice the trust region
+    // radius should reach deltaMin well before this is hit.
+    constexpr int max_consecutive_rejected = 50;
     converged = false;
 
     // --- Main iteration loop ---
     while (it < max_iter) {
-        it++;
-
         // If the previous step was not rejected, recompute Newton direction
         // and steepest descent direction at the current x. The Jacobian data
         // is current because oper_mech->Mult(x, r) was just called.
@@ -281,8 +335,14 @@ void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
         // Compute the dogleg step
         double pred_resid = 0.0;
-        bool use_nr = false;
-        Dogleg(delta, res_0, nr_norm, Jg_2, grad, nrStep, delx, pred_resid, use_nr);
+        double beta = 0.0;
+        DoglegStep step = DoglegStep::NEWTON;
+        Dogleg(delta, res_0, nr_norm, Jg_2, grad, nrStep, delx, pred_resid, step, beta);
+        const bool use_nr = (step == DoglegStep::NEWTON);
+        // Fraction of the full Newton step being taken. This is the trust-region
+        // analog of the NR / NRLS relaxation factor. When not taking the Newton step,
+        // the step lies on the trust-region boundary so ||delx|| = delta < nr_norm.
+        const double step_scale = use_nr ? 1.0 : delta / nr_norm;
 
         // Apply the trial step: x = x_prev + delx
         x = x_prev;
@@ -299,40 +359,80 @@ void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
         }
 
         res = Norm(r);
-
-        if (print_level >= 0) {
-            mfem::out << "TR dogleg: iter " << it << ", ||r|| = " << res << ", delta = " << delta
-                      << (use_nr ? " [NR]" : " [DL]") << "\n";
-        }
+        MFEM_ASSERT_0(mfem::IsFinite(res), "norm = " << res);
 
         // Check convergence
         if (res <= norm_max) {
             converged = true;
+            PrintStepDetails(step,
+                             beta,
+                             pred_resid,
+                             res,
+                             std::numeric_limits<double>::quiet_NaN(),
+                             delta,
+                             delta,
+                             "converged");
+            PrintStepScaleInfo(it, step_scale);
+            it++;
+            PrintIterationInfo(it, res, norm0);
             break;
         }
 
         // Update delta from actual vs predicted reduction. May flag for rejection.
+        // rho is only computed if the predicted change is non-zero.
+        const double delta_old = delta;
+        rho = std::numeric_limits<double>::quiet_NaN();
         bool delta_ok = delta_ctrl.UpdateDelta(
-            delta, res, res_0, pred_resid, reject_prev, use_nr, nr_norm, rho, print_level);
+            delta, res, res_0, pred_resid, reject_prev, use_nr, nr_norm, rho);
+
+        PrintStepDetails(step,
+                         beta,
+                         pred_resid,
+                         res,
+                         rho,
+                         delta_old,
+                         delta,
+                         reject_prev ? "rejected" : "accepted");
+
+        if (reject_prev) {
+            // Revert x and the residual norm. On the next pass reject_prev == true so
+            // we skip the Newton solve and recompute the dogleg with the updated
+            // (smaller) delta. The Jacobian, grad, nrStep, and Jg_2 are still valid
+            // from the last accepted state. Nothing is printed at the standard output
+            // level since this is the same iteration being retried.
+            x = x_prev;
+            res = res_0;
+            num_rejected++;
+            num_consecutive_rejected++;
+        } else {
+            // Accepted step so this completes an iteration
+            PrintStepScaleInfo(it, step_scale);
+            it++;
+            PrintIterationInfo(it, res, norm0);
+            num_consecutive_rejected = 0;
+        }
 
         if (!delta_ok) {
-            if (print_level >= 0) {
-                mfem::out << "TR dogleg: delta control failure at iter " << it << "\n";
+            if (print_level > 0) {
+                if (delta <= delta_ctrl.deltaMin) {
+                    mfem::out << "The trust region radius reached its minimum value of " << delta
+                              << " so the nonlinear solve is stopping\n";
+                } else {
+                    mfem::out << "The trust region model predicted no change in the residual at "
+                                 "its maximum radius so the nonlinear solve is stopping\n";
+                }
             }
             converged = false;
             break;
         }
 
-        // If the step is rejected, revert x and residual.
-        // On the next iteration, reject_prev == true so we skip the Newton solve
-        // and recompute the dogleg with the updated (smaller) delta. The Jacobian,
-        // grad, nrStep, and Jg_2 are still valid from the last accepted state.
-        if (reject_prev) {
+        if (num_consecutive_rejected >= max_consecutive_rejected) {
             if (print_level > 0) {
-                mfem::out << "TR dogleg: rejecting step, reverting to previous state\n";
+                mfem::out << "The trust region step was rejected " << num_consecutive_rejected
+                          << " times in a row so the nonlinear solve is stopping\n";
             }
-            x = x_prev;
-            res = res_0;
+            converged = false;
+            break;
         }
 
         res_0 = res;
@@ -340,9 +440,5 @@ void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
     final_iter = it;
     final_norm = res;
-
-    if (!converged && print_level >= 0) {
-        mfem::out << "TR dogleg: failed to converge in " << it
-                  << " iterations, final ||r|| = " << res << "\n";
-    }
+    PrintSummaryInfo(it, res, norm0, converged, num_rejected);
 }

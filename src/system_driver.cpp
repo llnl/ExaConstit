@@ -393,7 +393,8 @@ SystemDriver::SystemDriver(std::shared_ptr<SimulationState> sim_state)
     newton_solver->iterative_mode = true;
     newton_solver->SetSolver(J_solver);
     newton_solver->SetOperator(mech_operator);
-    newton_solver->SetPrintLevel(1);
+    // SetPrintLevel also makes sure only rank 0 prints the nonlinear solver output
+    newton_solver->SetPrintLevel(nonlinear_solver.print_info);
     newton_solver->SetRelTol(nonlinear_solver.rel_tol);
     newton_solver->SetAbsTol(nonlinear_solver.abs_tol);
     newton_solver->SetMaxIter(nonlinear_solver.iter);

@@ -746,6 +746,17 @@ struct NonlinearSolverOptions {
     NonlinearSolverType nl_solver = NonlinearSolverType::NR;
 
     /**
+     * @brief Verbosity of the nonlinear solver output
+     *
+     * - 0: only a one line summary (number of iterations, final residual, and final
+     *      relative residual) once the solver converges or fails
+     * - 1: residual and step scale information for every iteration (default)
+     * - 2+: also prints detailed per-iteration information for solvers that have it
+     *       (currently the trust-region dogleg solver)
+     */
+    int print_info = 1;
+
+    /**
      * @brief Trust-region configuration (only used when nl_solver == TRDOG).
      *
      * If left empty, default TrustRegionOptions values are used. Users with
