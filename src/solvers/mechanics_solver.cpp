@@ -312,13 +312,18 @@ void ExaNewtonLSSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
             double eps = (3.0 * q1 - 4.0 * q2 + q3) / (4.0 * (q1 - 2.0 * q2 + q3));
 
+            // Smallest relaxation factor we'll allow the line search to take
+            constexpr double min_scale = 0.05;
+
             if ((q1 - 2.0 * q2 + q3) > 0 && eps > 0 && eps < 1) {
-                scale = eps;
+                // The quadratic minimum can land arbitrarily close to 0, so make sure
+                // we don't go below our minimum relaxation factor
+                scale = std::max(eps, min_scale);
             } else if (q3 < q1) {
                 scale = 1.0;
             } else {
                 // We should probably just quit if this is the case...
-                scale = 0.05;
+                scale = min_scale;
             }
 
             if (print_level >= 0) {
