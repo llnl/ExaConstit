@@ -100,7 +100,9 @@ CompactNamespaces: false
 KeepEmptyLinesAtTheStartOfBlocks: false
 MaxEmptyLinesToKeep: 1
 
-# Include sorting - ExaConstit headers first, then TPLs, then stdlib
+# Include sorting - ExaConstit headers first, then MFEM, then other TPLs, then stdlib
+# CaseSensitive is set explicitly since clang-format >= 13 defaults to case-insensitive
+# matching, which would otherwise pull headers like "SNLS_config.h" into the wrong group
 # NOTE: clang-format will alphabetize within each priority group
 SortIncludes: CaseSensitive
 IncludeBlocks: Regroup
@@ -108,17 +110,26 @@ IncludeCategories:
   # ExaConstit project headers (quoted includes from project directories)
   - Regex:           '^"(boundary_conditions|fem_operators|mfem_expt|models|options|postprocessing|sim_state|solvers|system_driver|umats|utilities)/'
     Priority:        1
+    CaseSensitive:   true
   - Regex:           '^"(system_driver)'
     Priority:        1
-  # Third-party library headers (RAJA, mfem, ecmech, snls, caliper)
-  - Regex:           '^"(RAJA|mfem|ecmech|snls|caliper)'
+    CaseSensitive:   true
+  # MFEM headers get their own group
+  - Regex:           '^"mfem(\.hpp"|/)'
     Priority:        2
+    CaseSensitive:   true
+  # Other third-party library headers (RAJA, ECMech, SNLS, caliper, umpire)
+  - Regex:           '^["<](RAJA|ECMech|ecmech|SNLS|snls|caliper|umpire)'
+    Priority:        3
+    CaseSensitive:   true
   # Standard C++ library (angle brackets, no file extension)
   - Regex:           '^<[a-z_]+>$'
-    Priority:        3
+    Priority:        4
+    CaseSensitive:   true
   # C standard library (angle brackets with .h extension)
   - Regex:           '^<[a-z_]+\.h>$'
-    Priority:        3
+    Priority:        4
+    CaseSensitive:   true
   # Catch-all for anything else
   - Regex:           '.*'
     Priority:        99
