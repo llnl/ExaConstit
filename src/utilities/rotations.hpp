@@ -1,7 +1,8 @@
 #pragma once
 
-#include "ECMech_gpu_portability.h"
 #include "mfem.hpp"
+
+#include "ECMech_gpu_portability.h"
 
 #include <cmath>
 #include <limits>

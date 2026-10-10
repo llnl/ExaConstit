@@ -111,10 +111,9 @@ LinearSolverType string_to_linear_solver_type(const std::string& str) {
  */
 NonlinearSolverType string_to_nonlinear_solver_type(const std::string& str) {
     static const std::map<std::string, NonlinearSolverType> mapping = {
-        {"NR",    NonlinearSolverType::NR},
-        {"NRLS",  NonlinearSolverType::NRLS},
-        {"TRDOG", NonlinearSolverType::TRDOG}
-    };
+        {"NR", NonlinearSolverType::NR},
+        {"NRLS", NonlinearSolverType::NRLS},
+        {"TRDOG", NonlinearSolverType::TRDOG}};
 
     return string_to_enum(str, mapping, NonlinearSolverType::NOTYPE, "nonlinear solver");
 }

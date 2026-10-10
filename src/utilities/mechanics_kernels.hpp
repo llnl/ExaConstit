@@ -4,9 +4,10 @@
 #include "mfem_expt/partial_qfunc.hpp"
 #include "options/option_parser_v2.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 /**
  * @brief ExaConstit computational kernels for finite element operations.
@@ -541,8 +542,9 @@ double ComputeVolAvgTensorFilterFromPartial(const mfem::expt::PartialQuadratureF
         *ir, mfem::GeometricFactors::DETERMINANTS);
 
     // Get the local-to-global element mapping and data layout info
-    auto l2g = pqs->GetLocal2Global().Read();    // Maps local element index to global element index
-    auto loc_offsets = pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
+    auto l2g = pqs->GetLocal2Global().Read(); // Maps local element index to global element index
+    auto loc_offsets =
+        pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
     auto global_offsets = (pqs->GetGlobalOffset().Size() > 1)
                               ? pqs->GetGlobalOffset().Read()
                               : loc_offsets; // Offsets for global data layout
@@ -762,8 +764,9 @@ double ComputeVolAvgTensorFromPartial(const mfem::expt::PartialQuadratureFunctio
         *ir, mfem::GeometricFactors::DETERMINANTS);
 
     // Get the local-to-global element mapping and data layout info
-    auto l2g = pqs->GetLocal2Global().Read();    // Maps local element index to global element index
-    auto loc_offsets = pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
+    auto l2g = pqs->GetLocal2Global().Read(); // Maps local element index to global element index
+    auto loc_offsets =
+        pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
     auto global_offsets = (pqs->GetGlobalOffset().Size() > 1)
                               ? pqs->GetGlobalOffset().Read()
                               : loc_offsets; // Offsets for global data layout

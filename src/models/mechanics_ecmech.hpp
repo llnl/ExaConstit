@@ -2,9 +2,10 @@
 
 #include "models/mechanics_model.hpp"
 
+#include "mfem.hpp"
+
 #include "ECMech_const.h"
 #include "ECMech_matModelBase.h"
-#include "mfem.hpp"
 
 #include <memory>
 

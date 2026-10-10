@@ -97,10 +97,10 @@ enum class LinearSolverType {
  * @brief Enumeration for nonlinear solver types
  */
 enum class NonlinearSolverType {
-    NR,     /**< Newton-Raphson method */
-    NRLS,   /**< Newton-Raphson with line search */
-    TRDOG,  /**< Trust-region dogleg method (ported from SNLS) */
-    NOTYPE  /**< Uninitialized or invalid nonlinear solver type */
+    NR,    /**< Newton-Raphson method */
+    NRLS,  /**< Newton-Raphson with line search */
+    TRDOG, /**< Trust-region dogleg method (ported from SNLS) */
+    NOTYPE /**< Uninitialized or invalid nonlinear solver type */
 };
 
 /**

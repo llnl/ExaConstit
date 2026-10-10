@@ -5,8 +5,9 @@
 #include "utilities/strain_measures.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem/fem/qfunction.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <algorithm>
 #include <iostream> // cerr

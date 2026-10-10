@@ -3,10 +3,11 @@
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/rotations.hpp"
 
+#include "mfem/general/forall.hpp"
+
 #include "ECMech_const.h"
 #include "ECMech_gpu_portability.h"
 #include "SNLS_linalg.h"
-#include "mfem/general/forall.hpp"
 
 /**
  * @brief Type trait for detecting std::array types

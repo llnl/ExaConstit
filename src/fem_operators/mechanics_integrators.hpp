@@ -378,7 +378,7 @@ public:
      * @note GPU-compatible via mfem::forall
      * @note Requires prior AssembleGradPA() call for the D tensor
      */
-    virtual void AddMultTransposeGradPA(const mfem::Vector &x, mfem::Vector &y) const override;
+    virtual void AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
 
     using mfem::NonlinearFormIntegrator::AssemblePA;
     /**
@@ -780,10 +780,11 @@ public:
      * @note Material tangent C is accessed directly from the simulation state
      *       quadrature function during the AddMult kernels
      */
-    virtual void AssembleGradPA(const mfem::FiniteElementSpace &fes) override;
+    virtual void AssembleGradPA(const mfem::FiniteElementSpace& fes) override;
 
     /// State-ful overload that ignores the state vector @a x.
-    virtual void AssembleGradPA(const mfem::Vector &x, const mfem::FiniteElementSpace &fes) override;
+    virtual void AssembleGradPA(const mfem::Vector& x,
+                                const mfem::FiniteElementSpace& fes) override;
 
     /**
      * @brief Apply partial-assembly B-bar tangent stiffness action.
@@ -808,7 +809,7 @@ public:
      * @note GPU-compatible via mfem::forall
      * @note Requires prior AssembleGradPA() call
      */
-    virtual void AddMultGradPA(const mfem::Vector &x, mfem::Vector &y) const override;
+    virtual void AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
 
     /**
      * @brief Apply transposed B-bar tangent stiffness action.
@@ -827,7 +828,7 @@ public:
      *
      * @note For symmetric C, this produces identical results to AddMultGradPA
      */
-    virtual void AddMultTransposeGradPA(const mfem::Vector &x, mfem::Vector &y) const override;
+    virtual void AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
 
     /**
      * @brief Initialize partial assembly data structures for B-bar residual operations.

@@ -198,8 +198,9 @@ bool BoundaryOptions::validate() {
                     err << "Error: `BCs` for update step " << step << " has boundary attribute "
                         << vel_ids[i] << " with the " << shared_dirs
                         << "component(s) constrained by both `velocity_bcs` (essential_comps = "
-                        << vel_comps[i] << ") and `velocity_gradient_bcs` (essential_comps = "
-                        << vgrad_comps[j] << "). A DOF may only be constrained by one BC type.";
+                        << vel_comps[i]
+                        << ") and `velocity_gradient_bcs` (essential_comps = " << vgrad_comps[j]
+                        << "). A DOF may only be constrained by one BC type.";
                     WARNING_0_OPT(err.str());
                     overlap_found = true;
                 }

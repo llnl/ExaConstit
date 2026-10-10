@@ -48,87 +48,87 @@
  *       and p = s_N + alpha * g.
  *    Beta is taken from the larger root and clamped to [0, 1] for safety.
  */
-void ExaTrustRegionSolver::Dogleg(double delta, double res_0, double nr_norm,
-                                  double Jg_2, const mfem::Vector &grad,
-                                  const mfem::Vector &nrStep, mfem::Vector &delx,
-                                  double &pred_resid, bool &use_nr) const
-{
-   use_nr = false;
+void ExaTrustRegionSolver::Dogleg(double delta,
+                                  double res_0,
+                                  double nr_norm,
+                                  double Jg_2,
+                                  const mfem::Vector& grad,
+                                  const mfem::Vector& nrStep,
+                                  mfem::Vector& delx,
+                                  double& pred_resid,
+                                  bool& use_nr) const {
+    use_nr = false;
 
-   // --- Case 1: Full Newton step fits inside the trust region ---
-   if (nr_norm <= delta) {
-      use_nr = true;
-      delx = nrStep;
-      pred_resid = 0.0;
+    // --- Case 1: Full Newton step fits inside the trust region ---
+    if (nr_norm <= delta) {
+        use_nr = true;
+        delx = nrStep;
+        pred_resid = 0.0;
 
-      if (print_level > 0) {
-         mfem::out << "TR dogleg: taking full Newton step (||s_N|| = "
-                   << nr_norm << " <= delta = " << delta << ")\n";
-      }
-      return;
-   }
+        if (print_level > 0) {
+            mfem::out << "TR dogleg: taking full Newton step (||s_N|| = " << nr_norm
+                      << " <= delta = " << delta << ")\n";
+        }
+        return;
+    }
 
-   // Cauchy point parameters using MPI-aware dot products
-   const double norm2_grad = Dot(grad, grad);
-   const double norm_grad = std::sqrt(norm2_grad);
+    // Cauchy point parameters using MPI-aware dot products
+    const double norm2_grad = Dot(grad, grad);
+    const double norm_grad = std::sqrt(norm2_grad);
 
-   const double alpha = (Jg_2 > 0.0) ? (norm2_grad / Jg_2) : 1.0;
-   const double norm_grad_inv = (norm_grad > 0.0) ? (1.0 / norm_grad) : 1.0;
-   const double norm_s_sd_opt = alpha * norm_grad;
+    const double alpha = (Jg_2 > 0.0) ? (norm2_grad / Jg_2) : 1.0;
+    const double norm_grad_inv = (norm_grad > 0.0) ? (1.0 / norm_grad) : 1.0;
+    const double norm_s_sd_opt = alpha * norm_grad;
 
-   // --- Case 2: Cauchy point is outside the trust region ---
-   // Take a step along the steepest descent direction to the trust-region boundary
-   if (norm_s_sd_opt >= delta) {
-      // delx = -delta * (grad / ||grad||)
-      const double factor = -delta * norm_grad_inv;
-      delx = grad;
-      delx *= factor;
+    // --- Case 2: Cauchy point is outside the trust region ---
+    // Take a step along the steepest descent direction to the trust-region boundary
+    if (norm_s_sd_opt >= delta) {
+        // delx = -delta * (grad / ||grad||)
+        const double factor = -delta * norm_grad_inv;
+        delx = grad;
+        delx *= factor;
 
-      // Predicted residual from linear model at the truncated Cauchy step
-      const double val = -(delta * norm_grad) +
-                         0.5 * delta * delta * Jg_2 *
-                         (norm_grad_inv * norm_grad_inv);
-      pred_resid = std::sqrt(std::max(2.0 * val + res_0 * res_0, 0.0));
+        // Predicted residual from linear model at the truncated Cauchy step
+        const double val = -(delta * norm_grad) +
+                           0.5 * delta * delta * Jg_2 * (norm_grad_inv * norm_grad_inv);
+        pred_resid = std::sqrt(std::max(2.0 * val + res_0 * res_0, 0.0));
 
-      if (print_level > 0) {
-         mfem::out << "TR dogleg: stepping along first leg (steepest descent)\n";
-      }
-   }
-   // --- Case 3: Cauchy inside, Newton outside; interpolate along the second leg ---
-   else {
-      // Reuse delx as workspace for p = nrStep + alpha * grad
-      mfem::Vector &p = delx;
-      add(nrStep, alpha, grad, p);
+        if (print_level > 0) {
+            mfem::out << "TR dogleg: stepping along first leg (steepest descent)\n";
+        }
+    }
+    // --- Case 3: Cauchy inside, Newton outside; interpolate along the second leg ---
+    else {
+        // Reuse delx as workspace for p = nrStep + alpha * grad
+        mfem::Vector& p = delx;
+        add(nrStep, alpha, grad, p);
 
-      // Quadratic coefficients for the trust-region boundary intersection
-      double qa = Dot(p, p);
-      double qb = Dot(p, grad) * alpha;
-      double qc = norm_s_sd_opt * norm_s_sd_opt - delta * delta;
+        // Quadratic coefficients for the trust-region boundary intersection
+        double qa = Dot(p, p);
+        double qb = Dot(p, grad) * alpha;
+        double qc = norm_s_sd_opt * norm_s_sd_opt - delta * delta;
 
-      double discriminant = qb * qb - qa * qc;
-      double beta = (qa > 0.0)
-         ? (qb + std::sqrt(std::max(discriminant, 0.0))) / qa
-         : 0.0;
+        double discriminant = qb * qb - qa * qc;
+        double beta = (qa > 0.0) ? (qb + std::sqrt(std::max(discriminant, 0.0))) / qa : 0.0;
 
-      // Clamp beta to [0, 1] to handle any roundoff at the boundary
-      beta = std::max(0.0, std::min(1.0, beta));
+        // Clamp beta to [0, 1] to handle any roundoff at the boundary
+        beta = std::max(0.0, std::min(1.0, beta));
 
-      // delx = beta * nrStep - (1 - beta) * alpha * grad
-      const double omb = 1.0 - beta;
-      const double omba = omb * alpha;
-      add(beta, nrStep, -omba, grad, delx);
+        // delx = beta * nrStep - (1 - beta) * alpha * grad
+        const double omb = 1.0 - beta;
+        const double omba = omb * alpha;
+        add(beta, nrStep, -omba, grad, delx);
 
-      // Predicted residual from linear model at the dogleg step
-      const double res_cauchy = (Jg_2 > 0.0)
-         ? std::sqrt(std::max(res_0 * res_0 - alpha * norm2_grad, 0.0))
-         : res_0;
-      pred_resid = omb * res_cauchy;
+        // Predicted residual from linear model at the dogleg step
+        const double res_cauchy = (Jg_2 > 0.0)
+                                      ? std::sqrt(std::max(res_0 * res_0 - alpha * norm2_grad, 0.0))
+                                      : res_0;
+        pred_resid = omb * res_cauchy;
 
-      if (print_level > 0) {
-         mfem::out << "TR dogleg: stepping along second leg (beta = "
-                   << beta << ")\n";
-      }
-   }
+        if (print_level > 0) {
+            mfem::out << "TR dogleg: stepping along second leg (beta = " << beta << ")\n";
+        }
+    }
 }
 
 /**
@@ -181,170 +181,168 @@ void ExaTrustRegionSolver::Dogleg(double delta, double res_0, double nr_norm,
  * @note All scalar quantities (norms, dot products) use MFEM's MPI-aware
  *       Norm() and Dot() functions through the IterativeSolver base class
  */
-void ExaTrustRegionSolver::Mult(const mfem::Vector &b, mfem::Vector &x) const
-{
-   CALI_CXX_MARK_SCOPE("TR_dogleg_solver");
-   MFEM_ASSERT_0(oper_mech, "the Operator is not set (use SetOperator).");
-   MFEM_ASSERT_0(prec_mech, "the Solver is not set (use SetSolver).");
-   MFEM_ASSERT(delta_ctrl.Validate(), "TrDeltaControl parameters are invalid.");
+void ExaTrustRegionSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
+    CALI_CXX_MARK_SCOPE("TR_dogleg_solver");
+    MFEM_ASSERT_0(oper_mech, "the Operator is not set (use SetOperator).");
+    MFEM_ASSERT_0(prec_mech, "the Solver is not set (use SetSolver).");
+    MFEM_ASSERT(delta_ctrl.Validate(), "TrDeltaControl parameters are invalid.");
 
-   const bool have_b = (b.Size() == Height());
+    const bool have_b = (b.Size() == Height());
 
-   // --- Allocate working vectors once, reused across iterations ---
-   mfem::Vector nrStep(width, mfem::Device::GetMemoryType());
-   mfem::Vector grad(width, mfem::Device::GetMemoryType());
-   mfem::Vector delx(width, mfem::Device::GetMemoryType());
-   mfem::Vector Jg_temp(width, mfem::Device::GetMemoryType());
-   mfem::Vector x_prev(width, mfem::Device::GetMemoryType());
+    // --- Allocate working vectors once, reused across iterations ---
+    mfem::Vector nrStep(width, mfem::Device::GetMemoryType());
+    mfem::Vector grad(width, mfem::Device::GetMemoryType());
+    mfem::Vector delx(width, mfem::Device::GetMemoryType());
+    mfem::Vector Jg_temp(width, mfem::Device::GetMemoryType());
+    mfem::Vector x_prev(width, mfem::Device::GetMemoryType());
 
-   nrStep.UseDevice(true);
-   grad.UseDevice(true);
-   delx.UseDevice(true);
-   Jg_temp.UseDevice(true);
-   x_prev.UseDevice(true);
+    nrStep.UseDevice(true);
+    grad.UseDevice(true);
+    delx.UseDevice(true);
+    Jg_temp.UseDevice(true);
+    x_prev.UseDevice(true);
 
-   // --- Initial residual evaluation: r = F(x) - b ---
-   oper_mech->Mult(x, r);
-   if (have_b) { r -= b; }
+    // --- Initial residual evaluation: r = F(x) - b ---
+    oper_mech->Mult(x, r);
+    if (have_b) {
+        r -= b;
+    }
 
-   double res = Norm(r);
-   double res_0 = res;
-   const double norm_max = std::max(rel_tol * res, abs_tol);
+    double res = Norm(r);
+    double res_0 = res;
+    const double norm_max = std::max(rel_tol * res, abs_tol);
 
-   if (print_level >= 0) {
-      mfem::out << "TR dogleg: initial ||r|| = " << res << "\n";
-   }
+    if (print_level >= 0) {
+        mfem::out << "TR dogleg: initial ||r|| = " << res << "\n";
+    }
 
-   if (res <= norm_max) {
-      converged = true;
-      final_iter = 0;
-      final_norm = res;
-      return;
-   }
+    if (res <= norm_max) {
+        converged = true;
+        final_iter = 0;
+        final_norm = res;
+        return;
+    }
 
-   // --- Initialize trust-region state ---
-   double delta = delta_ctrl.deltaInit;
-   double rho = 0.0;
-   bool reject_prev = false;
+    // --- Initialize trust-region state ---
+    double delta = delta_ctrl.deltaInit;
+    double rho = 0.0;
+    bool reject_prev = false;
 
-   // Persisted across iterations when a step is not rejected
-   double Jg_2 = 0.0;
-   double nr_norm = 0.0;
+    // Persisted across iterations when a step is not rejected
+    double Jg_2 = 0.0;
+    double nr_norm = 0.0;
 
-   int it = 0;
-   converged = false;
+    int it = 0;
+    converged = false;
 
-   // --- Main iteration loop ---
-   while (it < max_iter) {
-      it++;
+    // --- Main iteration loop ---
+    while (it < max_iter) {
+        it++;
 
-      // If the previous step was not rejected, recompute Newton direction
-      // and steepest descent direction at the current x. The Jacobian data
-      // is current because oper_mech->Mult(x, r) was just called.
-      if (!reject_prev) {
-         CALI_CXX_MARK_SCOPE("TR_newton_setup");
+        // If the previous step was not rejected, recompute Newton direction
+        // and steepest descent direction at the current x. The Jacobian data
+        // is current because oper_mech->Mult(x, r) was just called.
+        if (!reject_prev) {
+            CALI_CXX_MARK_SCOPE("TR_newton_setup");
 
-         mfem::Operator &J = oper_mech->GetGradient(x);
+            mfem::Operator& J = oper_mech->GetGradient(x);
 
-         // Steepest descent direction: grad = J^T * r
-         // This is the gradient of the merit function f(x) = 0.5 * ||F(x)||^2
-         {
-            CALI_CXX_MARK_SCOPE("TR_gradient_transpose");
-            J.MultTranspose(r, grad);
-         }
+            // Steepest descent direction: grad = J^T * r
+            // This is the gradient of the merit function f(x) = 0.5 * ||F(x)||^2
+            {
+                CALI_CXX_MARK_SCOPE("TR_gradient_transpose");
+                J.MultTranspose(r, grad);
+            }
 
-         // Compute ||J * grad||^2 for the optimal Cauchy step length
-         //    alpha_cauchy = ||grad||^2 / ||J*grad||^2
-         {
-            J.Mult(grad, Jg_temp);
-            Jg_2 = Dot(Jg_temp, Jg_temp);
-         }
+            // Compute ||J * grad||^2 for the optimal Cauchy step length
+            //    alpha_cauchy = ||grad||^2 / ||J*grad||^2
+            {
+                J.Mult(grad, Jg_temp);
+                Jg_2 = Dot(Jg_temp, Jg_temp);
+            }
 
-         // Solve Newton system: J * c = r, then nrStep = -c
-         // CGSolver follows the same convention as ExaNewtonSolver where the
-         // Krylov solve produces c such that the Newton update would be x -= c.
-         // For the dogleg we need nrStep = -J^{-1}*r, so we negate after the solve.
-         {
-            CALI_CXX_MARK_SCOPE("TR_newton_solve");
-            c = 0.0;
-            this->CGSolver(J, r, c);
-            nrStep = c;
-            nrStep.Neg();
-         }
+            // Solve Newton system: J * c = r, then nrStep = -c
+            // CGSolver follows the same convention as ExaNewtonSolver where the
+            // Krylov solve produces c such that the Newton update would be x -= c.
+            // For the dogleg we need nrStep = -J^{-1}*r, so we negate after the solve.
+            {
+                CALI_CXX_MARK_SCOPE("TR_newton_solve");
+                c = 0.0;
+                this->CGSolver(J, r, c);
+                nrStep = c;
+                nrStep.Neg();
+            }
 
-         nr_norm = Norm(nrStep);
-      }
+            nr_norm = Norm(nrStep);
+        }
 
-      // Save state for potential step rejection
-      x_prev = x;
+        // Save state for potential step rejection
+        x_prev = x;
 
-      // Compute the dogleg step
-      double pred_resid = 0.0;
-      bool use_nr = false;
-      Dogleg(delta, res_0, nr_norm, Jg_2, grad, nrStep,
-             delx, pred_resid, use_nr);
+        // Compute the dogleg step
+        double pred_resid = 0.0;
+        bool use_nr = false;
+        Dogleg(delta, res_0, nr_norm, Jg_2, grad, nrStep, delx, pred_resid, use_nr);
 
-      // Apply the trial step: x = x_prev + delx
-      x = x_prev;
-      x += delx;
+        // Apply the trial step: x = x_prev + delx
+        x = x_prev;
+        x += delx;
 
-      // Evaluate residual at the trial point
-      reject_prev = false;
-      {
-         CALI_CXX_MARK_SCOPE("TR_trial_eval");
-         oper_mech->Mult(x, r);
-         if (have_b) { r -= b; }
-      }
+        // Evaluate residual at the trial point
+        reject_prev = false;
+        {
+            CALI_CXX_MARK_SCOPE("TR_trial_eval");
+            oper_mech->Mult(x, r);
+            if (have_b) {
+                r -= b;
+            }
+        }
 
-      res = Norm(r);
+        res = Norm(r);
 
-      if (print_level >= 0) {
-         mfem::out << "TR dogleg: iter " << it
-                   << ", ||r|| = " << res
-                   << ", delta = " << delta
-                   << (use_nr ? " [NR]" : " [DL]")
-                   << "\n";
-      }
+        if (print_level >= 0) {
+            mfem::out << "TR dogleg: iter " << it << ", ||r|| = " << res << ", delta = " << delta
+                      << (use_nr ? " [NR]" : " [DL]") << "\n";
+        }
 
-      // Check convergence
-      if (res <= norm_max) {
-         converged = true;
-         break;
-      }
+        // Check convergence
+        if (res <= norm_max) {
+            converged = true;
+            break;
+        }
 
-      // Update delta from actual vs predicted reduction. May flag for rejection.
-      bool delta_ok = delta_ctrl.UpdateDelta(
-         delta, res, res_0, pred_resid, reject_prev,
-         use_nr, nr_norm, rho, print_level);
+        // Update delta from actual vs predicted reduction. May flag for rejection.
+        bool delta_ok = delta_ctrl.UpdateDelta(
+            delta, res, res_0, pred_resid, reject_prev, use_nr, nr_norm, rho, print_level);
 
-      if (!delta_ok) {
-         if (print_level >= 0) {
-            mfem::out << "TR dogleg: delta control failure at iter " << it << "\n";
-         }
-         converged = false;
-         break;
-      }
+        if (!delta_ok) {
+            if (print_level >= 0) {
+                mfem::out << "TR dogleg: delta control failure at iter " << it << "\n";
+            }
+            converged = false;
+            break;
+        }
 
-      // If the step is rejected, revert x and residual.
-      // On the next iteration, reject_prev == true so we skip the Newton solve
-      // and recompute the dogleg with the updated (smaller) delta. The Jacobian,
-      // grad, nrStep, and Jg_2 are still valid from the last accepted state.
-      if (reject_prev) {
-         if (print_level > 0) {
-            mfem::out << "TR dogleg: rejecting step, reverting to previous state\n";
-         }
-         x = x_prev;
-         res = res_0;
-      }
+        // If the step is rejected, revert x and residual.
+        // On the next iteration, reject_prev == true so we skip the Newton solve
+        // and recompute the dogleg with the updated (smaller) delta. The Jacobian,
+        // grad, nrStep, and Jg_2 are still valid from the last accepted state.
+        if (reject_prev) {
+            if (print_level > 0) {
+                mfem::out << "TR dogleg: rejecting step, reverting to previous state\n";
+            }
+            x = x_prev;
+            res = res_0;
+        }
 
-      res_0 = res;
-   }
+        res_0 = res;
+    }
 
-   final_iter = it;
-   final_norm = res;
+    final_iter = it;
+    final_norm = res;
 
-   if (!converged && print_level >= 0) {
-      mfem::out << "TR dogleg: failed to converge in " << it
-                << " iterations, final ||r|| = " << res << "\n";
-   }
+    if (!converged && print_level >= 0) {
+        mfem::out << "TR dogleg: failed to converge in " << it
+                  << " iterations, final ||r|| = " << res << "\n";
+    }
 }

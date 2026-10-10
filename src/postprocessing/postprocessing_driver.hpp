@@ -4,8 +4,9 @@
 #include "sim_state/simulation_state.hpp"
 #include "utilities/mechanics_kernels.hpp"
 
-#include "ECMech_const.h"
 #include "mfem.hpp"
+
+#include "ECMech_const.h"
 
 // Forward declaration to avoid circular includes
 class PostProcessingFileManager;

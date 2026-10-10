@@ -6,8 +6,9 @@
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <exception>
 #include <iostream>

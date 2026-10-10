@@ -5,9 +5,10 @@
 #include "utilities/assembly_ops.hpp"
 #include "utilities/mechanics_log.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <algorithm>
 #include <iostream> // cerr
@@ -695,36 +696,35 @@ void ExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) con
 // All quadrature weights and Jacobian determinants are baked into D from the
 // AssembleGradPA step, so this kernel does not need to reapply them.
 // -----------------------------------------------------------------------------
-void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector &x,
-                                              mfem::Vector &y) const
-{
+void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("enlfi_amTGPA");
     if ((space_dims == 1) || (space_dims == 2)) {
         MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    }
-    else {
+    } else {
         const int dim = 3;
         const int DIM3 = 3;
         const int DIM6 = 6;
 
-        std::array<RAJA::idx_t, DIM3> perm3 {{ 2, 1, 0 } };
-        std::array<RAJA::idx_t, DIM6> perm6 {{ 5, 4, 3, 2, 1, 0 } };
+        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
         // D tensor from AssembleGradPA: D(elem, qpt, i, k, l, n)
         // The leading dim being elem matches the ordering used in the forward kernel.
-        RAJA::Layout<DIM6> layout_tensor =
-            RAJA::make_permuted_layout({{ dim, dim, dim, dim, nqpts, nelems } }, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0> > D(pa_dmat.Read(),
+        RAJA::Layout<DIM6> layout_tensor = RAJA::make_permuted_layout(
+            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
+        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> D(pa_dmat.Read(),
                                                                             layout_tensor);
 
         // Field variables: input/output E-vectors
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{ nnodes, dim, nelems } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Y(y.ReadWrite(), layout_field);
+        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
+                                                                     perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
         // Reference shape function derivatives: Gt(node, dim, qpt)
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{ nnodes, dim, nqpts } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Gt(grad.Read(), layout_grads);
+        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
+                                                                             layout_grads);
 
         const int nqpts_ = nqpts;
         const int dim_ = dim;
@@ -732,43 +732,43 @@ void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector &x,
 
         mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
             for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-            // Step 1: Compute velocity gradient at this quadrature point
-            //   Gx(i, k) = sum_a Gt(a, i, qpt) * X(a, k, elem)
-            double Gx[3][3];
-            for (int ii = 0; ii < dim_; ii++) {
-                for (int kk = 0; kk < dim_; kk++) {
-                    Gx[ii][kk] = 0.0;
-                    for (int a = 0; a < nnodes_; a++) {
-                        Gx[ii][kk] += Gt(a, ii, j_qpts) * X(a, kk, i_elems);
-                    }
-                }
-            }
-
-            // Step 2: Apply TRANSPOSED D contraction
-            //   T(l, n) = sum_{i,k} D(i, k, l, n, qpt, elem) * Gx(i, k)
-            // Compare to forward kernel:
-            //   T(i, k) = sum_{l,n} D(i, k, l, n, qpt, elem) * Gx(l, n)
-            double T[3][3];
-            for (int ll = 0; ll < dim_; ll++) {
-                for (int nn = 0; nn < dim_; nn++) {
-                    T[ll][nn] = 0.0;
-                    for (int ii = 0; ii < dim_; ii++) {
-                        for (int kk = 0; kk < dim_; kk++) {
-                        T[ll][nn] += D(i_elems, j_qpts, ii, kk, ll, nn) * Gx[ii][kk];
+                // Step 1: Compute velocity gradient at this quadrature point
+                //   Gx(i, k) = sum_a Gt(a, i, qpt) * X(a, k, elem)
+                double Gx[3][3];
+                for (int ii = 0; ii < dim_; ii++) {
+                    for (int kk = 0; kk < dim_; kk++) {
+                        Gx[ii][kk] = 0.0;
+                        for (int a = 0; a < nnodes_; a++) {
+                            Gx[ii][kk] += Gt(a, ii, j_qpts) * X(a, kk, i_elems);
                         }
                     }
                 }
-            }
 
-            // Step 3: Apply test-function gradients (same as forward kernel)
-            //   Y(a, n) += sum_l Gt(a, l, qpt) * T(l, n)
-            for (int nn = 0; nn < dim_; nn++) {
+                // Step 2: Apply TRANSPOSED D contraction
+                //   T(l, n) = sum_{i,k} D(i, k, l, n, qpt, elem) * Gx(i, k)
+                // Compare to forward kernel:
+                //   T(i, k) = sum_{l,n} D(i, k, l, n, qpt, elem) * Gx(l, n)
+                double T[3][3];
                 for (int ll = 0; ll < dim_; ll++) {
-                    for (int a = 0; a < nnodes_; a++) {
-                        Y(a, nn, i_elems) += Gt(a, ll, j_qpts) * T[ll][nn];
+                    for (int nn = 0; nn < dim_; nn++) {
+                        T[ll][nn] = 0.0;
+                        for (int ii = 0; ii < dim_; ii++) {
+                            for (int kk = 0; kk < dim_; kk++) {
+                                T[ll][nn] += D(i_elems, j_qpts, ii, kk, ll, nn) * Gx[ii][kk];
+                            }
+                        }
                     }
                 }
-            }
+
+                // Step 3: Apply test-function gradients (same as forward kernel)
+                //   Y(a, n) += sum_l Gt(a, l, qpt) * T(l, n)
+                for (int nn = 0; nn < dim_; nn++) {
+                    for (int ll = 0; ll < dim_; ll++) {
+                        for (int a = 0; a < nnodes_; a++) {
+                            Y(a, nn, i_elems) += Gt(a, ll, j_qpts) * T[ll][nn];
+                        }
+                    }
+                }
             } // End of nqpts
         }); // End of nelems
     } // End of else (3D path)
@@ -1375,21 +1375,19 @@ void ICExaNLFIntegrator::AssembleElementGrad(const mfem::FiniteElement& el,
 // Instead, AddMultGradPA / AddMultTransposeGradPA access C directly from the
 // quadrature function and apply the B-bar action on the fly in physical space.
 // -----------------------------------------------------------------------------
-void ICExaNLFIntegrator::AssembleGradPA(const mfem::Vector &/* x */,
-                                        const mfem::FiniteElementSpace &fes)
-{
+void ICExaNLFIntegrator::AssembleGradPA(const mfem::Vector& /* x */,
+                                        const mfem::FiniteElementSpace& fes) {
     this->AssembleGradPA(fes);
 }
 
-void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace &fes)
-{
+void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     CALI_CXX_MARK_SCOPE("icenlfi_assembleGradPA");
 
-    mfem::Mesh *mesh = fes.GetMesh();
-    const mfem::FiniteElement &el = *fes.GetFE(0);
+    mfem::Mesh* mesh = fes.GetMesh();
+    const mfem::FiniteElement& el = *fes.GetFE(0);
     space_dims = el.GetDim();
-    const mfem::IntegrationRule *ir =
-        &(mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
+    const mfem::IntegrationRule* ir = &(
+        mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 
     nqpts = ir->GetNPoints();
     nnodes = el.GetDof();
@@ -1408,11 +1406,11 @@ void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace &fes)
         {
             mfem::DenseMatrix DSh;
             const int offset = nnodes * space_dims;
-            double *qpts_dshape_data = grad.HostReadWrite();
+            double* qpts_dshape_data = grad.HostReadWrite();
             for (int i = 0; i < nqpts; i++) {
-            const mfem::IntegrationPoint &ip = ir->IntPoint(i);
-            DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, space_dims);
-            el.CalcDShape(ip, DSh);
+                const mfem::IntegrationPoint& ip = ir->IntPoint(i);
+                DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, space_dims);
+                el.CalcDShape(ip, DSh);
             }
         }
         grad.UseDevice(true);
@@ -1426,7 +1424,6 @@ void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace &fes)
         this->AssemblePA(fes);
     }
 }
-
 
 /// Method defining element assembly.
 /** The result of the element assembly is added and stored in the @a emat
@@ -2240,49 +2237,50 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
 //     trace, Δtr → 0 at every qpt and the result must match the standard
 //     (non-B-bar) result.
 // -----------------------------------------------------------------------------
-void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector &x,
-                                       mfem::Vector &y) const
-{
+void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("icenlfi_amGPA");
     if ((space_dims == 1) || (space_dims == 2)) {
         MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    }
-    else {
+    } else {
         const int dim = 3;
         const int DIM3 = 3;
         const int DIM4 = 4;
         const int DIM6 = 6;
 
-        std::array<RAJA::idx_t, DIM3> perm3 {{ 2, 1, 0 } };
-        std::array<RAJA::idx_t, DIM4> perm4 {{ 3, 2, 1, 0 } };
-        std::array<RAJA::idx_t, DIM6> perm6 {{ 5, 4, 3, 2, 1, 0 } };
+        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
         // Input / output E-vectors
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{ nnodes, dim, nelems } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Y(y.ReadWrite(), layout_field);
+        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
+                                                                     perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
         // Reference shape function derivatives Gt(node, dim, qpt)
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{ nnodes, dim, nqpts } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Gt(grad.Read(), layout_grads);
+        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
+                                                                             layout_grads);
 
         // Element-averaged derivatives N̄(node, dim, elem)
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Nbar(elem_deriv_shapes.Read(),
-                                                                                layout_field);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(
+            elem_deriv_shapes.Read(), layout_field);
 
         // Mesh Jacobians J(dim, dim, qpt, elem) — column-major mfem convention
-        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{ dim, dim, nqpts, nelems } }, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0> > J_data(geom->J.Read(), layout_jac);
+        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                   perm4);
+        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+                                                                                 layout_jac);
 
         // Material tangent C(j, k, l, m, qpt, elem) from quadrature function
         auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
         RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout(
-            {{ dim, dim, dim, dim, nqpts, nelems } }, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0> > C(tangent_qf->Read(), layout_C);
+            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
+        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
+                                                                            layout_C);
 
         // Integration weights from the tangent stiffness QF integration rule
-        const mfem::IntegrationRule &ir =
-            tangent_qf->GetSpace()->GetIntRule(0);
+        const mfem::IntegrationRule& ir = tangent_qf->GetSpace()->GetIntRule(0);
         auto W = ir.GetWeights().Read();
 
         const int nqpts_ = nqpts;
@@ -2293,105 +2291,104 @@ void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector &x,
             // Step 1: Hoist tr_bar outside the qpt loop (element-constant)
             double tr_bar = 0.0;
             for (int a = 0; a < nnodes_; a++) {
-            for (int k = 0; k < dim_; k++) {
-                tr_bar += Nbar(a, k, e) * X(a, k, e);
-            }
+                for (int k = 0; k < dim_; k++) {
+                    tr_bar += Nbar(a, k, e) * X(a, k, e);
+                }
             }
 
             for (int q = 0; q < nqpts_; q++) {
-            // Step 2: Compute adjugate and Jacobian determinant
-            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                            J13 = J_data(2, 0, q, e);
-            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                            J23 = J_data(2, 1, q, e);
-            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
-                            J33 = J_data(2, 2, q, e);
+                // Step 2: Compute adjugate and Jacobian determinant
+                const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
+                             J13 = J_data(2, 0, q, e);
+                const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
+                             J23 = J_data(2, 1, q, e);
+                const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+                             J33 = J_data(2, 2, q, e);
 
-            double adj[9];
-            adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-            adj[1] = (J23 * J31) - (J21 * J33); // 0,1
-            adj[2] = (J21 * J32) - (J22 * J31); // 0,2
-            adj[3] = (J13 * J32) - (J12 * J33); // 1,0
-            adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-            adj[5] = (J12 * J31) - (J11 * J32); // 1,2
-            adj[6] = (J12 * J23) - (J13 * J22); // 2,0
-            adj[7] = (J13 * J21) - (J11 * J23); // 2,1
-            adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+                double adj[9];
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J23 * J31) - (J21 * J33); // 0,1
+                adj[2] = (J21 * J32) - (J22 * J31); // 0,2
+                adj[3] = (J13 * J32) - (J12 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J12 * J31) - (J11 * J32); // 1,2
+                adj[6] = (J12 * J23) - (J13 * J22); // 2,0
+                adj[7] = (J13 * J21) - (J11 * J23); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
 
-            const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
-            const double idetJ = 1.0 / detJ;
-            const double w_detJ = W[q] * detJ;
+                const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
+                const double idetJ = 1.0 / detJ;
+                const double w_detJ = W[q] * detJ;
 
-            // Step 3: Physical velocity gradient L(i,j) = sum_a dN(a,j) * V(a,i)
-            // We compute dN(a, :) on-the-fly from Gt and adj.
-            double L[3][3] = {{ 0.0 } };
-            for (int a = 0; a < nnodes_; a++) {
-                double dNa[3];
-                for (int j = 0; j < dim_; j++) {
-                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] +
-                                    Gt(a, 1, q) * adj[j * 3 + 1] +
-                                    Gt(a, 2, q) * adj[j * 3 + 2]);
-                }
-                for (int i = 0; i < dim_; i++) {
+                // Step 3: Physical velocity gradient L(i,j) = sum_a dN(a,j) * V(a,i)
+                // We compute dN(a, :) on-the-fly from Gt and adj.
+                double L[3][3] = {{0.0}};
+                for (int a = 0; a < nnodes_; a++) {
+                    double dNa[3];
                     for (int j = 0; j < dim_; j++) {
-                        L[i][j] += dNa[j] * X(a, i, e);
+                        dNa[j] = idetJ *
+                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                  Gt(a, 2, q) * adj[j * 3 + 2]);
                     }
-                }
-            }
-
-            // Step 4: B-bar trace correction
-            const double tr_std = L[0][0] + L[1][1] + L[2][2];
-            const double dtr = (tr_bar - tr_std) / 3.0;
-
-            double Lbar[3][3];
-            for (int i = 0; i < dim_; i++) {
-                for (int j = 0; j < dim_; j++) {
-                    Lbar[i][j] = L[i][j];
-                }
-            }
-            Lbar[0][0] += dtr;
-            Lbar[1][1] += dtr;
-            Lbar[2][2] += dtr;
-
-            // Step 5: Apply material tangent — forward contraction
-            //   σ'(j, k) = sum_{l,m} C(j, k, l, m) * L̄(l, m)
-            double sigma[3][3] = {{ 0.0 } };
-            for (int j = 0; j < dim_; j++) {
-                for (int k = 0; k < dim_; k++) {
-                    for (int l = 0; l < dim_; l++) {
-                        for (int m = 0; m < dim_; m++) {
-                        sigma[j][k] += C(j, k, l, m, q, e) * Lbar[l][m];
+                    for (int i = 0; i < dim_; i++) {
+                        for (int j = 0; j < dim_; j++) {
+                            L[i][j] += dNa[j] * X(a, i, e);
                         }
                     }
                 }
-            }
 
-            // Step 6: Pressure (volumetric) part of σ'
-            const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+                // Step 4: B-bar trace correction
+                const double tr_std = L[0][0] + L[1][1] + L[2][2];
+                const double dtr = (tr_bar - tr_std) / 3.0;
 
-            // Step 7: Accumulate forces with B-bar test side
-            //   Y(a, k) += [sum_j dN(a,j) σ'(j,k) + (N̄(a,k) - dN(a,k)) p] * w * detJ
-            for (int a = 0; a < nnodes_; a++) {
-                double dNa[3];
-                for (int j = 0; j < dim_; j++) {
-                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] +
-                                    Gt(a, 1, q) * adj[j * 3 + 1] +
-                                    Gt(a, 2, q) * adj[j * 3 + 2]);
-                }
-                for (int k = 0; k < dim_; k++) {
-                    double f_std = 0.0;
+                double Lbar[3][3];
+                for (int i = 0; i < dim_; i++) {
                     for (int j = 0; j < dim_; j++) {
-                        f_std += dNa[j] * sigma[j][k];
+                        Lbar[i][j] = L[i][j];
                     }
-                    double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
-                    Y(a, k, e) += (f_std + f_bbar) * w_detJ;
                 }
-            }
+                Lbar[0][0] += dtr;
+                Lbar[1][1] += dtr;
+                Lbar[2][2] += dtr;
+
+                // Step 5: Apply material tangent — forward contraction
+                //   σ'(j, k) = sum_{l,m} C(j, k, l, m) * L̄(l, m)
+                double sigma[3][3] = {{0.0}};
+                for (int j = 0; j < dim_; j++) {
+                    for (int k = 0; k < dim_; k++) {
+                        for (int l = 0; l < dim_; l++) {
+                            for (int m = 0; m < dim_; m++) {
+                                sigma[j][k] += C(j, k, l, m, q, e) * Lbar[l][m];
+                            }
+                        }
+                    }
+                }
+
+                // Step 6: Pressure (volumetric) part of σ'
+                const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+
+                // Step 7: Accumulate forces with B-bar test side
+                //   Y(a, k) += [sum_j dN(a,j) σ'(j,k) + (N̄(a,k) - dN(a,k)) p] * w * detJ
+                for (int a = 0; a < nnodes_; a++) {
+                    double dNa[3];
+                    for (int j = 0; j < dim_; j++) {
+                        dNa[j] = idetJ *
+                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                  Gt(a, 2, q) * adj[j * 3 + 2]);
+                    }
+                    for (int k = 0; k < dim_; k++) {
+                        double f_std = 0.0;
+                        for (int j = 0; j < dim_; j++) {
+                            f_std += dNa[j] * sigma[j][k];
+                        }
+                        double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
+                        Y(a, k, e) += (f_std + f_bbar) * w_detJ;
+                    }
+                }
             } // End of qpts
         }); // End of nelems
     } // End of else (3D path)
 }
-
 
 // -----------------------------------------------------------------------------
 // ICExaNLFIntegrator::AddMultTransposeGradPA
@@ -2412,43 +2409,44 @@ void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector &x,
 // genuinely different results, as required for correct trust-region
 // Cauchy point computation.
 // -----------------------------------------------------------------------------
-void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector &x,
-                                                mfem::Vector &y) const
-{
+void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("icenlfi_amTGPA");
     if ((space_dims == 1) || (space_dims == 2)) {
         MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    }
-    else {
+    } else {
         const int dim = 3;
         const int DIM3 = 3;
         const int DIM4 = 4;
         const int DIM6 = 6;
 
-        std::array<RAJA::idx_t, DIM3> perm3 {{ 2, 1, 0 } };
-        std::array<RAJA::idx_t, DIM4> perm4 {{ 3, 2, 1, 0 } };
-        std::array<RAJA::idx_t, DIM6> perm6 {{ 5, 4, 3, 2, 1, 0 } };
+        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{ nnodes, dim, nelems } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Y(y.ReadWrite(), layout_field);
+        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
+                                                                     perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{ nnodes, dim, nqpts } }, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Gt(grad.Read(), layout_grads);
+        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
+                                                                             layout_grads);
 
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0> > Nbar(elem_deriv_shapes.Read(),
-                                                                                layout_field);
+        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(
+            elem_deriv_shapes.Read(), layout_field);
 
-        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{ dim, dim, nqpts, nelems } }, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0> > J_data(geom->J.Read(), layout_jac);
+        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                   perm4);
+        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+                                                                                 layout_jac);
 
         auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
         RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout(
-            {{ dim, dim, dim, dim, nqpts, nelems } }, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0> > C(tangent_qf->Read(), layout_C);
+            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
+        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
+                                                                            layout_C);
 
-        const mfem::IntegrationRule &ir =
-            tangent_qf->GetSpace()->GetIntRule(0);
+        const mfem::IntegrationRule& ir = tangent_qf->GetSpace()->GetIntRule(0);
         auto W = ir.GetWeights().Read();
 
         const int nqpts_ = nqpts;
@@ -2459,99 +2457,99 @@ void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector &x,
             // Step 1: Hoist tr_bar (element-constant)
             double tr_bar = 0.0;
             for (int a = 0; a < nnodes_; a++) {
-            for (int k = 0; k < dim_; k++) {
-                tr_bar += Nbar(a, k, e) * X(a, k, e);
-            }
+                for (int k = 0; k < dim_; k++) {
+                    tr_bar += Nbar(a, k, e) * X(a, k, e);
+                }
             }
 
             for (int q = 0; q < nqpts_; q++) {
-            // Step 2: Adjugate and Jacobian determinant
-            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                            J13 = J_data(2, 0, q, e);
-            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                            J23 = J_data(2, 1, q, e);
-            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
-                            J33 = J_data(2, 2, q, e);
+                // Step 2: Adjugate and Jacobian determinant
+                const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
+                             J13 = J_data(2, 0, q, e);
+                const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
+                             J23 = J_data(2, 1, q, e);
+                const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+                             J33 = J_data(2, 2, q, e);
 
-            double adj[9];
-            adj[0] = (J22 * J33) - (J23 * J32);
-            adj[1] = (J23 * J31) - (J21 * J33);
-            adj[2] = (J21 * J32) - (J22 * J31);
-            adj[3] = (J13 * J32) - (J12 * J33);
-            adj[4] = (J11 * J33) - (J13 * J31);
-            adj[5] = (J12 * J31) - (J11 * J32);
-            adj[6] = (J12 * J23) - (J13 * J22);
-            adj[7] = (J13 * J21) - (J11 * J23);
-            adj[8] = (J11 * J22) - (J12 * J21);
+                double adj[9];
+                adj[0] = (J22 * J33) - (J23 * J32);
+                adj[1] = (J23 * J31) - (J21 * J33);
+                adj[2] = (J21 * J32) - (J22 * J31);
+                adj[3] = (J13 * J32) - (J12 * J33);
+                adj[4] = (J11 * J33) - (J13 * J31);
+                adj[5] = (J12 * J31) - (J11 * J32);
+                adj[6] = (J12 * J23) - (J13 * J22);
+                adj[7] = (J13 * J21) - (J11 * J23);
+                adj[8] = (J11 * J22) - (J12 * J21);
 
-            const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
-            const double idetJ = 1.0 / detJ;
-            const double w_detJ = W[q] * detJ;
+                const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
+                const double idetJ = 1.0 / detJ;
+                const double w_detJ = W[q] * detJ;
 
-            // Step 3: Physical velocity gradient
-            double L[3][3] = {{ 0.0 } };
-            for (int a = 0; a < nnodes_; a++) {
-                double dNa[3];
-                for (int j = 0; j < dim_; j++) {
-                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] +
-                                    Gt(a, 1, q) * adj[j * 3 + 1] +
-                                    Gt(a, 2, q) * adj[j * 3 + 2]);
-                }
-                for (int i = 0; i < dim_; i++) {
+                // Step 3: Physical velocity gradient
+                double L[3][3] = {{0.0}};
+                for (int a = 0; a < nnodes_; a++) {
+                    double dNa[3];
                     for (int j = 0; j < dim_; j++) {
-                        L[i][j] += dNa[j] * X(a, i, e);
+                        dNa[j] = idetJ *
+                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                  Gt(a, 2, q) * adj[j * 3 + 2]);
                     }
-                }
-            }
-
-            // Step 4: B-bar trace correction
-            const double tr_std = L[0][0] + L[1][1] + L[2][2];
-            const double dtr = (tr_bar - tr_std) / 3.0;
-
-            double Lbar[3][3];
-            for (int i = 0; i < dim_; i++) {
-                for (int j = 0; j < dim_; j++) {
-                    Lbar[i][j] = L[i][j];
-                }
-            }
-            Lbar[0][0] += dtr;
-            Lbar[1][1] += dtr;
-            Lbar[2][2] += dtr;
-
-            // Step 5: TRANSPOSED material tangent contraction
-            //   σ'(j, k) = sum_{l,m} C(l, m, j, k) * L̄(l, m)
-            // (Compare to forward: C(j, k, l, m) * L̄(l, m))
-            double sigma[3][3] = {{ 0.0 } };
-            for (int j = 0; j < dim_; j++) {
-                for (int k = 0; k < dim_; k++) {
-                    for (int l = 0; l < dim_; l++) {
-                        for (int m = 0; m < dim_; m++) {
-                        sigma[j][k] += C(l, m, j, k, q, e) * Lbar[l][m];
+                    for (int i = 0; i < dim_; i++) {
+                        for (int j = 0; j < dim_; j++) {
+                            L[i][j] += dNa[j] * X(a, i, e);
                         }
                     }
                 }
-            }
 
-            // Step 6: Pressure
-            const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+                // Step 4: B-bar trace correction
+                const double tr_std = L[0][0] + L[1][1] + L[2][2];
+                const double dtr = (tr_bar - tr_std) / 3.0;
 
-            // Step 7: Accumulate with B-bar test side (same as forward kernel)
-            for (int a = 0; a < nnodes_; a++) {
-                double dNa[3];
-                for (int j = 0; j < dim_; j++) {
-                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] +
-                                    Gt(a, 1, q) * adj[j * 3 + 1] +
-                                    Gt(a, 2, q) * adj[j * 3 + 2]);
-                }
-                for (int k = 0; k < dim_; k++) {
-                    double f_std = 0.0;
+                double Lbar[3][3];
+                for (int i = 0; i < dim_; i++) {
                     for (int j = 0; j < dim_; j++) {
-                        f_std += dNa[j] * sigma[j][k];
+                        Lbar[i][j] = L[i][j];
                     }
-                    double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
-                    Y(a, k, e) += (f_std + f_bbar) * w_detJ;
                 }
-            }
+                Lbar[0][0] += dtr;
+                Lbar[1][1] += dtr;
+                Lbar[2][2] += dtr;
+
+                // Step 5: TRANSPOSED material tangent contraction
+                //   σ'(j, k) = sum_{l,m} C(l, m, j, k) * L̄(l, m)
+                // (Compare to forward: C(j, k, l, m) * L̄(l, m))
+                double sigma[3][3] = {{0.0}};
+                for (int j = 0; j < dim_; j++) {
+                    for (int k = 0; k < dim_; k++) {
+                        for (int l = 0; l < dim_; l++) {
+                            for (int m = 0; m < dim_; m++) {
+                                sigma[j][k] += C(l, m, j, k, q, e) * Lbar[l][m];
+                            }
+                        }
+                    }
+                }
+
+                // Step 6: Pressure
+                const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+
+                // Step 7: Accumulate with B-bar test side (same as forward kernel)
+                for (int a = 0; a < nnodes_; a++) {
+                    double dNa[3];
+                    for (int j = 0; j < dim_; j++) {
+                        dNa[j] = idetJ *
+                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                  Gt(a, 2, q) * adj[j * 3 + 2]);
+                    }
+                    for (int k = 0; k < dim_; k++) {
+                        double f_std = 0.0;
+                        for (int j = 0; j < dim_; j++) {
+                            f_std += dNa[j] * sigma[j][k];
+                        }
+                        double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
+                        Y(a, k, e) += (f_std + f_bbar) * w_detJ;
+                    }
+                }
             } // End of qpts
         }); // End of nelems
     } // End of else (3D path)

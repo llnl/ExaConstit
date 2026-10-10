@@ -8,10 +8,11 @@
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "ECMech_const.h"
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "ECMech_const.h"
+#include "RAJA/RAJA.hpp"
 
 #include <iostream>
 #include <limits>
@@ -348,12 +349,10 @@ SystemDriver::SystemDriver(std::shared_ptr<SimulationState> sim_state)
     if (nonlinear_solver.nl_solver == NonlinearSolverType::NR) {
         newton_solver = std::make_unique<ExaNewtonSolver>(
             m_sim_state->GetMeshParFiniteElementSpace()->GetComm());
-    }
-    else if (nonlinear_solver.nl_solver == NonlinearSolverType::NRLS) {
+    } else if (nonlinear_solver.nl_solver == NonlinearSolverType::NRLS) {
         newton_solver = std::make_unique<ExaNewtonLSSolver>(
             m_sim_state->GetMeshParFiniteElementSpace()->GetComm());
-    }
-    else if (nonlinear_solver.nl_solver == NonlinearSolverType::TRDOG) {
+    } else if (nonlinear_solver.nl_solver == NonlinearSolverType::TRDOG) {
         // Build the trust-region dogleg solver and configure delta-control
         // parameters from the parsed TOML options. If the user did not supply
         // a [trust_region] sub-table, the solver's internal defaults (matching
@@ -364,16 +363,16 @@ SystemDriver::SystemDriver(std::shared_ptr<SimulationState> sim_state)
         if (nonlinear_solver.trust_region.has_value()) {
             const auto& tr_opts = nonlinear_solver.trust_region.value();
             TrDeltaControl ctrl;
-            ctrl.deltaInit         = tr_opts.delta_init;
-            ctrl.deltaMin          = tr_opts.delta_min;
-            ctrl.deltaMax          = tr_opts.delta_max;
-            ctrl.xiLG              = tr_opts.xi_lg;
-            ctrl.xiUG              = tr_opts.xi_ug;
-            ctrl.xiLO              = tr_opts.xi_lo;
-            ctrl.xiUO              = tr_opts.xi_uo;
-            ctrl.xiIncDelta        = tr_opts.xi_inc;
-            ctrl.xiDecDelta        = tr_opts.xi_dec;
-            ctrl.xiForcedIncDelta  = tr_opts.xi_forced_inc;
+            ctrl.deltaInit = tr_opts.delta_init;
+            ctrl.deltaMin = tr_opts.delta_min;
+            ctrl.deltaMax = tr_opts.delta_max;
+            ctrl.xiLG = tr_opts.xi_lg;
+            ctrl.xiUG = tr_opts.xi_ug;
+            ctrl.xiLO = tr_opts.xi_lo;
+            ctrl.xiUO = tr_opts.xi_uo;
+            ctrl.xiIncDelta = tr_opts.xi_inc;
+            ctrl.xiDecDelta = tr_opts.xi_dec;
+            ctrl.xiForcedIncDelta = tr_opts.xi_forced_inc;
             ctrl.rejectResIncrease = tr_opts.reject_increase;
             tr_solver->SetTrustRegionControl(ctrl);
         }

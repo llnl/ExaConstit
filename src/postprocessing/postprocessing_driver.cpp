@@ -1286,8 +1286,9 @@ void PostProcessingDriver::CalcElementAvg(mfem::expt::PartialQuadratureFunction*
         *ir, mfem::GeometricFactors::DETERMINANTS);
 
     // KEY DIFFERENCE: Get the local-to-global element mapping for partial space
-    auto l2g = pqs->GetLocal2Global().Read();    // Maps local element index to global element index
-    auto loc_offsets = pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
+    auto l2g = pqs->GetLocal2Global().Read(); // Maps local element index to global element index
+    auto loc_offsets =
+        pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
     // auto global_offsets = (pqs->GetGlobalOffset().Size() > 1) ?
     //                        pqs->GetGlobalOffset().Read() : loc_offsets; // Offsets for global
     //                        data layout

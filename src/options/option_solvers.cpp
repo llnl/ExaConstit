@@ -213,7 +213,8 @@ bool TrustRegionOptions::validate() const {
     }
 
     if (delta_init < delta_min || delta_init > delta_max) {
-        WARNING_0_OPT("Error: TrustRegion table provided delta_init outside [delta_min, delta_max]");
+        WARNING_0_OPT(
+            "Error: TrustRegion table provided delta_init outside [delta_min, delta_max]");
         return false;
     }
 
@@ -273,8 +274,7 @@ bool NonlinearSolverOptions::validate() const {
         return false;
     }
 
-    if (nl_solver != NonlinearSolverType::NR &&
-        nl_solver != NonlinearSolverType::NRLS &&
+    if (nl_solver != NonlinearSolverType::NR && nl_solver != NonlinearSolverType::NRLS &&
         nl_solver != NonlinearSolverType::TRDOG) {
         WARNING_0_OPT("Error: NonLinearSolver table did not provide a valid nl_solver option "
                       "(`NR`, `NRLS`, or `TRDOG`)");
