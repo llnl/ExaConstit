@@ -720,8 +720,8 @@ grain_file = "grains.txt"
         # GEOMETRIC FIELDS
         # Basic geometric properties computed from finite element mesh
         # =================================================================
-        # "centroid"     -> "Centroid"           # Element centroid coordinates
-        # "volume"       -> "Volume"             # Element volume (or area in 2D)
+        # "centroid"     -> "Element Centroids"  # Element centroid coordinates
+        # "volume"       -> "Element Volumes"    # Element volume (or area in 2D)
         #
         # =================================================================
         # STRESS FIELDS

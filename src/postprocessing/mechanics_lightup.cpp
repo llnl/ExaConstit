@@ -173,7 +173,7 @@ std::vector<std::array<double, 4>> GetSymmetryGroups(const LatticeType& lattice_
             {FRAC_PI_3 * 4.0, 0.0, 0.0, 1.0},
             {PI, 1.0, 0.0, 0.0},      // twofold about  2 -1 -1  0 (x1,a1)
             {PI, -0.5, SQRT3_2, 0.0}, // twofold about -1  2 -1  0 (a2)
-            {PI, -0.5, SQRT3_2, 0.0}  // twofold about -1 -1  2  0 (a3)
+            {PI, -0.5, -SQRT3_2, 0.0} // twofold about -1 -1  2  0 (a3)
         };
         break;
     }

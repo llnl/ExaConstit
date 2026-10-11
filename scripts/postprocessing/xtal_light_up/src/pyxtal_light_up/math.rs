@@ -1,3 +1,9 @@
+//! Small fixed-size dense linear algebra helpers (dot / cross products, norms,
+//! matrix-vector and matrix-matrix products, tensor rotation) used by the light-up
+//! calculations. Matrices are row-major arrays of rows (`[[F; NCOLS]]`), and the
+//! dimensions are compile time constants so everything stays on the stack.
+//! Not every helper is used by the Python bindings, hence the dead_code allowance.
+
 #![allow(dead_code)]
 use libnum::{Float, NumAssignOps, NumOps, One, Zero};
 
@@ -64,9 +70,9 @@ pub fn norm_column<const NDIM: usize, const MDIM: usize, F>(
     }
 
     // Accumulate the results across all remaining rows
-    for i_n in 1..NDIM {
+    for row in matrix.iter().take(NDIM).skip(1) {
         for j_m in 0..MDIM {
-            norm_vec[j_m] += matrix[i_n][j_m] * matrix[i_n][j_m];
+            norm_vec[j_m] += row[j_m] * row[j_m];
         }
     }
 

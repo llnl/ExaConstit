@@ -1,3 +1,13 @@
+"""
+Small example / smoke test for the xtal_light_up Rust module.
+
+Runs each of the module's functions on a single element and, for the in-fiber
+check, also computes the distance to each fiber with HEXRD so the two can be
+compared. Requires the xtal_light_up module to be built
+(``pip install .`` from this directory) and HEXRD to be installed.
+
+For processing actual ExaConstit results see light_up_py/fiber_calcs_rank.py.
+"""
 import numpy as np
 import xtal_light_up.xtal_light_up as xlup
 
@@ -11,7 +21,9 @@ from hexrd.matrixutil import  \
 
 def make_matl(mat_name , sgnum , lparms , hkl_ssq_max = 50 , dmin_angstroms = 0.5) :
     """
-    
+    Build a HEXRD material, used here for its plane data (reciprocal lattice B and
+    crystal symmetry) when comparing against HEXRD.
+
     Parameters
     ----------
     mat_name : str
@@ -23,8 +35,11 @@ def make_matl(mat_name , sgnum , lparms , hkl_ssq_max = 50 , dmin_angstroms = 0.
     hkl_ssq_max : int, optional
         maximum hkl sum of squares (peak upper bound). The default is 50.
     dmin_angstroms : float, optional
-        minimum d-spacing in angstroms (alt peak upper bound). The default is 0.6.
-        
+        minimum d-spacing in angstroms (alt peak upper bound). The default is 0.5.
+
+    Returns
+    -------
+    hexrd.material.Material
     """
     
     matl = material.Material(mat_name)
@@ -40,10 +55,26 @@ def make_matl(mat_name , sgnum , lparms , hkl_ssq_max = 50 , dmin_angstroms = 0.
 
 def applySym(vec, qsym, csFlag=False, cullPM=False, tol=rot.cnst.sqrt_epsf):
     """
-    Apply symmetry group to a single 3-vector (columnar) argument.
+    Apply a symmetry group to a single 3-vector (columnar) argument, adapted from
+    HEXRD's version.
 
-    csFlag : centrosymmetry flag
-    cullPM : cull +/- flag
+    Parameters
+    ----------
+    vec : (3, 1) array
+        Vector to apply the symmetry operations to.
+    qsym : (4, nsym) array
+        Symmetry operations as quaternions (e.g. HEXRD's PlaneData.getQSym()).
+    csFlag : bool, optional
+        Centrosymmetry flag: also include -1 * each symmetric vector.
+    cullPM : bool, optional
+        Treat +v and -v as duplicates when removing duplicate vectors.
+    tol : float, optional
+        Tolerance for considering two vectors duplicates.
+
+    Returns
+    -------
+    (3, m) array
+        The m unique symmetrically equivalent vectors.
     """
     nsym = qsym.shape[1]
     Rsym = rot.rotMatOfQuat(qsym)
@@ -61,31 +92,37 @@ def applySym(vec, qsym, csFlag=False, cullPM=False, tol=rot.cnst.sqrt_epsf):
 
 def distanceToFiber(c, s, q, qsym, **kwargs):
     """
-    Calculate symmetrically reduced distance to orientation fiber.
+    Calculate the symmetrically reduced distance (angle) of each orientation to
+    the fiber defined by crystal direction c and sample direction s, adapted from
+    HEXRD's version. This is the pure Python / HEXRD equivalent of what
+    xlup.calc_within_fibers computes before applying its tolerance, so the two
+    can be compared.
 
     Parameters
     ----------
-    c : TYPE
-        DESCRIPTION.
-    s : TYPE
-        DESCRIPTION.
-    q : TYPE
-        DESCRIPTION.
-    qsym : TYPE
-        DESCRIPTION.
-    **kwargs : TYPE
-        DESCRIPTION.
+    c : 3-vector
+        Crystal direction (HKL components, converted with ``bmatrix`` if given).
+    s : 3-vector
+        Sample direction.
+    q : (4, nq) array
+        Orientations as quaternions.
+    qsym : (4, nsym) array
+        Crystal symmetry operations as quaternions.
+    **kwargs
+        ``centrosymmetry`` (bool, default False): also consider -c.
+        ``bmatrix`` ((3, 3) array, default identity): matrix taking c to the
+        crystal frame (e.g. the reciprocal lattice B for HKL plane normals).
 
     Raises
     ------
     RuntimeError
-        DESCRIPTION.
+        If c or s aren't 3-vectors or an unknown keyword argument is given.
 
     Returns
     -------
-    d : TYPE
-        DESCRIPTION.
-
+    d : (nq,) array
+        Angle in radians between s and the closest symmetrically equivalent
+        rotated crystal direction for each orientation.
     """
     csymFlag = False
     B = np.eye(3)
@@ -138,6 +175,10 @@ def distanceToFiber(c, s, q, qsym, **kwargs):
 
 # help(xlup)
 
+# A single element at a single step: arrays are (steps, elements, ...) just like the
+# data read from ExaConstit's output in light_up_py/fiber_calcs_rank.py.
+# Orientation quaternion [w, x, y, z] (normalized) and a lattice frame strain
+# 6-vector [11, 22, 33, 23, 13, 12].
 lattice_orientations = np.zeros((1,1,4))
 strains = np.zeros((1,1,6))
 
@@ -152,64 +193,26 @@ strains[:,:,3] = 1.0
 strains[:,:,4] = 2.0
 strains[:,:,5] = 3.0
 
+# Rotate the strain into the sample frame (in place). ExaConstit v0.9+ already
+# writes its "Elastic Strains" in the sample frame, so this is only for older data.
 xlup.strain_lattice2sample(lattice_orientations, strains)
 
+# Taylor factor = sum of |slip system shear rates| / equivalent plastic strain rate.
+# Both come straight from ExaConstit's outputs ("Shearing Rate" and ExaCMech's
+# "Equivalent Plastic Strain Rate"), so nothing needs to be recomputed here. The values
+# below just stand in for a single element's worth of that output; any number of slip
+# systems works.
 gdots = np.zeros((1,1,12))
 gdots[:,:,0] = 1e-4
 gdots[:,:,1] = 1e-4
 gdots[:,:,2] = -1e-4
+eq_pl_strain_rate = np.full((1,1), 1.0e-4)
 tay_factor = np.zeros((1,1))
 
-n_arr = (1 / np.sqrt(3)) * np.array([
-    [ 1 ,  1 ,  1] ,
-    [ 1 ,  1 ,  1] ,
-    [ 1 ,  1 ,  1] ,
-    [-1 ,  1 ,  1] ,
-    [-1 ,  1 ,  1] ,
-    [-1 ,  1 ,  1] ,
-    [-1 , -1 ,  1] ,
-    [-1 , -1 ,  1] ,
-    [-1 , -1 ,  1] ,
-    [ 1 , -1 ,  1] ,
-    [ 1 , -1 ,  1] ,
-    [ 1 , -1 ,  1]
-    ])
+xlup.calc_taylor_factors(gdots, eq_pl_strain_rate, tay_factor)
 
-s_arr = (1 / np.sqrt(2)) * np.array([
-    [ 0 ,  1 , -1] ,
-    [-1 ,  0 ,  1] ,
-    [ 1 , -1 ,  0] ,
-    [-1 ,  0 , -1] ,
-    [ 0 , -1 ,  1] ,
-    [ 1 ,  1 ,  0] ,
-    [ 0 , -1 , -1] ,
-    [ 1 ,  0 ,  1] ,
-    [-1 ,  1 ,  0] ,
-    [ 1 ,  0 , -1] ,
-    [ 0 ,  1 ,  1] ,
-    [-1 , -1 ,  0]
-    ])
-
-# calculate FCC Schmid tensor
-m_arr = np.zeros((n_arr.shape[0] , s_arr.shape[1], n_arr.shape[1]))
-for ii in range(m_arr.shape[0]) :
-    m_arr[ii, :, :] = np.tensordot(s_arr[ii] , n_arr[ii] , axes = 0)
-    m_arr[ii, :, :] =  0.5 * (m_arr[ii, :, :] + m_arr[ii, :, :].T)
-m_arr = np.reshape(m_arr, (n_arr.shape[0] , s_arr.shape[1] * n_arr.shape[1]))
-# calculate DpEff from shear strain rates on each slip system
-def dp_eff(gdots) :
-    
-    Dp = np.sum(m_arr * gdots[: , None] , axis = 0).reshape((3,3))
-
-    # Dp = Lp + Lp.T - np.diag(Lp.diagonal())
-    
-    return np.sqrt((2 / 3) * np.tensordot(Dp , Dp))
-
-dp_effs = np.zeros_like(tay_factor)
-
-xlup.calc_taylor_factors(gdots, tay_factor, dp_effs)
-
-# get material symmetry - here is a simple example for IN625
+# In-fiber check: compare HEXRD's distance to each HKL fiber with the Rust version.
+# Get material symmetry - here is a simple example for IN625 (FCC, a = 3.60 angstrom)
 matl = make_matl(mat_name = 'FCC' , sgnum = 225 , lparms = [3.60 ,])
 pd = matl.planeData
 
@@ -225,9 +228,11 @@ for jj in range(4):
     c_dir = np.atleast_2d(np.dot(pd.latVecOps['B'] , hkl[jj, :].T)).T
     distance = distanceToFiber(c_dir, s_dir, quats, pd.getQSym())
 
+# (nhkl, steps, elements) flags; lattice_type / lattice_params use the same names
+# and parameters as ExaConstit's laue_type / lattice_params light-up options
 in_fibers = np.zeros((hkl.shape[0], 1, 1), dtype=bool)
 
-xlup.calc_within_fibers(lattice_orientations, s_dir, hkl, 3.60, np.deg2rad(5.0), in_fibers)
+xlup.calc_within_fibers(lattice_orientations, s_dir, hkl, [3.60], np.deg2rad(5.0), in_fibers, lattice_type="cubic")
 
 # # compute distance from quaternions to crystallographic fiber
 # distance = np.degrees(rot.distanceToFiber(c_dir , s_dir , quats , pd.getQSym()))
