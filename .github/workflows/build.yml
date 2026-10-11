@@ -11,11 +11,12 @@ on:
 # Note the SNLS top dir is no longer where SNLS's source is located within ecmech
 # rather it's the top directory of ecmech.
 env:
-  HYPRE_ARCHIVE: v2.30.0.tar.gz
-  HYPRE_TOP_DIR: hypre-2.30.0
+  HYPRE_ARCHIVE: v3.1.0.tar.gz
+  HYPRE_TOP_DIR: hypre-3.1.0
   METIS_ARCHIVE: metis-5.1.0.tar.gz
   METIS_TOP_DIR: metis-5.1.0
   MFEM_TOP_DIR: mfem-exaconstit
+  MFEM_BRANCH: exaconstit-latest
   ECMECH_TOP_DIR: ecmech
   SNLS_TOP_DIR: ecmech
   RAJA_TOP_DIR: RAJA
@@ -143,7 +144,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.MFEM_TOP_DIR }}
-        key: ${{ runner.os }}-build-${{ env.MFEM_TOP_DIR }}-v2.06
+        key: ${{ runner.os }}-build-${{ env.MFEM_TOP_DIR }}-${{ env.MFEM_BRANCH }}-${{ env.HYPRE_TOP_DIR }}-v2.07
 
     - name: install mfem
       if: matrix.mpi == 'parallel' && steps.mfem-cache.outputs.cache-hit != 'true'
@@ -153,6 +154,7 @@ jobs:
         hypre-dir: '${{ github.workspace }}/${{ env.HYPRE_TOP_DIR }}/src/hypre/'
         metis-dir: '${{ github.workspace }}/${{ env.METIS_TOP_DIR }}/install_dir/'
         mfem-dir: ${{ env.MFEM_TOP_DIR }}
+        mfem-branch: ${{ env.MFEM_BRANCH }}
 
     # ExaConstit build and test
     - name: build
