@@ -39,20 +39,21 @@ void UnifiedLogger::initialize(const ExaOptions& options) {
     PostProcessingFileManager file_manager(options);
     // Step 1: Set up log directory path
     // Use file manager's structure if available for consistency
-    fs::path base_dir = fs::weakly_canonical(file_manager.GetOutputDirectory());
+    // The output directory was already resolved once on rank 0 and broadcast to all
+    // ranks in ExaOptions::parse_options, so it is used as is rather than resolving any
+    // symlinks in it again here.
+    fs::path base_dir = file_manager.GetOutputDirectory();
     log_directory = base_dir / "logs";
-    // Step 2: Create directory structure (handling symlinks properly)
+    // Step 2: Create directory structure
     if (mpi_rank == 0) {
+        // No exists() check first: create_directories() is a no-op if the directory
+        // already exists, and checking first only opens a window for the path to change
+        // between the check and the creation.
         std::error_code ec;
-
-        // Check if the path exists after resolving symlinks
-        if (!fs::exists(log_directory)) {
-            fs::create_directories(log_directory, ec);
-            if (ec) {
-                std::cerr << "Warning: Failed to create log directory: " << ec.message()
-                          << std::endl;
-            }
-        } else if (!fs::is_directory(log_directory)) {
+        fs::create_directories(log_directory, ec);
+        if (ec) {
+            std::cerr << "Warning: Failed to create log directory: " << ec.message() << std::endl;
+        } else if (!fs::is_directory(log_directory, ec)) {
             std::cerr << "Error: Log path exists but is not a directory: " << log_directory
                       << std::endl;
         }
@@ -442,21 +443,21 @@ std::string UnifiedLogger::end_capture() {
 
     // Step 7: Write file ONLY if content exists
     if (!sv.empty() && ctx->has_content) {
-        // Resolve symlinks in the output path
-        fs::path output_path = fs::weakly_canonical(ctx->output_filename);
+        // The log directory is built from the output directory that was resolved once in
+        // ExaOptions::parse_options, so the path is used as is. Several ranks can reach
+        // this at the same time, so the directory is created without a separate exists()
+        // check beforehand (create_directories() is a no-op if it already exists).
+        const fs::path& output_path = ctx->output_filename;
         fs::path output_dir = output_path.parent_path();
 
-        // Ensure output directory exists (with symlink handling)
         std::error_code ec;
-        if (!fs::exists(output_dir)) {
-            fs::create_directories(output_dir, ec);
-            if (ec) {
-                std::cerr << "Warning: Failed to create output directory: " << output_dir << ": "
-                          << ec.message() << std::endl;
-            }
+        fs::create_directories(output_dir, ec);
+        if (ec) {
+            std::cerr << "Warning: Failed to create output directory: " << output_dir << ": "
+                      << ec.message() << std::endl;
         }
 
-        // Open output file using resolved path
+        // Open output file
         std::ofstream out_file(output_path, std::ios::app);
         if (out_file.is_open()) {
             // Write header with metadata

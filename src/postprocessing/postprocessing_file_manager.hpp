@@ -185,11 +185,13 @@ public:
 
         auto filepath = GetVolumeAverageFilePath(calc_type, region, region_name);
 
-        bool file_exists = fs::exists(filepath);
         auto file = CreateOutputFile(filepath, true, comm);
 
         if (file && file->is_open()) {
-            if (!file_exists) {
+            // Write the header if the file is empty. Checking the opened file itself
+            // rather than calling exists() beforehand avoids another check-then-act gap.
+            file->seekp(0, std::ios_base::end);
+            if (file->tellp() == 0) {
                 *file << GetVolumeAverageHeader(calc_type);
             }
 
@@ -376,8 +378,12 @@ inline PostProcessingFileManager::PostProcessingFileManager(const ExaOptions& op
     if (m_output_directory.empty()) {
         m_output_directory = ".";
     }
-    // Resolve symlinks and build path
-    m_output_directory = fs::weakly_canonical(m_output_directory) / m_base_filename;
+    // The output directory has already been resolved to an absolute path once on rank 0
+    // and broadcast to all ranks in ExaOptions::parse_options. We purposefully do not
+    // resolve it again here, as resolving it independently on every rank (and for every
+    // file manager instance) is what opened the door to ranks seeing different states of
+    // a symlinked output directory.
+    m_output_directory = m_output_directory / m_base_filename;
 
     if (options.visualization.visit || options.visualization.paraview ||
         options.visualization.adios2) {
@@ -452,83 +458,44 @@ inline bool PostProcessingFileManager::EnsureDirectoryExists(fs::path& output_di
     int rank;
     MPI_Comm_rank(comm, &rank);
     bool success = false;
-    std::string path_str;
     if (rank == 0) {
-        try {
-            // Use weakly_canonical to resolve as much as possible
-            // This handles symlinks and normalizes the path
+        // Only rank 0 touches the file system, and it does so without first checking
+        // whether the directory exists. create_directories() is a no-op for directories
+        // that already exist, so a separate exists() check would only add a window where
+        // the path could change between the check and the creation (TOCTOU).
+        // output_dir is used as given; it is built from the output directory that was
+        // already resolved once in ExaOptions::parse_options.
+        std::error_code ec;
+        const bool created = fs::create_directories(output_dir, ec);
+        if (ec) {
+            std::cerr << "Error: Failed to create output directory " << output_dir << ": "
+                      << ec.message() << std::endl;
+        } else if (!fs::is_directory(output_dir, ec)) {
+            std::cerr << "Error: Path exists but is not a directory: " << output_dir << std::endl;
+        } else {
+            std::cout << (created ? "Creating output directory: " : "Using existing directory: ")
+                      << output_dir << std::endl;
+            success = true;
+        }
 
-            // Example: output_dir = "./results/test_case1/visualizations"
-            // where ./results is a symlink to /storage/results
-            // but test_case1/visualizations doesn't exist yet
-
-            // weakly_canonical will resolve to:
-            // /storage/results/test_case1/visualizations
-            fs::path canonical_path = fs::weakly_canonical(output_dir);
-
-            // Now check if this canonical path exists
-            if (fs::exists(canonical_path)) {
-                if (!fs::is_directory(canonical_path)) {
-                    std::cerr << "Error: Path exists but is not a directory: " << canonical_path
-                              << std::endl;
-                    success = false;
-                } else {
-                    std::cout << "Using existing directory: " << canonical_path << std::endl;
-                    output_dir = canonical_path;
-                    path_str = canonical_path.string();
-                    success = true;
-                }
+        // Make sure we can actually write to the directory
+        if (success) {
+            fs::path test_file = output_dir / "test_write.tmp";
+            std::ofstream test_stream(test_file);
+            if (!test_stream.is_open()) {
+                success = false;
+                std::cerr << "Warning: Output directory is not writable: " << output_dir
+                          << std::endl;
             } else {
-                // Directory doesn't exist, create it
-                std::cout << "Creating output directory: " << canonical_path << std::endl;
-                success = fs::create_directories(canonical_path);
-                if (success) {
-                    output_dir = canonical_path;
-                    path_str = canonical_path.string();
-
-                } else {
-                    std::cerr << "Warning: Failed to create output directory: " << canonical_path
-                              << std::endl;
-                }
+                test_stream.close();
+                fs::remove(test_file, ec);
             }
-
-            // Write test remains the same...
-            if (success) {
-                fs::path test_file = canonical_path / "test_write.tmp";
-                std::ofstream test_stream(test_file);
-                if (!test_stream.is_open()) {
-                    success = false;
-                    std::cerr << "Warning: Output directory is not writable: " << canonical_path
-                              << std::endl;
-                } else {
-                    test_stream.close();
-                    fs::remove(test_file);
-                }
-            }
-        } catch (const fs::filesystem_error& ex) {
-            success = false;
-            std::cerr << "Filesystem error when creating directory " << output_dir << ": "
-                      << ex.what() << std::endl;
-        } catch (const std::exception& ex) {
-            success = false;
-            std::cerr << "Error when creating directory " << output_dir << ": " << ex.what()
-                      << std::endl;
         }
     }
 
-    // Broadcast the potentially updated output_dir to all ranks
-    int dir_length = static_cast<int>(path_str.length());
-    MPI_Bcast(&dir_length, 1, MPI_INT, 0, comm);
-    if (dir_length > 0) {
-        path_str.resize(static_cast<size_t>(dir_length));
-        MPI_Bcast(path_str.data(), dir_length, MPI_CHAR, 0, comm);
-        output_dir = path_str;
-    }
-
-    bool success_t = false;
+    // All ranks wait until rank 0 is done so the directory exists before anyone uses it
     MPI_Bcast(&success, 1, MPI_C_BOOL, 0, comm);
-    success_t = success;
-    return success_t;
+    return success;
 }
 
 inline bool PostProcessingFileManager::EnsureOutputDirectoryExists() {
@@ -546,18 +513,23 @@ PostProcessingFileManager::CreateOutputFile(const fs::path& filepath, bool appen
     int rank;
     MPI_Comm_rank(comm, &rank);
     try {
-        // Use weakly_canonical to resolve symlinks in the path
-        fs::path resolved_path = fs::weakly_canonical(filepath);
+        // Note, this is only called by the rank that writes the file (e.g. rank 0 of a
+        // region's communicator), so nothing in here may be collective. This previously
+        // called MPI_Barrier(comm) whenever the directory appeared to be missing, which
+        // would hang since the other ranks never call this function.
+        //
+        // The path is used as given rather than re-resolving symlinks in it, and the
+        // parent directory is created without a separate exists() check beforehand
+        // (create_directories() is a no-op if it already exists).
+        const fs::path& resolved_path = filepath;
         fs::path dir_path = resolved_path.parent_path();
-
-        // Ensure directory exists (only check and create if needed)
-        if (!dir_path.empty() && !fs::exists(dir_path)) {
-            if (rank == 0) {
-                std::cout << "Creating directory: " << dir_path << std::endl;
-                fs::create_directories(dir_path);
+        if (!dir_path.empty()) {
+            std::error_code ec;
+            fs::create_directories(dir_path, ec);
+            if (ec) {
+                std::cerr << "Warning: Failed to create directory " << dir_path << ": "
+                          << ec.message() << std::endl;
             }
-            // Synchronize to ensure directory is created before all ranks proceed
-            MPI_Barrier(comm);
         }
 
         // Open file

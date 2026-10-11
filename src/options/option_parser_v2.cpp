@@ -80,6 +80,50 @@ void finalize_material_options(ExaOptions& options) {
     }
 }
 
+/**
+ * @brief Create the targets of any dangling symlinks along a path
+ *
+ * @param path Path to check component by component
+ * @param depth Current recursion depth (guards against symlink cycles)
+ * @return false if a dangling symlink's target could not be created
+ *
+ * @details create_directories() does not create the target of a dangling symlink, it
+ * just fails since the link itself already exists. A dangling link in the output path
+ * is a realistic setup though, e.g. `ln -s /remote/storage/location results` done before
+ * the storage directory itself has been created. So walk the path and create the
+ * target of every dangling link along it (which may itself contain dangling links).
+ */
+bool create_dangling_symlink_targets(const fs::path& path, int depth = 0) {
+    constexpr int max_depth = 40;
+    if (depth > max_depth) {
+        return false;
+    }
+    fs::path prefix;
+    for (const auto& part : path) {
+        prefix /= part;
+        std::error_code ec;
+        const auto link_status = fs::symlink_status(prefix, ec);
+        if (ec || !fs::is_symlink(link_status) || fs::exists(prefix, ec)) {
+            continue;
+        }
+        fs::path target = fs::read_symlink(prefix, ec);
+        if (ec) {
+            return false;
+        }
+        if (target.is_relative()) {
+            target = prefix.parent_path() / target;
+        }
+        if (!create_dangling_symlink_targets(target, depth + 1)) {
+            return false;
+        }
+        fs::create_directories(target, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 // Implementation of the struct conversion methods
@@ -115,6 +159,74 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
             mfem::mfem_error("");
         }
     }
+
+    // Resolve the output directory exactly once, on rank 0, and broadcast it so every
+    // rank and every later consumer (post-processing, logger, visualization) works from
+    // the same absolute path. Previously each rank resolved symlinks in this path on its
+    // own, several times over the course of a run, and paired filesystem checks with
+    // later actions (exists() followed by create_directories(), etc.). With the output
+    // directory being a symlink to another file system, ranks could see different
+    // states of that path between those checks and actions (a TOCTOU race).
+    //
+    // The directory is created *before* it is resolved: create_directories() follows a
+    // symlink that is already in place and otherwise creates a real directory, and
+    // canonical() then returns the physical directory that now exists. Nothing after
+    // this point goes back through a symlink in the user provided path, so another run
+    // (e.g. a different ExaConstit run on the same node) creating or changing that
+    // symlink later on cannot redirect where this run writes. If the path changes in
+    // the brief window between the two calls, canonical() fails rather than silently
+    // resolving to somewhere unexpected, and we report it.
+    //
+    // All error paths above abort on every rank, so every rank reaches this collective.
+    //
+    // If the output directory can't be created or resolved, every rank aborts here rather
+    // than running the whole simulation only to have none of its output saved.
+    auto& output_dir = post_processing.volume_averages.output_directory;
+    std::string resolved_str;
+    bool output_ok = true;
+    if (my_id == 0) {
+        fs::path dir = output_dir.empty() ? fs::path(".") : output_dir;
+        std::error_code ec;
+        fs::path abs_dir = fs::absolute(dir, ec);
+        if (ec) {
+            abs_dir = dir;
+        }
+        fs::path resolved;
+        if (!create_dangling_symlink_targets(abs_dir)) {
+            std::cerr << "Error: The output directory " << abs_dir
+                      << " contains a symlink whose target does not exist and could not be "
+                         "created"
+                      << std::endl;
+            output_ok = false;
+        } else {
+            fs::create_directories(abs_dir, ec);
+            if (!ec) {
+                resolved = fs::canonical(abs_dir, ec);
+            }
+            if (!ec && !fs::is_directory(resolved, ec)) {
+                ec = std::make_error_code(std::errc::not_a_directory);
+            }
+            if (ec || resolved.empty()) {
+                std::cerr << "Error: Unable to create and resolve the output directory " << abs_dir
+                          << ": " << ec.message() << std::endl;
+                output_ok = false;
+            }
+        }
+        resolved_str = resolved.string();
+    }
+    MPI_Bcast(&output_ok, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+    if (!output_ok) {
+        if (my_id == 0) {
+            mfem::mfem_error("MFEM_ABORT: Unable to set up the output directory");
+        } else {
+            mfem::mfem_error("");
+        }
+    }
+    int length = static_cast<int>(resolved_str.size());
+    MPI_Bcast(&length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    resolved_str.resize(static_cast<size_t>(length));
+    MPI_Bcast(resolved_str.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
+    output_dir = resolved_str;
 }
 
 void ExaOptions::parse_from_toml(const toml::value& toml_input) {
