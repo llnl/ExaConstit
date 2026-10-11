@@ -27,8 +27,14 @@ fn read_data(f: &str) -> Result<Box<dyn reader::ReaderResults<i32>>, Error> {
 
 #[cfg(feature = "polars")]
 fn read_data(f: &str) -> PolarsResult<DataFrame> {
-    CsvReader::from_path(f)?.has_header(false).with_skip_rows(2)
-               .with_delimiter(b'%').with_comment_char(Some(b',')).finish()
+    // Same layout as the data_reader version: 2 header lines to skip, comma
+    // separated columns, and '%' starting a comment.
+    CsvReadOptions::default()
+        .with_has_header(false)
+        .with_skip_rows(2)
+        .map_parse_options(|opts| opts.with_separator(b',').with_comment_prefix(Some("%")))
+        .try_into_reader_with_file_path(Some(f.into()))?
+        .finish()
 }
 
 fn sort_data(chunk_size: usize, data: &mut [i32]) {
@@ -50,8 +56,8 @@ fn rearrange_data(
     assert!(chunk_size.pow(3) <= (box_size.0 * box_size.1 * box_size.2));
 
     orig_data.iter().enumerate().for_each(|(index, val)| {
-        // CA results are indexed as y being fastest axis indexed on,
-        // then x axis, and finally the z axis.
+        // CA results are indexed as x being fastest axis indexed on,
+        // then y axis, and finally the z axis.
         let i = index % box_size.0;
         let j = (index / (box_size.0)) % box_size.1;
         let k = index / (box_size.0 * box_size.1);

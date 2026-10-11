@@ -1,318 +1,328 @@
 use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods};
-use pyo3::{pymodule, Bound, types::PyModule, PyResult, Python};
+use pyo3::{pyfunction, pymodule, types::PyModule, wrap_pyfunction, Bound, PyResult};
+use pyo3::prelude::PyModuleMethods;
  
 
 // use crate::xtal_light_up;
 pub(crate) mod math;
 use math::*;
 
+
+#[pyfunction]
+#[pyo3(name = "strain_lattice2sample")]
+fn strain_lattice2sample<'py>(
+    lattice_orientations: &Bound<'_, PyArray3<f64>>,
+    strains: &Bound<'_, PyArray3<f64>>,
+) -> anyhow::Result<()> {
+    let xtal_o = lattice_orientations.readonly();
+    let xtal_orientations = xtal_o.as_slice()?;
+    let mut xtal_s = strains.readwrite();
+    let xtal_strains = xtal_s.as_slice_mut()?;
+
+    // let xtal_ori_chunks = xtal_orientations.chunks_exact(4);
+    // let mut xtal_strain_chunks = xtal_strains.chunks_exact_mut(6);
+    // zip(xtal_orientations.chunks_exact(4)).
+    // |(strain, _quats)|
+    // xtal_strains.par_chunks_exact_mut(6).enumerate().for_each(|(i, strain)| { strain[0] = 0.0_f64;
+    //   // Zipping quats isn't the most obvious if we wanted chunks of things
+    //   // in parallel at least...
+    //   // This at least gets us around the compiler issue
+    //   let quats : &[f64] = {
+    //         let start = i * 4;
+    //         let end   = (i + 1) * 4; 
+    //         &xtal_orientations[start..end]
+    //     };
+    // });
+
+    xtal_strains.chunks_exact_mut(6).zip(xtal_orientations.chunks_exact(4)).for_each(|(strain_vec, quat)| {
+        rotate_strain_to_sample(quat, strain_vec); 
+    });
+    Ok(())
+}
+
+
+#[pyfunction]
+#[pyo3(name = "calc_taylor_factors")]
+fn calc_taylor_factors<'py>(
+    shear_rates: &Bound<'_, PyArray3<f64>>,
+    taylor_factors: &Bound<'_, PyArray2<f64>>,
+    eff_plastic_def_rate: &Bound<'_, PyArray2<f64>>,
+) -> anyhow::Result<()> {
+    let gamma_dots = shear_rates.readonly();
+    let gammadots = gamma_dots.as_slice()?;
+    let mut tay_factors = taylor_factors.readwrite();
+    let tayfacs = tay_factors.as_slice_mut()?;
+    let mut eff_pl_def_rate = eff_plastic_def_rate.readwrite();
+    let eps_rate = eff_pl_def_rate.as_slice_mut()?;
+
+    let eps_rate_gdots = eps_rate.iter_mut().zip(gammadots.chunks_exact(12));
+    tayfacs.iter_mut().zip(eps_rate_gdots).for_each(|(tayfac, eps_rate_gdot)| {
+        (*tayfac, *eps_rate_gdot.0)  = calc_taylor_factor(eps_rate_gdot.1);
+    });
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "calc_directional_stiffness")]
+fn calc_directional_stiffness<'py>(
+    cauchy_stress: &Bound<'_, PyArray3<f64>>,
+    sample_strain: &Bound<'_, PyArray3<f64>>,
+    directional_stiffness: &Bound<'_, PyArray2<f64>>,
+) -> anyhow::Result<()> {
+
+    let cauchy = cauchy_stress.readonly();
+    let stress = cauchy.as_slice()?;
+    let sstrain = sample_strain.readonly();
+    let strain = sstrain.as_slice()?;
+
+    let mut dir_stiffness = directional_stiffness.readwrite();
+    let dir_stiff = dir_stiffness.as_slice_mut()?;
+
+    let stress_strains = stress.chunks_exact(6).zip(strain.chunks_exact(6));
+
+    dir_stiff.iter_mut().zip(stress_strains).for_each(|(dir_stiff, stress_strains)| {
+        if f64::abs(stress_strains.1[2]) < f64::EPSILON {
+            *dir_stiff = 0.0_f64
+        }
+        else {
+            *dir_stiff = stress_strains.0[2] / stress_strains.1[2];
+        }
+    });
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "calc_lattice_strains")]
+fn calc_lattice_strains<'py>(
+    sample_strains: &Bound<'_, PyArray3<f64>>,
+    sample_dir: &Bound<'_, PyArray1<f64>>,
+    elem_vols: &Bound<'_, PyArray2<f64>>,
+    in_fibers: &Bound<'_, PyArray3<bool>>,
+    lattice_strains: &Bound<'_, PyArray2<f64>>,
+    lattice_volumes: &Bound<'_, PyArray2<f64>>,
+    per_rank_update: bool
+) -> anyhow::Result<()> {
+    let num_elems: usize;
+    let num_steps: usize;
+
+    let s_in_fibers = in_fibers.readonly();
+    {
+        let in_fiber_av = s_in_fibers.as_array();
+        (_, num_steps, num_elems) = in_fiber_av.dim();
+    }
+
+    let in_fiber_hkls = s_in_fibers.as_slice()?;
+    let s_strains = sample_strains.readonly();
+    let strains = s_strains.as_slice()?;
+
+    let mut s_lattice_strains = lattice_strains.readwrite();
+    let lat_strains = s_lattice_strains.as_slice_mut()?;
+
+    let mut s_lattice_vols = lattice_volumes.readwrite();
+    let lat_vols = s_lattice_vols.as_slice_mut()?;
+
+    let s_elem_vols = elem_vols.readonly();
+    let evs = s_elem_vols.as_slice()?;
+
+    let s_sample_dir = sample_dir.readonly();
+    let s_dir = s_sample_dir.as_slice()?;
+
+    let project_vec = [s_dir[0] * s_dir[0], s_dir[1] * s_dir[1] , s_dir[2] * s_dir[2] , 2.0_f64 * s_dir[1] * s_dir[2] , 2.0_f64 * s_dir[0] * s_dir[2] , 2.0_f64 * s_dir[0] * s_dir[1]];
+
+    let lat_strain_in_fiber_iter = lat_strains.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
+
+    let lat_vol_strain_in_fiber_iter = lat_vols.chunks_exact_mut(num_steps).zip(lat_strain_in_fiber_iter);
+
+    for (lat_vols_hkl, (lat_strains_hkl, in_fiber_hkl)) in lat_vol_strain_in_fiber_iter.into_iter() {
+        let ev_strains_iter = evs.chunks_exact(num_elems).zip(strains.chunks_exact(num_elems * 6));
+        let ev_strains_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_strains_iter);
+
+        for (istep, (in_fiber_hkl_step, (evs_step, strains_step))) in ev_strains_in_fiber_iter.enumerate() {
+            let (total_lat_vol, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
+
+            lat_vols_hkl[istep] += total_lat_vol;
+
+            lat_strains_hkl[istep] += strains_step.chunks_exact(6)
+            .zip(evs_step)
+            .zip(in_fiber_hkl_step)
+            .filter(|ev_strain_in_fiber| *ev_strain_in_fiber.1)
+            .map(|((strain, ev), _)| {
+                ev * inv_total_lat_vol * dot_prod::<6,f64>(&project_vec, strain)
+            })
+            .reduce(|lat_strain, lat_strain_elem|
+                lat_strain + lat_strain_elem
+            ).unwrap_or(0.0_f64);
+        }
+    }
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "calc_taylor_factors_lattice_fiber")]
+fn calc_taylor_factors_lattice_fiber<'py>(
+    shear_rates: &Bound<'_, PyArray3<f64>>,
+    taylor_factors: &Bound<'_, PyArray2<f64>>,
+    eff_plastic_def_rate: &Bound<'_, PyArray2<f64>>,
+    elem_vols: &Bound<'_, PyArray2<f64>>,
+    in_fibers: &Bound<'_, PyArray3<bool>>,
+    per_rank_update: bool
+) -> anyhow::Result<()> {
+    let num_elems: usize;
+    let num_steps: usize;
+
+    let s_in_fibers = in_fibers.readonly();
+    {
+        let in_fiber_av = s_in_fibers.as_array();
+        (_, num_steps, num_elems) = in_fiber_av.dim();
+    }
+    let in_fiber_hkls = s_in_fibers.as_slice()?;
+    let s_elem_vols = elem_vols.readonly();
+    let evs = s_elem_vols.as_slice()?;
+
+    let gamma_dots = shear_rates.readonly();
+    let gammadots = gamma_dots.as_slice()?;
+    let mut tay_factors = taylor_factors.readwrite();
+    let tayfacs = tay_factors.as_slice_mut()?;
+    let mut eff_pl_def_rate = eff_plastic_def_rate.readwrite();
+    let eps_rate = eff_pl_def_rate.as_slice_mut()?;
+
+    let lat_eps_in_fiber_iter = eps_rate.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
+    let ltf_leps_in_fiber_iter = tayfacs.chunks_exact_mut(num_steps).zip(lat_eps_in_fiber_iter);
+
+    for (tay_fac_hkl, (eps_rate_hkl, in_fiber_hkl)) in ltf_leps_in_fiber_iter.into_iter() {
+        let ev_gdot_iter = evs.chunks_exact(num_elems).zip(gammadots.chunks_exact(num_elems * 12));
+        let ev_gdot_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_gdot_iter);
+        for (istep, (in_fiber_hkl_step, (evs_step, gdots_step))) in ev_gdot_in_fiber_iter.enumerate() {
+            let (_, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
+
+            let (tay_fac_hkl_step, eps_rate_hkl_step) = gdots_step.chunks_exact(12)
+            .zip(evs_step)
+            .zip(in_fiber_hkl_step)
+            .filter(|ev_gdot_in_fiber| *ev_gdot_in_fiber.1)
+            .map(|((gdot, ev), _)| {
+                let (tf, deps) = calc_taylor_factor(gdot);
+                (ev * inv_total_lat_vol * tf, ev * inv_total_lat_vol * deps)
+            })
+            .reduce(|tfdeps, tfdeps_elem|
+                (tfdeps.0 + tfdeps_elem.0, tfdeps.1 + tfdeps_elem.1)
+            ).unwrap_or((0.0_f64, 0.0_f64));
+            tay_fac_hkl[istep] += tay_fac_hkl_step;
+            eps_rate_hkl[istep] += eps_rate_hkl_step;
+        }
+    }
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "calc_directional_stiffness_lattice_fiber")]
+fn calc_directional_stiffness_lattice_fiber<'py>(
+    cauchy_stress: &Bound<'_, PyArray3<f64>>,
+    sample_strain: &Bound<'_, PyArray3<f64>>,
+    directional_stiffness: &Bound<'_, PyArray2<f64>>,
+    elem_vols: &Bound<'_, PyArray2<f64>>,
+    in_fibers: &Bound<'_, PyArray3<bool>>,
+    per_rank_update: bool
+) -> anyhow::Result<()> {
+    let num_elems: usize;
+    let num_steps: usize;
+
+    let s_in_fibers = in_fibers.readonly();
+    {
+        let in_fiber_av = s_in_fibers.as_array();
+        (_, num_steps, num_elems) = in_fiber_av.dim();
+    }
+    let in_fiber_hkls = s_in_fibers.as_slice()?;
+    let s_elem_vols = elem_vols.readonly();
+    let evs = s_elem_vols.as_slice()?;
+
+    let cauchy = cauchy_stress.readonly();
+    let stress = cauchy.as_slice()?;
+    let sstrain = sample_strain.readonly();
+    let strain = sstrain.as_slice()?;
+
+    let mut dir_stiffness = directional_stiffness.readwrite();
+    let dir_stiff = dir_stiffness.as_slice_mut()?;
+
+    let lat_ds_in_fiber_iter = dir_stiff.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
+
+    for (dir_stiff_hkl, in_fiber_hkl) in lat_ds_in_fiber_iter.into_iter() {
+        let stress_strains = stress.chunks_exact(num_elems * 6).zip(strain.chunks_exact(num_elems * 6));
+        let ev_sst_iter = evs.chunks_exact(num_elems).zip(stress_strains);
+        let ev_sst_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_sst_iter);
+        for (istep, (in_fiber_hkl_step, (evs_step, (stress_step, strain_step)))) in ev_sst_in_fiber_iter.enumerate() {
+            let (_, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
+
+            dir_stiff_hkl[istep] += stress_step.chunks_exact(6)
+            .zip(strain_step.chunks_exact(6))
+            .zip(evs_step)
+            .zip(in_fiber_hkl_step)
+            .filter(|ev_sst_in_fiber| *ev_sst_in_fiber.1)
+            .map(|((sst, ev), _)| {
+                if f64::abs(sst.1[2]) < f64::EPSILON {
+                    0.0_f64
+                }
+                else {
+                    (sst.0[2] / sst.1[2]) * ev * inv_total_lat_vol
+                }
+            })
+            .reduce(|dir_modulus, dir_modulus_elem|
+                dir_modulus + dir_modulus_elem
+            ).unwrap_or(0.0_f64);
+        }
+    }
+
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "calc_within_fibers")]
+fn calc_within_fibers<'py>(
+    lattice_orientations: &Bound<'_, PyArray3<f64>>,
+    sample_dir: &Bound<'_, PyArray1<f64>>,
+    hkls: &Bound<'_, PyArray2<f64>>,
+    lattice_param_a: f64,
+    distance_tolerance_rad: f64,
+    in_fibers: &Bound<'_, PyArray3<bool>>,
+) -> anyhow::Result<()> {
+
+    let num_elems: usize;
+    let num_steps: usize;
+
+    let mut s_in_fibers = in_fibers.readwrite();
+    {
+        let in_fiber_av = s_in_fibers.as_array();
+        (_, num_steps, num_elems) = in_fiber_av.dim();
+    }
+
+    let in_fiber_hkls = s_in_fibers.as_slice_mut()?;
+
+    let xtal_o = lattice_orientations.readonly();
+    let xtal_orientations = xtal_o.as_slice()?;
+
+    let s_hkls = hkls.readonly();
+    let slice_hkls = s_hkls.as_slice()?;
+
+    let s_sample_dir = sample_dir.readonly();
+    let s_dir = s_sample_dir.as_slice()?;
+
+    in_fiber_hkls.chunks_exact_mut(num_steps * num_elems)
+    .zip(slice_hkls.chunks_exact(3))
+    .for_each(|(in_fibers, hkl)| {
+        calculate_in_fibers(lattice_param_a, hkl, s_dir, xtal_orientations, distance_tolerance_rad, in_fibers);
+    });
+
+    Ok(())
+}
+
 #[pymodule]
-fn xtal_light_up(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    #[pyfn(m)]
-    #[pyo3(name = "strain_lattice2sample")]
-    fn strain_lattice2sample<'py>(
-        lattice_orientations: &Bound<'_, PyArray3<f64>>,
-        strains: &Bound<'_, PyArray3<f64>>,
-    ) -> anyhow::Result<()> {
-        let xtal_o = lattice_orientations.readonly();
-        let xtal_orientations = xtal_o.as_slice()?;
-        let mut xtal_s = strains.readwrite();
-        let xtal_strains = xtal_s.as_slice_mut()?;
-
-        // let xtal_ori_chunks = xtal_orientations.chunks_exact(4);
-        // let mut xtal_strain_chunks = xtal_strains.chunks_exact_mut(6);
-        // zip(xtal_orientations.chunks_exact(4)).
-        // |(strain, _quats)|
-        // xtal_strains.par_chunks_exact_mut(6).enumerate().for_each(|(i, strain)| { strain[0] = 0.0_f64;
-        //   // Zipping quats isn't the most obvious if we wanted chunks of things
-        //   // in parallel at least...
-        //   // This at least gets us around the compiler issue
-        //   let quats : &[f64] = {
-        //         let start = i * 4;
-        //         let end   = (i + 1) * 4; 
-        //         &xtal_orientations[start..end]
-        //     };
-        // });
-
-        xtal_strains.chunks_exact_mut(6).zip(xtal_orientations.chunks_exact(4)).for_each(|(strain_vec, quat)| {
-            rotate_strain_to_sample(quat, strain_vec); 
-        });
-        Ok(())
-    }
-
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_taylor_factors")]
-    fn calc_taylor_factors<'py>(
-        shear_rates: &Bound<'_, PyArray3<f64>>,
-        taylor_factors: &Bound<'_, PyArray2<f64>>,
-        eff_plastic_def_rate: &Bound<'_, PyArray2<f64>>,
-    ) -> anyhow::Result<()> {
-        let gamma_dots = shear_rates.readonly();
-        let gammadots = gamma_dots.as_slice()?;
-        let mut tay_factors = taylor_factors.readwrite();
-        let tayfacs = tay_factors.as_slice_mut()?;
-        let mut eff_pl_def_rate = eff_plastic_def_rate.readwrite();
-        let eps_rate = eff_pl_def_rate.as_slice_mut()?;
-
-        let eps_rate_gdots = eps_rate.iter_mut().zip(gammadots.chunks_exact(12));
-        tayfacs.iter_mut().zip(eps_rate_gdots).for_each(|(tayfac, eps_rate_gdot)| {
-            (*tayfac, *eps_rate_gdot.0)  = calc_taylor_factor(eps_rate_gdot.1);
-        });
-        Ok(())
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_directional_stiffness")]
-    fn calc_directional_stiffness<'py>(
-        cauchy_stress: &Bound<'_, PyArray3<f64>>,
-        sample_strain: &Bound<'_, PyArray3<f64>>,
-        directional_stiffness: &Bound<'_, PyArray2<f64>>,
-    ) -> anyhow::Result<()> {
-
-        let cauchy = cauchy_stress.readonly();
-        let stress = cauchy.as_slice()?;
-        let sstrain = sample_strain.readonly();
-        let strain = sstrain.as_slice()?;
-
-        let mut dir_stiffness = directional_stiffness.readwrite();
-        let dir_stiff = dir_stiffness.as_slice_mut()?;
-
-        let stress_strains = stress.chunks_exact(6).zip(strain.chunks_exact(6));
-
-        dir_stiff.iter_mut().zip(stress_strains).for_each(|(dir_stiff, stress_strains)| {
-            if f64::abs(stress_strains.1[2]) < f64::EPSILON {
-                *dir_stiff = 0.0_f64
-            }
-            else {
-                *dir_stiff = stress_strains.0[2] / stress_strains.1[2];
-            }
-        });
-        Ok(())
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_lattice_strains")]
-    fn calc_lattice_strains<'py>(
-        sample_strains: &Bound<'_, PyArray3<f64>>,
-        sample_dir: &Bound<'_, PyArray1<f64>>,
-        elem_vols: &Bound<'_, PyArray2<f64>>,
-        in_fibers: &Bound<'_, PyArray3<bool>>,
-        lattice_strains: &Bound<'_, PyArray2<f64>>,
-        lattice_volumes: &Bound<'_, PyArray2<f64>>,
-        per_rank_update: bool
-    ) -> anyhow::Result<()> {
-        let num_elems: usize;
-        let num_steps: usize;
-
-        let s_in_fibers = in_fibers.readonly();
-        {
-            let in_fiber_av = s_in_fibers.as_array();
-            (_, num_steps, num_elems) = in_fiber_av.dim();
-        }
-
-        let in_fiber_hkls = s_in_fibers.as_slice()?;
-        let s_strains = sample_strains.readonly();
-        let strains = s_strains.as_slice()?;
-
-        let mut s_lattice_strains = lattice_strains.readwrite();
-        let lat_strains = s_lattice_strains.as_slice_mut()?;
-
-        let mut s_lattice_vols = lattice_volumes.readwrite();
-        let lat_vols = s_lattice_vols.as_slice_mut()?;
-
-        let s_elem_vols = elem_vols.readonly();
-        let evs = s_elem_vols.as_slice()?;
-
-        let s_sample_dir = sample_dir.readonly();
-        let s_dir = s_sample_dir.as_slice()?;
-
-        let project_vec = [s_dir[0] * s_dir[0], s_dir[1] * s_dir[1] , s_dir[2] * s_dir[2] , 2.0_f64 * s_dir[1] * s_dir[2] , 2.0_f64 * s_dir[0] * s_dir[2] , 2.0_f64 * s_dir[0] * s_dir[1]];
-
-        let lat_strain_in_fiber_iter = lat_strains.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
-
-        let lat_vol_strain_in_fiber_iter = lat_vols.chunks_exact_mut(num_steps).zip(lat_strain_in_fiber_iter);
-
-        for (lat_vols_hkl, (lat_strains_hkl, in_fiber_hkl)) in lat_vol_strain_in_fiber_iter.into_iter() {
-            let ev_strains_iter = evs.chunks_exact(num_elems).zip(strains.chunks_exact(num_elems * 6));
-            let ev_strains_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_strains_iter);
-
-            for (istep, (in_fiber_hkl_step, (evs_step, strains_step))) in ev_strains_in_fiber_iter.enumerate() {
-                let (total_lat_vol, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
-
-                lat_vols_hkl[istep] += total_lat_vol;
-
-                lat_strains_hkl[istep] += strains_step.chunks_exact(6)
-                .zip(evs_step)
-                .zip(in_fiber_hkl_step)
-                .filter(|ev_strain_in_fiber| *ev_strain_in_fiber.1)
-                .map(|((strain, ev), _)| {
-                    ev * inv_total_lat_vol * dot_prod::<6,f64>(&project_vec, strain)
-                })
-                .reduce(|lat_strain, lat_strain_elem|
-                    lat_strain + lat_strain_elem
-                ).unwrap_or(0.0_f64);
-            }
-        }
-        Ok(())
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_taylor_factors_lattice_fiber")]
-    fn calc_taylor_factors_lattice_fiber<'py>(
-        shear_rates: &Bound<'_, PyArray3<f64>>,
-        taylor_factors: &Bound<'_, PyArray2<f64>>,
-        eff_plastic_def_rate: &Bound<'_, PyArray2<f64>>,
-        elem_vols: &Bound<'_, PyArray2<f64>>,
-        in_fibers: &Bound<'_, PyArray3<bool>>,
-        per_rank_update: bool
-    ) -> anyhow::Result<()> {
-        let num_elems: usize;
-        let num_steps: usize;
-
-        let s_in_fibers = in_fibers.readonly();
-        {
-            let in_fiber_av = s_in_fibers.as_array();
-            (_, num_steps, num_elems) = in_fiber_av.dim();
-        }
-        let in_fiber_hkls = s_in_fibers.as_slice()?;
-        let s_elem_vols = elem_vols.readonly();
-        let evs = s_elem_vols.as_slice()?;
-
-        let gamma_dots = shear_rates.readonly();
-        let gammadots = gamma_dots.as_slice()?;
-        let mut tay_factors = taylor_factors.readwrite();
-        let tayfacs = tay_factors.as_slice_mut()?;
-        let mut eff_pl_def_rate = eff_plastic_def_rate.readwrite();
-        let eps_rate = eff_pl_def_rate.as_slice_mut()?;
-
-        let lat_eps_in_fiber_iter = eps_rate.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
-        let ltf_leps_in_fiber_iter = tayfacs.chunks_exact_mut(num_steps).zip(lat_eps_in_fiber_iter);
-
-        for (tay_fac_hkl, (eps_rate_hkl, in_fiber_hkl)) in ltf_leps_in_fiber_iter.into_iter() {
-            let ev_gdot_iter = evs.chunks_exact(num_elems).zip(gammadots.chunks_exact(num_elems * 12));
-            let ev_gdot_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_gdot_iter);
-            for (istep, (in_fiber_hkl_step, (evs_step, gdots_step))) in ev_gdot_in_fiber_iter.enumerate() {
-                let (_, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
-
-                let (tay_fac_hkl_step, eps_rate_hkl_step) = gdots_step.chunks_exact(12)
-                .zip(evs_step)
-                .zip(in_fiber_hkl_step)
-                .filter(|ev_gdot_in_fiber| *ev_gdot_in_fiber.1)
-                .map(|((gdot, ev), _)| {
-                    let (tf, deps) = calc_taylor_factor(gdot);
-                    (ev * inv_total_lat_vol * tf, ev * inv_total_lat_vol * deps)
-                })
-                .reduce(|tfdeps, tfdeps_elem|
-                    (tfdeps.0 + tfdeps_elem.0, tfdeps.1 + tfdeps_elem.1)
-                ).unwrap_or((0.0_f64, 0.0_f64));
-                tay_fac_hkl[istep] += tay_fac_hkl_step;
-                eps_rate_hkl[istep] += eps_rate_hkl_step;
-            }
-        }
-        Ok(())
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_directional_stiffness_lattice_fiber")]
-    fn calc_directional_stiffness_lattice_fiber<'py>(
-        cauchy_stress: &Bound<'_, PyArray3<f64>>,
-        sample_strain: &Bound<'_, PyArray3<f64>>,
-        directional_stiffness: &Bound<'_, PyArray2<f64>>,
-        elem_vols: &Bound<'_, PyArray2<f64>>,
-        in_fibers: &Bound<'_, PyArray3<bool>>,
-        per_rank_update: bool
-    ) -> anyhow::Result<()> {
-        let num_elems: usize;
-        let num_steps: usize;
-
-        let s_in_fibers = in_fibers.readonly();
-        {
-            let in_fiber_av = s_in_fibers.as_array();
-            (_, num_steps, num_elems) = in_fiber_av.dim();
-        }
-        let in_fiber_hkls = s_in_fibers.as_slice()?;
-        let s_elem_vols = elem_vols.readonly();
-        let evs = s_elem_vols.as_slice()?;
-
-        let cauchy = cauchy_stress.readonly();
-        let stress = cauchy.as_slice()?;
-        let sstrain = sample_strain.readonly();
-        let strain = sstrain.as_slice()?;
-
-        let mut dir_stiffness = directional_stiffness.readwrite();
-        let dir_stiff = dir_stiffness.as_slice_mut()?;
-
-        let lat_ds_in_fiber_iter = dir_stiff.chunks_exact_mut(num_steps).zip(in_fiber_hkls.chunks_exact(num_steps * num_elems));
-
-        for (dir_stiff_hkl, in_fiber_hkl) in lat_ds_in_fiber_iter.into_iter() {
-            let stress_strains = stress.chunks_exact(num_elems * 6).zip(strain.chunks_exact(num_elems * 6));
-            let ev_sst_iter = evs.chunks_exact(num_elems).zip(stress_strains);
-            let ev_sst_in_fiber_iter = in_fiber_hkl.chunks_exact(num_elems).zip(ev_sst_iter);
-            for (istep, (in_fiber_hkl_step, (evs_step, (stress_step, strain_step)))) in ev_sst_in_fiber_iter.enumerate() {
-                let (_, inv_total_lat_vol) = calc_volume_terms_fiber(evs_step, in_fiber_hkl_step, per_rank_update);
-
-                dir_stiff_hkl[istep] += stress_step.chunks_exact(6)
-                .zip(strain_step.chunks_exact(6))
-                .zip(evs_step)
-                .zip(in_fiber_hkl_step)
-                .filter(|ev_sst_in_fiber| *ev_sst_in_fiber.1)
-                .map(|((sst, ev), _)| {
-                    if f64::abs(sst.1[2]) < f64::EPSILON {
-                        0.0_f64
-                    }
-                    else {
-                        (sst.0[2] / sst.1[2]) * ev * inv_total_lat_vol
-                    }
-                })
-                .reduce(|dir_modulus, dir_modulus_elem|
-                    dir_modulus + dir_modulus_elem
-                ).unwrap_or(0.0_f64);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "calc_within_fibers")]
-    fn calc_within_fibers<'py>(
-        lattice_orientations: &Bound<'_, PyArray3<f64>>,
-        sample_dir: &Bound<'_, PyArray1<f64>>,
-        hkls: &Bound<'_, PyArray2<f64>>,
-        lattice_param_a: f64,
-        distance_tolerance_rad: f64,
-        in_fibers: &Bound<'_, PyArray3<bool>>,
-    ) -> anyhow::Result<()> {
-
-        let num_elems: usize;
-        let num_steps: usize;
-
-        let mut s_in_fibers = in_fibers.readwrite();
-        {
-            let in_fiber_av = s_in_fibers.as_array();
-            (_, num_steps, num_elems) = in_fiber_av.dim();
-        }
-
-        let in_fiber_hkls = s_in_fibers.as_slice_mut()?;
-
-        let xtal_o = lattice_orientations.readonly();
-        let xtal_orientations = xtal_o.as_slice()?;
-
-        let s_hkls = hkls.readonly();
-        let slice_hkls = s_hkls.as_slice()?;
-
-        let s_sample_dir = sample_dir.readonly();
-        let s_dir = s_sample_dir.as_slice()?;
-
-        in_fiber_hkls.chunks_exact_mut(num_steps * num_elems)
-        .zip(slice_hkls.chunks_exact(3))
-        .for_each(|(in_fibers, hkl)| {
-            calculate_in_fibers(lattice_param_a, hkl, s_dir, xtal_orientations, distance_tolerance_rad, in_fibers);
-        });
-
-        Ok(())
-    }
+fn xtal_light_up(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(strain_lattice2sample, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_taylor_factors, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_directional_stiffness, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_lattice_strains, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_taylor_factors_lattice_fiber, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_directional_stiffness_lattice_fiber, m)?)?;
+    m.add_function(wrap_pyfunction!(calc_within_fibers, m)?)?;
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 # Voxel Coarsen
 This is a Rust crate with python bindings that performs the coarsening steps of the ExaCA data in preparation for an ExaConstit simulation.
 
-This crate assumes the ExaCA file traverses data in the following axis order from fastest to slowest y->x->z . If this changes than the logic will need to be updated.
+This crate assumes the ExaCA file traverses data in the following axis order from fastest to slowest x->y->z (the order ExaCA currently writes its output in). If this changes then the logic in `rearrange_data` will need to be updated.
 
 In order to keep compile times lowish, I make use of a data reader crate (an old personal project of mine) that functions in a similar manner to Python's loadtxt with fairly decent read / parsing speeds (150-250 MB/s on an old 2013 mac). This simple data reader is roughly 2x as slow as the Rust "Polars" crate which I have as an optional feature. I'm not using that optional feature by default as it has a compile on time on the 10s of minutes due to what appears to be the fat-LTO that LLVM is doing on everything.
 
