@@ -377,8 +377,10 @@ void ExaOptions::parse_model_options(const toml::value& toml_input, MaterialOpti
         material.mech_type = string_to_mech_type(mech_type_str);
     }
 
-    if (model_section.contains("cp")) {
-        material.model.crystal_plasticity = toml::find<bool>(model_section, "cp");
+    if (model_section.contains("crystal_plasticity") || model_section.contains("cp")) {
+        const auto& key = model_section.contains("crystal_plasticity") ? "crystal_plasticity"
+                                                                       : "cp";
+        material.model.crystal_plasticity = toml::find<bool>(model_section, key);
     }
 
     // Parse ExaCMech-specific options

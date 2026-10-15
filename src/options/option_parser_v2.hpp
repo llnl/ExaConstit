@@ -1365,7 +1365,7 @@ public:
     /**
      * @brief Version string for ExaConstit
      */
-    std::string version = "0.9.0";
+    std::string version = "0.10.0";
 
     /**
      * @brief Mesh generation and refinement options

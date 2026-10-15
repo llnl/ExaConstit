@@ -5,7 +5,7 @@
 
 # Version of ExaConstit this configuration is designed for
 # This helps ensure compatibility - use the version shown when you run 'exaconstit --version'
-Version = "0.9.0"
+Version = "0.10.0"
 
 # Base name for the simulation output directory
 # This creates a subdirectory to organize all outputs from this simulation

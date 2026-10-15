@@ -4,8 +4,9 @@
 # The file uses TOML format where options are organized in sections [Section] and subsections [[Section.Subsection]]
 
 # Version of ExaConstit this configuration is designed for
-# This helps ensure compatibility - use the version shown when you run 'exaconstit --version'
-Version = "0.9.0"
+# This is recorded as metadata (it's echoed in the options summary printed at startup)
+# so you know which version of ExaConstit a configuration was written for / run with
+Version = "0.10.0"
 
 # Base name for the simulation output directory
 # This creates a subdirectory to organize all outputs from this simulation
@@ -39,7 +40,7 @@ grain_file = "grains.txt"
 # =====================================
 # Define properties for each material in your simulation
 # Use [[Materials]] to define multiple materials (note the double brackets)
-# Each material must have a unique region_id starting from 0
+# Materials are numbered as regions in the order they are listed here (first = region 1)
 
 [[Materials]]
     # User-friendly name for this material (for output files and identification)
@@ -47,6 +48,8 @@ grain_file = "grains.txt"
     
     # Which region of the mesh uses this material (starts at 1, must be sequential: 1, 2, 3...)
     # This corresponds to the material numbers in your region_mapping_file
+    # Note: regions are always numbered by the order of the [[Materials]] entries, so this
+    # value must match the position of this entry in the list
     region_id = 1
     
     # Initial temperature in Kelvin (affects material properties)
@@ -70,6 +73,10 @@ grain_file = "grains.txt"
     
     # ===== Internal State Variables =====
     # These track the material's history (plastic strain, damage, etc.)
+    # Do NOT include the crystal orientations in num_vars or the values: they are added
+    # automatically based on the [Materials.Grain] table
+    # For ExaCMech models, num_vars must match what the chosen model requires, which
+    # includes the internal energy and relative volume but not the quaternions
     [Materials.State_Vars]
         # Option 1: Read initial values from file
         floc = "state.txt"  # Path to state variables file
@@ -184,8 +191,8 @@ grain_file = "grains.txt"
             # - "load_on_setup" = reload for each setup (for debugging)
             load_strategy = "persistent"
             
-            # Allow loading external libraries?
-            # Set false for security if using pre-installed UMATs only
+            # Load the UMAT from library_path at runtime?
+            # Set false to use a UMAT compiled into the ExaConstit executable instead
             enable_dynamic_loading = true
             
             # Directories to search for the UMAT library
@@ -215,6 +222,11 @@ grain_file = "grains.txt"
     
     # Note: For all of the below BCs if we have changing BCs over several cycles then
     #       we need to have multiple [[BCs.velocity_bcs]] and [[BCs.velocity_gradient_bcs]]
+    #       The first entry is used starting at cycles[0], the second at cycles[1], etc.
+    #
+    # Note: A boundary can have some components constrained by a velocity BC and others by
+    #       a velocity gradient BC, but the same component of the same boundary can't be
+    #       constrained by both. This is checked at startup.
 
     # ===== Velocity Boundary Conditions =====
     # Apply specific velocities to nodes/surfaces
@@ -294,7 +306,7 @@ grain_file = "grains.txt"
     #   - Crystal plasticity model verification
     #
     # REQUIREMENTS & LIMITATIONS:
-    #   - Best performance with auto_time_stepping = true
+    #   - Best performance with automatic time stepping ([Time.Auto])
     #   - May cause convergence issues or crashes with fixed time stepping
     #   - Recommended for simple geometries (rectangular domains)
     #   - Not suitable for complex loading paths or multiaxial conditions
@@ -332,6 +344,11 @@ grain_file = "grains.txt"
     
     # ===== Automatic Time Stepping =====
     # Adjusts time step based on convergence behavior
+    # After each converged step dt is multiplied by
+    #   ([Solvers.NR] iter * dt_scale) / (nonlinear iterations the step took)
+    # so dt grows when a step converges in fewer than iter * dt_scale iterations
+    # and shrinks when it takes more, while staying within [dt_min, dt_max]
+    # A step that fails to converge is retried with dt * dt_scale, up to 4 times
     [Time.Auto]
         # Starting time step size
         # Smaller = more accurate but slower
@@ -402,6 +419,8 @@ grain_file = "grains.txt"
     # How to handle material incompressibility:
     # - "FULL" = standard integration (general purpose)
     # - "BBAR" = B-bar method (for nearly incompressible materials)
+    #            The material models (ExaCMech and UMATs) are given the same
+    #            element-averaged volumetric kinematics as the B-bar formulation
     # Use BBAR is really useful if your material has Poisson's ratio > 0.45
     integ_model = "FULL"
     
@@ -427,7 +446,7 @@ grain_file = "grains.txt"
         # - "CG" = Conjugate Gradient (fastest for well-behaved symmetric problems)
         # - "GMRES" = General solver (works for any problem, reliable but uses more memory)
         # - "MINRES" = Minimal Residual (for symmetric problems when CG fails)
-        # - "BiCGSTAB" = Memory-efficient alternative to GMRES (faster but less robust)
+        # - "BICGSTAB" = Memory-efficient alternative to GMRES (faster but less robust)
         # Use CG for typical material models, GMRES if unsure or have convergence issues
         solver = "GMRES"
         
@@ -455,11 +474,11 @@ grain_file = "grains.txt"
         iter = 25
         
         # Relative tolerance for equilibrium
-        # Stop when: force imbalance < rel_tol * applied force
+        # Stop when: ||residual|| <= rel_tol * ||initial residual of the time step||
         rel_tol = 1e-5
-        
+
         # Absolute tolerance for equilibrium
-        # Stop when: force imbalance < abs_tol
+        # Stop when: ||residual|| <= abs_tol
         abs_tol = 1e-10
         
         # Nonlinear solver type:
@@ -476,6 +495,52 @@ grain_file = "grains.txt"
         # - 2 = also print detailed information about each trust-region step
         #       (only used by "TRDOG", same as 1 for the other solvers)
         print_info = 1
+
+        # ===== Trust-Region Settings (Optional) =====
+        # Only used when nl_solver = "TRDOG". Any value left out (or the whole table)
+        # uses the defaults shown here, and all values are checked at startup.
+        # The trust region limits the size (2-norm) of each nonlinear step, i.e. the
+        # velocity correction, so delta has units of velocity and depends on the problem.
+        # Its size is adjusted after each step based on the step quality
+        #   rho = (actual change in ||residual||) / (change predicted by the linear model)
+        # Rejected trial steps are retried with a smaller trust region and don't count
+        # toward iter.
+        [Solvers.NR.trust_region]
+            # Initial trust-region size at the start of each time step
+            # Must be within [delta_min, delta_max]
+            delta_init = 1.0
+
+            # Smallest allowed trust-region size (must be positive)
+            # The solver fails if the trust region needs to shrink below this
+            delta_min = 1e-12
+
+            # Largest allowed trust-region size (must be greater than delta_min)
+            delta_max = 1e4
+
+            # "Good" step band [xi_lg, xi_ug]: if rho is in this band and the residual
+            # decreased, delta is increased by xi_inc (unless a full Newton step was taken)
+            # Must satisfy: xi_lo < xi_lg < xi_ug < xi_uo
+            xi_lg = 0.75
+            xi_ug = 1.4
+
+            # "Ok" step band [xi_lo, xi_uo]: if rho is outside this band, delta is
+            # decreased by xi_dec
+            xi_lo = 0.35
+            xi_uo = 5.0
+
+            # Factor delta is multiplied by when increased (must be > 1)
+            xi_inc = 1.5
+
+            # Factor delta is multiplied by when decreased (must be between 0 and 1)
+            xi_dec = 0.25
+
+            # Factor delta is multiplied by when the predicted residual change is
+            # exactly zero (must be > 1)
+            xi_forced_inc = 1.2
+
+            # Reject trial steps that increase the residual and retry them from the same
+            # state with a smaller trust region (recommended)
+            reject_increase = true
 
 # =====================================
 # VISUALIZATION OUTPUT
@@ -508,18 +573,17 @@ grain_file = "grains.txt"
     output_frequency = 10
     
     # ===== IMPORTANT: Visualization Output Location =====
-    # This path is RELATIVE to the main output directory structure!
-    # Actual location will be:
-    #   [PostProcessing.volume_averages.output_directory]/[basename]/[floc]
+    # Visualization files are always written to:
+    #   [PostProcessing.volume_averages.output_directory]/[basename]/visualizations/
     #
-    # Example: With output_directory = "./results", basename = "test", floc = "viz/":
-    #   Actual path: ./results/test/viz/
-    #
-    # Default "visualizations/" means files go to:
-    #   [output_directory]/[basename]/visualizations/
+    # Example: With output_directory = "./results", basename = "test":
+    #   Actual path: ./results/test/visualizations/
     #
     # Note: This is different from volume averages which go directly in:
     #   [output_directory]/[basename]/
+    #
+    # floc is a legacy option: in the pre-v0.9 option file format it set the output
+    # directory. It is otherwise ignored.
     floc = "visualizations/"
 
 # =====================================
@@ -568,8 +632,8 @@ grain_file = "grains.txt"
         # Only available for ExaCMech models
         elastic_strain = false
         
-        # How often to compute averages
-        # Must be multiple of visualization output_frequency
+        # How often to compute averages (in time steps)
+        # This is independent of the visualization output_frequency
         output_frequency = 1
         
         # ===== OUTPUT DIRECTORY STRUCTURE =====
@@ -588,6 +652,12 @@ grain_file = "grains.txt"
         #
         # IMPORTANT: The basename only affects the subdirectory name, NOT the output filenames
         # The actual filenames are controlled by the *_fname options below
+        #
+        # The directory is created if it doesn't exist. It can be a symbolic link to another
+        # file system (e.g. `ln -s /scratch/my_runs results`), even one whose target doesn't
+        # exist yet, in which case the target is created. The path is resolved once at
+        # startup, so changing the link mid-run doesn't change where that run writes.
+        # If the directory can't be created, the simulation stops right away with an error.
         output_directory = "./results/"
         
         # ===== MULTI-MATERIAL OUTPUT FILES =====
@@ -812,7 +882,7 @@ grain_file = "grains.txt"
     # ===== Polynomial Order =====
     # Shape function order (higher = more accurate but expensive)
     # 1 = linear elements (8-node hex, 4-node tet)
-    # 2 = quadratic elements (20-node hex, 10-node tet)
+    # 2 = quadratic elements (27-node hex, 10-node tet)
     # 3+ = high-order elements (research use)
     p_refinement = 1
     

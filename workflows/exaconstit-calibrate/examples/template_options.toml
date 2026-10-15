@@ -8,7 +8,7 @@
 # from SimCase.case_data in
 # nsga3_calibration.py before mechanics runs.
 
-Version = "0.9.0"
+Version = "0.10.0"
 
 # Keep this fixed at "options" so output files land under
 # results/options/, matching the reader paths configured by

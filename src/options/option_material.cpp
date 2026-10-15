@@ -213,8 +213,10 @@ ExaCMechModelOptions ExaCMechModelOptions::from_toml(const toml::value& toml_inp
 MaterialModelOptions MaterialModelOptions::from_toml(const toml::value& toml_input) {
     MaterialModelOptions model_options;
 
-    if (toml_input.contains("cp")) {
-        model_options.crystal_plasticity = toml::find<bool>(toml_input, "cp");
+    // Support both "crystal_plasticity" and the legacy "cp" key
+    if (toml_input.contains("crystal_plasticity") || toml_input.contains("cp")) {
+        const auto& key = toml_input.contains("crystal_plasticity") ? "crystal_plasticity" : "cp";
+        model_options.crystal_plasticity = toml::find<bool>(toml_input, key);
     }
 
     // Parse UMAT-specific options
@@ -234,8 +236,10 @@ MaterialModelOptions MaterialModelOptions::from_toml(const toml::value& toml_inp
 MaterialOptions MaterialOptions::from_toml(const toml::value& toml_input) {
     MaterialOptions options;
 
-    if (toml_input.contains("name")) {
-        options.material_name = toml::find<std::string>(toml_input, "name");
+    // Support both "material_name" and "name"
+    if (toml_input.contains("material_name") || toml_input.contains("name")) {
+        const auto& key = toml_input.contains("material_name") ? "material_name" : "name";
+        options.material_name = toml::find<std::string>(toml_input, key);
     }
 
     if (toml_input.contains("region_id")) {
