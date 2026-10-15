@@ -1,0 +1,815 @@
+# ExaConstit Configuration File
+# This file controls all aspects of your solid mechanics simulation.
+# Lines starting with '#' are comments and will be ignored by the program.
+# The file uses TOML format where options are organized in sections [Section] and subsections [[Section.Subsection]]
+
+# Version of ExaConstit this configuration is designed for
+# This helps ensure compatibility - use the version shown when you run 'exaconstit --version'
+Version = "0.9.0"
+
+# Base name for the simulation output directory
+# This creates a subdirectory to organize all outputs from this simulation
+# For example, if basename = "tensile_test", all outputs go in a "tensile_test" folder
+# If not specified, defaults to the name of this configuration file (without .toml extension)
+basename = "multi_material_test"
+
+# =====================================
+# MULTI-MATERIAL SETUP (Optional)
+# =====================================
+# For simulations with multiple materials, you need to tell the code how to assign
+# materials to different parts of your mesh
+
+# Maps grain IDs / existing mesh element attributes to material region numbers
+# This file should have two columns: element attributes / Grain IDs -> material_region_number
+# Example content:
+#   1  1
+#   2  1
+#   3  2
+# This would assign element attributes 1-2 to material 1, element 3 to material 2
+region_mapping_file = "region_mapping.txt"
+
+# For automatically generated meshes with multiple materials
+# This file assigns each element to a grain (crystal orientation)
+# Format: one integer per line, each representing a grain ID
+# Line 1 = grain ID for element 1, Line 2 = grain ID for element 2, etc.
+grain_file = "grains.txt"
+
+# =====================================
+# MATERIAL DEFINITIONS
+# =====================================
+# Define properties for each material in your simulation
+# Use [[Materials]] to define multiple materials (note the double brackets)
+# Each material must have a unique region_id starting from 0
+
+[[Materials]]
+    # User-friendly name for this material (for output files and identification)
+    material_name = "aluminum_alloy"
+    
+    # Which region of the mesh uses this material (starts at 1, must be sequential: 1, 2, 3...)
+    # This corresponds to the material numbers in your region_mapping_file
+    region_id = 1
+    
+    # Initial temperature in Kelvin (affects material properties)
+    # Room temperature ≈ 298K (25°C or 77°F)
+    temperature = 298.0
+    
+    # Material model type - tells the code which physics engine to use:
+    # - "umat" = User Material subroutine (custom material behavior)
+    # - "exacmech" = ExaCMech crystal plasticity library (for metals)
+    # - "" = Empty string if defined in Model section below
+    mech_type = "exacmech"
+    
+    # ===== Material Properties =====
+    [Materials.Properties]
+        # Option 1: Read properties from a file
+        floc = "props.txt"  # Path to properties file
+        num_props = 20      # Number of property values to read
+        
+        # Option 2: Define properties directly here (choose either floc OR values)
+        # values = [210000.0, 0.3, 450.0, ...]  # [Young's modulus, Poisson's ratio, yield stress, ...]
+    
+    # ===== Internal State Variables =====
+    # These track the material's history (plastic strain, damage, etc.)
+    [Materials.State_Vars]
+        # Option 1: Read initial values from file
+        floc = "state.txt"  # Path to state variables file
+        num_vars = 30       # Number of state variables
+        
+        # Option 2: Define initial values directly (usually zeros for virgin material)
+        # values = [0.0, 0.0, 0.0, ...]  # Initial values (often all zeros)
+    
+    # ===== Crystal/Grain Information (for crystal plasticity only) =====
+    [Materials.Grain]
+        # Where orientations are stored in the state variable array
+        # Use -1 to append at the end (recommended for UMATs)
+        # Positive number = specific location in state variable array
+        # Value ignored for any ExaCMech model
+        ori_state_var_loc = -1
+        
+        # If using custom orientation types we need to know the stride length values
+        # Value ignored for any ExaCMech model as always quaternions
+        ori_stride = 4
+        
+        # How crystal orientations are represented:
+        # - "quat" or "quaternion" = 4 values per orientation (recommended for accuracy)
+        # - "euler" = 3 Euler angles in degrees (Bunge convention: Z-X-Z)
+        # - "custom" = User-defined format
+        # Value ignored for any ExaCMech model as always quaternions
+        ori_type = "quat"
+        
+        # Total number of unique crystal orientations in your simulation
+        # For single crystal: num_grains = 1
+        # For polycrystal: num_grains = number of crystals
+        num_grains = 100
+        
+        # File containing crystal orientations
+        # Format depends on ori_type:
+        # - Quaternions: 4 values per line (q0 q1 q2 q3)
+        # - Euler angles: 3 values per line in degrees (phi1 Phi phi2)
+        orientation_file = "orientations.txt"
+        
+        # Maps elements to grains (which orientation each element uses)
+        # Only needed for auto-generated meshes
+        # For mesh files, this info should be in element attributes
+        grain_file = "grain_map.txt"
+    
+    # ===== Material Model Configuration =====
+    [Materials.Model]
+        # Must match the mech_type above (or define it here if not set above)
+        mech_type = "exacmech"
+        
+        # Is this a crystal plasticity model?
+        # - true = considers crystal orientation effects (required for ExaCMech)
+        # - false = isotropic material (same properties in all directions)
+        crystal_plasticity = true
+        
+        # ===== ExaCMech-Specific Settings =====
+        [Materials.Model.ExaCMech]
+            # Model name from ExaCMech library
+            # This combines crystal structure + hardening law + kinetics
+            # Common options:
+            # FCC metals (aluminum, copper, nickel):
+            #   - "evptn_FCC_A" = Linear Voce hardening + power law slip kinetics
+            #   - "evptn_FCC_AH" = Nonlinear Voce hardening + power law slip kinetics
+            #   - "evptn_FCC_B" = Kocks-Meckings single source DD model + MTS-like and phonon drag slip kinetics (temperature dependent)
+            # BCC metals (iron, tungsten):
+            #   - "evptn_BCC_A" = Linear Voce hardening + power law slip kinetics
+            #   - "evptn_BCC_B" = Kocks-Meckings single source DD model + MTS-like and phonon drag slip kinetics (temperature dependent)
+            # HCP metals (titanium, magnesium):
+            #   - "evptn_HCP_A" = Kocks-Meckings single source DD model + MTS-like and phonon drag slip kinetics (temperature dependent)
+            shortcut = "evptn_FCC_A"
+
+# ===== Second Material Example (UMAT) =====
+[[Materials]]
+    material_name = "custom_polymer"
+    region_id = 2
+    temperature = 298.0
+    mech_type = "umat"
+    
+    [Materials.Properties]
+        num_props = 2
+        # Direct property definition - useful for simple materials
+        # For polymer: [Young's modulus, Poisson's ratio]
+        values = [3000.0, 0.35]
+    
+    [Materials.State_Vars]
+        num_vars = 5
+        # Initial state (zeros for undeformed material)
+        values = [0.0, 0.0, 0.0, 0.0, 0.0]
+    
+    [Materials.Model]
+        mech_type = "umat"
+        # UMATs are typically isotropic
+        crystal_plasticity = false
+        
+        [Materials.Model.UMAT]
+            # Path to compiled UMAT library (.so or .dll file)
+            # Can be absolute path or relative to working directory
+            library_path = "./my_umat.so"
+            
+            # Name of the UMAT function in the library
+            # Must match the function name in your Fortran/C code
+            function_name = "my_polymer_model"
+            
+            # When to load the library:
+            # - "persistent" = load once at start, keep in memory (fastest)
+            # - "lazy_load" = load when first needed (saves memory)
+            # - "load_on_setup" = reload for each setup (for debugging)
+            load_strategy = "persistent"
+            
+            # Allow loading external libraries?
+            # Set false for security if using pre-installed UMATs only
+            enable_dynamic_loading = true
+            
+            # Directories to search for the UMAT library
+            # Searched in order if library_path is just a filename
+            search_paths = ["./", "./umats/", "/shared/umat_libs/"]
+
+# =====================================
+# BOUNDARY CONDITIONS
+# =====================================
+# Define how your model is loaded and constrained
+# BCs can change over time using the time_info section
+
+[BCs]
+    # ===== Time-Dependent BC Control =====
+    [BCs.time_info]
+        # How to specify when BCs change:
+        # Option 1: Based on cycle number (recommended for multi-step loading)
+        cycle_dependent = true
+         # Change BCs at cycle 100 and 200
+         # A value of 1 is always required
+        cycles = [1, 100, 200]
+        
+        # Option 2: Based on simulation time (alternative method)
+        # Currently ignored but will be coming in a future release
+        # time_dependent = true
+        # times = [0.1, 0.2]  # Change BCs at time 0.1 and 0.2
+    
+    # Note: For all of the below BCs if we have changing BCs over several cycles then
+    #       we need to have multiple [[BCs.velocity_bcs]] and [[BCs.velocity_gradient_bcs]]
+
+    # ===== Velocity Boundary Conditions =====
+    # Apply specific velocities to nodes/surfaces
+    # ( think constant engineering strain rate BCs )
+    [[BCs.velocity_bcs]]
+        # Which boundary markers/node sets to apply this BC to
+        # These numbers come from your mesh file's boundary markers
+        essential_ids = [1, 2, 3]
+        
+        # Which velocity components to constrain for each boundary marker
+        # This uses a binary encoding:
+        # 0 = no constraints (free)
+        # 1 = constrain X velocity only
+        # 2 = constrain Y velocity only  
+        # 3 = constrain Z velocity only
+        # 4 = constrain X and Y velocities
+        # 5 = constrain Y and Z velocities
+        # 6 = constrain X and Z velocities
+        # 7 = constrain all velocities (X, Y, and Z)
+        # Example: [3, 1, 2] means:
+        #   - Boundary 1: fix Z velocity only
+        #   - Boundary 2: fix X velocity only
+        #   - Boundary 3: fix Y velocity only
+        essential_comps = [3, 1, 2]
+        
+        # Velocity values for each constrained component
+        # Format: [vx, vy, vz] for each boundary marker
+        # Order matches essential_ids, components match essential_comps
+        # Example below: all velocities are zero (fixed boundaries)
+        essential_vals = [0.0, 0.0, 0.0,  # Boundary 1 velocities
+                          0.0, 0.0, 0.0,  # Boundary 2 velocities
+                          0.0, 0.0, 0.0]  # Boundary 3 velocities
+    
+    # ===== Velocity Gradient Boundary Conditions =====
+    # Apply a velocity gradient to a boundary
+    # ( think constant true strain rate BCs )
+    [[BCs.velocity_gradient_bcs]]
+        # Boundary markers for velocity gradient BC
+        essential_ids = [4]
+        
+        # Which components to constrain (same encoding as above)
+        # Typically use 7 (all components) for velocity gradient
+        essential_comps = [7]
+        
+        # Velocity gradient tensor (3x3 matrix)
+        # This defines the velocity: v = L·(x - origin)
+        # Each row is [L11, L12, L13; L21, L22, L23; L31, L32, L33]
+        # Example: uniaxial tension in Z at strain rate 0.001/s
+        velocity_gradient = [[0.0, 0.0, 0.0],    # dVx/dx, dVx/dy, dVx/dz
+                           [0.0, 0.0, 0.0],    # dVy/dx, dVy/dy, dVy/dz  
+                           [0.0, 0.0, 0.001]]  # dVz/dx, dVz/dy, dVz/dz
+        
+        # Reference point for velocity gradient (default: origin)
+        # Velocities are: v = L·(x - origin)
+        # Currently this is assummed constant over all time steps
+        # but in future this could change over time
+        origin = [0.0, 0.0, 0.0]
+
+    # =================================================================
+    # EXPERIMENTAL: Monotonic Z-Direction Loading Boundary Condition
+    # =================================================================
+    # Enables a specialized boundary condition for uniaxial monotonic loading
+    # in the z-direction, commonly used for material characterization and
+    # constitutive model validation.
+    #
+    # BEHAVIOR:
+    #   - Applies pure tension or compression in the z-direction
+    #   - Automatically constrains lateral surfaces to prevent shear deformation
+    #   - Maintains kinematic compatibility to avoid artificial stress concentrations
+    #   - Produces clean uniaxial stress states ideal for comparing with
+    #     experimental stress-strain curves
+    #
+    # TYPICAL USE CASES:
+    #   - Single crystal tensile/compression testing
+    #   - Polycrystal aggregate response validation
+    #   - Material parameter calibration
+    #   - Crystal plasticity model verification
+    #
+    # REQUIREMENTS & LIMITATIONS:
+    #   - Best performance with auto_time_stepping = true
+    #   - May cause convergence issues or crashes with fixed time stepping
+    #   - Recommended for simple geometries (rectangular domains)
+    #   - Not suitable for complex loading paths or multiaxial conditions
+    #
+    # WARNING: This is an experimental feature under active development.
+    #          Verify results against known analytical solutions before
+    #          using for production simulations.
+    #
+    expt_mono_def_flag = false
+
+# =====================================
+# TIME STEPPING CONTROL
+# =====================================
+# How the simulation advances through time
+# Choose ONE of: Custom, Auto, or Fixed
+
+[Time]
+    # Which time stepping method to use:
+    # - "custom" = user-defined time steps from file (most control)
+    # - "auto" = adaptive time stepping (recommended for efficiency)
+    # - "fixed" = constant time step (simplest)
+    # Time stepping priority (highest to lowest):
+    # 1. Custom (if [Time.Custom] exists)
+    # 2. Auto (if [Time.Auto] exists)
+    # 3. Fixed (if [Time.Fixed] exists or as default)
+    time_type = "custom"
+    
+    # ===== Restart Options (Optional) =====
+    # Continue from a previous simulation
+    # Currently ignored but will be coming in a near-future release
+    # restart = true
+    # restart_time = 0.5  # Time to restart from
+    # restart_cycle = 100  # Cycle number to restart from
+    
+    # ===== Automatic Time Stepping =====
+    # Adjusts time step based on convergence behavior
+    [Time.Auto]
+        # Starting time step size
+        # Smaller = more accurate but slower
+        # Typical range: 0.001 to 1.0
+        dt_start = 0.1
+        
+        # Minimum allowed time step
+        # Simulation fails if it needs smaller than this
+        # Too small = may never finish, too large = may not converge
+        dt_min = 0.001
+        
+        # Maximum allowed time step  
+        # Prevents steps from getting too large
+        # 1e9 = effectively no limit
+        dt_max = 1.0
+        
+        # Reduction factor when convergence is difficult
+        # If solver struggles, multiply dt by this factor
+        # Must be between 0 and 1 (0.25 = reduce to 25%)
+        dt_scale = 0.25
+        
+        # Target end time for simulation
+        t_final = 1.0
+    
+    # ===== Fixed Time Stepping =====
+    # Same time step throughout simulation
+    [Time.Fixed]
+        # Time step size (constant throughout)
+        dt = 0.01
+        
+        # Simulation end time
+        t_final = 1.0
+    
+    # ===== Custom Time Stepping =====
+    # Full control over every time step
+    [Time.Custom]
+        # Total number of time steps to take
+        nsteps = 1000
+        
+        # File containing time step sizes
+        # Format: one number per line (dt for each step)
+        # Line 1 = dt for step 1, Line 2 = dt for step 2, etc.
+        floc = "custom_dt.txt"
+
+# =====================================
+# SOLVER SETTINGS
+# =====================================
+# Controls how the equations are solved numerically
+
+[Solvers]
+    # ===== Matrix Assembly Strategy =====
+    # How to build and store the stiffness matrix:
+    # - "FULL" = build complete matrix (most memory, best for CPU-only problems)
+    # - "PA" = partial assembly (least memory, best for higher-order p-refinement elements)
+    # - "EA" = element assembly (less memory, best for large problems run on GPUs)
+    # GPU requires PA or EA, CPU works with all options
+    assembly = "FULL"
+    
+    # ===== Execution Model =====
+    # Where to run computations:
+    # - "CPU" = single processor core (simple, good for debugging or CPU only problems)
+    # These later options require RAJA/MFEM/ExaConstit to have been compiled with support for these
+    # - "OPENMP" = multiple CPU cores (faster for medium problems)
+    # - "GPU" = graphics card (fastest for large problems)
+    rtmodel = "CPU"
+    
+    # ===== Integration Scheme =====
+    # How to handle material incompressibility:
+    # - "FULL" = standard integration (general purpose)
+    # - "BBAR" = B-bar method (for nearly incompressible materials)
+    # Use BBAR is really useful if your material has Poisson's ratio > 0.45
+    integ_model = "FULL"
+    
+    # ===== Linear Solver Settings =====
+    # Solves Ax=b at each Newton iteration
+    [Solvers.Krylov]
+        # Maximum iterations before giving up
+        # Increase if solver fails to converge
+        # EA/PA may need 1000-5000 iterations
+        iter = 200
+        
+        # Relative tolerance for convergence
+        # Stop when: ||residual|| < rel_tol * ||initial residual||
+        # Smaller = more accurate but slower
+        rel_tol = 1e-10
+        
+        # Absolute tolerance for convergence  
+        # Stop when: ||residual|| < abs_tol
+        # Prevents over-solving when residual is already tiny
+        abs_tol = 1e-30
+        
+        # Linear solver algorithm:
+        # - "CG" = Conjugate Gradient (fastest for well-behaved symmetric problems)
+        # - "GMRES" = General solver (works for any problem, reliable but uses more memory)
+        # - "MINRES" = Minimal Residual (for symmetric problems when CG fails)
+        # - "BiCGSTAB" = Memory-efficient alternative to GMRES (faster but less robust)
+        # Use CG for typical material models, GMRES if unsure or have convergence issues
+        solver = "GMRES"
+        
+        # Preconditioner to accelerate convergence:
+        # With multi-material systems you might find better convergence
+        # properties by testing out different preconditioners
+        # EA/PA will automatically run with JACOBI as the full matrix is
+        # not constructed
+        # - "JACOBI" = diagonal scaling (simple/fast, works everywhere but slow convergence)
+        # - "AMG" = Algebraic MultiGrid (fewer iterations but expensive setup, can fail on some problems)
+        # - "ILU" = Incomplete factorization (good middle-ground, useful for multi-material systems)
+        # - "L1GS" = advanced smoother (can help with multi-material systems with contrasting properties)
+        # - "CHEBYSHEV" = polynomial smoother (good for problems with multiple material scales)
+        # Try ILU / L1GS / CHEBYSHEV if JACOBI convergence is too slow
+        preconditioner = "JACOBI"
+        
+        # Output verbosity (0 = quiet, 1+ = show iterations)
+        print_level = 0
+    
+    # ===== Nonlinear Solver Settings =====
+    # Solves the overall nonlinear problem
+    [Solvers.NR]
+        # Maximum Newton-Raphson iterations per time step
+        # Increase if "failed to converge" errors occur
+        iter = 25
+        
+        # Relative tolerance for equilibrium
+        # Stop when: force imbalance < rel_tol * applied force
+        rel_tol = 1e-5
+        
+        # Absolute tolerance for equilibrium
+        # Stop when: force imbalance < abs_tol
+        abs_tol = 1e-10
+        
+        # Nonlinear solver type:
+        # - "NR" = standard Newton-Raphson (usually sufficient)
+        # - "NRLS" = Newton with line search (for difficult convergence)
+        nl_solver = "NR"
+
+# =====================================
+# VISUALIZATION OUTPUT
+# =====================================
+# Controls what visualization files are created for post-processing
+# These files can be opened in ParaView, VisIt, or other tools
+
+[Visualizations]
+    # ===== Output Formats =====
+    # Enable the formats you need (multiple can be true)
+    
+    # VisIt format (.visit files + data)
+    # Good for: VisIt software, time series data
+    visit = false
+    
+    # ParaView format (.pvtu/.vtu files)  
+    # Good for: ParaView software, widely supported
+    # Recommended for most users
+    paraview = true
+    
+    # ADIOS2 format (high-performance I/O)
+    # Good for: very large simulations, supercomputers
+    adios2 = false
+    
+    # ===== Output Control =====
+    # How often to write visualization files
+    # 1 = every time step (lots of files!)
+    # 10 = every 10th time step
+    # 100 = every 100th time step
+    output_frequency = 10
+    
+    # ===== IMPORTANT: Visualization Output Location =====
+    # This path is RELATIVE to the main output directory structure!
+    # Actual location will be:
+    #   [PostProcessing.volume_averages.output_directory]/[basename]/[floc]
+    #
+    # Example: With output_directory = "./results", basename = "test", floc = "viz/":
+    #   Actual path: ./results/test/viz/
+    #
+    # Default "visualizations/" means files go to:
+    #   [output_directory]/[basename]/visualizations/
+    #
+    # Note: This is different from volume averages which go directly in:
+    #   [output_directory]/[basename]/
+    floc = "visualizations/"
+
+# =====================================
+# POST-PROCESSING OPTIONS  
+# =====================================
+# Analysis and data extraction from your simulation
+
+[PostProcessing]
+    # ===== Volume Averaging =====
+    # Computes average quantities over the entire domain or by material
+    # Useful for: stress-strain curves, homogenized properties
+    [PostProcessing.volume_averages]
+        # Master switch for volume averaging
+        enabled = true
+        
+        # Which quantities to average:
+        # Each creates a separate output file with time history
+        
+        # Stress tensor (6 components: σxx, σyy, σzz, σxy, σyz, σxz)
+        stress = true
+        
+        # Deformation gradient tensor F (9 components)
+        # F relates current to reference configuration
+        def_grad = true
+        
+        # Euler strain tensor (6 components)
+        # Sometimes referred to as "true strain" or "logarithmic strain" in the 1D sense
+        # Note: "logarithmic strain" is a completely different measure when we move to 3D tensors
+        euler_strain = true
+        
+        # Integrated plastic work across entire volume
+        # Note: this is the only quantity that is the integrated quantity over the
+        # volume rather than a volume average value
+        # Useful for finding equivalent yield points across multiple
+        # loading directions
+        plastic_work = true
+
+        # Equivalent plastic strain (scalar value)
+        # Single value representing accumulated plastic deformation
+        # Common measures: von Mises equivalent strain
+        # Useful for: failure prediction, hardening evolution
+        # Only available for ExaCMech models
+        eq_pl_strain = false
+
+        # Elastic strain tensor (6 components)
+        # Only available for ExaCMech models
+        elastic_strain = false
+        
+        # How often to compute averages
+        # Must be multiple of visualization output_frequency
+        output_frequency = 1
+        
+        # ===== OUTPUT DIRECTORY STRUCTURE =====
+        # This setting determines the base directory for ALL simulation outputs
+        # The actual output structure will be:
+        #   [output_directory]/[basename]/                    <- Main simulation folder
+        #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
+        #   [output_directory]/[basename]/visualizations/    <- Visualization files
+        #   [output_directory]/[basename]/restart/            <- Restart files (if enabled)
+        # 
+        # Example: If output_directory = "./results" and basename = "tensile_test":
+        #   ./results/tensile_test/                          <- All outputs go here
+        #   ./results/tensile_test/avg_stress_global.txt     <- Note: filename NOT affected by basename
+        #   ./results/tensile_test/avg_stress_region_aluminum_alloy_1.txt
+        #   ./results/tensile_test/visualizations/solution_000010.vtu
+        #
+        # IMPORTANT: The basename only affects the subdirectory name, NOT the output filenames
+        # The actual filenames are controlled by the *_fname options below
+        output_directory = "./results/"
+        
+        # ===== MULTI-MATERIAL OUTPUT FILES =====
+        # For simulations with multiple materials, EACH quantity generates:
+        # 1. A global average file: avg_[quantity]_global.txt
+        #    - Contains volume-weighted average over ENTIRE domain
+        #    - Useful for overall material response
+        #
+        # 2. Per-material files: avg_[quantity]_region_[material_name]_[region_id].txt
+        #    - Contains average over that material region only
+        #    - Useful for individual material behavior
+        #
+        # Example with two materials (aluminum and polymer):
+        #   avg_stress_global.txt                    <- Combined response
+        #   avg_stress_region_aluminum_alloy_1.txt   <- Aluminum only (region 1)
+        #   avg_stress_region_custom_polymer_2.txt   <- Polymer only (region 2)
+        #
+        # File format (all files):
+        # Column 1: Time
+        # Column 2: Volume (total volume averaged over)
+        # Columns 3+: Component values
+        # Data is space-delimited, one row per time step
+        
+        # ===== Output File Names =====
+        # These define the base names for averaged quantity files
+        # These are optional but the base names are provided down below
+        # Actual filenames will have _global or _region_[name]_[id] appended
+        
+        # Stress components file
+        # Columns: time, volume, σxx, σyy, σzz, σxy, σyz, σxz
+        # Creates: avg_stress_global.txt, avg_stress_region_*.txt
+        avg_stress_fname = "avg_stress.txt"
+        
+        # Deformation gradient file  
+        # Columns: time, volume, F11, F12, F13, F21, F22, F23, F31, F32, F33
+        # Creates: avg_def_grad_global.txt, avg_def_grad_region_*.txt
+        avg_def_grad_fname = "avg_def_grad.txt"
+        
+        # Euler strain file
+        # Columns: time, volume, εxx, εyy, εzz, εxy, εyz, εxz
+        # Creates: avg_euler_strain_global.txt, avg_euler_strain_region_*.txt
+        avg_euler_strain_fname = "avg_euler_strain.txt"
+        
+        # Plastic work file
+        # Columns: time, volume, plastic_work
+        # Creates: avg_pl_work_global.txt, avg_pl_work_region_*.txt
+        avg_pl_work_fname = "avg_pl_work.txt"
+
+        # Equivalent plastic strain file
+        # Columns: time, volume, equivalent_plastic_strain
+        # Creates: avg_eq_pl_strain_global.txt, avg_eq_pl_strain_region_*.txt
+        avg_eq_pl_strain_fname = "avg_eq_pl_strain.txt"
+        
+        # Elastic strain file (ExaCMech only)
+        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
+        # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
+        avg_elastic_strain_fname = "avg_elastic_strain.txt"
+    
+    # ===== Crystal Orientation Analysis (Light-Up) =====
+    # Tracks which crystals are favorably oriented for slip across all crystal systems
+    # Supports cubic, hexagonal, trigonal, rhombohedral, tetragonal, orthorhombic, monoclinic, triclinic
+    # Useful for: texture evolution, identifying active grains, powder diffraction simulation
+    [[PostProcessing.light_up]]
+        # Enable this analysis
+        enabled = true
+        
+        # Which material to analyze (must match Materials.material_name)
+        material_name = "aluminum_alloy"
+
+        # Crystal system type - determines symmetry operations and lattice parameter requirements
+        # Supported values: 'CUBIC', 'HEXAGONAL', 'TRIGONAL', 'RHOMBOHEDRAL', 
+        #                   'TETRAGONAL', 'ORTHORHOMBIC', 'MONOCLINIC', 'TRICLINIC'
+        laue_type = 'CUBIC'
+        
+        # Crystal directions to monitor [h,k,l]
+        # These are Miller indices in crystal coordinates
+        # Examples: [1,1,1] = octahedral planes, [1,0,0] = cube faces, [1,1,0] = cube edges
+        # For hexagonal: [1,0,0] = basal, [0,0,1] = c-axis, [1,1,0] = prismatic
+        hkl_directions = [[1, 1, 1], [1, 0, 0], [1, 1, 0]]
+        
+        # Angular tolerance in radians
+        # Grains within this angle of target direction are considered "in-fiber"
+        # 0.0873 radians ≈ 5 degrees, 0.1745 radians ≈ 10 degrees
+        distance_tolerance = 0.0873
+        
+        # Sample direction in lab coordinates [x,y,z]
+        # Used as reference for orientation analysis and lattice strain calculations
+        # [0,0,1] = Z direction (typical loading direction)
+        # [1,0,0] = X direction, [0,1,0] = Y direction
+        sample_direction = [0.0, 0.0, 1.0]
+        
+        # Crystal lattice parameters - requirements vary by crystal system:
+        # CUBIC:          [a] (lattice parameter in Angstroms)
+        # HEXAGONAL:      [a, c] (basal and c-axis parameters in Angstroms)
+        # TRIGONAL:       [a, c] (basal and c-axis parameters in Angstroms)
+        # RHOMBOHEDRAL:   [a, alpha] (lattice parameter in Angstroms, angle in radians)
+        # TETRAGONAL:     [a, c] (basal and c-axis parameters in Angstroms)
+        # ORTHORHOMBIC:   [a, b, c] (three lattice parameters in Angstroms)
+        # MONOCLINIC:     [a, b, c, beta] (three lattice parameters in Angstroms, monoclinic angle in radians)
+        # TRICLINIC:      [a, b, c, alpha, beta, gamma] (three lattice parameters in Angstroms, three angles in radians)
+        lattice_parameters = [3.6]  # Cubic aluminum: a = 3.6 Angstroms
+        
+        # Base name for output files
+        # Creates files like: lattice_avg_directional_stiffness.txt, lattice_avg_dpeff.txt, lattice_avg_strains.txt...
+        # File naming automatically includes region number as well as quantity related to it
+        lattice_basename = "lattice_avg_"
+
+    # Example: Hexagonal crystal system (e.g., titanium, zinc)
+    # [[PostProcessing.light_up]]
+    #     enabled = true
+    #     material_name = "titanium_alloy"
+    #     laue_type = 'HEXAGONAL'
+    #     hkl_directions = [[1, 0, 0], [0, 0, 1], [1, 1, 0]]  # basal, c-axis, prismatic
+    #     distance_tolerance = 0.0873
+    #     sample_direction = [0.0, 0.0, 1.0]
+    #     lattice_parameters = [2.95, 4.68]  # a = 2.95 Å, c = 4.68 Å for Ti
+    #     lattice_basename = "ti_lattice_"
+
+    # Example: Rhombohedral crystal system (e.g., some ceramics, bismuth)
+    # [[PostProcessing.light_up]]
+    #     enabled = true
+    #     material_name = "rhombohedral_ceramic"
+    #     laue_type = 'RHOMBOHEDRAL'
+    #     hkl_directions = [[1, 1, 1], [1, 0, 0], [1, 1, 0]]
+    #     distance_tolerance = 0.0873
+    #     sample_direction = [0.0, 0.0, 1.0]
+    #     lattice_parameters = [4.75, 1.0472]  # a = 4.75 Å, alpha = 60° = 1.0472 radians
+    #     lattice_basename = "rhombo_lattice_"
+    
+    # ===== Field Projections =====
+    # Projects integration point data to nodes for visualization
+    [PostProcessing.projections]
+        # Field projection configuration for post-processing and visualization
+        # Format: "field_key" -> "Display Name in Visualization Tools"
+        # All fields listed below are available by default (except "all_state")
+        #
+        # =================================================================
+        # GEOMETRIC FIELDS
+        # Basic geometric properties computed from finite element mesh
+        # =================================================================
+        # "centroid"     -> "Centroid"           # Element centroid coordinates
+        # "volume"       -> "Volume"             # Element volume (or area in 2D)
+        #
+        # =================================================================
+        # STRESS FIELDS
+        # Fundamental stress measures for solid mechanics analysis
+        # =================================================================
+        # "cauchy"       -> "Cauchy Stress"      # Cauchy stress tensor (σ)
+        # "von_mises"    -> "Von Mises Stress"   # Von Mises equivalent stress (√(3/2 s:s))
+        # "hydro"        -> "Hydrostatic Stress" # Hydrostatic pressure (tr(σ)/3)
+        #
+        # =================================================================
+        # GENERAL STATE VARIABLES
+        # Material state quantities from constitutive models
+        # =================================================================
+        # "all_state"    -> "All State Variables" # Complete state variable vector
+        #                                         # (WARNING: Can be very large for complex models)
+        #
+        # =================================================================
+        # EXACMECH CRYSTAL PLASTICITY FIELDS
+        # Specialized quantities for crystalline material modeling
+        # Available when using ExaCMech constitutive models
+        # =================================================================
+        # "dpeff"          -> "Equivalent Plastic Strain Rate"  # √(2/3 ε̇ᵖ:ε̇ᵖ)
+        # "eps"            -> "Equivalent Plastic Strain"       # ∫√(2/3 ε̇ᵖ:ε̇ᵖ) dt
+        # "xtal_ori"       -> "Crystal Orientations"            # Crystal orientation tensors/quaternions
+        # "elastic_strain" -> "Elastic Strains"                 # Elastic strain tensor components in sample frame
+        # "hardness"       -> "Hardness"                        # Crystal hardness parameters
+        # "shear_rate"     -> "Shearing Rate"                   # Shear rate on slip systems
+        #
+        # =================================================================
+        # CONFIGURATION
+        # =================================================================
+        #
+        # Automatic field selection based on constitutive model
+        # Controls whether to automatically enable all fields compatible with your material model
+        auto_enable_compatible = true
+        #   true  -> Automatically project all fields supported by the active constitutive model
+        #            (Geometric fields + Stress fields + model-specific state variables)
+        #            Ignores 'enabled_projections' list when true
+        #            Recommended for exploratory analysis and model validation
+        #   false -> Use only fields specified in 'enabled_projections' list below
+        #            Recommended for production runs or when targeting specific outputs
+        #            Reduces computational overhead and output file size
+        #
+        # Manual field selection (only used when auto_enable_compatible = false)
+        # Specify which fields to project for visualization and analysis
+        # Leave empty ([]) to disable all projections
+        # Example configurations:
+        #   enabled_projections = ["cauchy", "von_mises", "eps"]            # Basic stress + plasticity
+        #   enabled_projections = ["volume", "cauchy", "dpeff", "xtal_ori"] # Geometry + crystal fields
+        #   enabled_projections = ["all_state"]                             # Everything (large output)
+        enabled_projections = []
+
+# =====================================
+# MESH SETTINGS
+# =====================================
+# Defines the geometry and discretization of your model
+
+[Mesh]
+    # Mesh source:
+    # - "file" = load from mesh file (most common)
+    # - "auto" = generate simple box mesh (for testing or bringing over voxelized data)
+    type = "file"
+    
+    # ===== File-Based Mesh =====
+    # Path to mesh file (MFEM format .mesh or .mesh.gz)
+    # Can use absolute or relative paths
+    floc = "../../data/my_model.mesh"
+    
+    # ===== Mesh Refinement =====
+    # Subdivide elements for higher accuracy
+    
+    # Serial refinement (before domain decomposition)
+    # 0 = no refinement, 1 = split each element into 8 (linear hex) (3D)
+    ref_ser = 0
+    
+    # Parallel refinement (after domain decomposition)  
+    # Use for better load balancing on many processors
+    ref_par = 0
+    
+    # ===== Polynomial Order =====
+    # Shape function order (higher = more accurate but expensive)
+    # 1 = linear elements (8-node hex, 4-node tet)
+    # 2 = quadratic elements (20-node hex, 10-node tet)
+    # 3+ = high-order elements (research use)
+    p_refinement = 1
+    
+    # ===== Periodic Boundaries =====
+    # Connect opposite faces for periodic simulations
+    # Used for: representative volume elements (RVEs)
+    # Currently ignored as we don't yet support PBCs yet
+    # periodicity = false
+    
+    # ===== Auto-Generated Mesh =====
+    # Creates a simple box mesh (useful for testing)
+    [Mesh.Auto]
+        # Physical dimensions [X_length, Y_length, Z_length]
+        mxyz = [1.0, 1.0, 1.0]
+        
+        # Number of elements [X_elements, Y_elements, Z_elements]
+        # Total elements = product of these numbers
+        nxyz = [10, 10, 10]

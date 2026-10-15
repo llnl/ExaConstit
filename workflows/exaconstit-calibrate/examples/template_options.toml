@@ -1,0 +1,170 @@
+# ExaConstit NSGA-III calibration template.
+#
+# This file uses the newer ExaConstit options layout from examples/options.toml,
+# but keeps only the pieces needed by examples/nsga3_calibration.py.
+#
+# The calibration driver renders this file once per simulation case.
+# Values written with double-percent placeholder syntax are filled
+# from SimCase.case_data in
+# nsga3_calibration.py before mechanics runs.
+
+Version = "0.9.0"
+
+# Keep this fixed at "options" so output files land under
+# results/options/, matching the reader paths configured by
+# nsga3_calibration.py.
+basename = "options"
+
+# Auto-generated meshes use this grain map. For file-based meshes this
+# information may already live in the mesh element attributes.
+grain_file = "%%grain_file%%"
+
+# =====================================
+# MATERIAL DEFINITIONS
+# =====================================
+
+[[Materials]]
+    material_name = "voce_fcc"
+    region_id = 1
+    temperature = %%temperature_k%%
+    mech_type = "exacmech"
+
+    [Materials.Properties]
+        floc = "%%properties_file%%"
+        num_props = 17
+
+    [Materials.State_Vars]
+        floc = "%%state_vars_file%%"
+        num_vars = 24
+
+    [Materials.Grain]
+        # Matches the legacy voce calibration setup.
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "%%ori_file%%"
+        grain_file = "%%grain_file%%"
+
+    [Materials.Model]
+        mech_type = "exacmech"
+        crystal_plasticity = true
+
+        [Materials.Model.ExaCMech]
+            # Old layout:
+            #   xtal_type = "fcc"
+            #   slip_type = "powervoce"
+            #
+            # New 0.9-style shortcut name:
+            #   evptn_FCC_A = FCC + linear Voce hardening + power-law slip.
+            shortcut = "evptn_FCC_A"
+
+# =====================================
+# BOUNDARY CONDITIONS
+# =====================================
+
+[BCs]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+    # This preserves the existing calibration behavior: the driver
+    # supplies per-experiment boundary values through %%essential_vals%%.
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 4]
+        essential_comps = [3, 3]
+        essential_vals = %%essential_vals%%
+
+    # Keep the newer experimental monotonic deformation helper off by
+    # default. The calibration example controls loading explicitly via
+    # velocity_bcs above.
+    expt_mono_def_flag = false
+
+# =====================================
+# TIME STEPPING CONTROL
+# =====================================
+
+[Time]
+    time_type = "auto"
+
+    [Time.Auto]
+        dt_start = %%dt_min%%
+        dt_min = %%dt_min%%
+        dt_max = %%dt_max%%
+        dt_scale = %%dt_scale%%
+        t_final = %%t_final%%
+
+# =====================================
+# SOLVER SETTINGS
+# =====================================
+
+[Solvers]
+    assembly = "EA"
+    rtmodel = "CPU"
+    integ_model = "FULL"
+
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+        preconditioner = "JACOBI"
+        print_level = 0
+
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+        nl_solver = "NR"
+
+# =====================================
+# VISUALIZATION OUTPUT
+# =====================================
+
+[Visualizations]
+    visit = false
+    paraview = false
+    adios2 = false
+    output_frequency = 1
+    floc = "visualizations/"
+
+# =====================================
+# POST-PROCESSING OPTIONS
+# =====================================
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        def_grad = true
+        euler_strain = true
+        plastic_work = true
+        eq_pl_strain = true
+        elastic_strain = true
+        output_frequency = 1
+        output_directory = "./results/"
+
+        avg_stress_fname = "avg_stress.txt"
+        avg_def_grad_fname = "avg_def_grad.txt"
+        avg_euler_strain_fname = "avg_euler_strain.txt"
+        avg_pl_work_fname = "avg_pl_work.txt"
+        avg_eq_pl_strain_fname = "avg_eq_pl_strain.txt"
+        avg_elastic_strain_fname = "avg_elastic_strain.txt"
+
+    [PostProcessing.projections]
+        auto_enable_compatible = false
+        enabled_projections = []
+
+# =====================================
+# MESH SETTINGS
+# =====================================
+
+[Mesh]
+    type = "auto"
+    ref_ser = 1
+    ref_par = 0
+    p_refinement = %%p_refinement%%
+
+    [Mesh.Auto]
+        mxyz = %%mesh_lengths%%
+        nxyz = %%mesh_cuts%%

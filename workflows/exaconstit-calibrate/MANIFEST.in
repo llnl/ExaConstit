@@ -1,0 +1,14 @@
+# Extra files to include in the sdist. The wheel is unaffected
+# (wheel contents come from setuptools.packages.find + package_data).
+#
+# These files matter to people installing from source but not to
+# people installing from the wheel:
+# - examples/ is the runnable side-by-side port of the pre-refactor
+#   script. Users pulling from source want it; wheel users will
+#   typically read it on GitHub instead.
+# - RELEASING.md is only useful to maintainers cutting new releases.
+
+recursive-include examples *.py *.md
+include RELEASING.md
+include README.md
+include LICENSE
