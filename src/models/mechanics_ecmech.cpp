@@ -548,6 +548,44 @@ void ExaCMechModel::ModelSetup(const int nqpts,
                                  vel_grad_array_data,
                                  local2global_ptr);
 
+    // B-bar integrator: the material gets the same volume-averaged kinematics that Bbar
+    // applies in the residual and tangent (shared implementation in
+    // utilities/mechanics_kernels.hpp): Lbar = L + (tr_bar - tr L)/3 I in every element, so
+    // pressure-dependent behavior (porosity, damage) sees an element-constant dilatation
+    // rate. Only the diagonal of L changes: the deviatoric rate and the spin are untouched.
+    if (m_sim_state->GetOptions().solvers.integ_model == IntegrationModel::BBAR) {
+        const auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
+        const mfem::FiniteElement& fe = *fe_space->GetFE(0);
+        const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(),
+                                                             2 * fe.GetOrder() + 1);
+        MFEM_VERIFY(ir.GetNPoints() == nqpts,
+                    "B-bar velocity gradient: the integration rule differs from the model's");
+        const int bbar_size = 3 * nnodes * local_nelems;
+        if (!bbar_shape_grads) {
+            bbar_shape_grads = std::make_unique<mfem::Vector>(bbar_size,
+                                                              mfem::Device::GetMemoryType());
+            bbar_shape_grads->UseDevice(true);
+        } else if (bbar_shape_grads->Size() != bbar_size) {
+            bbar_shape_grads->SetSize(bbar_size, mfem::Device::GetMemoryType());
+        }
+        double* bbar_data = bbar_shape_grads->Write();
+        exaconstit::kernel::ElementAveragedShapeGradients(nqpts,
+                                                          local_nelems,
+                                                          nnodes,
+                                                          jacobian_array,
+                                                          loc_grad_array,
+                                                          ir.GetWeights().Read(),
+                                                          bbar_data,
+                                                          local2global_ptr);
+        exaconstit::kernel::ApplyBBarVelocityGradient(nqpts,
+                                                      local_nelems,
+                                                      nnodes,
+                                                      bbar_data,
+                                                      vel_array,
+                                                      vel_grad_array_data,
+                                                      local2global_ptr);
+    }
+
     kernel_setup(npts,
                  nstatev,
                  dt,

@@ -3,6 +3,7 @@
 #include "fem_operators/mechanics_integrators.hpp"
 
 #include "utilities/assembly_ops.hpp"
+#include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 
 #include "mfem.hpp"
@@ -1241,18 +1242,18 @@ void ICExaNLFIntegrator::AssembleElementVector(const mfem::FiniteElement& el,
         const mfem::IntegrationPoint& ip = irc->IntPoint(i);
         Ttr.SetIntPoint(&ip);
 
-        // compute Jacobian of the transformation
-        Jpt = Ttr.InverseJacobian(); // Jrt = dxi / dX
-
+        // Shared B-bar implementation (utilities/mechanics_kernels.hpp): the same element
+        // averages the PA/EA setup and the material models use.
         el.CalcDShape(ip, DSh);
-        Mult(DSh, Jpt, DS); // dN_a(xi) / dX = dN_a(xi)/dxi * dxi/dX
-        DS *= (Ttr.Weight() * ip.weight);
-        elem_deriv_shapes_loc += DS;
-
-        eVol += (Ttr.Weight() * ip.weight);
+        exaconstit::kernel::BBarAccumulateQpt(dof,
+                                              Ttr.Jacobian().GetData(),
+                                              DSh.GetData(),
+                                              ip.weight,
+                                              elem_deriv_shapes_loc.GetData(),
+                                              eVol);
     }
 
-    elem_deriv_shapes_loc *= (1.0 / eVol);
+    exaconstit::kernel::BBarFinalize(dof, eVol, elem_deriv_shapes_loc.GetData());
 
     double stress[6];
 
@@ -1326,18 +1327,18 @@ void ICExaNLFIntegrator::AssembleElementGrad(const mfem::FiniteElement& el,
         const mfem::IntegrationPoint& ip = irc->IntPoint(i);
         Ttr.SetIntPoint(&ip);
 
-        // compute Jacobian of the transformation
-        Jrt = Ttr.InverseJacobian(); // Jrt = dxi / dX
-
+        // Shared B-bar implementation (utilities/mechanics_kernels.hpp): the same element
+        // averages the PA/EA setup and the material models use.
         el.CalcDShape(ip, DSh);
-        Mult(DSh, Jrt, DS); // dN_a(xi) / dX = dN_a(xi)/dxi * dxi/dX
-        DS *= (Ttr.Weight() * ip.weight);
-        elem_deriv_shapes_loc += DS;
-
-        eVol += (Ttr.Weight() * ip.weight);
+        exaconstit::kernel::BBarAccumulateQpt(dof,
+                                              Ttr.Jacobian().GetData(),
+                                              DSh.GetData(),
+                                              ip.weight,
+                                              elem_deriv_shapes_loc.GetData(),
+                                              eVol);
     }
 
-    elem_deriv_shapes_loc *= (1.0 / eVol);
+    exaconstit::kernel::BBarFinalize(dof, eVol, elem_deriv_shapes_loc.GetData());
 
     for (int i = 0; i < ir->GetNPoints(); i++) {
         const mfem::IntegrationPoint& ip = ir->IntPoint(i);
@@ -2064,8 +2065,6 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
             elem_deriv_shapes.UseDevice();
         }
 
-        elem_deriv_shapes = 0.0;
-
         // geom->J really isn't going to work for us as of right now. We could just reorder it
         // to the version that we want it to be in instead...
         if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
@@ -2073,12 +2072,8 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
             jacobian.UseDevice(true);
         }
 
-        const int DIM2 = 2;
-        const int DIM3 = 3;
         const int DIM4 = 4;
         std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
 
         RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
                                                                      perm4);
@@ -2090,20 +2085,8 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
         RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
             geom->J.Read(), layout_geom);
 
-        RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                      perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
-            elem_deriv_shapes.ReadWrite(), layout_egrads);
-
-        // Transpose of the local gradient variable
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
-
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
         const int nqpts_ = nqpts;
         const int dim_ = dim;
-        const int nnodes_ = nnodes;
 
         mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
             for (int j = 0; j < nqpts_; j++) {
@@ -2115,70 +2098,10 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
             }
         });
 
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            double volume = 0.0;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    c_detJ = W[j_qpts];
-                    volume += c_detJ * detJ;
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knds = 0; knds < nnodes_; knds++) {
-                    elem_deriv_shapes_view(knds, 0, i_elems) += c_detJ *
-                                                                (Gt(knds, 0, j_qpts) * A(0, 0) +
-                                                                 Gt(knds, 1, j_qpts) * A(0, 1) +
-                                                                 Gt(knds, 2, j_qpts) * A(0, 2));
-
-                    elem_deriv_shapes_view(knds, 1, i_elems) += c_detJ *
-                                                                (Gt(knds, 0, j_qpts) * A(1, 0) +
-                                                                 Gt(knds, 1, j_qpts) * A(1, 1) +
-                                                                 Gt(knds, 2, j_qpts) * A(1, 2));
-
-                    elem_deriv_shapes_view(knds, 2, i_elems) += c_detJ *
-                                                                (Gt(knds, 0, j_qpts) * A(2, 0) +
-                                                                 Gt(knds, 1, j_qpts) * A(2, 1) +
-                                                                 Gt(knds, 2, j_qpts) * A(2, 2));
-                } // End of nnodes
-            } // End of nqpts
-
-            double ivol = 1.0 / volume;
-
-            for (int knds = 0; knds < nnodes_; knds++) {
-                elem_deriv_shapes_view(knds, 0, i_elems) *= ivol;
-                elem_deriv_shapes_view(knds, 1, i_elems) *= ivol;
-                elem_deriv_shapes_view(knds, 2, i_elems) *= ivol;
-            }
-        }); // End of mfem::MFEM_FORALL
+        // Element-averaged shape gradients with the shared B-bar implementation
+        // (utilities/mechanics_kernels.hpp), the same code the material models use.
+        exaconstit::kernel::ElementAveragedShapeGradients(
+            nqpts, nelems, nnodes, jacobian.Read(), grad.Read(), W, elem_deriv_shapes.Write());
 
     } // End of space dims if else
 }

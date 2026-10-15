@@ -77,6 +77,16 @@ protected:
     std::unique_ptr<mfem::Vector> eff_def_rate;
 
     /**
+     * @brief Element-averaged physical shape gradients for the B-bar velocity gradient
+     *
+     * @details Used only with IntegrationModel::BBAR: nnodes x 3 values per element of this
+     * region, filled each ModelSetup call by exaconstit::kernel::ElementAveragedShapeGradients
+     * and consumed by exaconstit::kernel::ApplyBBarVelocityGradient. Allocated on first use
+     * and resized only if the region's element count changes.
+     */
+    std::unique_ptr<mfem::Vector> bbar_shape_grads;
+
+    /**
      * @brief Mapping from variable names to their locations within the state variable vector
      *
      * @details This is ExaCMech-specific and helps locate variables within the large state vector.

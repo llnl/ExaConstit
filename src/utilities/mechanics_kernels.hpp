@@ -9,6 +9,8 @@
 
 #include "RAJA/RAJA.hpp"
 
+#include <cmath>
+
 /**
  * @brief ExaConstit computational kernels for finite element operations.
  *
@@ -895,6 +897,223 @@ double ComputeVolAvgTensorFromPartial(const mfem::expt::PartialQuadratureFunctio
     }
     return total_volume;
 }
+
+/**
+ * @name B-bar / F-bar kinematics shared by the B-bar integrator and the material models
+ *
+ * @details With the B-bar integrator (IntegrationModel::BBAR) the element residual is
+ * R_e = sum_q w_q det(J_q) Bbar_q^T sigma_q, where Bbar replaces the volumetric part of
+ * the strain-rate operator with its element average (Hughes 1980; Hughes, The Finite
+ * Element Method, Sec. 4.5.2):
+ *
+ *   element-averaged physical shape gradients:  bbar_a = (1/V) sum_q w_q det(J_q) grad N_a(x_q),
+ *                                               V = sum_q w_q det(J_q)
+ *   averaged divergence of the velocity:        tr_bar = sum_a bbar_a . v_a
+ *                                                      = (1/V) sum_q w_q det(J_q) div v(x_q)
+ *   B-bar velocity gradient at a point:         Lbar = L + (tr_bar - tr L)/3 I
+ *
+ * Bbar applied to the element velocities gives exactly sym(Lbar) (GenerateGradBarMatrix),
+ * and the B-bar tangent operator already linearizes with Lbar. For the stress at each
+ * point to come from the same kinematics, the material models receive Lbar (ExaCMech) or
+ * its deformation-gradient counterpart Fbar (UMAT); the residual int Bbar^T sigma(Lbar)
+ * and the tangent int Bbar^T C Bbar are then a consistent pair.
+ *
+ * These helpers are the single implementation of those quantities:
+ *  - BBarAccumulateQpt / BBarFinalize: bbar for one element. Called per element by the
+ *    B-bar integrator's full-assembly paths, and through ElementAveragedShapeGradients
+ *    by its partial/element-assembly setup and by the ExaCMech model.
+ *  - BBarTrace / BBarCorrectVelocityGradient: tr_bar and Lbar (ExaCMech, through
+ *    ApplyBBarVelocityGradient).
+ *  - FBarElement: Fbar = (Jbar / det F)^(1/3) F with Jbar the element's volume-averaged
+ *    det F, i.e. V_current / V_reference (UMAT). Its increment Fbar_end Fbar_beg^-1 has
+ *    the element-constant volume ratio V_end / V_beg, the time integral of tr_bar.
+ *
+ * Layouts (column-major; the same as mfem::DenseMatrix, the reordered geometric-factor
+ * Jacobians used by the integrators, and GradCalc):
+ *  - Jacobian at one point:            jac[i + 3 j]        = d x_i / d xi_j
+ *  - Reference shape derivatives:      dshape[a + nnodes m] = d N_a / d xi_m
+ *  - Averaged physical gradients:      bbar[a + nnodes k]  = d Nbar_a / d x_k
+ *  - Element velocities:               vel[a + nnodes k]   = v_k at node a
+ *  - Velocity gradient at one point:   vgrad[i + 3 j]      = d v_i / d x_j
+ *  - Deformation gradient at a point:  defgrad[i + 3 j]    = d x_i / d X_j
+ * All routines assume 3D (3x3 Jacobians).
+ * @{
+ */
+
+/**
+ * @brief Add one quadrature point's contribution to an element's averaged shape gradients.
+ *
+ * @param nnodes number of element nodes (dofs per component)
+ * @param jac Jacobian d x / d xi at the point, column-major 3x3
+ * @param dshape reference shape derivatives at the point, nnodes x 3 column-major
+ * @param weight quadrature weight w_q (without det J)
+ * @param[in,out] bbar_sum running sum of w_q det(J_q) grad N_a, nnodes x 3 column-major
+ * @param[in,out] volume running sum of w_q det(J_q)
+ *
+ * @details Uses det(J) grad N_a = adj(J)^T-contracted reference derivatives,
+ * det(J) dN_a/dx_k = sum_m dN_a/dxi_m adj(J)(m, k), so no inverse is formed.
+ * Initialize bbar_sum and volume to zero, call once per point, then BBarFinalize.
+ */
+MFEM_HOST_DEVICE inline void BBarAccumulateQpt(const int nnodes,
+                                               const double* jac,
+                                               const double* dshape,
+                                               const double weight,
+                                               double* bbar_sum,
+                                               double& volume) {
+    const double J11 = jac[0], J21 = jac[1], J31 = jac[2];
+    const double J12 = jac[3], J22 = jac[4], J32 = jac[5];
+    const double J13 = jac[6], J23 = jac[7], J33 = jac[8];
+    const double det_j = J11 * (J22 * J33 - J32 * J23) - J21 * (J12 * J33 - J32 * J13) +
+                         J31 * (J12 * J23 - J22 * J13);
+    // adj(J)(m, k), the transposed cofactor matrix
+    const double adj[3][3] = {
+        {J22 * J33 - J23 * J32, J13 * J32 - J12 * J33, J12 * J23 - J13 * J22},
+        {J23 * J31 - J21 * J33, J11 * J33 - J13 * J31, J13 * J21 - J11 * J23},
+        {J21 * J32 - J22 * J31, J12 * J31 - J11 * J32, J11 * J22 - J12 * J21}};
+    for (int a = 0; a < nnodes; ++a) {
+        const double dn0 = dshape[a];
+        const double dn1 = dshape[a + nnodes];
+        const double dn2 = dshape[a + 2 * nnodes];
+        for (int k = 0; k < 3; ++k) {
+            bbar_sum[a + nnodes * k] += weight *
+                                        (dn0 * adj[0][k] + dn1 * adj[1][k] + dn2 * adj[2][k]);
+        }
+    }
+    volume += weight * det_j;
+}
+
+/**
+ * @brief Turn the accumulated sums into element averages: bbar = bbar_sum / volume.
+ * @param nnodes number of element nodes
+ * @param volume element volume from BBarAccumulateQpt (must be positive)
+ * @param[in,out] bbar nnodes x 3 column-major
+ */
+MFEM_HOST_DEVICE inline void BBarFinalize(const int nnodes, const double volume, double* bbar) {
+    const double inv_volume = 1.0 / volume;
+    for (int i = 0; i < 3 * nnodes; ++i) {
+        bbar[i] *= inv_volume;
+    }
+}
+
+/**
+ * @brief Element-averaged velocity divergence, tr_bar = sum_a bbar_a . v_a.
+ * @param nnodes number of element nodes
+ * @param bbar element-averaged physical shape gradients, nnodes x 3 column-major
+ * @param vel element nodal velocities, nnodes x 3 column-major
+ * @return tr_bar, the same for every point of the element
+ */
+MFEM_HOST_DEVICE inline double BBarTrace(const int nnodes, const double* bbar, const double* vel) {
+    double tr_bar = 0.0;
+    for (int i = 0; i < 3 * nnodes; ++i) {
+        tr_bar += bbar[i] * vel[i];
+    }
+    return tr_bar;
+}
+
+/**
+ * @brief Replace the trace of a point's velocity gradient by the element average:
+ * Lbar = L + (tr_bar - tr L)/3 I.
+ * @param tr_bar element-averaged divergence from BBarTrace
+ * @param[in,out] vgrad velocity gradient at the point, column-major 3x3
+ * @details Only the diagonal changes, by the same amount: the deviatoric part of
+ * sym(L) and the spin skw(L) are unchanged.
+ */
+MFEM_HOST_DEVICE inline void BBarCorrectVelocityGradient(const double tr_bar, double* vgrad) {
+    const double shift = (tr_bar - (vgrad[0] + vgrad[4] + vgrad[8])) / 3.0;
+    vgrad[0] += shift;
+    vgrad[4] += shift;
+    vgrad[8] += shift;
+}
+
+/**
+ * @brief Volume-averaged F-bar for one element: F_q <- (Jbar / det F_q)^(1/3) F_q with
+ * Jbar = sum_q wdetj0_q det F_q / sum_q wdetj0_q.
+ *
+ * @param nqpts number of quadrature points of the element
+ * @param stride distance in doubles between consecutive points' deformation gradients (>= 9)
+ * @param wdetj0 w_q det(J_q) in the reference configuration of the deformation gradients
+ * @param[in,out] defgrad nqpts column-major 3x3 deformation gradients, point q at q * stride
+ *
+ * @details Jbar is V_current / V_reference of the element, so every det Fbar_q equals it and
+ * the isochoric part F / det(F)^(1/3) of each point is unchanged. Requires det F_q > 0.
+ */
+MFEM_HOST_DEVICE inline void
+FBarElement(const int nqpts, const int stride, const double* wdetj0, double* defgrad) {
+    double volume_ref = 0.0;
+    double volume_cur = 0.0;
+    for (int q = 0; q < nqpts; ++q) {
+        const double* f = defgrad + q * stride;
+        const double det_f = f[0] * (f[4] * f[8] - f[5] * f[7]) -
+                             f[1] * (f[3] * f[8] - f[5] * f[6]) +
+                             f[2] * (f[3] * f[7] - f[4] * f[6]);
+        volume_ref += wdetj0[q];
+        volume_cur += wdetj0[q] * det_f;
+    }
+    const double j_bar = volume_cur / volume_ref;
+    for (int q = 0; q < nqpts; ++q) {
+        double* f = defgrad + q * stride;
+        const double det_f = f[0] * (f[4] * f[8] - f[5] * f[7]) -
+                             f[1] * (f[3] * f[8] - f[5] * f[6]) +
+                             f[2] * (f[3] * f[7] - f[4] * f[6]);
+        const double scale = pow(j_bar / det_f, 1.0 / 3.0);
+        for (int i = 0; i < 9; ++i) {
+            f[i] *= scale;
+        }
+    }
+}
+
+/**
+ * @brief Element-averaged physical shape gradients bbar for a set of elements (B-bar).
+ *
+ * @param nqpts quadrature points per element
+ * @param nelems number of elements to process (local count when local2global is given)
+ * @param nnodes nodes per element
+ * @param jacobian_data Jacobians d x / d xi, layout (3, 3, nqpts, input elements), column-major:
+ *        element e, point q at e * 9 * nqpts + 9 * q (the layout GradCalc and the integrators use)
+ * @param loc_grad_data reference shape derivatives, layout (nnodes, 3, nqpts):
+ *        point q at q * 3 * nnodes
+ * @param weights quadrature weights w_q (nqpts values; device pointer when running on device)
+ * @param[out] bbar_data averaged gradients, layout (nnodes, 3, nelems): element e at e * 3 * nnodes
+ * @param local2global optional map from processed (local) element index to the input element
+ *        index used for jacobian_data; nullptr: identity
+ *
+ * @details One element per thread: BBarAccumulateQpt over the element's points, then
+ * BBarFinalize. Used by ICExaNLFIntegrator::AssemblePA and by ExaCMechModel::ModelSetup,
+ * so the integrator and the material model compute bbar with the same code.
+ */
+void ElementAveragedShapeGradients(const int nqpts,
+                                   const int nelems,
+                                   const int nnodes,
+                                   const double* jacobian_data,
+                                   const double* loc_grad_data,
+                                   const double* weights,
+                                   double* bbar_data,
+                                   const int* const local2global = nullptr);
+
+/**
+ * @brief Apply the B-bar trace correction Lbar = L + (tr_bar - tr L)/3 I to the velocity
+ * gradients of a set of elements.
+ *
+ * @param nqpts quadrature points per element
+ * @param nelems number of elements to process (local count when local2global is given)
+ * @param nnodes nodes per element
+ * @param bbar_data averaged gradients from ElementAveragedShapeGradients,
+ *        layout (nnodes, 3, nelems)
+ * @param vel_data element nodal velocities, layout (nnodes, 3, input elements): element e at
+ *        e * 3 * nnodes (the layout GradCalc reads)
+ * @param[in,out] vel_grad_data velocity gradients, layout (3, 3, nqpts, nelems): element e,
+ *        point q at e * 9 * nqpts + 9 * q (the layout GradCalc writes)
+ * @param local2global optional map from processed element index to the input element index
+ *        used for vel_data; nullptr: identity
+ */
+void ApplyBBarVelocityGradient(const int nqpts,
+                               const int nelems,
+                               const int nnodes,
+                               const double* bbar_data,
+                               const double* vel_data,
+                               double* vel_grad_data,
+                               const int* const local2global = nullptr);
+/** @} */
 
 } // namespace kernel
 } // namespace exaconstit
