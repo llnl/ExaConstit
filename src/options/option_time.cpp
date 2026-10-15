@@ -91,7 +91,24 @@ bool TimeOptions::CustomTimeOptions::load_custom_dt_values() {
     }
 }
 
-void TimeOptions::determine_time_type() {
+void TimeOptions::determine_time_type(const std::optional<TimeStepType>& requested_type) {
+    // An explicit time_type takes precedence over which sections are present. An unknown
+    // string has already been warned about and comes in as NOTYPE: fall back to the priority.
+    if (requested_type.has_value() && requested_type.value() != TimeStepType::NOTYPE) {
+        time_type = requested_type.value();
+        time_type_explicit = true;
+        if (time_type == TimeStepType::FIXED && !fixed_time.has_value()) {
+            fixed_time = FixedTimeOptions{};
+        } else if ((time_type == TimeStepType::AUTO && !auto_time.has_value()) ||
+                   (time_type == TimeStepType::CUSTOM && !custom_time.has_value())) {
+            const std::string section = (time_type == TimeStepType::AUTO) ? "Auto" : "Custom";
+            WARNING_0_OPT("Error: Time.time_type requests " + section +
+                          " time stepping but no [Time." + section + "] section was provided");
+        }
+        return;
+    }
+
+    time_type_explicit = false;
     if (custom_time.has_value()) {
         time_type = TimeStepType::CUSTOM;
     } else if (auto_time.has_value()) {
@@ -135,7 +152,11 @@ TimeOptions TimeOptions::from_toml(const toml::value& toml_input) {
     }
 
     // Determine which time stepping mode to use
-    options.determine_time_type();
+    std::optional<TimeStepType> requested_type;
+    if (toml_input.contains("time_type")) {
+        requested_type = string_to_time_step_type(toml::find<std::string>(toml_input, "time_type"));
+    }
+    options.determine_time_type(requested_type);
 
     return options;
 }

@@ -465,6 +465,12 @@ struct TimeOptions {
     TimeStepType time_type = TimeStepType::FIXED;
 
     /**
+     * @brief Whether time_type came from the time_type option (true) or from the
+     * Custom > Auto > Fixed section priority (false)
+     */
+    bool time_type_explicit = false;
+
+    /**
      * @brief Auto time stepping options
      */
     struct AutoTimeOptions {
@@ -572,9 +578,16 @@ struct TimeOptions {
     size_t restart_cycle = 0;
 
     /**
-     * @brief Determine which time stepping mode is active based on priority (Custom > Auto > Fixed)
+     * @brief Determine which time stepping mode is active
+     *
+     * @param requested_type Mode given by the time_type option, if any
+     *
+     * @details An explicit time_type wins regardless of which sections are present (Fixed
+     * falls back to default fixed options if [Time.Fixed] is missing). Otherwise, or if the
+     * time_type string was not recognized, the mode follows the priority Custom > Auto > Fixed
+     * based on which sections exist.
      */
-    void determine_time_type();
+    void determine_time_type(const std::optional<TimeStepType>& requested_type = std::nullopt);
 
     // Static conversion from TOML
     static TimeOptions from_toml(const toml::value& toml_input);

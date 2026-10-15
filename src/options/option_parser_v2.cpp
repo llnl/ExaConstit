@@ -297,38 +297,8 @@ void ExaOptions::parse_time_options(const toml::value& toml_input) {
         return;
     }
 
-    const auto time_section = toml::find(toml_input, "Time");
-
-    // Parse restart options
-    if (time_section.contains("restart")) {
-        time.restart = toml::find<bool>(time_section, "restart");
-    }
-
-    if (time_section.contains("restart_time")) {
-        time.restart_time = toml::find<double>(time_section, "restart_time");
-    }
-
-    if (time_section.contains("restart_cycle")) {
-        time.restart_cycle = toml::find<size_t>(time_section, "restart_cycle");
-    }
-
-    // Parse nested time stepping sections
-    if (time_section.contains("Auto")) {
-        time.auto_time = TimeOptions::AutoTimeOptions::from_toml(toml::find(time_section, "Auto"));
-    }
-
-    if (time_section.contains("Fixed")) {
-        time.fixed_time = TimeOptions::FixedTimeOptions::from_toml(
-            toml::find(time_section, "Fixed"));
-    }
-
-    if (time_section.contains("Custom")) {
-        time.custom_time = TimeOptions::CustomTimeOptions::from_toml(
-            toml::find(time_section, "Custom"));
-    }
-
-    // Determine which time stepping mode to use
-    time.determine_time_type();
+    // Same parsing (restart options, nested sections, time_type) as TimeOptions::from_toml
+    time = TimeOptions::from_toml(toml::find(toml_input, "Time"));
 }
 
 void ExaOptions::parse_solver_options(const toml::value& toml_input) {
@@ -795,19 +765,24 @@ void ExaOptions::print_mesh_options() const {
 void ExaOptions::print_time_options() const {
     std::cout << "\nTime Stepping Options:\n";
 
-    if (time.time_type == TimeStepType::FIXED) {
-        std::cout << "  Type: Fixed time stepping\n";
+    // Which mode was picked and how: an explicit time_type wins over the section priority
+    const char* selected_by = time.time_type_explicit
+                                  ? "set by time_type"
+                                  : "selected by section priority Custom > Auto > Fixed";
+
+    if (time.time_type == TimeStepType::FIXED && time.fixed_time.has_value()) {
+        std::cout << "  Type: Fixed time stepping (" << selected_by << ")\n";
         std::cout << "  Time step (dt): " << time.fixed_time->dt << "\n";
         std::cout << "  Final time: " << time.fixed_time->t_final << "\n";
-    } else if (time.time_type == TimeStepType::AUTO) {
-        std::cout << "  Type: Automatic time stepping\n";
+    } else if (time.time_type == TimeStepType::AUTO && time.auto_time.has_value()) {
+        std::cout << "  Type: Automatic time stepping (" << selected_by << ")\n";
         std::cout << "  Initial dt: " << time.auto_time->dt_start << "\n";
         std::cout << "  Minimum dt: " << time.auto_time->dt_min << "\n";
         std::cout << "  Maximum dt: " << time.auto_time->dt_max << "\n";
         std::cout << "  Scaling factor: " << time.auto_time->dt_scale << "\n";
         std::cout << "  Final time: " << time.auto_time->t_final << "\n";
-    } else if (time.time_type == TimeStepType::CUSTOM) {
-        std::cout << "  Type: Custom time stepping\n";
+    } else if (time.time_type == TimeStepType::CUSTOM && time.custom_time.has_value()) {
+        std::cout << "  Type: Custom time stepping (" << selected_by << ")\n";
         std::cout << "  Number of steps: " << time.custom_time->nsteps << "\n";
         std::cout << "  Custom dt file: " << time.custom_time->floc << "\n";
         if (!time.custom_time->dt_values.empty()) {
@@ -817,6 +792,8 @@ void ExaOptions::print_time_options() const {
                                          0.0)
                       << "\n";
         }
+    } else {
+        std::cout << "  Type: none (time_type has no matching [Time.*] section)\n";
     }
 
     if (time.restart) {

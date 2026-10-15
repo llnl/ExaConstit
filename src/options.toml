@@ -309,7 +309,8 @@ grain_file = "grains.txt"
     # - "custom" = user-defined time steps from file (most control)
     # - "auto" = adaptive time stepping (recommended for efficiency)
     # - "fixed" = constant time step (simplest)
-    # Time stepping priority (highest to lowest):
+    # time_type selects the method even when several sections are given below.
+    # If time_type is omitted, the priority (highest to lowest) is:
     # 1. Custom (if [Time.Custom] exists)
     # 2. Auto (if [Time.Auto] exists)
     # 3. Fixed (if [Time.Fixed] exists or as default)
