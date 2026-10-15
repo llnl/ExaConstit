@@ -333,21 +333,21 @@ bool SolverOptions::validate() {
     }
 
     if (rtmodel == RTModel::GPU && linear_solver.preconditioner != PreconditionerType::JACOBI) {
-        WARNING_0_OPT("Warning: Solver table did not provide a valid preconditioner option when "
+        WARNING_0_OPT("Solver table did not provide a valid preconditioner option when "
                       "using GPU rtmodel: `JACOBI` preconditioner is the only one that can be used "
                       "with `GPU` rtmodels");
-        WARNING_0_OPT("Warning: Updating the preconditioner value for you to `JACOBI`");
+        WARNING_0_OPT("Updating the preconditioner value for you to `JACOBI`");
         linear_solver.preconditioner = PreconditionerType::JACOBI;
     }
 
     if (assembly != AssemblyType::FULL &&
         linear_solver.preconditioner != PreconditionerType::JACOBI) {
-        WARNING_0_OPT("Warning: Solver table did not provide a valid preconditioner option when "
+        WARNING_0_OPT("Solver table did not provide a valid preconditioner option when "
                       "using either `EA` or `PA` assembly: `JACOBI` preconditioner is the only one "
                       "that can be used with those assembly options");
-        WARNING_0_OPT("Warning: This can be a result of using legacy decks which did not have this "
+        WARNING_0_OPT("This can be a result of using legacy decks which did not have this "
                       "field and if so just ignore this warning.");
-        WARNING_0_OPT("Warning: Updating the preconditioner value for you to `JACOBI`");
+        WARNING_0_OPT("Updating the preconditioner value for you to `JACOBI`");
         linear_solver.preconditioner = PreconditionerType::JACOBI;
     }
 

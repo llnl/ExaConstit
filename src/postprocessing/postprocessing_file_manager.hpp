@@ -2,6 +2,8 @@
 
 #include "options/option_parser_v2.hpp"
 
+#include "mfem.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -91,6 +93,9 @@ public:
      * @param append Whether to append to existing file
      * @param comm MPI communicator associated with a given region
      * @return Unique pointer to opened file stream
+     *
+     * Only called by the rank that writes the file (rank 0 of comm), so any problems are
+     * reported from that rank.
      */
     std::unique_ptr<std::ofstream>
     CreateOutputFile(const fs::path& filepath, bool append = true, MPI_Comm comm = MPI_COMM_WORLD);
@@ -468,10 +473,10 @@ inline bool PostProcessingFileManager::EnsureDirectoryExists(fs::path& output_di
         std::error_code ec;
         const bool created = fs::create_directories(output_dir, ec);
         if (ec) {
-            std::cerr << "Error: Failed to create output directory " << output_dir << ": "
-                      << ec.message() << std::endl;
+            MFEM_WARNING("Failed to create output directory " << output_dir << ": "
+                                                              << ec.message());
         } else if (!fs::is_directory(output_dir, ec)) {
-            std::cerr << "Error: Path exists but is not a directory: " << output_dir << std::endl;
+            MFEM_WARNING("Path exists but is not a directory: " << output_dir);
         } else {
             std::cout << (created ? "Creating output directory: " : "Using existing directory: ")
                       << output_dir << std::endl;
@@ -484,8 +489,7 @@ inline bool PostProcessingFileManager::EnsureDirectoryExists(fs::path& output_di
             std::ofstream test_stream(test_file);
             if (!test_stream.is_open()) {
                 success = false;
-                std::cerr << "Warning: Output directory is not writable: " << output_dir
-                          << std::endl;
+                MFEM_WARNING("Output directory is not writable: " << output_dir);
             } else {
                 test_stream.close();
                 fs::remove(test_file, ec);
@@ -508,10 +512,8 @@ inline bool PostProcessingFileManager::EnsureOutputDirectoryExists() {
     return success;
 }
 
-inline std::unique_ptr<std::ofstream>
-PostProcessingFileManager::CreateOutputFile(const fs::path& filepath, bool append, MPI_Comm comm) {
-    int rank;
-    MPI_Comm_rank(comm, &rank);
+inline std::unique_ptr<std::ofstream> PostProcessingFileManager::CreateOutputFile(
+    const fs::path& filepath, bool append, [[maybe_unused]] MPI_Comm comm) {
     try {
         // Note, this is only called by the rank that writes the file (e.g. rank 0 of a
         // region's communicator), so nothing in here may be collective. This previously
@@ -527,8 +529,7 @@ PostProcessingFileManager::CreateOutputFile(const fs::path& filepath, bool appen
             std::error_code ec;
             fs::create_directories(dir_path, ec);
             if (ec) {
-                std::cerr << "Warning: Failed to create directory " << dir_path << ": "
-                          << ec.message() << std::endl;
+                MFEM_WARNING("Failed to create directory " << dir_path << ": " << ec.message());
             }
         }
 
@@ -541,9 +542,7 @@ PostProcessingFileManager::CreateOutputFile(const fs::path& filepath, bool appen
         auto file = std::make_unique<std::ofstream>(resolved_path, mode);
 
         if (!file->is_open()) {
-            if (rank == 0) {
-                std::cerr << "Warning: Failed to open output file: " << resolved_path << std::endl;
-            }
+            MFEM_WARNING("Failed to open output file: " << resolved_path);
             return nullptr;
         }
         // Apply precision configuration
@@ -551,15 +550,10 @@ PostProcessingFileManager::CreateOutputFile(const fs::path& filepath, bool appen
         return file;
 
     } catch (const fs::filesystem_error& ex) {
-        if (rank == 0) {
-            std::cerr << "Filesystem error when creating file " << filepath << ": " << ex.what()
-                      << std::endl;
-        }
+        MFEM_WARNING("Filesystem error when creating file " << filepath << ": " << ex.what());
         return nullptr;
     } catch (const std::exception& ex) {
-        if (rank == 0) {
-            std::cerr << "Error when creating file " << filepath << ": " << ex.what() << std::endl;
-        }
+        MFEM_WARNING("Error when creating file " << filepath << ": " << ex.what());
         return nullptr;
     }
 }

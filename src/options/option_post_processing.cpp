@@ -130,7 +130,7 @@ LightUpOptions LightUpOptions::from_toml(const toml::value& toml_input) {
     if (toml_input.contains("material_name")) {
         options.material_name = toml::find<std::string>(toml_input, "material_name");
     } else {
-        WARNING_0_OPT("Warning: LightUp configuration missing 'material_name' field");
+        WARNING_0_OPT("LightUp configuration missing 'material_name' field");
     }
 
     if (toml_input.contains("light_up_hkl")) {
@@ -259,7 +259,7 @@ std::vector<LightUpOptions> LightUpOptions::from_toml_with_legacy(const toml::va
                     auto light_options = LightUpOptions::from_toml(light_config);
                     if (light_options.enabled) {
                         if (light_options.material_name.empty()) {
-                            WARNING_0_OPT("Warning: LightUp config in array missing material_name. "
+                            WARNING_0_OPT("LightUp config in array missing material_name. "
                                           "Skipping.");
                             continue;
                         }

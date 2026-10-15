@@ -67,9 +67,7 @@ MaterialProperties MaterialProperties::from_toml(const toml::value& toml_input) 
         try {
             props.properties = load_vector_from_file(props.properties_file, props.num_props);
         } catch (const std::exception& e) {
-            std::ostringstream err;
-            err << "Warning: " << e.what();
-            WARNING_0_OPT(err.str());
+            WARNING_0_OPT(e.what());
         }
     }
     return props;
@@ -95,9 +93,7 @@ StateVariables StateVariables::from_toml(const toml::value& toml_input) {
         try {
             vars.initial_values = load_vector_from_file(vars.state_file, vars.num_vars);
         } catch (const std::exception& e) {
-            std::ostringstream err;
-            err << "Warning: " << e.what();
-            WARNING_0_OPT(err.str());
+            WARNING_0_OPT(e.what());
         }
     }
     return vars;

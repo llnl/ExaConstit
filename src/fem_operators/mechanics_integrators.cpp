@@ -5,6 +5,7 @@
 #include "utilities/assembly_ops.hpp"
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
+#include "utilities/unified_logger.hpp"
 
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
@@ -171,148 +172,144 @@ void ExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
     // return a pointer to beginning step stress. This is used for output visualization
     auto stress_end = m_sim_state->GetQuadratureFunction("cauchy_stress_end");
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        if (grad.Size() != (nqpts * dim * nnodes)) {
-            grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
+    const int dim = 3;
+
+    if (grad.Size() != (nqpts * dim * nnodes)) {
+        grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
+        {
+            mfem::DenseMatrix DSh;
+            const int offset = nnodes * dim;
+            double* qpts_dshape_data = grad.HostReadWrite();
+            for (int i = 0; i < nqpts; i++) {
+                const mfem::IntegrationPoint& ip = ir->IntPoint(i);
+                DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
+                el.CalcDShape(ip, DSh);
+            }
+        }
+        grad.UseDevice(true);
+    }
+
+    // geom->J really isn't going to work for us as of right now. We could just reorder it
+    // to the version that we want it to be in instead...
+    if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
+        jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        jacobian.UseDevice(true);
+    }
+
+    if (dmat.Size() != (dim * dim * nqpts * nelems)) {
+        dmat.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        dmat.UseDevice(true);
+    }
+
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
+                                                                  layout_jacob);
+
+    RAJA::Layout<DIM3> layout_stress = RAJA::make_permuted_layout({{2 * dim, nqpts, nelems}},
+                                                                  perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> S(stress_end->ReadWrite(),
+                                                                        layout_stress);
+
+    RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> D(dmat.ReadWrite(), layout_jacob);
+
+    RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(geom->J.Read(),
+                                                                                  layout_geom);
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+        for (int j = 0; j < nqpts_; j++) {
+            for (int k = 0; k < dim_; k++) {
+                for (int l = 0; l < dim_; l++) {
+                    J(l, k, j, i) = geom_j_view(j, l, k, i);
+                }
+            }
+        }
+    });
+
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points. adj is actually in row
+        // major memory order but if we set this to col. major than this view will act as the
+        // transpose of adj A which is what we want.
+        RAJA::View<const double, RAJA::Layout<DIM2>> A(&adj[0], dim_, dim_);
+        // RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0> > A(&adj[0],
+        // layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
             {
-                mfem::DenseMatrix DSh;
-                const int offset = nnodes * dim;
-                double* qpts_dshape_data = grad.HostReadWrite();
-                for (int i = 0; i < nqpts; i++) {
-                    const mfem::IntegrationPoint& ip = ir->IntPoint(i);
-                    DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
-                    el.CalcDShape(ip, DSh);
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+            }
+
+            D(0, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(0, 0) +
+                                       S(5, j_qpts, i_elems) * A(0, 1) +
+                                       S(4, j_qpts, i_elems) * A(0, 2);
+            D(1, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(1, 0) +
+                                       S(5, j_qpts, i_elems) * A(1, 1) +
+                                       S(4, j_qpts, i_elems) * A(1, 2);
+            D(2, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(2, 0) +
+                                       S(5, j_qpts, i_elems) * A(2, 1) +
+                                       S(4, j_qpts, i_elems) * A(2, 2);
+
+            D(0, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(0, 0) +
+                                       S(1, j_qpts, i_elems) * A(0, 1) +
+                                       S(3, j_qpts, i_elems) * A(0, 2);
+            D(1, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(1, 0) +
+                                       S(1, j_qpts, i_elems) * A(1, 1) +
+                                       S(3, j_qpts, i_elems) * A(1, 2);
+            D(2, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(2, 0) +
+                                       S(1, j_qpts, i_elems) * A(2, 1) +
+                                       S(3, j_qpts, i_elems) * A(2, 2);
+
+            D(0, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(0, 0) +
+                                       S(3, j_qpts, i_elems) * A(0, 1) +
+                                       S(2, j_qpts, i_elems) * A(0, 2);
+            D(1, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(1, 0) +
+                                       S(3, j_qpts, i_elems) * A(1, 1) +
+                                       S(2, j_qpts, i_elems) * A(1, 2);
+            D(2, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(2, 0) +
+                                       S(3, j_qpts, i_elems) * A(2, 1) +
+                                       S(2, j_qpts, i_elems) * A(2, 2);
+        } // End of doing J_{ij}\sigma_{jk} / nqpts loop
+    }); // End of elements
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            for (int i = 0; i < dim_; i++) {
+                for (int j = 0; j < dim_; j++) {
+                    D(j, i, j_qpts, i_elems) *= W[j_qpts];
                 }
             }
-            grad.UseDevice(true);
         }
-
-        // geom->J really isn't going to work for us as of right now. We could just reorder it
-        // to the version that we want it to be in instead...
-        if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
-            jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            jacobian.UseDevice(true);
-        }
-
-        if (dmat.Size() != (dim * dim * nqpts * nelems)) {
-            dmat.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            dmat.UseDevice(true);
-        }
-
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
-                                                                      layout_jacob);
-
-        RAJA::Layout<DIM3> layout_stress = RAJA::make_permuted_layout({{2 * dim, nqpts, nelems}},
-                                                                      perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> S(stress_end->ReadWrite(),
-                                                                            layout_stress);
-
-        RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> D(dmat.ReadWrite(),
-                                                                      layout_jacob);
-
-        RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
-                                                                    perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
-            geom->J.Read(), layout_geom);
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
-            for (int j = 0; j < nqpts_; j++) {
-                for (int k = 0; k < dim_; k++) {
-                    for (int l = 0; l < dim_; l++) {
-                        J(l, k, j, i) = geom_j_view(j, l, k, i);
-                    }
-                }
-            }
-        });
-
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points. adj is actually in row
-            // major memory order but if we set this to col. major than this view will act as the
-            // transpose of adj A which is what we want.
-            RAJA::View<const double, RAJA::Layout<DIM2>> A(&adj[0], dim_, dim_);
-            // RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0> > A(&adj[0],
-            // layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-
-                D(0, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(0, 0) +
-                                           S(5, j_qpts, i_elems) * A(0, 1) +
-                                           S(4, j_qpts, i_elems) * A(0, 2);
-                D(1, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(1, 0) +
-                                           S(5, j_qpts, i_elems) * A(1, 1) +
-                                           S(4, j_qpts, i_elems) * A(1, 2);
-                D(2, 0, j_qpts, i_elems) = S(0, j_qpts, i_elems) * A(2, 0) +
-                                           S(5, j_qpts, i_elems) * A(2, 1) +
-                                           S(4, j_qpts, i_elems) * A(2, 2);
-
-                D(0, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(0, 0) +
-                                           S(1, j_qpts, i_elems) * A(0, 1) +
-                                           S(3, j_qpts, i_elems) * A(0, 2);
-                D(1, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(1, 0) +
-                                           S(1, j_qpts, i_elems) * A(1, 1) +
-                                           S(3, j_qpts, i_elems) * A(1, 2);
-                D(2, 1, j_qpts, i_elems) = S(5, j_qpts, i_elems) * A(2, 0) +
-                                           S(1, j_qpts, i_elems) * A(2, 1) +
-                                           S(3, j_qpts, i_elems) * A(2, 2);
-
-                D(0, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(0, 0) +
-                                           S(3, j_qpts, i_elems) * A(0, 1) +
-                                           S(2, j_qpts, i_elems) * A(0, 2);
-                D(1, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(1, 0) +
-                                           S(3, j_qpts, i_elems) * A(1, 1) +
-                                           S(2, j_qpts, i_elems) * A(1, 2);
-                D(2, 2, j_qpts, i_elems) = S(4, j_qpts, i_elems) * A(2, 0) +
-                                           S(3, j_qpts, i_elems) * A(2, 1) +
-                                           S(2, j_qpts, i_elems) * A(2, 2);
-            } // End of doing J_{ij}\sigma_{jk} / nqpts loop
-        }); // End of elements
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                for (int i = 0; i < dim_; i++) {
-                    for (int j = 0; j < dim_; j++) {
-                        D(j, i, j_qpts, i_elems) *= W[j_qpts];
-                    }
-                }
-            }
-        });
-    } // End of if statement
+    });
 }
 
 // In the below function we'll be applying the below action on our material
@@ -343,208 +340,205 @@ void ExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     nelems = fes.GetNE();
     auto W = ir->GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        if (grad.Size() != (nqpts * dim * nnodes)) {
-            grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
-            {
-                mfem::DenseMatrix DSh;
-                const int offset = nnodes * dim;
-                double* qpts_dshape_data = grad.HostReadWrite();
-                for (int i = 0; i < nqpts; i++) {
-                    const mfem::IntegrationPoint& ip = ir->IntPoint(i);
-                    DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
-                    el.CalcDShape(ip, DSh);
-                }
+    const int dim = 3;
+
+    if (grad.Size() != (nqpts * dim * nnodes)) {
+        grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
+        {
+            mfem::DenseMatrix DSh;
+            const int offset = nnodes * dim;
+            double* qpts_dshape_data = grad.HostReadWrite();
+            for (int i = 0; i < nqpts; i++) {
+                const mfem::IntegrationPoint& ip = ir->IntPoint(i);
+                DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
+                el.CalcDShape(ip, DSh);
             }
-            grad.UseDevice(true);
         }
+        grad.UseDevice(true);
+    }
 
-        // geom->J really isn't going to work for us as of right now. We could just reorder it
-        // to the version that we want it to be in instead...
-        if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
-            jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            jacobian.UseDevice(true);
+    // geom->J really isn't going to work for us as of right now. We could just reorder it
+    // to the version that we want it to be in instead...
+    if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
+        jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        jacobian.UseDevice(true);
 
-            geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
+        geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
 
-            const int DIM4 = 4;
-            std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-
-            RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout(
-                {{dim, dim, nqpts, nelems}}, perm4);
-            RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
-                                                                          layout_jacob);
-
-            RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
-                                                                        perm4);
-            RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
-                geom->J.Read(), layout_geom);
-            const int nqpts_ = nqpts;
-            const int dim_ = dim;
-            mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
-                for (int j = 0; j < nqpts_; j++) {
-                    for (int k = 0; k < dim_; k++) {
-                        for (int l = 0; l < dim_; l++) {
-                            J(l, k, j, i) = geom_j_view(j, l, k, i);
-                        }
-                    }
-                }
-            });
-        }
-
-        if (pa_dmat.Size() != (dim * dim * dim * dim * nqpts * nelems)) {
-            pa_dmat.SetSize(dim * dim * dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            pa_dmat.UseDevice(true);
-        }
-
-        if (pa_mat.Size() != (dim * dim * dim * dim * nqpts * nelems)) {
-            pa_mat.SetSize(dim * dim * dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            pa_mat.UseDevice(true);
-        }
-
-        TransformMatGradTo4D(m_sim_state->GetQuadratureFunction("tangent_stiffness"), pa_mat);
-
-        pa_dmat = 0.0;
-
-        const int DIM2 = 2;
         const int DIM4 = 4;
-        const int DIM6 = 6;
-        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
         std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
-
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
-
-        RAJA::Layout<DIM6> layout_4Dtensor = RAJA::make_permuted_layout(
-            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(pa_mat.Read(),
-                                                                            layout_4Dtensor);
-        // Swapped over to row order since it makes sense in later applications...
-        // Should make C row order as well for PA operations
-        RAJA::View<double, RAJA::Layout<DIM6>> D(
-            pa_dmat.ReadWrite(), nelems, nqpts, dim, dim, dim, dim);
 
         RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
                                                                      perm4);
         RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
                                                                       layout_jacob);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
-
+        RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
+                                                                    perm4);
+        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
+            geom->J.Read(), layout_geom);
         const int nqpts_ = nqpts;
         const int dim_ = dim;
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    c_detJ = 1.0 / detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                // Unrolled part of the loops just so we wouldn't have so many nested ones.
-                // If we were to get really ambitious we could eliminate also the m indexed
-                // loop...
-                for (int n = 0; n < dim_; n++) {
-                    for (int m = 0; m < dim_; m++) {
-                        for (int l = 0; l < dim_; l++) {
-                            D(i_elems, j_qpts, 0, 0, l, n) +=
-                                (A(0, 0) * C(0, 0, l, m, j_qpts, i_elems) +
-                                 A(1, 0) * C(1, 0, l, m, j_qpts, i_elems) +
-                                 A(2, 0) * C(2, 0, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 0, 1, l, n) +=
-                                (A(0, 0) * C(0, 1, l, m, j_qpts, i_elems) +
-                                 A(1, 0) * C(1, 1, l, m, j_qpts, i_elems) +
-                                 A(2, 0) * C(2, 1, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 0, 2, l, n) +=
-                                (A(0, 0) * C(0, 2, l, m, j_qpts, i_elems) +
-                                 A(1, 0) * C(1, 2, l, m, j_qpts, i_elems) +
-                                 A(2, 0) * C(2, 2, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 1, 0, l, n) +=
-                                (A(0, 1) * C(0, 0, l, m, j_qpts, i_elems) +
-                                 A(1, 1) * C(1, 0, l, m, j_qpts, i_elems) +
-                                 A(2, 1) * C(2, 0, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 1, 1, l, n) +=
-                                (A(0, 1) * C(0, 1, l, m, j_qpts, i_elems) +
-                                 A(1, 1) * C(1, 1, l, m, j_qpts, i_elems) +
-                                 A(2, 1) * C(2, 1, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 1, 2, l, n) +=
-                                (A(0, 1) * C(0, 2, l, m, j_qpts, i_elems) +
-                                 A(1, 1) * C(1, 2, l, m, j_qpts, i_elems) +
-                                 A(2, 1) * C(2, 2, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 2, 0, l, n) +=
-                                (A(0, 2) * C(0, 0, l, m, j_qpts, i_elems) +
-                                 A(1, 2) * C(1, 0, l, m, j_qpts, i_elems) +
-                                 A(2, 2) * C(2, 0, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 2, 1, l, n) +=
-                                (A(0, 2) * C(0, 1, l, m, j_qpts, i_elems) +
-                                 A(1, 2) * C(1, 1, l, m, j_qpts, i_elems) +
-                                 A(2, 2) * C(2, 1, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                            D(i_elems, j_qpts, 2, 2, l, n) +=
-                                (A(0, 2) * C(0, 2, l, m, j_qpts, i_elems) +
-                                 A(1, 2) * C(1, 2, l, m, j_qpts, i_elems) +
-                                 A(2, 2) * C(2, 2, l, m, j_qpts, i_elems)) *
-                                A(m, n);
-                        }
-                    }
-                } // End of Dikln = adj(J)_{ji} C_{jklm} adj(J)_{mn} loop
-
-                // Unrolled part of the loops just so we wouldn't have so many nested ones.
-                for (int n = 0; n < dim_; n++) {
+        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+            for (int j = 0; j < nqpts_; j++) {
+                for (int k = 0; k < dim_; k++) {
                     for (int l = 0; l < dim_; l++) {
-                        D(i_elems, j_qpts, l, n, 0, 0) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 0, 1) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 0, 2) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 1, 0) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 1, 1) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 1, 2) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 2, 0) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 2, 1) *= c_detJ;
-                        D(i_elems, j_qpts, l, n, 2, 2) *= c_detJ;
+                        J(l, k, j, i) = geom_j_view(j, l, k, i);
                     }
-                } // End of D_{ijkl} *= 1/det(J) * w_{qpt} loop
-            } // End of quadrature loop
-        }); // End of Elements loop
-    } // End of else statement
+                }
+            }
+        });
+    }
+
+    if (pa_dmat.Size() != (dim * dim * dim * dim * nqpts * nelems)) {
+        pa_dmat.SetSize(dim * dim * dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        pa_dmat.UseDevice(true);
+    }
+
+    if (pa_mat.Size() != (dim * dim * dim * dim * nqpts * nelems)) {
+        pa_mat.SetSize(dim * dim * dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        pa_mat.UseDevice(true);
+    }
+
+    TransformMatGradTo4D(m_sim_state->GetQuadratureFunction("tangent_stiffness"), pa_mat);
+
+    pa_dmat = 0.0;
+
+    const int DIM2 = 2;
+    const int DIM4 = 4;
+    const int DIM6 = 6;
+    std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+
+    RAJA::Layout<DIM6> layout_4Dtensor = RAJA::make_permuted_layout(
+        {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(pa_mat.Read(),
+                                                                        layout_4Dtensor);
+    // Swapped over to row order since it makes sense in later applications...
+    // Should make C row order as well for PA operations
+    RAJA::View<double, RAJA::Layout<DIM6>> D(
+        pa_dmat.ReadWrite(), nelems, nqpts, dim, dim, dim, dim);
+
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
+                                                                  layout_jacob);
+
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                c_detJ = 1.0 / detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+            }
+            // Unrolled part of the loops just so we wouldn't have so many nested ones.
+            // If we were to get really ambitious we could eliminate also the m indexed
+            // loop...
+            for (int n = 0; n < dim_; n++) {
+                for (int m = 0; m < dim_; m++) {
+                    for (int l = 0; l < dim_; l++) {
+                        D(i_elems, j_qpts, 0, 0, l, n) +=
+                            (A(0, 0) * C(0, 0, l, m, j_qpts, i_elems) +
+                             A(1, 0) * C(1, 0, l, m, j_qpts, i_elems) +
+                             A(2, 0) * C(2, 0, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 0, 1, l, n) +=
+                            (A(0, 0) * C(0, 1, l, m, j_qpts, i_elems) +
+                             A(1, 0) * C(1, 1, l, m, j_qpts, i_elems) +
+                             A(2, 0) * C(2, 1, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 0, 2, l, n) +=
+                            (A(0, 0) * C(0, 2, l, m, j_qpts, i_elems) +
+                             A(1, 0) * C(1, 2, l, m, j_qpts, i_elems) +
+                             A(2, 0) * C(2, 2, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 1, 0, l, n) +=
+                            (A(0, 1) * C(0, 0, l, m, j_qpts, i_elems) +
+                             A(1, 1) * C(1, 0, l, m, j_qpts, i_elems) +
+                             A(2, 1) * C(2, 0, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 1, 1, l, n) +=
+                            (A(0, 1) * C(0, 1, l, m, j_qpts, i_elems) +
+                             A(1, 1) * C(1, 1, l, m, j_qpts, i_elems) +
+                             A(2, 1) * C(2, 1, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 1, 2, l, n) +=
+                            (A(0, 1) * C(0, 2, l, m, j_qpts, i_elems) +
+                             A(1, 1) * C(1, 2, l, m, j_qpts, i_elems) +
+                             A(2, 1) * C(2, 2, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 2, 0, l, n) +=
+                            (A(0, 2) * C(0, 0, l, m, j_qpts, i_elems) +
+                             A(1, 2) * C(1, 0, l, m, j_qpts, i_elems) +
+                             A(2, 2) * C(2, 0, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 2, 1, l, n) +=
+                            (A(0, 2) * C(0, 1, l, m, j_qpts, i_elems) +
+                             A(1, 2) * C(1, 1, l, m, j_qpts, i_elems) +
+                             A(2, 2) * C(2, 1, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                        D(i_elems, j_qpts, 2, 2, l, n) +=
+                            (A(0, 2) * C(0, 2, l, m, j_qpts, i_elems) +
+                             A(1, 2) * C(1, 2, l, m, j_qpts, i_elems) +
+                             A(2, 2) * C(2, 2, l, m, j_qpts, i_elems)) *
+                            A(m, n);
+                    }
+                }
+            } // End of Dikln = adj(J)_{ji} C_{jklm} adj(J)_{mn} loop
+
+            // Unrolled part of the loops just so we wouldn't have so many nested ones.
+            for (int n = 0; n < dim_; n++) {
+                for (int l = 0; l < dim_; l++) {
+                    D(i_elems, j_qpts, l, n, 0, 0) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 0, 1) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 0, 2) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 1, 0) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 1, 1) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 1, 2) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 2, 0) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 2, 1) *= c_detJ;
+                    D(i_elems, j_qpts, l, n, 2, 2) *= c_detJ;
+                }
+            } // End of D_{ijkl} *= 1/det(J) * w_{qpt} loop
+        } // End of quadrature loop
+    }); // End of Elements loop
 }
 
 // Here we're applying the following action operation using the assembled "D" 2nd order
@@ -552,45 +546,40 @@ void ExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
 // y_{ik} = \nabla_{ij}\phi^T_{\epsilon} D_{jk}
 void ExaNLFIntegrator::AddMultPA(const mfem::Vector& /*x*/, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("enlfi_amPAV");
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        // Swapped over to row order since it makes sense in later applications...
-        // Should make C row order as well for PA operations
-        RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                      perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> D(dmat.Read(),
-                                                                            layout_tensor);
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
-        // Transpose of the local gradient variable
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    const int dim = 3;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
 
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                for (int k = 0; k < dim_; k++) {
-                    for (int j = 0; j < dim_; j++) {
-                        for (int i = 0; i < nnodes_; i++) {
-                            Y(i, k, i_elems) += Gt(i, j, j_qpts) * D(j, k, j_qpts, i_elems);
-                        }
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    // Swapped over to row order since it makes sense in later applications...
+    // Should make C row order as well for PA operations
+    RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                  perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> D(dmat.Read(), layout_tensor);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    // Transpose of the local gradient variable
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
+
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            for (int k = 0; k < dim_; k++) {
+                for (int j = 0; j < dim_; j++) {
+                    for (int i = 0; i < nnodes_; i++) {
+                        Y(i, k, i_elems) += Gt(i, j, j_qpts) * D(j, k, j_qpts, i_elems);
                     }
-                } // End of the final action of Y_{ik} += Gt_{ij} T_{jk}
-            } // End of nQpts
-        }); // End of nelems
-    } // End of if statement
+                }
+            } // End of the final action of Y_{ik} += Gt_{ij} T_{jk}
+        } // End of nQpts
+    }); // End of nelems
 }
 
 // Here we're applying the following action operation using the assembled "D" 4th order
@@ -598,75 +587,71 @@ void ExaNLFIntegrator::AddMultPA(const mfem::Vector& /*x*/, mfem::Vector& y) con
 // y_{ik} = \nabla_{ij}\phi^T_{\epsilon} D_{jklm} \nabla_{mn}\phi_{\epsilon} x_{nl}
 void ExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("enlfi_amPAG");
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM6 = 6;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
-        // Swapped over to row order since it makes sense in later applications...
-        // Should make C row order as well for PA operations
-        RAJA::View<const double, RAJA::Layout<DIM6>> D(
-            pa_dmat.Read(), nelems, nqpts, dim, dim, dim, dim);
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
-        // Transpose of the local gradient variable
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    const int dim = 3;
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM6 = 6;
 
-        // View for our temporary 2d array
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                double T[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-                for (int i = 0; i < dim_; i++) {
-                    for (int j = 0; j < dim_; j++) {
-                        for (int k = 0; k < nnodes_; k++) {
-                            T[0] += D(i_elems, j_qpts, 0, 0, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[1] += D(i_elems, j_qpts, 1, 0, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[2] += D(i_elems, j_qpts, 2, 0, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[3] += D(i_elems, j_qpts, 0, 1, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[4] += D(i_elems, j_qpts, 1, 1, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[5] += D(i_elems, j_qpts, 2, 1, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[6] += D(i_elems, j_qpts, 0, 2, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[7] += D(i_elems, j_qpts, 1, 2, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                            T[8] += D(i_elems, j_qpts, 2, 2, i, j) * Gt(k, j, j_qpts) *
-                                    X(k, i, i_elems);
-                        }
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+    // Swapped over to row order since it makes sense in later applications...
+    // Should make C row order as well for PA operations
+    RAJA::View<const double, RAJA::Layout<DIM6>> D(
+        pa_dmat.Read(), nelems, nqpts, dim, dim, dim, dim);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    // Transpose of the local gradient variable
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
+
+    // View for our temporary 2d array
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            double T[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+            for (int i = 0; i < dim_; i++) {
+                for (int j = 0; j < dim_; j++) {
+                    for (int k = 0; k < nnodes_; k++) {
+                        T[0] += D(i_elems, j_qpts, 0, 0, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[1] += D(i_elems, j_qpts, 1, 0, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[2] += D(i_elems, j_qpts, 2, 0, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[3] += D(i_elems, j_qpts, 0, 1, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[4] += D(i_elems, j_qpts, 1, 1, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[5] += D(i_elems, j_qpts, 2, 1, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[6] += D(i_elems, j_qpts, 0, 2, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[7] += D(i_elems, j_qpts, 1, 2, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
+                        T[8] += D(i_elems, j_qpts, 2, 2, i, j) * Gt(k, j, j_qpts) *
+                                X(k, i, i_elems);
                     }
-                } // End of doing tensor contraction of D_{jkmo}G_{op}X_{pm}
+                }
+            } // End of doing tensor contraction of D_{jkmo}G_{op}X_{pm}
 
-                RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> Tview(&T[0],
-                                                                                        layout_adj);
-                for (int k = 0; k < dim_; k++) {
-                    for (int j = 0; j < dim_; j++) {
-                        for (int i = 0; i < nnodes_; i++) {
-                            Y(i, k, i_elems) += Gt(i, j, j_qpts) * Tview(j, k);
-                        }
+            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> Tview(&T[0],
+                                                                                    layout_adj);
+            for (int k = 0; k < dim_; k++) {
+                for (int j = 0; j < dim_; j++) {
+                    for (int i = 0; i < nnodes_; i++) {
+                        Y(i, k, i_elems) += Gt(i, j, j_qpts) * Tview(j, k);
                     }
-                } // End of the final action of Y_{ik} += Gt_{ij} T_{jk}
-            } // End of nQpts
-        }); // End of nelems
-    } // End of if statement
+                }
+            } // End of the final action of Y_{ik} += Gt_{ij} T_{jk}
+        } // End of nQpts
+    }); // End of nelems
 }
 
 // -----------------------------------------------------------------------------
@@ -699,80 +684,76 @@ void ExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) con
 // -----------------------------------------------------------------------------
 void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("enlfi_amTGPA");
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM3 = 3;
-        const int DIM6 = 6;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
+    const int dim = 3;
+    const int DIM3 = 3;
+    const int DIM6 = 6;
 
-        // D tensor from AssembleGradPA: D(elem, qpt, i, k, l, n)
-        // The leading dim being elem matches the ordering used in the forward kernel.
-        RAJA::Layout<DIM6> layout_tensor = RAJA::make_permuted_layout(
-            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> D(pa_dmat.Read(),
-                                                                            layout_tensor);
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
-        // Field variables: input/output E-vectors
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    // D tensor from AssembleGradPA: D(elem, qpt, i, k, l, n)
+    // The leading dim being elem matches the ordering used in the forward kernel.
+    RAJA::Layout<DIM6> layout_tensor = RAJA::make_permuted_layout(
+        {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> D(pa_dmat.Read(),
+                                                                        layout_tensor);
 
-        // Reference shape function derivatives: Gt(node, dim, qpt)
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    // Field variables: input/output E-vectors
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
+    // Reference shape function derivatives: Gt(node, dim, qpt)
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // Step 1: Compute velocity gradient at this quadrature point
-                //   Gx(i, k) = sum_a Gt(a, i, qpt) * X(a, k, elem)
-                double Gx[3][3];
-                for (int ii = 0; ii < dim_; ii++) {
-                    for (int kk = 0; kk < dim_; kk++) {
-                        Gx[ii][kk] = 0.0;
-                        for (int a = 0; a < nnodes_; a++) {
-                            Gx[ii][kk] += Gt(a, ii, j_qpts) * X(a, kk, i_elems);
-                        }
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // Step 1: Compute velocity gradient at this quadrature point
+            //   Gx(i, k) = sum_a Gt(a, i, qpt) * X(a, k, elem)
+            double Gx[3][3];
+            for (int ii = 0; ii < dim_; ii++) {
+                for (int kk = 0; kk < dim_; kk++) {
+                    Gx[ii][kk] = 0.0;
+                    for (int a = 0; a < nnodes_; a++) {
+                        Gx[ii][kk] += Gt(a, ii, j_qpts) * X(a, kk, i_elems);
                     }
                 }
+            }
 
-                // Step 2: Apply TRANSPOSED D contraction
-                //   T(l, n) = sum_{i,k} D(i, k, l, n, qpt, elem) * Gx(i, k)
-                // Compare to forward kernel:
-                //   T(i, k) = sum_{l,n} D(i, k, l, n, qpt, elem) * Gx(l, n)
-                double T[3][3];
-                for (int ll = 0; ll < dim_; ll++) {
-                    for (int nn = 0; nn < dim_; nn++) {
-                        T[ll][nn] = 0.0;
-                        for (int ii = 0; ii < dim_; ii++) {
-                            for (int kk = 0; kk < dim_; kk++) {
-                                T[ll][nn] += D(i_elems, j_qpts, ii, kk, ll, nn) * Gx[ii][kk];
-                            }
-                        }
-                    }
-                }
-
-                // Step 3: Apply test-function gradients (same as forward kernel)
-                //   Y(a, n) += sum_l Gt(a, l, qpt) * T(l, n)
+            // Step 2: Apply TRANSPOSED D contraction
+            //   T(l, n) = sum_{i,k} D(i, k, l, n, qpt, elem) * Gx(i, k)
+            // Compare to forward kernel:
+            //   T(i, k) = sum_{l,n} D(i, k, l, n, qpt, elem) * Gx(l, n)
+            double T[3][3];
+            for (int ll = 0; ll < dim_; ll++) {
                 for (int nn = 0; nn < dim_; nn++) {
-                    for (int ll = 0; ll < dim_; ll++) {
-                        for (int a = 0; a < nnodes_; a++) {
-                            Y(a, nn, i_elems) += Gt(a, ll, j_qpts) * T[ll][nn];
+                    T[ll][nn] = 0.0;
+                    for (int ii = 0; ii < dim_; ii++) {
+                        for (int kk = 0; kk < dim_; kk++) {
+                            T[ll][nn] += D(i_elems, j_qpts, ii, kk, ll, nn) * Gx[ii][kk];
                         }
                     }
                 }
-            } // End of nqpts
-        }); // End of nelems
-    } // End of else (3D path)
+            }
+
+            // Step 3: Apply test-function gradients (same as forward kernel)
+            //   Y(a, n) += sum_l Gt(a, l, qpt) * T(l, n)
+            for (int nn = 0; nn < dim_; nn++) {
+                for (int ll = 0; ll < dim_; ll++) {
+                    for (int a = 0; a < nnodes_; a++) {
+                        Y(a, nn, i_elems) += Gt(a, ll, j_qpts) * T[ll][nn];
+                    }
+                }
+            }
+        } // End of nqpts
+    }); // End of nelems
 }
 
 // This assembles the diagonal of our LHS which can be used as a preconditioner
@@ -783,125 +764,113 @@ void ExaNLFIntegrator::AssembleGradDiagonalPA(mfem::Vector& diag) const {
         m_sim_state->GetQuadratureFunction("tangent_stiffness")->GetSpaceShared()->GetIntRule(0);
     auto W = ir.GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
+    const int dim = 3;
 
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
 
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
 
-        RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
-            {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
-            m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
 
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(diag.ReadWrite(),
-                                                                      layout_field);
+    RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
+        {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
+        m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
 
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
-                                                                            layout_jacob);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(diag.ReadWrite(), layout_field);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
+                                                                        layout_jacob);
 
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
 
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    c_detJ = 1.0 / detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knodes = 0; knodes < nnodes_; knodes++) {
-                    const double bx = Gt(knodes, 0, j_qpts) * A(0, 0) +
-                                      Gt(knodes, 1, j_qpts) * A(0, 1) +
-                                      Gt(knodes, 2, j_qpts) * A(0, 2);
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-                    const double by = Gt(knodes, 0, j_qpts) * A(1, 0) +
-                                      Gt(knodes, 1, j_qpts) * A(1, 1) +
-                                      Gt(knodes, 2, j_qpts) * A(1, 2);
-
-                    const double bz = Gt(knodes, 0, j_qpts) * A(2, 0) +
-                                      Gt(knodes, 1, j_qpts) * A(2, 1) +
-                                      Gt(knodes, 2, j_qpts) * A(2, 2);
-
-                    Y(knodes, 0, i_elems) +=
-                        c_detJ *
-                        (bx * (bx * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
-                               bz * K(0, 4, j_qpts, i_elems)) +
-                         by * (bx * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
-                               bz * K(5, 4, j_qpts, i_elems)) +
-                         bz * (bx * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
-                               bz * K(4, 4, j_qpts, i_elems)));
-
-                    Y(knodes, 1, i_elems) +=
-                        c_detJ *
-                        (bx * (bx * K(5, 5, j_qpts, i_elems) + by * K(5, 1, j_qpts, i_elems) +
-                               bz * K(5, 3, j_qpts, i_elems)) +
-                         by * (bx * K(1, 5, j_qpts, i_elems) + by * K(1, 1, j_qpts, i_elems) +
-                               bz * K(1, 3, j_qpts, i_elems)) +
-                         bz * (bx * K(3, 5, j_qpts, i_elems) + by * K(3, 1, j_qpts, i_elems) +
-                               bz * K(3, 3, j_qpts, i_elems)));
-
-                    Y(knodes, 2, i_elems) +=
-                        c_detJ *
-                        (bx * (bx * K(4, 4, j_qpts, i_elems) + by * K(4, 3, j_qpts, i_elems) +
-                               bz * K(4, 2, j_qpts, i_elems)) +
-                         by * (bx * K(3, 4, j_qpts, i_elems) + by * K(3, 3, j_qpts, i_elems) +
-                               bz * K(3, 2, j_qpts, i_elems)) +
-                         bz * (bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems) +
-                               bz * K(2, 2, j_qpts, i_elems)));
-                }
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                c_detJ = 1.0 / detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
             }
-        });
-    }
+            for (int knodes = 0; knodes < nnodes_; knodes++) {
+                const double bx = Gt(knodes, 0, j_qpts) * A(0, 0) +
+                                  Gt(knodes, 1, j_qpts) * A(0, 1) + Gt(knodes, 2, j_qpts) * A(0, 2);
+
+                const double by = Gt(knodes, 0, j_qpts) * A(1, 0) +
+                                  Gt(knodes, 1, j_qpts) * A(1, 1) + Gt(knodes, 2, j_qpts) * A(1, 2);
+
+                const double bz = Gt(knodes, 0, j_qpts) * A(2, 0) +
+                                  Gt(knodes, 1, j_qpts) * A(2, 1) + Gt(knodes, 2, j_qpts) * A(2, 2);
+
+                Y(knodes, 0, i_elems) +=
+                    c_detJ * (bx * (bx * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                    bz * K(0, 4, j_qpts, i_elems)) +
+                              by * (bx * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                    bz * K(5, 4, j_qpts, i_elems)) +
+                              bz * (bx * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                    bz * K(4, 4, j_qpts, i_elems)));
+
+                Y(knodes, 1, i_elems) +=
+                    c_detJ * (bx * (bx * K(5, 5, j_qpts, i_elems) + by * K(5, 1, j_qpts, i_elems) +
+                                    bz * K(5, 3, j_qpts, i_elems)) +
+                              by * (bx * K(1, 5, j_qpts, i_elems) + by * K(1, 1, j_qpts, i_elems) +
+                                    bz * K(1, 3, j_qpts, i_elems)) +
+                              bz * (bx * K(3, 5, j_qpts, i_elems) + by * K(3, 1, j_qpts, i_elems) +
+                                    bz * K(3, 3, j_qpts, i_elems)));
+
+                Y(knodes, 2, i_elems) +=
+                    c_detJ * (bx * (bx * K(4, 4, j_qpts, i_elems) + by * K(4, 3, j_qpts, i_elems) +
+                                    bz * K(4, 2, j_qpts, i_elems)) +
+                              by * (bx * K(3, 4, j_qpts, i_elems) + by * K(3, 3, j_qpts, i_elems) +
+                                    bz * K(3, 2, j_qpts, i_elems)) +
+                              bz * (bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems) +
+                                    bz * K(2, 2, j_qpts, i_elems)));
+            }
+        }
+    });
 }
 
 /// Method defining element assembly.
@@ -925,263 +894,254 @@ void ExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::Vec
     nelems = fes.GetNE();
     auto W = ir->GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        if (grad.Size() != (nqpts * dim * nnodes)) {
-            grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
-            {
-                mfem::DenseMatrix DSh;
-                const int offset = nnodes * dim;
-                double* qpts_dshape_data = grad.HostReadWrite();
-                for (int i = 0; i < nqpts; i++) {
-                    const mfem::IntegrationPoint& ip = ir->IntPoint(i);
-                    DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
-                    el.CalcDShape(ip, DSh);
-                }
+    const int dim = 3;
+
+    if (grad.Size() != (nqpts * dim * nnodes)) {
+        grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
+        {
+            mfem::DenseMatrix DSh;
+            const int offset = nnodes * dim;
+            double* qpts_dshape_data = grad.HostReadWrite();
+            for (int i = 0; i < nqpts; i++) {
+                const mfem::IntegrationPoint& ip = ir->IntPoint(i);
+                DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
+                el.CalcDShape(ip, DSh);
             }
-            grad.UseDevice(true);
         }
+        grad.UseDevice(true);
+    }
 
-        // geom->J really isn't going to work for us as of right now. We could just reorder it
-        // to the version that we want it to be in instead...
-        if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
-            jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            jacobian.UseDevice(true);
+    // geom->J really isn't going to work for us as of right now. We could just reorder it
+    // to the version that we want it to be in instead...
+    if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
+        jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        jacobian.UseDevice(true);
 
-            geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
+        geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
 
-            const int DIM4 = 4;
-            std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-
-            RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout(
-                {{dim, dim, nqpts, nelems}}, perm4);
-            RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
-                                                                          layout_jacob);
-
-            RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
-                                                                        perm4);
-            RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
-                geom->J.Read(), layout_geom);
-            const int nqpts_ = nqpts;
-            const int dim_ = dim;
-            mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
-                for (int j = 0; j < nqpts_; j++) {
-                    for (int k = 0; k < dim_; k++) {
-                        for (int l = 0; l < dim_; l++) {
-                            J(l, k, j, i) = geom_j_view(j, l, k, i);
-                        }
-                    }
-                }
-            });
-        }
-
-        const int DIM2 = 2;
-        const int DIM3 = 3;
         const int DIM4 = 4;
-
         std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
-
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
-
-        RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
-            {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
-            m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
-
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
-            {{nnodes * dim, nnodes * dim, nelems}}, perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(),
-                                                                      layout_field);
 
         RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
                                                                      perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
-                                                                            layout_jacob);
+        RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
+                                                                      layout_jacob);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
-
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
-
+        RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
+                                                                    perm4);
+        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
+            geom->J.Read(), layout_geom);
         const int nqpts_ = nqpts;
         const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    c_detJ = 1.0 / detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knds = 0; knds < nnodes_; knds++) {
-                    const double bx = Gt(knds, 0, j_qpts) * A(0, 0) +
-                                      Gt(knds, 1, j_qpts) * A(0, 1) + Gt(knds, 2, j_qpts) * A(0, 2);
-
-                    const double by = Gt(knds, 0, j_qpts) * A(1, 0) +
-                                      Gt(knds, 1, j_qpts) * A(1, 1) + Gt(knds, 2, j_qpts) * A(1, 2);
-
-                    const double bz = Gt(knds, 0, j_qpts) * A(2, 0) +
-                                      Gt(knds, 1, j_qpts) * A(2, 1) + Gt(knds, 2, j_qpts) * A(2, 2);
-
-                    const double k11x = c_detJ * (bx * K(0, 0, j_qpts, i_elems) +
-                                                  by * K(0, 5, j_qpts, i_elems) +
-                                                  bz * K(0, 4, j_qpts, i_elems));
-                    const double k11y = c_detJ * (bx * K(5, 0, j_qpts, i_elems) +
-                                                  by * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 4, j_qpts, i_elems));
-                    const double k11z = c_detJ * (bx * K(4, 0, j_qpts, i_elems) +
-                                                  by * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 4, j_qpts, i_elems));
-
-                    const double k12x = c_detJ * (bx * K(0, 5, j_qpts, i_elems) +
-                                                  by * K(0, 1, j_qpts, i_elems) +
-                                                  bz * K(0, 3, j_qpts, i_elems));
-                    const double k12y = c_detJ * (bx * K(5, 5, j_qpts, i_elems) +
-                                                  by * K(5, 1, j_qpts, i_elems) +
-                                                  bz * K(5, 3, j_qpts, i_elems));
-                    const double k12z = c_detJ * (bx * K(4, 5, j_qpts, i_elems) +
-                                                  by * K(4, 1, j_qpts, i_elems) +
-                                                  bz * K(4, 3, j_qpts, i_elems));
-
-                    const double k13x = c_detJ * (bx * K(0, 4, j_qpts, i_elems) +
-                                                  by * K(0, 3, j_qpts, i_elems) +
-                                                  bz * K(0, 2, j_qpts, i_elems));
-                    const double k13y = c_detJ * (bx * K(5, 4, j_qpts, i_elems) +
-                                                  by * K(5, 3, j_qpts, i_elems) +
-                                                  bz * K(5, 2, j_qpts, i_elems));
-                    const double k13z = c_detJ * (bx * K(4, 4, j_qpts, i_elems) +
-                                                  by * K(4, 3, j_qpts, i_elems) +
-                                                  bz * K(4, 2, j_qpts, i_elems));
-
-                    const double k21x = c_detJ * (bx * K(5, 0, j_qpts, i_elems) +
-                                                  by * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 4, j_qpts, i_elems));
-                    const double k21y = c_detJ * (bx * K(1, 0, j_qpts, i_elems) +
-                                                  by * K(1, 5, j_qpts, i_elems) +
-                                                  bz * K(1, 4, j_qpts, i_elems));
-                    const double k21z = c_detJ * (bx * K(3, 0, j_qpts, i_elems) +
-                                                  by * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 4, j_qpts, i_elems));
-
-                    const double k22x = c_detJ * (bx * K(5, 5, j_qpts, i_elems) +
-                                                  by * K(5, 1, j_qpts, i_elems) +
-                                                  bz * K(5, 3, j_qpts, i_elems));
-                    const double k22y = c_detJ * (bx * K(1, 5, j_qpts, i_elems) +
-                                                  by * K(1, 1, j_qpts, i_elems) +
-                                                  bz * K(1, 3, j_qpts, i_elems));
-                    const double k22z = c_detJ * (bx * K(3, 5, j_qpts, i_elems) +
-                                                  by * K(3, 1, j_qpts, i_elems) +
-                                                  bz * K(3, 3, j_qpts, i_elems));
-
-                    const double k23x = c_detJ * (bx * K(5, 4, j_qpts, i_elems) +
-                                                  by * K(5, 3, j_qpts, i_elems) +
-                                                  bz * K(5, 2, j_qpts, i_elems));
-                    const double k23y = c_detJ * (bx * K(1, 4, j_qpts, i_elems) +
-                                                  by * K(1, 3, j_qpts, i_elems) +
-                                                  bz * K(1, 2, j_qpts, i_elems));
-                    const double k23z = c_detJ * (bx * K(3, 4, j_qpts, i_elems) +
-                                                  by * K(3, 3, j_qpts, i_elems) +
-                                                  bz * K(3, 2, j_qpts, i_elems));
-
-                    const double k31x = c_detJ * (bx * K(4, 0, j_qpts, i_elems) +
-                                                  by * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 4, j_qpts, i_elems));
-                    const double k31y = c_detJ * (bx * K(3, 0, j_qpts, i_elems) +
-                                                  by * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 4, j_qpts, i_elems));
-                    const double k31z = c_detJ * (bx * K(2, 0, j_qpts, i_elems) +
-                                                  by * K(2, 5, j_qpts, i_elems) +
-                                                  bz * K(2, 4, j_qpts, i_elems));
-
-                    const double k32x = c_detJ * (bx * K(4, 5, j_qpts, i_elems) +
-                                                  by * K(4, 1, j_qpts, i_elems) +
-                                                  bz * K(4, 3, j_qpts, i_elems));
-                    const double k32y = c_detJ * (bx * K(3, 5, j_qpts, i_elems) +
-                                                  by * K(3, 1, j_qpts, i_elems) +
-                                                  bz * K(3, 3, j_qpts, i_elems));
-                    const double k32z = c_detJ * (bx * K(2, 5, j_qpts, i_elems) +
-                                                  by * K(2, 1, j_qpts, i_elems) +
-                                                  bz * K(2, 3, j_qpts, i_elems));
-
-                    const double k33x = c_detJ * (bx * K(4, 4, j_qpts, i_elems) +
-                                                  by * K(4, 3, j_qpts, i_elems) +
-                                                  bz * K(4, 2, j_qpts, i_elems));
-                    const double k33y = c_detJ * (bx * K(3, 4, j_qpts, i_elems) +
-                                                  by * K(3, 3, j_qpts, i_elems) +
-                                                  bz * K(3, 2, j_qpts, i_elems));
-                    const double k33z = c_detJ * (bx * K(2, 4, j_qpts, i_elems) +
-                                                  by * K(2, 3, j_qpts, i_elems) +
-                                                  bz * K(2, 2, j_qpts, i_elems));
-
-                    for (int lnds = 0; lnds < nnodes_; lnds++) {
-                        const double gx = Gt(lnds, 0, j_qpts) * A(0, 0) +
-                                          Gt(lnds, 1, j_qpts) * A(0, 1) +
-                                          Gt(lnds, 2, j_qpts) * A(0, 2);
-
-                        const double gy = Gt(lnds, 0, j_qpts) * A(1, 0) +
-                                          Gt(lnds, 1, j_qpts) * A(1, 1) +
-                                          Gt(lnds, 2, j_qpts) * A(1, 2);
-
-                        const double gz = Gt(lnds, 0, j_qpts) * A(2, 0) +
-                                          Gt(lnds, 1, j_qpts) * A(2, 1) +
-                                          Gt(lnds, 2, j_qpts) * A(2, 2);
-
-                        E(lnds, knds, i_elems) += gx * k11x + gy * k11y + gz * k11z;
-                        E(lnds, knds + nnodes_, i_elems) += gx * k12x + gy * k12y + gz * k12z;
-                        E(lnds, knds + 2 * nnodes_, i_elems) += gx * k13x + gy * k13y + gz * k13z;
-
-                        E(lnds + nnodes_, knds, i_elems) += gx * k21x + gy * k21y + gz * k21z;
-                        E(lnds + nnodes_, knds + nnodes_, i_elems) += gx * k22x + gy * k22y +
-                                                                      gz * k22z;
-                        E(lnds + nnodes_, knds + 2 * nnodes_, i_elems) += gx * k23x + gy * k23y +
-                                                                          gz * k23z;
-
-                        E(lnds + 2 * nnodes_, knds, i_elems) += gx * k31x + gy * k31y + gz * k31z;
-                        E(lnds + 2 * nnodes_, knds + nnodes_, i_elems) += gx * k32x + gy * k32y +
-                                                                          gz * k32z;
-                        E(lnds + 2 * nnodes_, knds + 2 * nnodes_, i_elems) += gx * k33x +
-                                                                              gy * k33y + gz * k33z;
+        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+            for (int j = 0; j < nqpts_; j++) {
+                for (int k = 0; k < dim_; k++) {
+                    for (int l = 0; l < dim_; l++) {
+                        J(l, k, j, i) = geom_j_view(j, l, k, i);
                     }
                 }
             }
         });
     }
+
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
+
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+
+    RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
+        {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
+        m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
+
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
+        {{nnodes * dim, nnodes * dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(), layout_field);
+
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
+                                                                        layout_jacob);
+
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
+
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                c_detJ = 1.0 / detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+            }
+            for (int knds = 0; knds < nnodes_; knds++) {
+                const double bx = Gt(knds, 0, j_qpts) * A(0, 0) + Gt(knds, 1, j_qpts) * A(0, 1) +
+                                  Gt(knds, 2, j_qpts) * A(0, 2);
+
+                const double by = Gt(knds, 0, j_qpts) * A(1, 0) + Gt(knds, 1, j_qpts) * A(1, 1) +
+                                  Gt(knds, 2, j_qpts) * A(1, 2);
+
+                const double bz = Gt(knds, 0, j_qpts) * A(2, 0) + Gt(knds, 1, j_qpts) * A(2, 1) +
+                                  Gt(knds, 2, j_qpts) * A(2, 2);
+
+                const double k11x = c_detJ *
+                                    (bx * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 4, j_qpts, i_elems));
+                const double k11y = c_detJ *
+                                    (bx * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 4, j_qpts, i_elems));
+                const double k11z = c_detJ *
+                                    (bx * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 4, j_qpts, i_elems));
+
+                const double k12x = c_detJ *
+                                    (bx * K(0, 5, j_qpts, i_elems) + by * K(0, 1, j_qpts, i_elems) +
+                                     bz * K(0, 3, j_qpts, i_elems));
+                const double k12y = c_detJ *
+                                    (bx * K(5, 5, j_qpts, i_elems) + by * K(5, 1, j_qpts, i_elems) +
+                                     bz * K(5, 3, j_qpts, i_elems));
+                const double k12z = c_detJ *
+                                    (bx * K(4, 5, j_qpts, i_elems) + by * K(4, 1, j_qpts, i_elems) +
+                                     bz * K(4, 3, j_qpts, i_elems));
+
+                const double k13x = c_detJ *
+                                    (bx * K(0, 4, j_qpts, i_elems) + by * K(0, 3, j_qpts, i_elems) +
+                                     bz * K(0, 2, j_qpts, i_elems));
+                const double k13y = c_detJ *
+                                    (bx * K(5, 4, j_qpts, i_elems) + by * K(5, 3, j_qpts, i_elems) +
+                                     bz * K(5, 2, j_qpts, i_elems));
+                const double k13z = c_detJ *
+                                    (bx * K(4, 4, j_qpts, i_elems) + by * K(4, 3, j_qpts, i_elems) +
+                                     bz * K(4, 2, j_qpts, i_elems));
+
+                const double k21x = c_detJ *
+                                    (bx * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 4, j_qpts, i_elems));
+                const double k21y = c_detJ *
+                                    (bx * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 4, j_qpts, i_elems));
+                const double k21z = c_detJ *
+                                    (bx * K(3, 0, j_qpts, i_elems) + by * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 4, j_qpts, i_elems));
+
+                const double k22x = c_detJ *
+                                    (bx * K(5, 5, j_qpts, i_elems) + by * K(5, 1, j_qpts, i_elems) +
+                                     bz * K(5, 3, j_qpts, i_elems));
+                const double k22y = c_detJ *
+                                    (bx * K(1, 5, j_qpts, i_elems) + by * K(1, 1, j_qpts, i_elems) +
+                                     bz * K(1, 3, j_qpts, i_elems));
+                const double k22z = c_detJ *
+                                    (bx * K(3, 5, j_qpts, i_elems) + by * K(3, 1, j_qpts, i_elems) +
+                                     bz * K(3, 3, j_qpts, i_elems));
+
+                const double k23x = c_detJ *
+                                    (bx * K(5, 4, j_qpts, i_elems) + by * K(5, 3, j_qpts, i_elems) +
+                                     bz * K(5, 2, j_qpts, i_elems));
+                const double k23y = c_detJ *
+                                    (bx * K(1, 4, j_qpts, i_elems) + by * K(1, 3, j_qpts, i_elems) +
+                                     bz * K(1, 2, j_qpts, i_elems));
+                const double k23z = c_detJ *
+                                    (bx * K(3, 4, j_qpts, i_elems) + by * K(3, 3, j_qpts, i_elems) +
+                                     bz * K(3, 2, j_qpts, i_elems));
+
+                const double k31x = c_detJ *
+                                    (bx * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 4, j_qpts, i_elems));
+                const double k31y = c_detJ *
+                                    (bx * K(3, 0, j_qpts, i_elems) + by * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 4, j_qpts, i_elems));
+                const double k31z = c_detJ *
+                                    (bx * K(2, 0, j_qpts, i_elems) + by * K(2, 5, j_qpts, i_elems) +
+                                     bz * K(2, 4, j_qpts, i_elems));
+
+                const double k32x = c_detJ *
+                                    (bx * K(4, 5, j_qpts, i_elems) + by * K(4, 1, j_qpts, i_elems) +
+                                     bz * K(4, 3, j_qpts, i_elems));
+                const double k32y = c_detJ *
+                                    (bx * K(3, 5, j_qpts, i_elems) + by * K(3, 1, j_qpts, i_elems) +
+                                     bz * K(3, 3, j_qpts, i_elems));
+                const double k32z = c_detJ *
+                                    (bx * K(2, 5, j_qpts, i_elems) + by * K(2, 1, j_qpts, i_elems) +
+                                     bz * K(2, 3, j_qpts, i_elems));
+
+                const double k33x = c_detJ *
+                                    (bx * K(4, 4, j_qpts, i_elems) + by * K(4, 3, j_qpts, i_elems) +
+                                     bz * K(4, 2, j_qpts, i_elems));
+                const double k33y = c_detJ *
+                                    (bx * K(3, 4, j_qpts, i_elems) + by * K(3, 3, j_qpts, i_elems) +
+                                     bz * K(3, 2, j_qpts, i_elems));
+                const double k33z = c_detJ *
+                                    (bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems) +
+                                     bz * K(2, 2, j_qpts, i_elems));
+
+                for (int lnds = 0; lnds < nnodes_; lnds++) {
+                    const double gx = Gt(lnds, 0, j_qpts) * A(0, 0) +
+                                      Gt(lnds, 1, j_qpts) * A(0, 1) + Gt(lnds, 2, j_qpts) * A(0, 2);
+
+                    const double gy = Gt(lnds, 0, j_qpts) * A(1, 0) +
+                                      Gt(lnds, 1, j_qpts) * A(1, 1) + Gt(lnds, 2, j_qpts) * A(1, 2);
+
+                    const double gz = Gt(lnds, 0, j_qpts) * A(2, 0) +
+                                      Gt(lnds, 1, j_qpts) * A(2, 1) + Gt(lnds, 2, j_qpts) * A(2, 2);
+
+                    E(lnds, knds, i_elems) += gx * k11x + gy * k11y + gz * k11z;
+                    E(lnds, knds + nnodes_, i_elems) += gx * k12x + gy * k12y + gz * k12z;
+                    E(lnds, knds + 2 * nnodes_, i_elems) += gx * k13x + gy * k13y + gz * k13z;
+
+                    E(lnds + nnodes_, knds, i_elems) += gx * k21x + gy * k21y + gz * k21z;
+                    E(lnds + nnodes_, knds + nnodes_, i_elems) += gx * k22x + gy * k22y + gz * k22z;
+                    E(lnds + nnodes_, knds + 2 * nnodes_, i_elems) += gx * k23x + gy * k23y +
+                                                                      gz * k23z;
+
+                    E(lnds + 2 * nnodes_, knds, i_elems) += gx * k31x + gy * k31y + gz * k31z;
+                    E(lnds + 2 * nnodes_, knds + nnodes_, i_elems) += gx * k32x + gy * k32y +
+                                                                      gz * k32z;
+                    E(lnds + 2 * nnodes_, knds + 2 * nnodes_, i_elems) += gx * k33x + gy * k33y +
+                                                                          gz * k33z;
+                }
+            }
+        }
+    });
 }
 
 // Outside of the UMAT function calls this should be the function called
@@ -1394,9 +1354,7 @@ void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     nnodes = el.GetDof();
     nelems = fes.GetNE();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    }
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
     // Cache geometric factors (Jacobians at quadrature points)
     geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
@@ -1447,383 +1405,347 @@ void ICExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::V
     nelems = fes.GetNE();
     auto W = ir->GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    }
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-    else {
-        const int dim = 3;
+    const int dim = 3;
 
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
 
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
 
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
 
-        // Our field variables that are inputs and outputs
+    // Our field variables that are inputs and outputs
 
-        RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                      perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
-            elem_deriv_shapes.Read(), layout_egrads);
+    RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
+        elem_deriv_shapes.Read(), layout_egrads);
 
-        RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
-            {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
-            m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
+    RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
+        {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
+        m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
 
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
-            {{nnodes * dim, nnodes * dim, nelems}}, perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(),
-                                                                      layout_field);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
+        {{nnodes * dim, nnodes * dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(), layout_field);
 
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
-                                                                            layout_jacob);
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
+                                                                        layout_jacob);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
 
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        const double i3 = 1.0 / 3.0;
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            double idetJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    idetJ = 1.0 / detJ;
-                    c_detJ = detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knds = 0; knds < nnodes_; knds++) {
-                    const double bx = idetJ * (Gt(knds, 0, j_qpts) * A(0, 0) +
-                                               Gt(knds, 1, j_qpts) * A(0, 1) +
-                                               Gt(knds, 2, j_qpts) * A(0, 2));
+    const double i3 = 1.0 / 3.0;
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        double idetJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                idetJ = 1.0 / detJ;
+                c_detJ = detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+            }
+            for (int knds = 0; knds < nnodes_; knds++) {
+                const double bx = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(0, 0) + Gt(knds, 1, j_qpts) * A(0, 1) +
+                                   Gt(knds, 2, j_qpts) * A(0, 2));
 
-                    const double by = idetJ * (Gt(knds, 0, j_qpts) * A(1, 0) +
-                                               Gt(knds, 1, j_qpts) * A(1, 1) +
-                                               Gt(knds, 2, j_qpts) * A(1, 2));
+                const double by = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(1, 0) + Gt(knds, 1, j_qpts) * A(1, 1) +
+                                   Gt(knds, 2, j_qpts) * A(1, 2));
 
-                    const double bz = idetJ * (Gt(knds, 0, j_qpts) * A(2, 0) +
-                                               Gt(knds, 1, j_qpts) * A(2, 1) +
-                                               Gt(knds, 2, j_qpts) * A(2, 2));
-                    const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
-                    const double b5 = b4 + bx;
-                    const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
-                    const double b7 = b6 + by;
-                    const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
-                    const double b9 = b8 + bz;
+                const double bz = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(2, 0) + Gt(knds, 1, j_qpts) * A(2, 1) +
+                                   Gt(knds, 2, j_qpts) * A(2, 2));
+                const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
+                const double b5 = b4 + bx;
+                const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
+                const double b7 = b6 + by;
+                const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
+                const double b9 = b8 + bz;
 
-                    const double k11w =
-                        c_detJ * (b4 * K(1, 1, j_qpts, i_elems) + b4 * K(1, 2, j_qpts, i_elems) +
-                                  b5 * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
-                                  bz * K(1, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
-                                  b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
-                                  by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
+                const double k11w = c_detJ *
+                                    (b4 * K(1, 1, j_qpts, i_elems) + b4 * K(1, 2, j_qpts, i_elems) +
+                                     b5 * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
+                                     b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
+                                     by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
 
-                    const double k11x = c_detJ * (b4 * K(0, 1, j_qpts, i_elems) +
-                                                  b4 * K(0, 2, j_qpts, i_elems) +
-                                                  b5 * K(0, 0, j_qpts, i_elems) +
-                                                  by * K(0, 5, j_qpts, i_elems) +
-                                                  bz * K(0, 4, j_qpts, i_elems));
+                const double k11x = c_detJ *
+                                    (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
+                                     b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 4, j_qpts, i_elems));
 
-                    const double k11y = c_detJ * (b4 * K(5, 1, j_qpts, i_elems) +
-                                                  b4 * K(5, 2, j_qpts, i_elems) +
-                                                  b5 * K(5, 0, j_qpts, i_elems) +
-                                                  by * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 4, j_qpts, i_elems));
+                const double k11y = c_detJ *
+                                    (b4 * K(5, 1, j_qpts, i_elems) + b4 * K(5, 2, j_qpts, i_elems) +
+                                     b5 * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 4, j_qpts, i_elems));
 
-                    const double k11z = c_detJ * (b4 * K(4, 1, j_qpts, i_elems) +
-                                                  b4 * K(4, 2, j_qpts, i_elems) +
-                                                  b5 * K(4, 0, j_qpts, i_elems) +
-                                                  by * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 4, j_qpts, i_elems));
+                const double k11z = c_detJ *
+                                    (b4 * K(4, 1, j_qpts, i_elems) + b4 * K(4, 2, j_qpts, i_elems) +
+                                     b5 * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 4, j_qpts, i_elems));
 
-                    const double k12w =
-                        c_detJ * (b6 * K(1, 0, j_qpts, i_elems) + b6 * K(1, 2, j_qpts, i_elems) +
-                                  b7 * K(1, 1, j_qpts, i_elems) + bx * K(1, 5, j_qpts, i_elems) +
-                                  bz * K(1, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
-                                  b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
-                                  bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
+                const double k12w = c_detJ *
+                                    (b6 * K(1, 0, j_qpts, i_elems) + b6 * K(1, 2, j_qpts, i_elems) +
+                                     b7 * K(1, 1, j_qpts, i_elems) + bx * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
+                                     b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
+                                     bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
 
-                    const double k12x = c_detJ * (b6 * K(0, 0, j_qpts, i_elems) +
-                                                  b6 * K(0, 2, j_qpts, i_elems) +
-                                                  b7 * K(0, 1, j_qpts, i_elems) +
-                                                  bx * K(0, 5, j_qpts, i_elems) +
-                                                  bz * K(0, 3, j_qpts, i_elems));
+                const double k12x = c_detJ *
+                                    (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
+                                     b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 3, j_qpts, i_elems));
 
-                    const double k12y = c_detJ * (b6 * K(5, 0, j_qpts, i_elems) +
-                                                  b6 * K(5, 2, j_qpts, i_elems) +
-                                                  b7 * K(5, 1, j_qpts, i_elems) +
-                                                  bx * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 3, j_qpts, i_elems));
+                const double k12y = c_detJ *
+                                    (b6 * K(5, 0, j_qpts, i_elems) + b6 * K(5, 2, j_qpts, i_elems) +
+                                     b7 * K(5, 1, j_qpts, i_elems) + bx * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 3, j_qpts, i_elems));
 
-                    const double k12z = c_detJ * (b6 * K(4, 0, j_qpts, i_elems) +
-                                                  b6 * K(4, 2, j_qpts, i_elems) +
-                                                  b7 * K(4, 1, j_qpts, i_elems) +
-                                                  bx * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 3, j_qpts, i_elems));
+                const double k12z = c_detJ *
+                                    (b6 * K(4, 0, j_qpts, i_elems) + b6 * K(4, 2, j_qpts, i_elems) +
+                                     b7 * K(4, 1, j_qpts, i_elems) + bx * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 3, j_qpts, i_elems));
 
-                    const double k13w =
-                        c_detJ * (b8 * K(1, 0, j_qpts, i_elems) + b8 * K(1, 1, j_qpts, i_elems) +
-                                  b9 * K(1, 2, j_qpts, i_elems) + bx * K(1, 4, j_qpts, i_elems) +
-                                  by * K(1, 3, j_qpts, i_elems) + b8 * K(2, 0, j_qpts, i_elems) +
-                                  b8 * K(2, 1, j_qpts, i_elems) + b9 * K(2, 2, j_qpts, i_elems) +
-                                  bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems));
+                const double k13w = c_detJ *
+                                    (b8 * K(1, 0, j_qpts, i_elems) + b8 * K(1, 1, j_qpts, i_elems) +
+                                     b9 * K(1, 2, j_qpts, i_elems) + bx * K(1, 4, j_qpts, i_elems) +
+                                     by * K(1, 3, j_qpts, i_elems) + b8 * K(2, 0, j_qpts, i_elems) +
+                                     b8 * K(2, 1, j_qpts, i_elems) + b9 * K(2, 2, j_qpts, i_elems) +
+                                     bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems));
 
-                    const double k13x = c_detJ * (b8 * K(0, 0, j_qpts, i_elems) +
-                                                  b8 * K(0, 1, j_qpts, i_elems) +
-                                                  b9 * K(0, 2, j_qpts, i_elems) +
-                                                  bx * K(0, 4, j_qpts, i_elems) +
-                                                  by * K(0, 3, j_qpts, i_elems));
+                const double k13x = c_detJ *
+                                    (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
+                                     b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
+                                     by * K(0, 3, j_qpts, i_elems));
 
-                    const double k13y = c_detJ * (b8 * K(5, 0, j_qpts, i_elems) +
-                                                  b8 * K(5, 1, j_qpts, i_elems) +
-                                                  b9 * K(5, 2, j_qpts, i_elems) +
-                                                  bx * K(5, 4, j_qpts, i_elems) +
-                                                  by * K(5, 3, j_qpts, i_elems));
+                const double k13y = c_detJ *
+                                    (b8 * K(5, 0, j_qpts, i_elems) + b8 * K(5, 1, j_qpts, i_elems) +
+                                     b9 * K(5, 2, j_qpts, i_elems) + bx * K(5, 4, j_qpts, i_elems) +
+                                     by * K(5, 3, j_qpts, i_elems));
 
-                    const double k13z = c_detJ * (b8 * K(4, 0, j_qpts, i_elems) +
-                                                  b8 * K(4, 1, j_qpts, i_elems) +
-                                                  b9 * K(4, 2, j_qpts, i_elems) +
-                                                  bx * K(4, 4, j_qpts, i_elems) +
-                                                  by * K(4, 3, j_qpts, i_elems));
+                const double k13z = c_detJ *
+                                    (b8 * K(4, 0, j_qpts, i_elems) + b8 * K(4, 1, j_qpts, i_elems) +
+                                     b9 * K(4, 2, j_qpts, i_elems) + bx * K(4, 4, j_qpts, i_elems) +
+                                     by * K(4, 3, j_qpts, i_elems));
 
-                    const double k21w =
-                        c_detJ * (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
-                                  b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
-                                  bz * K(0, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
-                                  b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
-                                  by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
+                const double k21w = c_detJ *
+                                    (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
+                                     b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
+                                     b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
+                                     by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
 
-                    const double k21x = c_detJ * (b4 * K(1, 1, j_qpts, i_elems) +
-                                                  b4 * K(1, 2, j_qpts, i_elems) +
-                                                  b5 * K(1, 0, j_qpts, i_elems) +
-                                                  by * K(1, 5, j_qpts, i_elems) +
-                                                  bz * K(1, 4, j_qpts, i_elems));
+                const double k21x = c_detJ *
+                                    (b4 * K(1, 1, j_qpts, i_elems) + b4 * K(1, 2, j_qpts, i_elems) +
+                                     b5 * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 4, j_qpts, i_elems));
 
-                    const double k21y = c_detJ * (b4 * K(5, 1, j_qpts, i_elems) +
-                                                  b4 * K(5, 2, j_qpts, i_elems) +
-                                                  b5 * K(5, 0, j_qpts, i_elems) +
-                                                  by * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 4, j_qpts, i_elems));
+                const double k21y = c_detJ *
+                                    (b4 * K(5, 1, j_qpts, i_elems) + b4 * K(5, 2, j_qpts, i_elems) +
+                                     b5 * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 4, j_qpts, i_elems));
 
-                    const double k21z = c_detJ * (b4 * K(3, 1, j_qpts, i_elems) +
-                                                  b4 * K(3, 2, j_qpts, i_elems) +
-                                                  b5 * K(3, 0, j_qpts, i_elems) +
-                                                  by * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 4, j_qpts, i_elems));
+                const double k21z = c_detJ *
+                                    (b4 * K(3, 1, j_qpts, i_elems) + b4 * K(3, 2, j_qpts, i_elems) +
+                                     b5 * K(3, 0, j_qpts, i_elems) + by * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 4, j_qpts, i_elems));
 
-                    const double k22w =
-                        c_detJ * (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
-                                  b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
-                                  bz * K(0, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
-                                  b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
-                                  bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
+                const double k22w = c_detJ *
+                                    (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
+                                     b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
+                                     b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
+                                     bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
 
-                    const double k22x = c_detJ * (b6 * K(1, 0, j_qpts, i_elems) +
-                                                  b6 * K(1, 2, j_qpts, i_elems) +
-                                                  b7 * K(1, 1, j_qpts, i_elems) +
-                                                  bx * K(1, 5, j_qpts, i_elems) +
-                                                  bz * K(1, 3, j_qpts, i_elems));
+                const double k22x = c_detJ *
+                                    (b6 * K(1, 0, j_qpts, i_elems) + b6 * K(1, 2, j_qpts, i_elems) +
+                                     b7 * K(1, 1, j_qpts, i_elems) + bx * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 3, j_qpts, i_elems));
 
-                    const double k22y = c_detJ * (b6 * K(5, 0, j_qpts, i_elems) +
-                                                  b6 * K(5, 2, j_qpts, i_elems) +
-                                                  b7 * K(5, 1, j_qpts, i_elems) +
-                                                  bx * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 3, j_qpts, i_elems));
+                const double k22y = c_detJ *
+                                    (b6 * K(5, 0, j_qpts, i_elems) + b6 * K(5, 2, j_qpts, i_elems) +
+                                     b7 * K(5, 1, j_qpts, i_elems) + bx * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 3, j_qpts, i_elems));
 
-                    const double k22z = c_detJ * (b6 * K(3, 0, j_qpts, i_elems) +
-                                                  b6 * K(3, 2, j_qpts, i_elems) +
-                                                  b7 * K(3, 1, j_qpts, i_elems) +
-                                                  bx * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 3, j_qpts, i_elems));
+                const double k22z = c_detJ *
+                                    (b6 * K(3, 0, j_qpts, i_elems) + b6 * K(3, 2, j_qpts, i_elems) +
+                                     b7 * K(3, 1, j_qpts, i_elems) + bx * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 3, j_qpts, i_elems));
 
-                    const double k23w =
-                        c_detJ * (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
-                                  b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
-                                  by * K(0, 3, j_qpts, i_elems) + b8 * K(2, 0, j_qpts, i_elems) +
-                                  b8 * K(2, 1, j_qpts, i_elems) + b9 * K(2, 2, j_qpts, i_elems) +
-                                  bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems));
+                const double k23w = c_detJ *
+                                    (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
+                                     b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
+                                     by * K(0, 3, j_qpts, i_elems) + b8 * K(2, 0, j_qpts, i_elems) +
+                                     b8 * K(2, 1, j_qpts, i_elems) + b9 * K(2, 2, j_qpts, i_elems) +
+                                     bx * K(2, 4, j_qpts, i_elems) + by * K(2, 3, j_qpts, i_elems));
 
-                    const double k23x = c_detJ * (b8 * K(1, 0, j_qpts, i_elems) +
-                                                  b8 * K(1, 1, j_qpts, i_elems) +
-                                                  b9 * K(1, 2, j_qpts, i_elems) +
-                                                  bx * K(1, 4, j_qpts, i_elems) +
-                                                  by * K(1, 3, j_qpts, i_elems));
+                const double k23x = c_detJ *
+                                    (b8 * K(1, 0, j_qpts, i_elems) + b8 * K(1, 1, j_qpts, i_elems) +
+                                     b9 * K(1, 2, j_qpts, i_elems) + bx * K(1, 4, j_qpts, i_elems) +
+                                     by * K(1, 3, j_qpts, i_elems));
 
-                    const double k23y = c_detJ * (b8 * K(5, 0, j_qpts, i_elems) +
-                                                  b8 * K(5, 1, j_qpts, i_elems) +
-                                                  b9 * K(5, 2, j_qpts, i_elems) +
-                                                  bx * K(5, 4, j_qpts, i_elems) +
-                                                  by * K(5, 3, j_qpts, i_elems));
+                const double k23y = c_detJ *
+                                    (b8 * K(5, 0, j_qpts, i_elems) + b8 * K(5, 1, j_qpts, i_elems) +
+                                     b9 * K(5, 2, j_qpts, i_elems) + bx * K(5, 4, j_qpts, i_elems) +
+                                     by * K(5, 3, j_qpts, i_elems));
 
-                    const double k23z = c_detJ * (b8 * K(3, 0, j_qpts, i_elems) +
-                                                  b8 * K(3, 1, j_qpts, i_elems) +
-                                                  b9 * K(3, 2, j_qpts, i_elems) +
-                                                  bx * K(3, 4, j_qpts, i_elems) +
-                                                  by * K(3, 3, j_qpts, i_elems));
+                const double k23z = c_detJ *
+                                    (b8 * K(3, 0, j_qpts, i_elems) + b8 * K(3, 1, j_qpts, i_elems) +
+                                     b9 * K(3, 2, j_qpts, i_elems) + bx * K(3, 4, j_qpts, i_elems) +
+                                     by * K(3, 3, j_qpts, i_elems));
 
-                    const double k31w =
-                        c_detJ * (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
-                                  b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
-                                  bz * K(0, 4, j_qpts, i_elems) + b4 * K(1, 1, j_qpts, i_elems) +
-                                  b4 * K(1, 2, j_qpts, i_elems) + b5 * K(1, 0, j_qpts, i_elems) +
-                                  by * K(1, 5, j_qpts, i_elems) + bz * K(1, 4, j_qpts, i_elems));
+                const double k31w = c_detJ *
+                                    (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
+                                     b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 4, j_qpts, i_elems) + b4 * K(1, 1, j_qpts, i_elems) +
+                                     b4 * K(1, 2, j_qpts, i_elems) + b5 * K(1, 0, j_qpts, i_elems) +
+                                     by * K(1, 5, j_qpts, i_elems) + bz * K(1, 4, j_qpts, i_elems));
 
-                    const double k31x = c_detJ * (b4 * K(2, 1, j_qpts, i_elems) +
-                                                  b4 * K(2, 2, j_qpts, i_elems) +
-                                                  b5 * K(2, 0, j_qpts, i_elems) +
-                                                  by * K(2, 5, j_qpts, i_elems) +
-                                                  bz * K(2, 4, j_qpts, i_elems));
+                const double k31x = c_detJ *
+                                    (b4 * K(2, 1, j_qpts, i_elems) + b4 * K(2, 2, j_qpts, i_elems) +
+                                     b5 * K(2, 0, j_qpts, i_elems) + by * K(2, 5, j_qpts, i_elems) +
+                                     bz * K(2, 4, j_qpts, i_elems));
 
-                    const double k31y = c_detJ * (b4 * K(4, 1, j_qpts, i_elems) +
-                                                  b4 * K(4, 2, j_qpts, i_elems) +
-                                                  b5 * K(4, 0, j_qpts, i_elems) +
-                                                  by * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 4, j_qpts, i_elems));
+                const double k31y = c_detJ *
+                                    (b4 * K(4, 1, j_qpts, i_elems) + b4 * K(4, 2, j_qpts, i_elems) +
+                                     b5 * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 4, j_qpts, i_elems));
 
-                    const double k31z = c_detJ * (b4 * K(3, 1, j_qpts, i_elems) +
-                                                  b4 * K(3, 2, j_qpts, i_elems) +
-                                                  b5 * K(3, 0, j_qpts, i_elems) +
-                                                  by * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 4, j_qpts, i_elems));
+                const double k31z = c_detJ *
+                                    (b4 * K(3, 1, j_qpts, i_elems) + b4 * K(3, 2, j_qpts, i_elems) +
+                                     b5 * K(3, 0, j_qpts, i_elems) + by * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 4, j_qpts, i_elems));
 
-                    const double k32w =
-                        c_detJ * (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
-                                  b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
-                                  bz * K(0, 3, j_qpts, i_elems) + b6 * K(1, 0, j_qpts, i_elems) +
-                                  b6 * K(1, 2, j_qpts, i_elems) + b7 * K(1, 1, j_qpts, i_elems) +
-                                  bx * K(1, 5, j_qpts, i_elems) + bz * K(1, 3, j_qpts, i_elems));
+                const double k32w = c_detJ *
+                                    (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
+                                     b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 3, j_qpts, i_elems) + b6 * K(1, 0, j_qpts, i_elems) +
+                                     b6 * K(1, 2, j_qpts, i_elems) + b7 * K(1, 1, j_qpts, i_elems) +
+                                     bx * K(1, 5, j_qpts, i_elems) + bz * K(1, 3, j_qpts, i_elems));
 
-                    const double k32x = c_detJ * (b6 * K(2, 0, j_qpts, i_elems) +
-                                                  b6 * K(2, 2, j_qpts, i_elems) +
-                                                  b7 * K(2, 1, j_qpts, i_elems) +
-                                                  bx * K(2, 5, j_qpts, i_elems) +
-                                                  bz * K(2, 3, j_qpts, i_elems));
+                const double k32x = c_detJ *
+                                    (b6 * K(2, 0, j_qpts, i_elems) + b6 * K(2, 2, j_qpts, i_elems) +
+                                     b7 * K(2, 1, j_qpts, i_elems) + bx * K(2, 5, j_qpts, i_elems) +
+                                     bz * K(2, 3, j_qpts, i_elems));
 
-                    const double k32y = c_detJ * (b6 * K(4, 0, j_qpts, i_elems) +
-                                                  b6 * K(4, 2, j_qpts, i_elems) +
-                                                  b7 * K(4, 1, j_qpts, i_elems) +
-                                                  bx * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 3, j_qpts, i_elems));
+                const double k32y = c_detJ *
+                                    (b6 * K(4, 0, j_qpts, i_elems) + b6 * K(4, 2, j_qpts, i_elems) +
+                                     b7 * K(4, 1, j_qpts, i_elems) + bx * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 3, j_qpts, i_elems));
 
-                    const double k32z = c_detJ * (b6 * K(3, 0, j_qpts, i_elems) +
-                                                  b6 * K(3, 2, j_qpts, i_elems) +
-                                                  b7 * K(3, 1, j_qpts, i_elems) +
-                                                  bx * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 3, j_qpts, i_elems));
+                const double k32z = c_detJ *
+                                    (b6 * K(3, 0, j_qpts, i_elems) + b6 * K(3, 2, j_qpts, i_elems) +
+                                     b7 * K(3, 1, j_qpts, i_elems) + bx * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 3, j_qpts, i_elems));
 
-                    const double k33w =
-                        c_detJ * (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
-                                  b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
-                                  by * K(0, 3, j_qpts, i_elems) + b8 * K(1, 0, j_qpts, i_elems) +
-                                  b8 * K(1, 1, j_qpts, i_elems) + b9 * K(1, 2, j_qpts, i_elems) +
-                                  bx * K(1, 4, j_qpts, i_elems) + by * K(1, 3, j_qpts, i_elems));
+                const double k33w = c_detJ *
+                                    (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
+                                     b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
+                                     by * K(0, 3, j_qpts, i_elems) + b8 * K(1, 0, j_qpts, i_elems) +
+                                     b8 * K(1, 1, j_qpts, i_elems) + b9 * K(1, 2, j_qpts, i_elems) +
+                                     bx * K(1, 4, j_qpts, i_elems) + by * K(1, 3, j_qpts, i_elems));
 
-                    const double k33x = c_detJ * (b8 * K(2, 0, j_qpts, i_elems) +
-                                                  b8 * K(2, 1, j_qpts, i_elems) +
-                                                  b9 * K(2, 2, j_qpts, i_elems) +
-                                                  bx * K(2, 4, j_qpts, i_elems) +
-                                                  by * K(2, 3, j_qpts, i_elems));
+                const double k33x = c_detJ *
+                                    (b8 * K(2, 0, j_qpts, i_elems) + b8 * K(2, 1, j_qpts, i_elems) +
+                                     b9 * K(2, 2, j_qpts, i_elems) + bx * K(2, 4, j_qpts, i_elems) +
+                                     by * K(2, 3, j_qpts, i_elems));
 
-                    const double k33y = c_detJ * (b8 * K(4, 0, j_qpts, i_elems) +
-                                                  b8 * K(4, 1, j_qpts, i_elems) +
-                                                  b9 * K(4, 2, j_qpts, i_elems) +
-                                                  bx * K(4, 4, j_qpts, i_elems) +
-                                                  by * K(4, 3, j_qpts, i_elems));
+                const double k33y = c_detJ *
+                                    (b8 * K(4, 0, j_qpts, i_elems) + b8 * K(4, 1, j_qpts, i_elems) +
+                                     b9 * K(4, 2, j_qpts, i_elems) + bx * K(4, 4, j_qpts, i_elems) +
+                                     by * K(4, 3, j_qpts, i_elems));
 
-                    const double k33z = c_detJ * (b8 * K(3, 0, j_qpts, i_elems) +
-                                                  b8 * K(3, 1, j_qpts, i_elems) +
-                                                  b9 * K(3, 2, j_qpts, i_elems) +
-                                                  bx * K(3, 4, j_qpts, i_elems) +
-                                                  by * K(3, 3, j_qpts, i_elems));
+                const double k33z = c_detJ *
+                                    (b8 * K(3, 0, j_qpts, i_elems) + b8 * K(3, 1, j_qpts, i_elems) +
+                                     b9 * K(3, 2, j_qpts, i_elems) + bx * K(3, 4, j_qpts, i_elems) +
+                                     by * K(3, 3, j_qpts, i_elems));
 
-                    for (int lnds = 0; lnds < nnodes_; lnds++) {
-                        const double gx = idetJ * (Gt(lnds, 0, j_qpts) * A(0, 0) +
-                                                   Gt(lnds, 1, j_qpts) * A(0, 1) +
-                                                   Gt(lnds, 2, j_qpts) * A(0, 2));
+                for (int lnds = 0; lnds < nnodes_; lnds++) {
+                    const double gx = idetJ * (Gt(lnds, 0, j_qpts) * A(0, 0) +
+                                               Gt(lnds, 1, j_qpts) * A(0, 1) +
+                                               Gt(lnds, 2, j_qpts) * A(0, 2));
 
-                        const double gy = idetJ * (Gt(lnds, 0, j_qpts) * A(1, 0) +
-                                                   Gt(lnds, 1, j_qpts) * A(1, 1) +
-                                                   Gt(lnds, 2, j_qpts) * A(1, 2));
+                    const double gy = idetJ * (Gt(lnds, 0, j_qpts) * A(1, 0) +
+                                               Gt(lnds, 1, j_qpts) * A(1, 1) +
+                                               Gt(lnds, 2, j_qpts) * A(1, 2));
 
-                        const double gz = idetJ * (Gt(lnds, 0, j_qpts) * A(2, 0) +
-                                                   Gt(lnds, 1, j_qpts) * A(2, 1) +
-                                                   Gt(lnds, 2, j_qpts) * A(2, 2));
+                    const double gz = idetJ * (Gt(lnds, 0, j_qpts) * A(2, 0) +
+                                               Gt(lnds, 1, j_qpts) * A(2, 1) +
+                                               Gt(lnds, 2, j_qpts) * A(2, 2));
 
-                        const double g4 = i3 * (elem_deriv_shapes_view(lnds, 0, i_elems) - gx);
-                        const double g5 = g4 + gx;
-                        const double g6 = i3 * (elem_deriv_shapes_view(lnds, 1, i_elems) - gy);
-                        const double g7 = g6 + gy;
-                        const double g8 = i3 * (elem_deriv_shapes_view(lnds, 2, i_elems) - gz);
-                        const double g9 = g8 + gz;
+                    const double g4 = i3 * (elem_deriv_shapes_view(lnds, 0, i_elems) - gx);
+                    const double g5 = g4 + gx;
+                    const double g6 = i3 * (elem_deriv_shapes_view(lnds, 1, i_elems) - gy);
+                    const double g7 = g6 + gy;
+                    const double g8 = i3 * (elem_deriv_shapes_view(lnds, 2, i_elems) - gz);
+                    const double g9 = g8 + gz;
 
-                        E(lnds, knds, i_elems) += g4 * k11w + g5 * k11x + gy * k11y + gz * k11z;
-                        E(lnds, knds + nnodes_, i_elems) += g4 * k12w + g5 * k12x + gy * k12y +
-                                                            gz * k12z;
-                        E(lnds, knds + 2 * nnodes_, i_elems) += g4 * k13w + g5 * k13x + gy * k13y +
-                                                                gz * k13z;
+                    E(lnds, knds, i_elems) += g4 * k11w + g5 * k11x + gy * k11y + gz * k11z;
+                    E(lnds, knds + nnodes_, i_elems) += g4 * k12w + g5 * k12x + gy * k12y +
+                                                        gz * k12z;
+                    E(lnds, knds + 2 * nnodes_, i_elems) += g4 * k13w + g5 * k13x + gy * k13y +
+                                                            gz * k13z;
 
-                        E(lnds + nnodes_, knds, i_elems) += g6 * k21w + g7 * k21x + gx * k21y +
-                                                            gz * k21z;
-                        E(lnds + nnodes_, knds + nnodes_, i_elems) += g6 * k22w + g7 * k22x +
-                                                                      gx * k22y + gz * k22z;
-                        E(lnds + nnodes_, knds + 2 * nnodes_, i_elems) += g6 * k23w + g7 * k23x +
-                                                                          gx * k23y + gz * k23z;
+                    E(lnds + nnodes_, knds, i_elems) += g6 * k21w + g7 * k21x + gx * k21y +
+                                                        gz * k21z;
+                    E(lnds + nnodes_, knds + nnodes_, i_elems) += g6 * k22w + g7 * k22x +
+                                                                  gx * k22y + gz * k22z;
+                    E(lnds + nnodes_, knds + 2 * nnodes_, i_elems) += g6 * k23w + g7 * k23x +
+                                                                      gx * k23y + gz * k23z;
 
-                        E(lnds + 2 * nnodes_, knds, i_elems) += g8 * k31w + g9 * k31x + gx * k31y +
-                                                                gy * k31z;
-                        E(lnds + 2 * nnodes_, knds + nnodes_, i_elems) += g8 * k32w + g9 * k32x +
-                                                                          gx * k32y + gy * k32z;
-                        E(lnds + 2 * nnodes_, knds + 2 * nnodes_, i_elems) += g8 * k33w +
-                                                                              g9 * k33x +
-                                                                              gx * k33y + gy * k33z;
-                    }
+                    E(lnds + 2 * nnodes_, knds, i_elems) += g8 * k31w + g9 * k31x + gx * k31y +
+                                                            gy * k31z;
+                    E(lnds + 2 * nnodes_, knds + nnodes_, i_elems) += g8 * k32w + g9 * k32x +
+                                                                      gx * k32y + gy * k32z;
+                    E(lnds + 2 * nnodes_, knds + 2 * nnodes_, i_elems) += g8 * k33w + g9 * k33x +
+                                                                          gx * k33y + gy * k33z;
                 }
             }
-        });
-    }
+        }
+    });
 }
 
 // This assembles the diagonal of our LHS which can be used as a preconditioner
@@ -1834,193 +1756,177 @@ void ICExaNLFIntegrator::AssembleGradDiagonalPA(mfem::Vector& diag) const {
         m_sim_state->GetQuadratureFunction("tangent_stiffness")->GetSpaceShared()->GetIntRule(0);
     auto W = ir.GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
+    const int dim = 3;
 
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
 
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
 
-        // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
 
-        RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
-            {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
-            m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
+    // bunch of helper RAJA views to make dealing with data easier down below in our kernel.
 
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(diag.ReadWrite(),
-                                                                      layout_field);
+    RAJA::Layout<DIM4> layout_tensor = RAJA::make_permuted_layout(
+        {{2 * dim, 2 * dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> K(
+        m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
 
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
-                                                                            layout_jacob);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(diag.ReadWrite(), layout_field);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
+                                                                        layout_jacob);
 
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
 
-        RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                      perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
-            elem_deriv_shapes.Read(), layout_egrads);
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        const double i3 = 1.0 / 3.0;
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            double idetJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    idetJ = 1.0 / detJ;
-                    c_detJ = detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knds = 0; knds < nnodes_; knds++) {
-                    const double bx = idetJ * (Gt(knds, 0, j_qpts) * A(0, 0) +
-                                               Gt(knds, 1, j_qpts) * A(0, 1) +
-                                               Gt(knds, 2, j_qpts) * A(0, 2));
+    RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
+        elem_deriv_shapes.Read(), layout_egrads);
 
-                    const double by = idetJ * (Gt(knds, 0, j_qpts) * A(1, 0) +
-                                               Gt(knds, 1, j_qpts) * A(1, 1) +
-                                               Gt(knds, 2, j_qpts) * A(1, 2));
-
-                    const double bz = idetJ * (Gt(knds, 0, j_qpts) * A(2, 0) +
-                                               Gt(knds, 1, j_qpts) * A(2, 1) +
-                                               Gt(knds, 2, j_qpts) * A(2, 2));
-                    const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
-                    const double b5 = b4 + bx;
-                    const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
-                    const double b7 = b6 + by;
-                    const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
-                    const double b9 = b8 + bz;
-
-                    const double k11w =
-                        c_detJ * (b4 * K(1, 1, j_qpts, i_elems) + b4 * K(1, 2, j_qpts, i_elems) +
-                                  b5 * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
-                                  bz * K(1, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
-                                  b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
-                                  by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
-
-                    const double k11x = c_detJ * (b4 * K(0, 1, j_qpts, i_elems) +
-                                                  b4 * K(0, 2, j_qpts, i_elems) +
-                                                  b5 * K(0, 0, j_qpts, i_elems) +
-                                                  by * K(0, 5, j_qpts, i_elems) +
-                                                  bz * K(0, 4, j_qpts, i_elems));
-
-                    const double k11y = c_detJ * (b4 * K(5, 1, j_qpts, i_elems) +
-                                                  b4 * K(5, 2, j_qpts, i_elems) +
-                                                  b5 * K(5, 0, j_qpts, i_elems) +
-                                                  by * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 4, j_qpts, i_elems));
-
-                    const double k11z = c_detJ * (b4 * K(4, 1, j_qpts, i_elems) +
-                                                  b4 * K(4, 2, j_qpts, i_elems) +
-                                                  b5 * K(4, 0, j_qpts, i_elems) +
-                                                  by * K(4, 5, j_qpts, i_elems) +
-                                                  bz * K(4, 4, j_qpts, i_elems));
-
-                    const double k22w =
-                        c_detJ * (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
-                                  b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
-                                  bz * K(0, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
-                                  b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
-                                  bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
-
-                    const double k22x = c_detJ * (b6 * K(1, 0, j_qpts, i_elems) +
-                                                  b6 * K(1, 2, j_qpts, i_elems) +
-                                                  b7 * K(1, 1, j_qpts, i_elems) +
-                                                  bx * K(1, 5, j_qpts, i_elems) +
-                                                  bz * K(1, 3, j_qpts, i_elems));
-
-                    const double k22y = c_detJ * (b6 * K(5, 0, j_qpts, i_elems) +
-                                                  b6 * K(5, 2, j_qpts, i_elems) +
-                                                  b7 * K(5, 1, j_qpts, i_elems) +
-                                                  bx * K(5, 5, j_qpts, i_elems) +
-                                                  bz * K(5, 3, j_qpts, i_elems));
-
-                    const double k22z = c_detJ * (b6 * K(3, 0, j_qpts, i_elems) +
-                                                  b6 * K(3, 2, j_qpts, i_elems) +
-                                                  b7 * K(3, 1, j_qpts, i_elems) +
-                                                  bx * K(3, 5, j_qpts, i_elems) +
-                                                  bz * K(3, 3, j_qpts, i_elems));
-
-                    const double k33w =
-                        c_detJ * (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
-                                  b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
-                                  by * K(0, 3, j_qpts, i_elems) + b8 * K(1, 0, j_qpts, i_elems) +
-                                  b8 * K(1, 1, j_qpts, i_elems) + b9 * K(1, 2, j_qpts, i_elems) +
-                                  bx * K(1, 4, j_qpts, i_elems) + by * K(1, 3, j_qpts, i_elems));
-
-                    const double k33x = c_detJ * (b8 * K(2, 0, j_qpts, i_elems) +
-                                                  b8 * K(2, 1, j_qpts, i_elems) +
-                                                  b9 * K(2, 2, j_qpts, i_elems) +
-                                                  bx * K(2, 4, j_qpts, i_elems) +
-                                                  by * K(2, 3, j_qpts, i_elems));
-
-                    const double k33y = c_detJ * (b8 * K(4, 0, j_qpts, i_elems) +
-                                                  b8 * K(4, 1, j_qpts, i_elems) +
-                                                  b9 * K(4, 2, j_qpts, i_elems) +
-                                                  bx * K(4, 4, j_qpts, i_elems) +
-                                                  by * K(4, 3, j_qpts, i_elems));
-
-                    const double k33z = c_detJ * (b8 * K(3, 0, j_qpts, i_elems) +
-                                                  b8 * K(3, 1, j_qpts, i_elems) +
-                                                  b9 * K(3, 2, j_qpts, i_elems) +
-                                                  bx * K(3, 4, j_qpts, i_elems) +
-                                                  by * K(3, 3, j_qpts, i_elems));
-
-                    Y(knds, 0, i_elems) += b4 * k11w + b5 * k11x + by * k11y + bz * k11z;
-                    Y(knds, 1, i_elems) += b6 * k22w + b7 * k22x + bx * k22y + bz * k22z;
-                    Y(knds, 2, i_elems) += b8 * k33w + b9 * k33x + bx * k33y + by * k33z;
-                }
+    const double i3 = 1.0 / 3.0;
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        double idetJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                idetJ = 1.0 / detJ;
+                c_detJ = detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
             }
-        });
-    }
+            for (int knds = 0; knds < nnodes_; knds++) {
+                const double bx = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(0, 0) + Gt(knds, 1, j_qpts) * A(0, 1) +
+                                   Gt(knds, 2, j_qpts) * A(0, 2));
+
+                const double by = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(1, 0) + Gt(knds, 1, j_qpts) * A(1, 1) +
+                                   Gt(knds, 2, j_qpts) * A(1, 2));
+
+                const double bz = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(2, 0) + Gt(knds, 1, j_qpts) * A(2, 1) +
+                                   Gt(knds, 2, j_qpts) * A(2, 2));
+                const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
+                const double b5 = b4 + bx;
+                const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
+                const double b7 = b6 + by;
+                const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
+                const double b9 = b8 + bz;
+
+                const double k11w = c_detJ *
+                                    (b4 * K(1, 1, j_qpts, i_elems) + b4 * K(1, 2, j_qpts, i_elems) +
+                                     b5 * K(1, 0, j_qpts, i_elems) + by * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 4, j_qpts, i_elems) + b4 * K(2, 1, j_qpts, i_elems) +
+                                     b4 * K(2, 2, j_qpts, i_elems) + b5 * K(2, 0, j_qpts, i_elems) +
+                                     by * K(2, 5, j_qpts, i_elems) + bz * K(2, 4, j_qpts, i_elems));
+
+                const double k11x = c_detJ *
+                                    (b4 * K(0, 1, j_qpts, i_elems) + b4 * K(0, 2, j_qpts, i_elems) +
+                                     b5 * K(0, 0, j_qpts, i_elems) + by * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 4, j_qpts, i_elems));
+
+                const double k11y = c_detJ *
+                                    (b4 * K(5, 1, j_qpts, i_elems) + b4 * K(5, 2, j_qpts, i_elems) +
+                                     b5 * K(5, 0, j_qpts, i_elems) + by * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 4, j_qpts, i_elems));
+
+                const double k11z = c_detJ *
+                                    (b4 * K(4, 1, j_qpts, i_elems) + b4 * K(4, 2, j_qpts, i_elems) +
+                                     b5 * K(4, 0, j_qpts, i_elems) + by * K(4, 5, j_qpts, i_elems) +
+                                     bz * K(4, 4, j_qpts, i_elems));
+
+                const double k22w = c_detJ *
+                                    (b6 * K(0, 0, j_qpts, i_elems) + b6 * K(0, 2, j_qpts, i_elems) +
+                                     b7 * K(0, 1, j_qpts, i_elems) + bx * K(0, 5, j_qpts, i_elems) +
+                                     bz * K(0, 3, j_qpts, i_elems) + b6 * K(2, 0, j_qpts, i_elems) +
+                                     b6 * K(2, 2, j_qpts, i_elems) + b7 * K(2, 1, j_qpts, i_elems) +
+                                     bx * K(2, 5, j_qpts, i_elems) + bz * K(2, 3, j_qpts, i_elems));
+
+                const double k22x = c_detJ *
+                                    (b6 * K(1, 0, j_qpts, i_elems) + b6 * K(1, 2, j_qpts, i_elems) +
+                                     b7 * K(1, 1, j_qpts, i_elems) + bx * K(1, 5, j_qpts, i_elems) +
+                                     bz * K(1, 3, j_qpts, i_elems));
+
+                const double k22y = c_detJ *
+                                    (b6 * K(5, 0, j_qpts, i_elems) + b6 * K(5, 2, j_qpts, i_elems) +
+                                     b7 * K(5, 1, j_qpts, i_elems) + bx * K(5, 5, j_qpts, i_elems) +
+                                     bz * K(5, 3, j_qpts, i_elems));
+
+                const double k22z = c_detJ *
+                                    (b6 * K(3, 0, j_qpts, i_elems) + b6 * K(3, 2, j_qpts, i_elems) +
+                                     b7 * K(3, 1, j_qpts, i_elems) + bx * K(3, 5, j_qpts, i_elems) +
+                                     bz * K(3, 3, j_qpts, i_elems));
+
+                const double k33w = c_detJ *
+                                    (b8 * K(0, 0, j_qpts, i_elems) + b8 * K(0, 1, j_qpts, i_elems) +
+                                     b9 * K(0, 2, j_qpts, i_elems) + bx * K(0, 4, j_qpts, i_elems) +
+                                     by * K(0, 3, j_qpts, i_elems) + b8 * K(1, 0, j_qpts, i_elems) +
+                                     b8 * K(1, 1, j_qpts, i_elems) + b9 * K(1, 2, j_qpts, i_elems) +
+                                     bx * K(1, 4, j_qpts, i_elems) + by * K(1, 3, j_qpts, i_elems));
+
+                const double k33x = c_detJ *
+                                    (b8 * K(2, 0, j_qpts, i_elems) + b8 * K(2, 1, j_qpts, i_elems) +
+                                     b9 * K(2, 2, j_qpts, i_elems) + bx * K(2, 4, j_qpts, i_elems) +
+                                     by * K(2, 3, j_qpts, i_elems));
+
+                const double k33y = c_detJ *
+                                    (b8 * K(4, 0, j_qpts, i_elems) + b8 * K(4, 1, j_qpts, i_elems) +
+                                     b9 * K(4, 2, j_qpts, i_elems) + bx * K(4, 4, j_qpts, i_elems) +
+                                     by * K(4, 3, j_qpts, i_elems));
+
+                const double k33z = c_detJ *
+                                    (b8 * K(3, 0, j_qpts, i_elems) + b8 * K(3, 1, j_qpts, i_elems) +
+                                     b9 * K(3, 2, j_qpts, i_elems) + bx * K(3, 4, j_qpts, i_elems) +
+                                     by * K(3, 3, j_qpts, i_elems));
+
+                Y(knds, 0, i_elems) += b4 * k11w + b5 * k11x + by * k11y + bz * k11z;
+                Y(knds, 1, i_elems) += b6 * k22w + b7 * k22x + bx * k22y + bz * k22z;
+                Y(knds, 2, i_elems) += b8 * k33w + b9 * k33x + bx * k33y + by * k33z;
+            }
+        }
+    });
 }
 
 // This performs the assembly step of our RHS side of our system:
@@ -2040,70 +1946,66 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
     auto W = ir->GetWeights().Read();
     geom = mesh->GetGeometricFactors(*ir, mfem::GeometricFactors::JACOBIANS);
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        if (grad.Size() != (nqpts * dim * nnodes)) {
-            grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
-            {
-                mfem::DenseMatrix DSh;
-                const int offset = nnodes * dim;
-                double* qpts_dshape_data = grad.HostReadWrite();
-                for (int i = 0; i < nqpts; i++) {
-                    const mfem::IntegrationPoint& ip = ir->IntPoint(i);
-                    DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
-                    el.CalcDShape(ip, DSh);
+    const int dim = 3;
+
+    if (grad.Size() != (nqpts * dim * nnodes)) {
+        grad.SetSize(nqpts * dim * nnodes, mfem::Device::GetMemoryType());
+        {
+            mfem::DenseMatrix DSh;
+            const int offset = nnodes * dim;
+            double* qpts_dshape_data = grad.HostReadWrite();
+            for (int i = 0; i < nqpts; i++) {
+                const mfem::IntegrationPoint& ip = ir->IntPoint(i);
+                DSh.UseExternalData(&qpts_dshape_data[offset * i], nnodes, dim);
+                el.CalcDShape(ip, DSh);
+            }
+        }
+        grad.UseDevice(true);
+    }
+
+    if (elem_deriv_shapes.Size() != (nnodes * dim * nelems)) {
+        elem_deriv_shapes.SetSize(nnodes * space_dims * nelems, mfem::Device::GetMemoryType());
+        elem_deriv_shapes.UseDevice();
+    }
+
+    // geom->J really isn't going to work for us as of right now. We could just reorder it
+    // to the version that we want it to be in instead...
+    if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
+        jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
+        jacobian.UseDevice(true);
+    }
+
+    const int DIM4 = 4;
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
+                                                                  layout_jacob);
+
+    RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(geom->J.Read(),
+                                                                                  layout_geom);
+
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+        for (int j = 0; j < nqpts_; j++) {
+            for (int k = 0; k < dim_; k++) {
+                for (int l = 0; l < dim_; l++) {
+                    J(l, k, j, i) = geom_j_view(j, l, k, i);
                 }
             }
-            grad.UseDevice(true);
         }
+    });
 
-        if (elem_deriv_shapes.Size() != (nnodes * dim * nelems)) {
-            elem_deriv_shapes.SetSize(nnodes * space_dims * nelems, mfem::Device::GetMemoryType());
-            elem_deriv_shapes.UseDevice();
-        }
-
-        // geom->J really isn't going to work for us as of right now. We could just reorder it
-        // to the version that we want it to be in instead...
-        if (jacobian.Size() != (dim * dim * nqpts * nelems)) {
-            jacobian.SetSize(dim * dim * nqpts * nelems, mfem::Device::GetMemoryType());
-            jacobian.UseDevice(true);
-        }
-
-        const int DIM4 = 4;
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.ReadWrite(),
-                                                                      layout_jacob);
-
-        RAJA::Layout<DIM4> layout_geom = RAJA::make_permuted_layout({{nqpts, dim, dim, nelems}},
-                                                                    perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> geom_j_view(
-            geom->J.Read(), layout_geom);
-
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
-            for (int j = 0; j < nqpts_; j++) {
-                for (int k = 0; k < dim_; k++) {
-                    for (int l = 0; l < dim_; l++) {
-                        J(l, k, j, i) = geom_j_view(j, l, k, i);
-                    }
-                }
-            }
-        });
-
-        // Element-averaged shape gradients with the shared B-bar implementation
-        // (utilities/mechanics_kernels.hpp), the same code the material models use.
-        exaconstit::kernel::ElementAveragedShapeGradients(
-            nqpts, nelems, nnodes, jacobian.Read(), grad.Read(), W, elem_deriv_shapes.Write());
-
-    } // End of space dims if else
+    // Element-averaged shape gradients with the shared B-bar implementation
+    // (utilities/mechanics_kernels.hpp), the same code the material models use.
+    exaconstit::kernel::ElementAveragedShapeGradients(
+        nqpts, nelems, nnodes, jacobian.Read(), grad.Read(), W, elem_deriv_shapes.Write());
 }
 
 // -----------------------------------------------------------------------------
@@ -2162,155 +2064,148 @@ void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
 // -----------------------------------------------------------------------------
 void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("icenlfi_amGPA");
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
-        const int DIM6 = 6;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
+    const int dim = 3;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
+    const int DIM6 = 6;
 
-        // Input / output E-vectors
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
-        // Reference shape function derivatives Gt(node, dim, qpt)
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    // Input / output E-vectors
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
-        // Element-averaged derivatives N̄(node, dim, elem)
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(
-            elem_deriv_shapes.Read(), layout_field);
+    // Reference shape function derivatives Gt(node, dim, qpt)
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        // Mesh Jacobians J(dim, dim, qpt, elem) — column-major mfem convention
-        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                   perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
-                                                                                 layout_jac);
+    // Element-averaged derivatives N̄(node, dim, elem)
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(elem_deriv_shapes.Read(),
+                                                                           layout_field);
 
-        // Material tangent C(j, k, l, m, qpt, elem) from quadrature function
-        auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
-        RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout(
-            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
-                                                                            layout_C);
+    // Mesh Jacobians J(dim, dim, qpt, elem) — column-major mfem convention
+    RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+                                                                             layout_jac);
 
-        // Integration weights from the tangent stiffness QF integration rule
-        const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
-        auto W = ir.GetWeights().Read();
+    // Material tangent C(j, k, l, m, qpt, elem) from quadrature function
+    auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
+    RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout({{dim, dim, dim, dim, nqpts, nelems}},
+                                                             perm6);
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
+                                                                        layout_C);
 
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
+    // Integration weights from the tangent stiffness QF integration rule
+    const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
+    auto W = ir.GetWeights().Read();
 
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int e) {
-            // Step 1: Hoist tr_bar outside the qpt loop (element-constant)
-            double tr_bar = 0.0;
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int e) {
+        // Step 1: Hoist tr_bar outside the qpt loop (element-constant)
+        double tr_bar = 0.0;
+        for (int a = 0; a < nnodes_; a++) {
+            for (int k = 0; k < dim_; k++) {
+                tr_bar += Nbar(a, k, e) * X(a, k, e);
+            }
+        }
+
+        for (int q = 0; q < nqpts_; q++) {
+            // Step 2: Compute adjugate and Jacobian determinant
+            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
+                         J13 = J_data(2, 0, q, e);
+            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
+                         J23 = J_data(2, 1, q, e);
+            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+                         J33 = J_data(2, 2, q, e);
+
+            double adj[9];
+            adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+            adj[1] = (J23 * J31) - (J21 * J33); // 0,1
+            adj[2] = (J21 * J32) - (J22 * J31); // 0,2
+            adj[3] = (J13 * J32) - (J12 * J33); // 1,0
+            adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+            adj[5] = (J12 * J31) - (J11 * J32); // 1,2
+            adj[6] = (J12 * J23) - (J13 * J22); // 2,0
+            adj[7] = (J13 * J21) - (J11 * J23); // 2,1
+            adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+
+            const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
+            const double idetJ = 1.0 / detJ;
+            const double w_detJ = W[q] * detJ;
+
+            // Step 3: Physical velocity gradient L(i,j) = sum_a dN(a,j) * V(a,i)
+            // We compute dN(a, :) on-the-fly from Gt and adj.
+            double L[3][3] = {{0.0}};
             for (int a = 0; a < nnodes_; a++) {
-                for (int k = 0; k < dim_; k++) {
-                    tr_bar += Nbar(a, k, e) * X(a, k, e);
+                double dNa[3];
+                for (int j = 0; j < dim_; j++) {
+                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                      Gt(a, 2, q) * adj[j * 3 + 2]);
+                }
+                for (int i = 0; i < dim_; i++) {
+                    for (int j = 0; j < dim_; j++) {
+                        L[i][j] += dNa[j] * X(a, i, e);
+                    }
                 }
             }
 
-            for (int q = 0; q < nqpts_; q++) {
-                // Step 2: Compute adjugate and Jacobian determinant
-                const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                             J13 = J_data(2, 0, q, e);
-                const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                             J23 = J_data(2, 1, q, e);
-                const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
-                             J33 = J_data(2, 2, q, e);
+            // Step 4: B-bar trace correction
+            const double tr_std = L[0][0] + L[1][1] + L[2][2];
+            const double dtr = (tr_bar - tr_std) / 3.0;
 
-                double adj[9];
-                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                adj[1] = (J23 * J31) - (J21 * J33); // 0,1
-                adj[2] = (J21 * J32) - (J22 * J31); // 0,2
-                adj[3] = (J13 * J32) - (J12 * J33); // 1,0
-                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                adj[5] = (J12 * J31) - (J11 * J32); // 1,2
-                adj[6] = (J12 * J23) - (J13 * J22); // 2,0
-                adj[7] = (J13 * J21) - (J11 * J23); // 2,1
-                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-
-                const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
-                const double idetJ = 1.0 / detJ;
-                const double w_detJ = W[q] * detJ;
-
-                // Step 3: Physical velocity gradient L(i,j) = sum_a dN(a,j) * V(a,i)
-                // We compute dN(a, :) on-the-fly from Gt and adj.
-                double L[3][3] = {{0.0}};
-                for (int a = 0; a < nnodes_; a++) {
-                    double dNa[3];
-                    for (int j = 0; j < dim_; j++) {
-                        dNa[j] = idetJ *
-                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
-                                  Gt(a, 2, q) * adj[j * 3 + 2]);
-                    }
-                    for (int i = 0; i < dim_; i++) {
-                        for (int j = 0; j < dim_; j++) {
-                            L[i][j] += dNa[j] * X(a, i, e);
-                        }
-                    }
-                }
-
-                // Step 4: B-bar trace correction
-                const double tr_std = L[0][0] + L[1][1] + L[2][2];
-                const double dtr = (tr_bar - tr_std) / 3.0;
-
-                double Lbar[3][3];
-                for (int i = 0; i < dim_; i++) {
-                    for (int j = 0; j < dim_; j++) {
-                        Lbar[i][j] = L[i][j];
-                    }
-                }
-                Lbar[0][0] += dtr;
-                Lbar[1][1] += dtr;
-                Lbar[2][2] += dtr;
-
-                // Step 5: Apply material tangent — forward contraction
-                //   σ'(j, k) = sum_{l,m} C(j, k, l, m) * L̄(l, m)
-                double sigma[3][3] = {{0.0}};
+            double Lbar[3][3];
+            for (int i = 0; i < dim_; i++) {
                 for (int j = 0; j < dim_; j++) {
-                    for (int k = 0; k < dim_; k++) {
-                        for (int l = 0; l < dim_; l++) {
-                            for (int m = 0; m < dim_; m++) {
-                                sigma[j][k] += C(j, k, l, m, q, e) * Lbar[l][m];
-                            }
+                    Lbar[i][j] = L[i][j];
+                }
+            }
+            Lbar[0][0] += dtr;
+            Lbar[1][1] += dtr;
+            Lbar[2][2] += dtr;
+
+            // Step 5: Apply material tangent — forward contraction
+            //   σ'(j, k) = sum_{l,m} C(j, k, l, m) * L̄(l, m)
+            double sigma[3][3] = {{0.0}};
+            for (int j = 0; j < dim_; j++) {
+                for (int k = 0; k < dim_; k++) {
+                    for (int l = 0; l < dim_; l++) {
+                        for (int m = 0; m < dim_; m++) {
+                            sigma[j][k] += C(j, k, l, m, q, e) * Lbar[l][m];
                         }
                     }
                 }
+            }
 
-                // Step 6: Pressure (volumetric) part of σ'
-                const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+            // Step 6: Pressure (volumetric) part of σ'
+            const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
 
-                // Step 7: Accumulate forces with B-bar test side
-                //   Y(a, k) += [sum_j dN(a,j) σ'(j,k) + (N̄(a,k) - dN(a,k)) p] * w * detJ
-                for (int a = 0; a < nnodes_; a++) {
-                    double dNa[3];
+            // Step 7: Accumulate forces with B-bar test side
+            //   Y(a, k) += [sum_j dN(a,j) σ'(j,k) + (N̄(a,k) - dN(a,k)) p] * w * detJ
+            for (int a = 0; a < nnodes_; a++) {
+                double dNa[3];
+                for (int j = 0; j < dim_; j++) {
+                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                      Gt(a, 2, q) * adj[j * 3 + 2]);
+                }
+                for (int k = 0; k < dim_; k++) {
+                    double f_std = 0.0;
                     for (int j = 0; j < dim_; j++) {
-                        dNa[j] = idetJ *
-                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
-                                  Gt(a, 2, q) * adj[j * 3 + 2]);
+                        f_std += dNa[j] * sigma[j][k];
                     }
-                    for (int k = 0; k < dim_; k++) {
-                        double f_std = 0.0;
-                        for (int j = 0; j < dim_; j++) {
-                            f_std += dNa[j] * sigma[j][k];
-                        }
-                        double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
-                        Y(a, k, e) += (f_std + f_bbar) * w_detJ;
-                    }
+                    double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
+                    Y(a, k, e) += (f_std + f_bbar) * w_detJ;
                 }
-            } // End of qpts
-        }); // End of nelems
-    } // End of else (3D path)
+            }
+        } // End of qpts
+    }); // End of nelems
 }
 
 // -----------------------------------------------------------------------------
@@ -2334,148 +2229,141 @@ void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) c
 // -----------------------------------------------------------------------------
 void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const {
     CALI_CXX_MARK_SCOPE("icenlfi_amTGPA");
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
-        const int DIM6 = 6;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
+    const int dim = 3;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
+    const int DIM6 = 6;
 
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> X(x.Read(), layout_field);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
 
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(
-            elem_deriv_shapes.Read(), layout_field);
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                   perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
-                                                                                 layout_jac);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(elem_deriv_shapes.Read(),
+                                                                           layout_field);
 
-        auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
-        RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout(
-            {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
-        RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
-                                                                            layout_C);
+    RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}}, perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+                                                                             layout_jac);
 
-        const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
-        auto W = ir.GetWeights().Read();
+    auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
+    RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout({{dim, dim, dim, dim, nqpts, nelems}},
+                                                             perm6);
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
+                                                                        layout_C);
 
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
+    const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
+    auto W = ir.GetWeights().Read();
 
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int e) {
-            // Step 1: Hoist tr_bar (element-constant)
-            double tr_bar = 0.0;
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
+
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int e) {
+        // Step 1: Hoist tr_bar (element-constant)
+        double tr_bar = 0.0;
+        for (int a = 0; a < nnodes_; a++) {
+            for (int k = 0; k < dim_; k++) {
+                tr_bar += Nbar(a, k, e) * X(a, k, e);
+            }
+        }
+
+        for (int q = 0; q < nqpts_; q++) {
+            // Step 2: Adjugate and Jacobian determinant
+            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
+                         J13 = J_data(2, 0, q, e);
+            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
+                         J23 = J_data(2, 1, q, e);
+            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+                         J33 = J_data(2, 2, q, e);
+
+            double adj[9];
+            adj[0] = (J22 * J33) - (J23 * J32);
+            adj[1] = (J23 * J31) - (J21 * J33);
+            adj[2] = (J21 * J32) - (J22 * J31);
+            adj[3] = (J13 * J32) - (J12 * J33);
+            adj[4] = (J11 * J33) - (J13 * J31);
+            adj[5] = (J12 * J31) - (J11 * J32);
+            adj[6] = (J12 * J23) - (J13 * J22);
+            adj[7] = (J13 * J21) - (J11 * J23);
+            adj[8] = (J11 * J22) - (J12 * J21);
+
+            const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
+            const double idetJ = 1.0 / detJ;
+            const double w_detJ = W[q] * detJ;
+
+            // Step 3: Physical velocity gradient
+            double L[3][3] = {{0.0}};
             for (int a = 0; a < nnodes_; a++) {
-                for (int k = 0; k < dim_; k++) {
-                    tr_bar += Nbar(a, k, e) * X(a, k, e);
+                double dNa[3];
+                for (int j = 0; j < dim_; j++) {
+                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                      Gt(a, 2, q) * adj[j * 3 + 2]);
+                }
+                for (int i = 0; i < dim_; i++) {
+                    for (int j = 0; j < dim_; j++) {
+                        L[i][j] += dNa[j] * X(a, i, e);
+                    }
                 }
             }
 
-            for (int q = 0; q < nqpts_; q++) {
-                // Step 2: Adjugate and Jacobian determinant
-                const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                             J13 = J_data(2, 0, q, e);
-                const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                             J23 = J_data(2, 1, q, e);
-                const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
-                             J33 = J_data(2, 2, q, e);
+            // Step 4: B-bar trace correction
+            const double tr_std = L[0][0] + L[1][1] + L[2][2];
+            const double dtr = (tr_bar - tr_std) / 3.0;
 
-                double adj[9];
-                adj[0] = (J22 * J33) - (J23 * J32);
-                adj[1] = (J23 * J31) - (J21 * J33);
-                adj[2] = (J21 * J32) - (J22 * J31);
-                adj[3] = (J13 * J32) - (J12 * J33);
-                adj[4] = (J11 * J33) - (J13 * J31);
-                adj[5] = (J12 * J31) - (J11 * J32);
-                adj[6] = (J12 * J23) - (J13 * J22);
-                adj[7] = (J13 * J21) - (J11 * J23);
-                adj[8] = (J11 * J22) - (J12 * J21);
-
-                const double detJ = J11 * adj[0] + J21 * adj[3] + J31 * adj[6];
-                const double idetJ = 1.0 / detJ;
-                const double w_detJ = W[q] * detJ;
-
-                // Step 3: Physical velocity gradient
-                double L[3][3] = {{0.0}};
-                for (int a = 0; a < nnodes_; a++) {
-                    double dNa[3];
-                    for (int j = 0; j < dim_; j++) {
-                        dNa[j] = idetJ *
-                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
-                                  Gt(a, 2, q) * adj[j * 3 + 2]);
-                    }
-                    for (int i = 0; i < dim_; i++) {
-                        for (int j = 0; j < dim_; j++) {
-                            L[i][j] += dNa[j] * X(a, i, e);
-                        }
-                    }
-                }
-
-                // Step 4: B-bar trace correction
-                const double tr_std = L[0][0] + L[1][1] + L[2][2];
-                const double dtr = (tr_bar - tr_std) / 3.0;
-
-                double Lbar[3][3];
-                for (int i = 0; i < dim_; i++) {
-                    for (int j = 0; j < dim_; j++) {
-                        Lbar[i][j] = L[i][j];
-                    }
-                }
-                Lbar[0][0] += dtr;
-                Lbar[1][1] += dtr;
-                Lbar[2][2] += dtr;
-
-                // Step 5: TRANSPOSED material tangent contraction
-                //   σ'(j, k) = sum_{l,m} C(l, m, j, k) * L̄(l, m)
-                // (Compare to forward: C(j, k, l, m) * L̄(l, m))
-                double sigma[3][3] = {{0.0}};
+            double Lbar[3][3];
+            for (int i = 0; i < dim_; i++) {
                 for (int j = 0; j < dim_; j++) {
-                    for (int k = 0; k < dim_; k++) {
-                        for (int l = 0; l < dim_; l++) {
-                            for (int m = 0; m < dim_; m++) {
-                                sigma[j][k] += C(l, m, j, k, q, e) * Lbar[l][m];
-                            }
+                    Lbar[i][j] = L[i][j];
+                }
+            }
+            Lbar[0][0] += dtr;
+            Lbar[1][1] += dtr;
+            Lbar[2][2] += dtr;
+
+            // Step 5: TRANSPOSED material tangent contraction
+            //   σ'(j, k) = sum_{l,m} C(l, m, j, k) * L̄(l, m)
+            // (Compare to forward: C(j, k, l, m) * L̄(l, m))
+            double sigma[3][3] = {{0.0}};
+            for (int j = 0; j < dim_; j++) {
+                for (int k = 0; k < dim_; k++) {
+                    for (int l = 0; l < dim_; l++) {
+                        for (int m = 0; m < dim_; m++) {
+                            sigma[j][k] += C(l, m, j, k, q, e) * Lbar[l][m];
                         }
                     }
                 }
+            }
 
-                // Step 6: Pressure
-                const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
+            // Step 6: Pressure
+            const double p = (sigma[0][0] + sigma[1][1] + sigma[2][2]) / 3.0;
 
-                // Step 7: Accumulate with B-bar test side (same as forward kernel)
-                for (int a = 0; a < nnodes_; a++) {
-                    double dNa[3];
+            // Step 7: Accumulate with B-bar test side (same as forward kernel)
+            for (int a = 0; a < nnodes_; a++) {
+                double dNa[3];
+                for (int j = 0; j < dim_; j++) {
+                    dNa[j] = idetJ * (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
+                                      Gt(a, 2, q) * adj[j * 3 + 2]);
+                }
+                for (int k = 0; k < dim_; k++) {
+                    double f_std = 0.0;
                     for (int j = 0; j < dim_; j++) {
-                        dNa[j] = idetJ *
-                                 (Gt(a, 0, q) * adj[j * 3 + 0] + Gt(a, 1, q) * adj[j * 3 + 1] +
-                                  Gt(a, 2, q) * adj[j * 3 + 2]);
+                        f_std += dNa[j] * sigma[j][k];
                     }
-                    for (int k = 0; k < dim_; k++) {
-                        double f_std = 0.0;
-                        for (int j = 0; j < dim_; j++) {
-                            f_std += dNa[j] * sigma[j][k];
-                        }
-                        double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
-                        Y(a, k, e) += (f_std + f_bbar) * w_detJ;
-                    }
+                    double f_bbar = (Nbar(a, k, e) - dNa[k]) * p;
+                    Y(a, k, e) += (f_std + f_bbar) * w_detJ;
                 }
-            } // End of qpts
-        }); // End of nelems
-    } // End of else (3D path)
+            }
+        } // End of qpts
+    }); // End of nelems
 }
 
 // Here we're applying the following action operation using the assembled "D" 2nd order
@@ -2491,126 +2379,117 @@ void ICExaNLFIntegrator::AddMultPA(const mfem::Vector& /*x*/, mfem::Vector& y) c
         m_sim_state->GetQuadratureFunction("tangent_stiffness")->GetSpaceShared()->GetIntRule(0);
     auto W = ir.GetWeights().Read();
 
-    if ((space_dims == 1) || (space_dims == 2)) {
-        MFEM_ABORT("Dimensions of 1 or 2 not supported.");
-    } else {
-        const int dim = 3;
-        const int DIM2 = 2;
-        const int DIM3 = 3;
-        const int DIM4 = 4;
+    MFEM_VERIFY_0(space_dims == 3, "Dimensions of 1 or 2 not supported.");
 
-        std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
-        std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-        std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
+    const int dim = 3;
+    const int DIM2 = 2;
+    const int DIM3 = 3;
+    const int DIM4 = 4;
 
-        RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
-                                                                     perm4);
-        RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
-                                                                            layout_jacob);
+    std::array<RAJA::idx_t, DIM4> perm4{{3, 2, 1, 0}};
+    std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
+    std::array<RAJA::idx_t, DIM2> perm2{{1, 0}};
 
-        RAJA::Layout<DIM3> layout_stress = RAJA::make_permuted_layout({{2 * dim, nqpts, nelems}},
-                                                                      perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> S(stress_end->ReadWrite(),
-                                                                            layout_stress);
+    RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
+                                                                 perm4);
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J(jacobian.Read(),
+                                                                        layout_jacob);
 
-        // Our field variables that are inputs and outputs
-        RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                     perm3);
-        RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
-        // Transpose of the local gradient variable
-        RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(),
-                                                                             layout_grads);
+    RAJA::Layout<DIM3> layout_stress = RAJA::make_permuted_layout({{2 * dim, nqpts, nelems}},
+                                                                  perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> S(stress_end->ReadWrite(),
+                                                                        layout_stress);
 
-        RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}},
-                                                                      perm3);
-        RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
-            elem_deriv_shapes.Read(), layout_egrads);
+    // Our field variables that are inputs and outputs
+    RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Y(y.ReadWrite(), layout_field);
+    // Transpose of the local gradient variable
+    RAJA::Layout<DIM3> layout_grads = RAJA::make_permuted_layout({{nnodes, dim, nqpts}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Gt(grad.Read(), layout_grads);
 
-        RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
+    RAJA::Layout<DIM3> layout_egrads = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
+    RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> elem_deriv_shapes_view(
+        elem_deriv_shapes.Read(), layout_egrads);
 
-        const double i3 = 1.0 / 3.0;
-        const int nqpts_ = nqpts;
-        const int dim_ = dim;
-        const int nnodes_ = nnodes;
+    RAJA::Layout<DIM2> layout_adj = RAJA::make_permuted_layout({{dim, dim}}, perm2);
 
-        // This loop we'll want to parallelize the rest are all serial for now.
-        mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
-            double adj[dim_ * dim_];
-            double c_detJ;
-            double idetJ;
-            // So, we're going to say this view is constant however we're going to mutate the values
-            // only in that one scoped section for the quadrature points.
-            RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0],
-                                                                                layout_adj);
-            for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
-                // If we scope this then we only need to carry half the number of variables around
-                // with us for the adjugate term.
-                {
-                    const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
-                    const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
-                    const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
-                    const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
-                    const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
-                    const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
-                    const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
-                    const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
-                    const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
-                    const double detJ = J11 * (J22 * J33 - J32 * J23) -
-                                        /* */ J21 * (J12 * J33 - J32 * J13) +
-                                        /* */ J31 * (J12 * J23 - J22 * J13);
-                    idetJ = 1.0 / detJ;
-                    c_detJ = detJ * W[j_qpts];
-                    // adj(J)
-                    adj[0] = (J22 * J33) - (J23 * J32); // 0,0
-                    adj[1] = (J32 * J13) - (J12 * J33); // 0,1
-                    adj[2] = (J12 * J23) - (J22 * J13); // 0,2
-                    adj[3] = (J31 * J23) - (J21 * J33); // 1,0
-                    adj[4] = (J11 * J33) - (J13 * J31); // 1,1
-                    adj[5] = (J21 * J13) - (J11 * J23); // 1,2
-                    adj[6] = (J21 * J32) - (J31 * J22); // 2,0
-                    adj[7] = (J31 * J12) - (J11 * J32); // 2,1
-                    adj[8] = (J11 * J22) - (J12 * J21); // 2,2
-                }
-                for (int knds = 0; knds < nnodes_; knds++) {
-                    const double bx = idetJ * (Gt(knds, 0, j_qpts) * A(0, 0) +
-                                               Gt(knds, 1, j_qpts) * A(0, 1) +
-                                               Gt(knds, 2, j_qpts) * A(0, 2));
+    const double i3 = 1.0 / 3.0;
+    const int nqpts_ = nqpts;
+    const int dim_ = dim;
+    const int nnodes_ = nnodes;
 
-                    const double by = idetJ * (Gt(knds, 0, j_qpts) * A(1, 0) +
-                                               Gt(knds, 1, j_qpts) * A(1, 1) +
-                                               Gt(knds, 2, j_qpts) * A(1, 2));
+    // This loop we'll want to parallelize the rest are all serial for now.
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_elems) {
+        double adj[dim_ * dim_];
+        double c_detJ;
+        double idetJ;
+        // So, we're going to say this view is constant however we're going to mutate the values
+        // only in that one scoped section for the quadrature points.
+        RAJA::View<const double, RAJA::Layout<DIM2, RAJA::Index_type, 0>> A(&adj[0], layout_adj);
+        for (int j_qpts = 0; j_qpts < nqpts_; j_qpts++) {
+            // If we scope this then we only need to carry half the number of variables around
+            // with us for the adjugate term.
+            {
+                const double J11 = J(0, 0, j_qpts, i_elems); // 0,0
+                const double J21 = J(1, 0, j_qpts, i_elems); // 1,0
+                const double J31 = J(2, 0, j_qpts, i_elems); // 2,0
+                const double J12 = J(0, 1, j_qpts, i_elems); // 0,1
+                const double J22 = J(1, 1, j_qpts, i_elems); // 1,1
+                const double J32 = J(2, 1, j_qpts, i_elems); // 2,1
+                const double J13 = J(0, 2, j_qpts, i_elems); // 0,2
+                const double J23 = J(1, 2, j_qpts, i_elems); // 1,2
+                const double J33 = J(2, 2, j_qpts, i_elems); // 2,2
+                const double detJ = J11 * (J22 * J33 - J32 * J23) -
+                                    /* */ J21 * (J12 * J33 - J32 * J13) +
+                                    /* */ J31 * (J12 * J23 - J22 * J13);
+                idetJ = 1.0 / detJ;
+                c_detJ = detJ * W[j_qpts];
+                // adj(J)
+                adj[0] = (J22 * J33) - (J23 * J32); // 0,0
+                adj[1] = (J32 * J13) - (J12 * J33); // 0,1
+                adj[2] = (J12 * J23) - (J22 * J13); // 0,2
+                adj[3] = (J31 * J23) - (J21 * J33); // 1,0
+                adj[4] = (J11 * J33) - (J13 * J31); // 1,1
+                adj[5] = (J21 * J13) - (J11 * J23); // 1,2
+                adj[6] = (J21 * J32) - (J31 * J22); // 2,0
+                adj[7] = (J31 * J12) - (J11 * J32); // 2,1
+                adj[8] = (J11 * J22) - (J12 * J21); // 2,2
+            }
+            for (int knds = 0; knds < nnodes_; knds++) {
+                const double bx = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(0, 0) + Gt(knds, 1, j_qpts) * A(0, 1) +
+                                   Gt(knds, 2, j_qpts) * A(0, 2));
 
-                    const double bz = idetJ * (Gt(knds, 0, j_qpts) * A(2, 0) +
-                                               Gt(knds, 1, j_qpts) * A(2, 1) +
-                                               Gt(knds, 2, j_qpts) * A(2, 2));
+                const double by = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(1, 0) + Gt(knds, 1, j_qpts) * A(1, 1) +
+                                   Gt(knds, 2, j_qpts) * A(1, 2));
 
-                    const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
-                    const double b5 = b4 + bx;
-                    const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
-                    const double b7 = b6 + by;
-                    const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
-                    const double b9 = b8 + bz;
+                const double bz = idetJ *
+                                  (Gt(knds, 0, j_qpts) * A(2, 0) + Gt(knds, 1, j_qpts) * A(2, 1) +
+                                   Gt(knds, 2, j_qpts) * A(2, 2));
 
-                    Y(knds, 0, i_elems) += c_detJ * (b4 * S(1, j_qpts, i_elems) +
-                                                     b4 * S(2, j_qpts, i_elems) +
-                                                     b5 * S(0, j_qpts, i_elems) +
-                                                     by * S(5, j_qpts, i_elems) +
-                                                     bz * S(4, j_qpts, i_elems));
+                const double b4 = i3 * (elem_deriv_shapes_view(knds, 0, i_elems) - bx);
+                const double b5 = b4 + bx;
+                const double b6 = i3 * (elem_deriv_shapes_view(knds, 1, i_elems) - by);
+                const double b7 = b6 + by;
+                const double b8 = i3 * (elem_deriv_shapes_view(knds, 2, i_elems) - bz);
+                const double b9 = b8 + bz;
 
-                    Y(knds, 1, i_elems) += c_detJ * (b6 * S(0, j_qpts, i_elems) +
-                                                     b6 * S(2, j_qpts, i_elems) +
-                                                     b7 * S(1, j_qpts, i_elems) +
-                                                     bx * S(5, j_qpts, i_elems) +
-                                                     bz * S(3, j_qpts, i_elems));
+                Y(knds, 0, i_elems) += c_detJ *
+                                       (b4 * S(1, j_qpts, i_elems) + b4 * S(2, j_qpts, i_elems) +
+                                        b5 * S(0, j_qpts, i_elems) + by * S(5, j_qpts, i_elems) +
+                                        bz * S(4, j_qpts, i_elems));
 
-                    Y(knds, 2, i_elems) += c_detJ * (b8 * S(0, j_qpts, i_elems) +
-                                                     b8 * S(1, j_qpts, i_elems) +
-                                                     b9 * S(2, j_qpts, i_elems) +
-                                                     bx * S(4, j_qpts, i_elems) +
-                                                     by * S(3, j_qpts, i_elems));
-                } // End of nnodes
-            } // End of nQpts
-        }); // End of nelems
-    } // End of if statement
+                Y(knds, 1, i_elems) += c_detJ *
+                                       (b6 * S(0, j_qpts, i_elems) + b6 * S(2, j_qpts, i_elems) +
+                                        b7 * S(1, j_qpts, i_elems) + bx * S(5, j_qpts, i_elems) +
+                                        bz * S(3, j_qpts, i_elems));
+
+                Y(knds, 2, i_elems) += c_detJ *
+                                       (b8 * S(0, j_qpts, i_elems) + b8 * S(1, j_qpts, i_elems) +
+                                        b9 * S(2, j_qpts, i_elems) + bx * S(4, j_qpts, i_elems) +
+                                        by * S(3, j_qpts, i_elems));
+            } // End of nnodes
+        } // End of nQpts
+    }); // End of nelems
 }

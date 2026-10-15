@@ -558,8 +558,8 @@ void ExaCMechModel::ModelSetup(const int nqpts,
         const mfem::FiniteElement& fe = *fe_space->GetFE(0);
         const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(),
                                                              2 * fe.GetOrder() + 1);
-        MFEM_VERIFY(ir.GetNPoints() == nqpts,
-                    "B-bar velocity gradient: the integration rule differs from the model's");
+        MFEM_VERIFY_0(ir.GetNPoints() == nqpts,
+                      "B-bar velocity gradient: the integration rule differs from the model's");
         const int bbar_size = 3 * nnodes * local_nelems;
         if (!bbar_shape_grads) {
             bbar_shape_grads = std::make_unique<mfem::Vector>(bbar_size,

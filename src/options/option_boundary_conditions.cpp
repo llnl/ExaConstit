@@ -99,11 +99,11 @@ bool BoundaryOptions::validate() {
              ++i) {
             // Add to velocity-specific maps
             if (vel_bc.essential_ids[i] <= 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_bcs` has an `essential_ids` that <= 0. We've "
+                WARNING_0_OPT("`BCs.velocity_bcs` has an `essential_ids` that <= 0. We've "
                               "fixed any negative values");
             }
             if (vel_bc.essential_comps[i] < 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_bcs` has an `essential_comps` that < 0. "
+                WARNING_0_OPT("`BCs.velocity_bcs` has an `essential_comps` that < 0. "
                               "We've fixed any negative values");
             }
         }
@@ -126,11 +126,11 @@ bool BoundaryOptions::validate() {
              ++i) {
             // Add to velocity-specific maps
             if (vgrad_bc.essential_ids[i] <= 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_gradient_bcs` has an `essential_ids` that <= "
+                WARNING_0_OPT("`BCs.velocity_gradient_bcs` has an `essential_ids` that <= "
                               "0. We've fixed any negative values");
             }
             if (vgrad_bc.essential_comps[i] < 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_gradient_bcs` has an `essential_comps` that "
+                WARNING_0_OPT("`BCs.velocity_gradient_bcs` has an `essential_comps` that "
                               "< 0. We've fixed any negative values");
             }
         }

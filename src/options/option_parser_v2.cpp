@@ -53,26 +53,23 @@ void finalize_material_options(ExaOptions& options) {
                 if (!options.orientation_file.has_value()) {
                     options.orientation_file = grain.orientation_file.value();
                 }
-                if (grain.orientation_file.value().compare(options.orientation_file.value()) != 0) {
-                    MFEM_ABORT("Check material grain tables as orientation files in there are not "
-                               "consistent between values listed elsewhere");
-                }
+                VERIFY_0_OPT(grain.orientation_file.value() == options.orientation_file.value(),
+                             "Check material grain tables as orientation files in there are not "
+                             "consistent between values listed elsewhere");
             }
 
             if (grain.grain_file.has_value()) {
                 if (!options.grain_file.has_value()) {
                     options.grain_file = grain.grain_file.value();
                 }
-                if (grain.grain_file.value().compare(options.grain_file.value()) != 0) {
-                    MFEM_ABORT("Check material grain tables as grain files in there are not "
-                               "consistent between values listed elsewhere");
-                }
+                VERIFY_0_OPT(grain.grain_file.value() == options.grain_file.value(),
+                             "Check material grain tables as grain files in there are not "
+                             "consistent between values listed elsewhere");
             }
 
-            if (max_grains < grain.num_grains && index > 0) {
-                MFEM_ABORT("Check material grain tables as values in there are not consistent "
-                           "between multiple materials");
-            }
+            VERIFY_0_OPT(max_grains >= grain.num_grains || index == 0,
+                         "Check material grain tables as values in there are not consistent "
+                         "between multiple materials");
 
             max_grains = grain.num_grains;
             index++;
@@ -140,24 +137,9 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
         parse_from_toml(toml_input);
 
         // Validate the complete configuration
-        if (!validate()) {
-            WARNING_0_OPT("Error: Configuration validation failed.");
-            if (my_id == 0) {
-                mfem::mfem_error("MFEM_ABORT: Configuration validation failed for option file");
-            } else {
-                mfem::mfem_error("");
-            }
-        }
+        VERIFY_0_OPT(validate(), "Configuration validation failed for option file");
     } catch (const std::exception& e) {
-        std::ostringstream oss;
-        oss << "Error parsing options: " << e.what();
-        std::string err = oss.str();
-        WARNING_0_OPT(err);
-        if (my_id == 0) {
-            mfem::mfem_error("MFEM_ABORT: Configuration validation failed for option file");
-        } else {
-            mfem::mfem_error("");
-        }
+        ABORT_0_OPT("Error parsing options: " << e.what());
     }
 
     // Resolve the output directory exactly once, on rank 0, and broadcast it so every
@@ -183,6 +165,7 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
     // than running the whole simulation only to have none of its output saved.
     auto& output_dir = post_processing.volume_averages.output_directory;
     std::string resolved_str;
+    std::string output_err;
     bool output_ok = true;
     if (my_id == 0) {
         fs::path dir = output_dir.empty() ? fs::path(".") : output_dir;
@@ -193,10 +176,9 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
         }
         fs::path resolved;
         if (!create_dangling_symlink_targets(abs_dir)) {
-            std::cerr << "Error: The output directory " << abs_dir
-                      << " contains a symlink whose target does not exist and could not be "
-                         "created"
-                      << std::endl;
+            output_err = "the output directory " + abs_dir.string() +
+                         " contains a symlink whose target does not exist and could not be "
+                         "created";
             output_ok = false;
         } else {
             fs::create_directories(abs_dir, ec);
@@ -207,21 +189,15 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
                 ec = std::make_error_code(std::errc::not_a_directory);
             }
             if (ec || resolved.empty()) {
-                std::cerr << "Error: Unable to create and resolve the output directory " << abs_dir
-                          << ": " << ec.message() << std::endl;
+                output_err = "unable to create and resolve the output directory " +
+                             abs_dir.string() + ": " + ec.message();
                 output_ok = false;
             }
         }
         resolved_str = resolved.string();
     }
     MPI_Bcast(&output_ok, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
-    if (!output_ok) {
-        if (my_id == 0) {
-            mfem::mfem_error("MFEM_ABORT: Unable to set up the output directory");
-        } else {
-            mfem::mfem_error("");
-        }
-    }
+    VERIFY_0_OPT(output_ok, "Unable to set up the output directory, " << output_err);
     int length = static_cast<int>(resolved_str.size());
     MPI_Bcast(&length, 1, MPI_INT, 0, MPI_COMM_WORLD);
     resolved_str.resize(static_cast<size_t>(length));

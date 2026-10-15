@@ -6,6 +6,7 @@
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/rotations.hpp"
+#include "utilities/unified_logger.hpp"
 
 #include "ECMech_const.h"
 #include "SNLS_linalg.h"
@@ -378,10 +379,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
 
     // Ensure output directory exists
     if (!m_file_manager->EnsureOutputDirectoryExists()) {
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: Failed to create output directory. Volume averaging may fail."
-                      << std::endl;
-        }
+        MFEM_WARNING_0("Failed to create output directory. Volume averaging may fail.");
     }
 
     // Initialize region-specific data structures
@@ -595,10 +593,7 @@ PostProcessingDriver::CalcType PostProcessingDriver::GetCalcType(const std::stri
         return CalcType::ELASTIC_STRAIN;
     } else {
         // Default fallback - could also throw an exception for strict validation
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: Unknown calculation type '" << calc_type_str
-                      << "', defaulting to stress" << std::endl;
-        }
+        MFEM_WARNING_0("Unknown calculation type '" << calc_type_str << "', defaulting to stress");
         return CalcType::STRESS;
     }
 }
@@ -650,9 +645,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
 
     default:
         // This should never happen due to enum type safety, but defensive programming
-        if (m_mpi_rank == 0) {
-            std::cerr << "Error: Unhandled calculation type in CalculateVolumeAverage" << std::endl;
-        }
+        MFEM_ABORT_0("Unhandled calculation type in CalculateVolumeAverage");
         return VolumeAverageData();
     }
 
@@ -1000,10 +993,7 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
         }
     } else {
         // No valid regions found - issue warning
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: No valid regions found for global " << calc_type_str
-                      << " calculation" << std::endl;
-        }
+        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
         return;
     }
 
@@ -1634,11 +1624,9 @@ void PostProcessingDriver::InitializeLightUpAnalysis() {
 
     // Create LightUp instance for each enabled configuration
     for (const auto& light_config : enabled_configs) {
-        if (!light_config.region_id.has_value() && m_mpi_rank == 0) {
-            std::cerr << "Error: LightUp config for material '" << light_config.material_name
-                      << "' has unresolved region_id" << std::endl;
-            continue;
-        }
+        MFEM_VERIFY_0(light_config.region_id.has_value(),
+                      "LightUp config for material '" << light_config.material_name
+                                                      << "' has unresolved region_id");
 
         int region_id = light_config.region_id.value() - 1;
 

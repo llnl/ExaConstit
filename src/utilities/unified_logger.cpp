@@ -52,10 +52,9 @@ void UnifiedLogger::initialize(const ExaOptions& options) {
         std::error_code ec;
         fs::create_directories(log_directory, ec);
         if (ec) {
-            std::cerr << "Warning: Failed to create log directory: " << ec.message() << std::endl;
+            MFEM_WARNING("Failed to create log directory: " << ec.message());
         } else if (!fs::is_directory(log_directory, ec)) {
-            std::cerr << "Error: Log path exists but is not a directory: " << log_directory
-                      << std::endl;
+            MFEM_WARNING("Log path exists but is not a directory: " << log_directory);
         }
     }
 
@@ -70,7 +69,7 @@ void UnifiedLogger::initialize(const ExaOptions& options) {
     main_log_file = std::make_unique<std::ofstream>(main_log_filename, std::ios::app);
 
     if (!main_log_file->is_open()) {
-        std::cerr << "Warning: Failed to open main log file: " << main_log_filename << std::endl;
+        MFEM_WARNING("Failed to open main log file: " << main_log_filename);
         return;
     }
 
@@ -412,9 +411,9 @@ std::string UnifiedLogger::end_capture() {
     // Step 5: Check capture duration for warnings
     auto duration = std::chrono::steady_clock::now() - ctx->start_time;
     if (duration > std::chrono::seconds(5)) {
-        std::cerr << "[Logger] Long capture duration: "
-                  << std::chrono::duration_cast<std::chrono::seconds>(duration).count()
-                  << " seconds for " << ctx->output_filename.filename() << std::endl;
+        MFEM_WARNING("[Logger] Long capture duration: "
+                     << std::chrono::duration_cast<std::chrono::seconds>(duration).count()
+                     << " seconds for " << ctx->output_filename.filename());
     }
 
     // Step 6: Process captured content
@@ -453,8 +452,8 @@ std::string UnifiedLogger::end_capture() {
         std::error_code ec;
         fs::create_directories(output_dir, ec);
         if (ec) {
-            std::cerr << "Warning: Failed to create output directory: " << output_dir << ": "
-                      << ec.message() << std::endl;
+            MFEM_WARNING("Failed to create output directory: " << output_dir << ": "
+                                                               << ec.message());
         }
 
         // Open output file
@@ -628,7 +627,7 @@ void UnifiedLogger::print_capture_statistics() {
             }
 
         } catch (const std::filesystem::filesystem_error& e) {
-            std::cerr << "Warning: Could not scan log directory: " << e.what() << std::endl;
+            MFEM_WARNING("Could not scan log directory: " << e.what());
         }
         std::cout << std::endl;
     }

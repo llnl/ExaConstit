@@ -1247,13 +1247,13 @@ private:
      *
      * @param orientation_file Path to orientation data file
      * @param num_grains Number of grains to load
-     * @return True if successful, false otherwise
      *
      * @details Reads all of the values in the orientation file so they can be shared
      * across multiple material regions. The values are not interpreted here, as their
-     * format depends on each region's material model.
+     * format depends on each region's material model. Aborts if the file can't be read,
+     * has no values, or the grain count doesn't match previously loaded data.
      */
-    bool LoadSharedOrientationData(const std::string& orientation_file, int num_grains);
+    void LoadSharedOrientationData(const std::string& orientation_file, int num_grains);
 
     /**
      * @brief Convert quaternions to Euler angles

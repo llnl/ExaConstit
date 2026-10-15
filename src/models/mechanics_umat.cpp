@@ -201,8 +201,8 @@ void AbaqusUmatModel::CalcIncrEndDefGrad(const mfem::ParGridFunction& x0) {
     // averaging (F-bar, shared implementation in utilities/mechanics_kernels.hpp), so its
     // strain increments carry the element-constant volume change V_end / V_beg.
     const bool use_fbar = (m_sim_state->GetOptions().solvers.integ_model == IntegrationModel::BBAR);
-    MFEM_VERIFY(!use_fbar || vdim == dim * dim,
-                "F-bar: deformation gradients must be stored as 3x3");
+    MFEM_VERIFY_0(!use_fbar || vdim == dim * dim,
+                  "F-bar: deformation gradients must be stored as 3x3");
     const double* wdetj_data = use_fbar ? loc0_wdetj->HostRead() : nullptr;
 
     double* incr_data = incr_def_grad->HostReadWrite();
@@ -789,10 +789,9 @@ bool AbaqusUmatModel::LoadUmatLibrary() {
         umat_library_path.string(), load_strategy, umat_function_name);
 
     if (!umat_function) {
-        std::ostringstream err;
-        err << "Failed to load UMAT library: " << umat_library_path.string()
-            << "\nError: " << exaconstit::UnifiedUmatLoader::GetLastError();
-        MFEM_ABORT_0(err.str());
+        MFEM_ABORT_0("Failed to load UMAT library: "
+                     << umat_library_path.string()
+                     << "\nError: " << exaconstit::UnifiedUmatLoader::GetLastError());
         return false;
     }
 
@@ -843,9 +842,7 @@ void AbaqusUmatModel::CallUmat(double* stress,
                                int* kspt,
                                int* kstep,
                                int* kinc) {
-    if (!umat_function) {
-        MFEM_ABORT_0("UMAT function not available");
-    }
+    MFEM_VERIFY_0(umat_function, "UMAT function not available");
 
     umat_function(stress,
                   statev,

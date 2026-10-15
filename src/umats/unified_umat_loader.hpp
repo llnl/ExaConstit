@@ -2,6 +2,7 @@
 
 #include "umats/userumat.h"
 #include "utilities/dynamic_function_loader.hpp"
+#include "utilities/unified_logger.hpp"
 
 #include <iostream>
 #include <sstream>
@@ -64,14 +65,11 @@ public:
             // Compatibility: warn if different symbol was used
             if (!function_name.empty() && function_name != "auto" &&
                 result.resolved_symbol != function_name) {
-                std::cerr << "Warning: Requested function '" << function_name
-                          << "' not found, using '" << result.resolved_symbol << "' instead"
-                          << std::endl;
+                MFEM_WARNING_0("Requested function '" << function_name << "' not found, using '"
+                                                      << result.resolved_symbol << "' instead");
             }
-        } else {
-            // Log error
-            std::cerr << "Failed to load UMAT: " << result.error_message << std::endl;
         }
+        // On failure, callers report the error through GetLastError()
 
         return result.function;
     }
