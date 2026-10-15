@@ -82,19 +82,23 @@ grain_file = "grains.txt"
     [Materials.Grain]
         # Where orientations are stored in the state variable array
         # Use -1 to append at the end (recommended for UMATs)
+        # Use 0 to put them at the beginning
         # Positive number = specific location in state variable array
-        # Value ignored for any ExaCMech model
+        # Leave at -1 for ExaCMech models as the location is set automatically
         ori_state_var_loc = -1
         
         # If using custom orientation types we need to know the stride length values
+        # Defaults to 4 for "quat" and 3 for "euler", so it's only needed for "custom"
         # Value ignored for any ExaCMech model as always quaternions
         ori_stride = 4
-        
+
         # How crystal orientations are represented:
-        # - "quat" or "quaternion" = 4 values per orientation (recommended for accuracy)
-        # - "euler" = 3 Euler angles in degrees (Bunge convention: Z-X-Z)
-        # - "custom" = User-defined format
-        # Value ignored for any ExaCMech model as always quaternions
+        # - "quat" = 4 values per orientation (recommended for accuracy)
+        # - "euler" = 3 values per orientation (e.g. Bunge Z-X-Z Euler angles)
+        # - "custom" = ori_stride values per orientation in a user-defined format
+        # For UMATs the values are passed in as is, so use whatever convention and
+        # units your UMAT expects
+        # ExaCMech models require "quat" (the default)
         ori_type = "quat"
         
         # Total number of unique crystal orientations in your simulation
@@ -103,9 +107,12 @@ grain_file = "grains.txt"
         num_grains = 100
         
         # File containing crystal orientations
-        # Format depends on ori_type:
+        # One orientation per grain (line 1 = grain 1, etc.) with the number of values
+        # per orientation set by ori_type / ori_stride:
         # - Quaternions: 4 values per line (q0 q1 q2 q3)
-        # - Euler angles: 3 values per line in degrees (phi1 Phi phi2)
+        # - Euler angles: 3 values per line (phi1 Phi phi2)
+        # For ExaCMech models these must be unit quaternions (w x y z) representing passive
+        # rotations from the crystal to the sample reference frame (normalized if needed)
         orientation_file = "orientations.txt"
         
         # Maps elements to grains (which orientation each element uses)

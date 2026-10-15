@@ -332,6 +332,12 @@ bool GrainInfo::validate() const {
         return false;
     }
 
+    if (ori_type == OriType::CUSTOM && ori_stride < 1) {
+        WARNING_0_OPT("Error: Orientation type `CUSTOM` within the Grain table requires a "
+                      "positive ori_stride");
+        return false;
+    }
+
     if (num_grains < 1) {
         WARNING_0_OPT("Error: num_grains was provided a value less than 1");
         return false;
@@ -476,6 +482,14 @@ bool MaterialOptions::validate() const {
             WARNING_0_OPT(err.str());
             return false;
         }
+    }
+
+    if (model.exacmech && grain_info && grain_info->ori_type != OriType::QUAT) {
+        std::ostringstream err;
+        err << "Error: Material table for material_name_region# " << mat_name
+            << " uses an ExaCMech model, which requires ori_type = \"quat\" in the Grain table";
+        WARNING_0_OPT(err.str());
+        return false;
     }
 
     if (model.exacmech) {
