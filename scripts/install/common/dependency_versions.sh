@@ -12,7 +12,7 @@ export CHAI_VER="v2025.12.0"
 
 # Material models
 export EXACMECH_REPO="https://github.com/LLNL/ExaCMech.git"
-export EXACMECH_BRANCH="develop"
+export EXACMECH_BRANCH="v0.4.3"
 
 # FEM infrastructure
 export HYPRE_VER="v3.1.0"
@@ -20,7 +20,7 @@ export METIS_VER="5.1.0"
 export METIS_URL="https://mfem.github.io/tpls/metis-${METIS_VER}.tar.gz"
 
 export MFEM_REPO="https://github.com/rcarson3/mfem.git"
-export MFEM_BRANCH="exaconstit-latest"
+export MFEM_BRANCH="exaconstit-dev"
 
 # Main application
 export EXACONSTIT_REPO="https://github.com/llnl/ExaConstit.git"

@@ -16,7 +16,8 @@ env:
   METIS_ARCHIVE: metis-5.1.0.tar.gz
   METIS_TOP_DIR: metis-5.1.0
   MFEM_TOP_DIR: mfem-exaconstit
-  MFEM_BRANCH: exaconstit-latest
+  MFEM_REPO: https://github.com/rcarson3/mfem.git
+  MFEM_BRANCH: exaconstit-dev
   ECMECH_TOP_DIR: ecmech
   SNLS_TOP_DIR: ecmech
   RAJA_TOP_DIR: RAJA
@@ -76,7 +77,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.RAJA_TOP_DIR }}
-        key: ${{ runner.os }}-build-${{ env.RAJA_TOP_DIR }}-v2.03
+        key: ${{ runner.os }}-build-${{ env.RAJA_TOP_DIR }}-v2025.12.2
 
     - name: get raja
       if: matrix.mpi == 'parallel' && steps.raja-cache.outputs.cache-hit != 'true'
@@ -92,7 +93,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.ECMECH_TOP_DIR }}
-        key: ${{ runner.os }}-build-${{ env.ECMECH_TOP_DIR }}-v2.04
+        key: ${{ runner.os }}-build-${{ env.ECMECH_TOP_DIR }}-v0.4.3-raja-v2025.12.2
 
     - name: get ecmech
       if: matrix.mpi == 'parallel' && steps.ecmech-cache.outputs.cache-hit != 'true'
@@ -136,15 +137,22 @@ jobs:
         metis-dir: ${{ env.METIS_TOP_DIR }}
 
 
-    # Get Metis through cache, or build it.
-    # Install will only run on cache miss.
+    # Get MFEM through cache, or build it.
+    # Install will only run on cache miss. The cache key includes the current
+    # commit of MFEM_BRANCH so MFEM is rebuilt whenever that branch moves.
+    - name: get mfem commit
+      id: mfem-commit
+      if: matrix.mpi == 'parallel'
+      run: |
+        echo "sha=$(git ls-remote ${{ env.MFEM_REPO }} refs/heads/${{ env.MFEM_BRANCH }} | cut -f1)" >> $GITHUB_OUTPUT
+
     - name: cache mfem
       id: mfem-cache
       if: matrix.mpi == 'parallel'
       uses: actions/cache@v4
       with:
         path: ${{ env.MFEM_TOP_DIR }}
-        key: ${{ runner.os }}-build-${{ env.MFEM_TOP_DIR }}-${{ env.MFEM_BRANCH }}-${{ env.HYPRE_TOP_DIR }}-v2.07
+        key: ${{ runner.os }}-build-${{ env.MFEM_TOP_DIR }}-${{ steps.mfem-commit.outputs.sha }}-${{ env.HYPRE_TOP_DIR }}-${{ env.RAJA_TOP_DIR }}-v2025.12.2
 
     - name: install mfem
       if: matrix.mpi == 'parallel' && steps.mfem-cache.outputs.cache-hit != 'true'
@@ -154,6 +162,7 @@ jobs:
         hypre-dir: '${{ github.workspace }}/${{ env.HYPRE_TOP_DIR }}/src/hypre/'
         metis-dir: '${{ github.workspace }}/${{ env.METIS_TOP_DIR }}/install_dir/'
         mfem-dir: ${{ env.MFEM_TOP_DIR }}
+        mfem-repo: ${{ env.MFEM_REPO }}
         mfem-branch: ${{ env.MFEM_BRANCH }}
 
     # ExaConstit build and test
