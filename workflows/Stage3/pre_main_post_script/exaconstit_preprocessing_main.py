@@ -5,7 +5,7 @@ Created on Fri Aug 28 11:21:16 2020
 
 @author: carson16
 
-Current version: v0.3
+Current version: v0.4
 This is meant to be used with the demonstration problem. 
 It could be run as a standalone script in which users would want to modify
 the bottom code which is behind the if main check to be inline with everything.
@@ -21,8 +21,7 @@ of how to set things up so everything runs as we'd expect.
 import numpy as np
 import pandas as pd
 
-import rust_voxel_coarsen.rust_voxel_coarsen as rvc
-from job_creation import job_scripts_entk as job_scripts
+from job_creation import job_scripts_local as job_scripts
 
 import argparse
 import subprocess
@@ -32,10 +31,10 @@ import re
 import sys
 import pickle
 
-barlat_opt = '../postprocessing/barlat_optimize.py'
+barlat_opt = '../postprocessing/barlat_optimize_v2.py'
 if not barlat_opt in sys.path:
     sys.path.append(os.path.dirname(os.path.abspath(barlat_opt)))
-import barlat_optimize as bo
+import barlat_optimize_v2 as bo
 
 class cd:
     """Context manager for changing the current working directory"""
@@ -84,13 +83,10 @@ def exaconstit_preprocess(args, output_directory):
        - 'input_master_toml' - Master option toml file for ExaConstit for which we\'ll use to run all of our jobs
        - 'input_output_toml' - Option toml file name used for ExaConstit for which we\'ll use to run a job
        - 'rtmodel' - Value to use as Solvers.rtmodel in configured options file
+       - 'ang_spacing' - The angle spacing between points default to 15 degs if not available, note should be an integer increment
+       - 'strain_rate' - The desired strain rate for the problem with default value set at 0.001 1/s
     '''
     #%%
-    # Input filename and directory
-    fdiri = os.path.abspath(args["exaca_input_file_dir"])
-
-    fin = args["exaca_input_file"]
-
     fdirc = os.path.abspath(args["common_file_directory"])
     #%%
     # Output filenames and directory
@@ -106,8 +102,8 @@ def exaconstit_preprocess(args, output_directory):
     if not os.path.exists(fdiro):
         os.makedirs(fdiro)
 
-    dt_file = args["dt_file_name"]
-    dt_step = args["number_time_steps"]
+    # dt_file = args["dt_file_name"]
+    # dt_step = args["number_time_steps"]
 
     #%%
     # Temperatue ranges that simulations were run at
@@ -116,6 +112,12 @@ def exaconstit_preprocess(args, output_directory):
     num_props = args["num_properties"]
     state_files = args["state_file_names"]
     num_states = args["num_states"]
+    grain_file_name = args["grain_file_name"]
+    ngrains = args["ngrains"]
+    shortcut_name = args["shortcut_name"]
+    rve_base_name = args["rve_base_name"]
+    matl_name = args["matl_name"]
+    ori_out = args["ori_file_name"]
 
     if(len(tempk) != len(prop_files)):
         raise ValueError('Temperature input and property file names not of the same length')
@@ -123,130 +125,15 @@ def exaconstit_preprocess(args, output_directory):
     if(len(tempk) != len(state_files)):
         raise ValueError('Temperature input and state file names not of the same length')
 
-    #%%
-    # For our orientation data we want to be flexible for what ExaCA is using as they
-    # now have both a 10k and 1e6 unique orientation list and potentially this could change
-    # per simulation (hopefully not though). We used to require this to be uni_cubic_10k_quats.txt
-    # and then we assumed it was in the same file as the ExaCA data. Now we allow it to be anywhere
-    # and have any name. The only requirement is it must be a list of quaternions that are crystal to sample
-    # using passive rotations, and the quats must be equivalent of the rotation matrices that they used
-    # to run their simulations. This should always be the case as I've generated the rotation matrice files for them.
-    fh = os.path.abspath(args["unique_ori_filename"])
+    if ("ang_spacing" not in args.keys()):
+        ang_spacing = 15.0
+    else:
+        ang_spacing = args["ang_spacing"]
 
-    ori_quat = np.loadtxt(fh)
-    ori_quat = ori_quat.T
-    nori = ori_quat.shape[1]
-
-    #%%
-    # Time to read in our voxel data
-    fh = os.path.join(fdiri, os.path.basename(fin))
-    # ExaCA has the following headers
-    # Coordinates are in CA units, 1 cell = #.#### microns. Data is cell-centered. Origin at #,#,#
-    # X coord, Y coord, Z coord, Grain ID
-    # If we read in just the first line we can get out what the voxel size
-    # should be with the following set of code.
-    voxel_size = 1.0
-    with open(fh, "rt") as f:
-        line = f.readline()
-        sub_line = line.split("=")
-        sub_line = sub_line[1]
-        sub_line = sub_line.strip().split(" ")
-        voxel_size = float(sub_line[0]) * 1e6
-        print("Voxel size: " + str(voxel_size) + " microns")
-
-    fh = os.path.join(fdiri, os.path.basename(fin))
-    voxel = args["coarsening"]
-    box_size, cdata = rvc.voxel_coarsen(fh, voxel)
-
-    dnx = np.int32(box_size[0] / voxel)
-    dny = np.int32(box_size[1] / voxel)
-    dnz = np.int32(box_size[2] / voxel)
-
-    #%%
-    print("Finished coarsening data")
-    # Here we find all of the unique grain numbers which correspond to 1-10k
-    # We then find what quaternions are available
-    ugr, ret_inv_gr, ret_cnts_gr = np.unique(cdata.flatten(), return_counts=True, return_inverse=True)
-    gr_num = np.abs(np.mod(ugr, nori))
-    uori, ret_inv, ret_cnts = np.unique(gr_num, return_counts=True, return_inverse=True)
-    quats = ori_quat[:, gr_num[ret_inv]]
-
-    #%%
-    # This section is responsible for returning to a unique set of
-    # unit quaternions for all of our grains. Once, we have that
-    # the data can be saved off.
-    indlog = ret_cnts > 1
-    ind = np.r_[0:uori.shape[0]]
-    index = ind[indlog]
-    #
-    for i in index:
-        ad = np.argwhere(ret_inv == i)
-        if(ad.shape[0] == 2):
-            quats[0, ad[1]] = 1.1 * quats[0, ad[1]]
-        else:
-            rands = np.random.uniform(0.9,1.1, (ad.shape[0],1))
-            jj = 0
-            for j in ad[1:]:
-                quats[0, j] = rands[jj] * quats[0, j]
-                jj += 1
-
-    quats = quats * np.tile(1.0 / np.linalg.norm(quats, axis=0), (4,1))
-
-    ngrains = quats.shape[1]
-
-    fh = os.path.join(fdiro, os.path.basename(ori_out))
-    np.savetxt(fh, quats.T)
-    #%%
-    # The grain numbers from the ExaCA simulation are most likely
-    # not sequential from 1..ngrains, so we need to go ahead and
-    # do that down below for the ExaConstit simulation.
-    # We can then save the data off.
-    ngrains = ugr.shape[0]
-    fh = os.path.join(fdiro, os.path.basename(gr_out))
-
-    vec = np.squeeze(cdata.flatten())
-    vec2 = np.copy(vec)
-
-    # This is an optimization for when you have a large set of grains and # of voxels
-    # much faster than the previous version which made use of logical
-    # indices
-    gmap = {}
-    for i in range(ngrains):
-        gmap[ugr[i]] = i + 1
-    for i in range(vec.shape[0]):
-        ind = gmap[vec[i]]
-        vec2[i] = ind
-
-    np.savetxt(fh, vec2, fmt = "%d")
-    #%%
-    # Since we have all of the relevant info about the mesh dimensions,
-    # we could just run the mesh generator down below as well...
-
-    print("Starting mesh generation")
-
-    # Our dimensions are usually in mm and our supplied voxel sizes from ExaCA are usually in microns.
-    # So, we need to divide by 1000 here.
-    lx = round(voxel_size * box_size[0], 1) / 1000.
-    ly = round(voxel_size * box_size[1], 1) / 1000.
-    lz = round(voxel_size * box_size[2], 1) / 1000.
-
-    mesh_file_loc = os.path.join(os.path.abspath('./'), os.path.basename("simulation.mesh"))
-
-    if (args["mesh_generator"]):
-
-        fhg = os.path.join(fdiro, os.path.basename(gr_out))
-        fhm = os.path.join(fdiro, os.path.basename(fout + '.mesh'))
-
-        with cd(args["mesh_generator_dir"]):
-            cmd = './mesh_generator'
-            args = '-nx ' + str(dnx) + ' -ny ' + str(dny) + ' -nz ' + str(dnx)
-            args = args + ' -lx ' + str(lx) + ' -ly ' + str(ly) + ' -lz ' + str(lz)
-            args = args + ' -grain ' + fhg
-            args = args + ' -o ' + fhm
-            args = args + ' -ord 1 -auto_mesh'
-            cmd = cmd + ' ' + args
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True)
-        mesh_file_loc = fhm
+    if ("strain_rate" not in args.keys()):
+        strain_rate = 0.001
+    else:
+        strain_rate = args["strain_rate"]
 
     # At this point this is quite manual. We could probably end up automating this construction later on if 
     # we really wanted to
@@ -259,7 +146,6 @@ def exaconstit_preprocess(args, output_directory):
     # These will be repeated in a loop
     rve_name = []
     ori_file_name = []
-    grain_num = []
     temperature = []
     mesh_file = []
     lprop_file = []
@@ -268,23 +154,44 @@ def exaconstit_preprocess(args, output_directory):
     nstate = []
     ldt_file = []
     ntstep = []
+    grain_fname = []
+    num_grains = []
+    shortcut = []
+    material_name = []
 
-    loading_dir_names_xy = ["x_0_y_90", "x_15_y_75", "x_30_y_60", "x_45_y_45", "x_60_y_30", "x_75_y_15", "x_90_y_0"]
-    loading_dir_names_xz = ["x_15_z_75", "x_30_z_60", "x_45_z_45", "x_60_z_30", "x_75_z_15", "x_90_z_0"]
-    loading_dir_names_yz = ["y_15_z_75", "y_30_z_60", "y_45_z_45", "y_60_z_30", "y_75_z_15"]
+    loading_cosines_xy = []
+    loading_dir_names_xy = []
+
+    for ang in np.arange(0.0, 91.0, ang_spacing):
+        ang90 = 90.0 - ang
+        name = "x_" + str(int(ang)) + "_y_" + str(int(ang90))
+        loading_cosines_xy.append((ang, ang90, 90.0))
+        loading_dir_names_xy.append(name)
+
+    loading_cosines_xz = []
+    loading_dir_names_xz = []
+
+    for ang in np.arange(ang_spacing, 91.0, ang_spacing):
+        ang90 = 90.0 - ang
+        name = "x_" + str(int(ang)) + "_z_" + str(int(ang90))
+        loading_cosines_xz.append((ang, 90.0, ang90))
+        loading_dir_names_xz.append(name)
+
+    loading_cosines_yz = []
+    loading_dir_names_yz = []
+
+    for ang in np.arange(ang_spacing, 90.0, ang_spacing):
+        ang90 = 90.0 - ang
+        name = "y_" + str(int(ang)) + "_z_" + str(int(ang90))
+        loading_cosines_yz.append((90.0, ang, ang90))
+        loading_dir_names_yz.append(name)
+
     loading_dir_names_shear = ["shear_xy", "shear_xz", "shear_yz"]
 
-    loading_cosines_xy = [(0.0, 90.0, 90.0), (15.0, 75.0, 90.0), (30.0, 60.0, 90.0), (45.0, 45.0, 90.0), (60.0, 30.0, 90.0),
-                        (75.0, 15.0, 90.0), (90.0, 0.0, 90.0)]
-    loading_cosines_xz = [(15.0, 90.0, 75.0), (30.0, 90.0, 60.0), (45.0, 90.0, 45.0), (60.0, 90.0, 30.0), (75.0, 90.0, 15.0),
-                        (90.0, 90.0, 0.0)]
-    loading_cosines_yz = [(90.0, 15.0, 75.0), (90.0, 30.0, 60.0), (90.0, 45.0, 45.0), (90.0, 60.0, 30.0), (90.0, 75.0, 15.0)]
 
-    strain_rate = 0.001
-
-    vel_x = strain_rate * lx
-    vel_y = strain_rate * ly
-    vel_z = strain_rate * lz
+    vel_x = strain_rate * 1.0
+    vel_y = strain_rate * 1.0
+    vel_z = strain_rate * 1.0
 
     essential_ids_xz   = str(np.array2string(np.asarray([1, 2, 3, 4, 5]), separator=', '))
     essential_comps_xz = str(np.array2string(np.asarray([3, 1, 2, 3, 1]), separator=', '))
@@ -397,30 +304,30 @@ def exaconstit_preprocess(args, output_directory):
     for itemp in range(len(tempk)):
         for i in range(nruns):
             rve_name.append(rve_unique_name)
-            fho = os.path.join(fdiro, os.path.basename(ori_out))
+            fho = os.path.join(fdirc, os.path.basename(ori_out))
             ori_file_name.append(fho)
-            grain_num.append(ngrains)
             temperature.append(tempk[itemp])
-            mesh_file.append(mesh_file_loc)
             fhp = os.path.join(fdirc, os.path.basename(prop_files[itemp]))
             lprop_file.append(fhp)
             fhs = os.path.join(fdirc, os.path.basename(state_files[itemp]))
             lstate_file.append(fhs)
-            fhc = os.path.join(fdirc, os.path.basename(dt_file))
-            ldt_file.append(fhc)
             nprop.append(num_props[itemp])
             nstate.append(num_states[itemp])
-            ntstep.append(dt_step)
+            grain_fname.append(grain_file_name)
+            num_grains.append(ngrains)
+            shortcut.append(shortcut_name)
+            material_name.append(matl_name)
         if(itemp > 0):
             lloading_name.extend(loading_name)
             lessential_vals.extend(essential_vals)
             lessential_ids.extend(essential_ids)
             lessential_comps.extend(essential_comps)
 
-    data = {"rve_unique_name" : rve_name, "ori_file_name" : ori_file_name, "ngrains" : grain_num, "tempk" : temperature,
-            "prop_file_loc" : lprop_file, "nprops" : nprop, "state_file_loc" : lstate_file, "nstates" : nstate,
+    data = {"rve_unique_name" : rve_name, "prop_file_loc" : lprop_file, "nprops" : nprop, "temperature" : temperature,
+            "grain_file_name" : grain_fname, "ngrains" : num_grains, "shortcut_name" : shortcut, "matl_name" : material_name,
+            "state_file_loc" : lstate_file, "nstates" : nstate, "ori_file_name" : ori_file_name,
             "ess_id_array" : lessential_ids, "ess_comp_array" : lessential_comps, "ess_vals_array" : lessential_vals,
-            "loading_name" : lloading_name, "mesh_file_loc" : mesh_file, "dt_file" : ldt_file, "dt_steps" : ntstep}
+            "loading_name" : lloading_name}
 
     df = pd.DataFrame(data)
 
@@ -478,8 +385,6 @@ def exaconstit_job_cli(args, output_file_dir, df):
     # Output directory
     fdiro = fdir_rve
 
-    rtmodel = args["rtmodel"]
-
     #%%
     # Create all of the necessary symlink files and job script
     fh = os.path.join(fdirc, os.path.basename(fin))
@@ -535,13 +440,13 @@ def exaconstit_job_cli(args, output_file_dir, df):
     headers = list(df.columns)
     headers.pop(0)
 
-    avg_headers = ["avg_stress_ext", "avg_pl_work_ext", "avg_dp_tensor_ext", "avg_def_grad_ext"]
+    avg_headers = ["rve_name"]
     if not os.path.exists(fdiro):
         os.makedirs(fdiro)
     for iDir in range(nruns):
         rve_name = df["rve_unique_name"][iDir]
         load_dir_name = df["loading_name"][iDir]
-        temp_k = str(int(df["tempk"][iDir]))
+        temp_k = str(int(df["temperature"][iDir]))
         fdiron = fdir_rve
         fdironl = os.path.join(fdiron, load_dir_name+"_"+temp_k, "")
         if not os.path.exists(fdironl):
@@ -575,9 +480,6 @@ def exaconstit_job_cli(args, output_file_dir, df):
             replace = ext_name
             toml = re.sub(search, replace, toml)
 
-        search = "%%rtmodel%%"
-        toml = re.sub(search, rtmodel, toml)
-
         # Output toml file
         fh = os.path.join(fdironl, os.path.basename(fotoml))
         # Check to see if it is a symlink and if so remove the link
@@ -589,7 +491,7 @@ def exaconstit_job_cli(args, output_file_dir, df):
 
     return None
 
-def exaconstit_job_generation(input_cases, output_file_dir, pre_process=True, post_process=False):
+def exaconstit_job_generation(input_cases, output_file_dir, pre_process=True, job_creation=False, post_process=False):
     '''
     exaconstit_job_generation takes in a panada dataframe (input_cases) and the desired output file directory for all runs:
        input_cases has the following set of headers that need to be filled out for each RVE
@@ -625,6 +527,7 @@ def exaconstit_job_generation(input_cases, output_file_dir, pre_process=True, po
     scripts_run = []
     rve_test_matrices = []
     rve_test_file = os.path.join(output_file_dir, "rve_test_matrices.pickle")
+    post_process_file = os.path.join(output_file_dir, "post_process.pickle")
 
     if pre_process:
         for irve in range(nrves):
@@ -645,73 +548,80 @@ def exaconstit_job_generation(input_cases, output_file_dir, pre_process=True, po
     # This is not at all efficient way to submit all of the jobs but...
     # it should get the job done for the near term
     # We assume that this script will run submit and or run all of our simulations
-    job_scripts(input_cases, output_file_dir, rve_test_matrices)
+    if job_creation:
+        job_scripts(input_cases, output_file_dir, rve_test_matrices)
     if post_process:
-        for irve in range(nrves):
-            local_input_cases = input_cases.loc[irve]
-            fdirs = os.path.abspath(output_file_dir)
-            frve_name = local_input_cases["rve_unique_name"]
-            fdir_rve = os.path.join(fdirs, frve, "")
+        post_results = bo.postprocessing(input_cases, output_file_dir, rve_test_matrices, nrves, 
+                                        quaternion_file=input_cases["quaternion_file"][0], quat_weights_file=input_cases["quaternion_weights"][0], use_sachs=input_cases["ori_optimization"][0])
+        with open(post_process_file, "wb") as f_handle:
+            pickle.dump(post_results, f_handle, protocol=pickle.HIGHEST_PROTOCOL)
+        
 
-            ftime = local_input_cases["dt_file_name"]
-            tempk = local_input_cases["temperature"]
-            bo.postprocessing(frve_name, fdir_rve, ftime, tempk, False)
+#        for irve in range(nrves):
+#            local_input_cases = input_cases.loc[irve]
+#            fdirs = os.path.abspath(output_file_dir)
+#            frve_name = local_input_cases["rve_unique_name"]
+#            fdir_rve = os.path.join(fdirs, frve, "")
+#
+#            ftime = local_input_cases["dt_file_name"]
+#            tempk = local_input_cases["temperature"]
+#            bo.postprocessing(frve_name, fdir_rve, ftime, tempk, False)
 
 if __name__ == "__main__":
     # Input parameters for preprocessing/simulation portion of things
     inputs = {
-        "exaca_input_file_dir" : [],
-        "exaca_input_file" : [],
-        "unique_ori_filename" : [],
-        "coarsening" : [],
-        "mesh_generator" : [],
-        "mesh_generator_dir" : [],
         "rve_unique_name" : [],
         "temperature" : [],
+        "grain_file_name" : [],
+        "ngrains" : [],
+        "shortcut_name" : [],
+        "rve_base_name" : [],
+        "matl_name" : [],
         "property_file_names" : [],
         "num_properties" : [],
         "state_file_names" : [],
         "num_states" : [],
-        "dt_file_name" : [],
-        "number_time_steps" : [],
+        "ori_file_name" : [],
+        "quaternion_file" : None,
+        "quaternion_weights" : None,
+        "ori_optimization" : None,
         "common_file_directory" : [],
         "input_job_filename" : [],
         "input_job_filedir" : [],
-        "bsub_jobs" : [],
         "input_master_toml" : [],
         "input_output_toml" : [],
-        "rtmodel" : [],
+        "strain_rate": [],
+        "ang_spacing": [],
         "exaconstit_binary" : [],
         "exaconstit_module_source_file" : [],
-        "rve_job_num_ranks" : []
+        "job_num_nodes" : [],
+        "job_walltime"  : [],
+        "job_node_cpus" : [],
+        "job_node_gpus" : [],
+        "job_max_nodes_fail"    : [],
+        "job_max_walltime_fail" : [],
+        "rve_job_num_nodes" : [],
+        "rve_job_num_ranks" : [],
+        "rve_job_time" : []
     }
 
     # Relevant data files we need to run
-    path_dir = "/gpfs/alpine/world-shared/mat190/exaam-challenge-problem-dummy/CY22-DEMO-DONT-DELETE/"
+    path_dir = "./"
     path_dir = os.path.abspath(path_dir)
-    output_file_dir = os.path.join(path_dir, "cases", "exaconstit_test", "")
-    exaca_dir_base = os.path.join(path_dir, "cases", "exaca", "")
-    test_base_name = "_ExaConstit.csv"
-    uni_ori_file = os.path.join(path_dir, "templates", "exaca", "uni_cubic_10k_quats.txt")
-    # Would be where ever ExaConstit was built / installed
-    # If we had a world location that we knew things were located at then we could use that here
-    # such as:
-    exaconstit_build_dir = os.environ.get("exaconstit_build_dir", "/gpfs/alpine/world-shared/mat190/exaconstit/ExaConstit/build/")
-    exaconstit_install_dir = os.path.join(exaconstit_build_dir, "bin", "")
-    mesh_gen_dir = os.path.join(exaconstit_install_dir, "")
-    # Location of the ExaConstit binary
-    exaconstit_binary = os.environ.get("exaconstit_binary", "/gpfs/alpine/world-shared/mat190/exaconstit/exaconstit-mechanics-v0_6_2")
-    # Location of shell script file that will be used to source/load our necessary modules needed to run ExaConstit 
-    exaconstit_module_source_file = os.path.abspath("/gpfs/alpine/world-shared/mat190/exaconstit/module_loads_v62.sh")
+    output_file_dir = os.path.join(path_dir, "cases", "")
 
-    temperatures = [298.0]#, 523.0, 773.0]
-    property_files = ["props_cp_voce_ab_in625_RT.txt"]#, "props_cp_voce_ab_in625_T250.txt", "props_cp_voce_ab_in625_T500"]
-    num_props = [17]#, 17, 17]
-    state_files = ["state_cp_voce.txt"]#, "state_cp_voce.txt", "state_cp_voce"]
-    num_states = [24]#, 24, 24]
-    dt_file_name = "custom_dt_fine.txt"
-    num_time_steps = 1
-    coarse_level = 2
+    temperatures = [298.0]
+    ang_spacing = 1.0
+    strain_rate = 0.001
+    property_files = ["props_cp_in625.txt"]
+    num_props = [17]
+    state_files = ["state_cp.txt"]
+    num_states = [24]
+    grain_file_name = "grains.txt"
+    ngrains = 1000
+    shortcut_name = "evptn_FCC_A"
+    rve_base_name = "px_in625_deg_1"
+    matl_name = "in625"
     # Where ever we have the common files located
     common_file_directory = "../common_simulation_files/"
     common_file_directory = os.path.abspath(common_file_directory)
@@ -720,43 +630,67 @@ if __name__ == "__main__":
     bsub_jobs = False
     input_master_toml = "options_master.toml"
     input_output_toml = "options.toml"
-    rtmodel = "GPU"
-    num_nodes = 8
-    num_resources_per_node = 6
+    ori_file_name = "quats_1k.txt"
+    rtmodel = "CPU"
+
+    inputs["quaternion_file"] = os.path.join(common_file_directory, ori_file_name)
+    inputs["ori_optimization"] = True
+
+    num_nodes = 1
+    num_resources_per_node = 56
     rve_job_num_ranks = num_nodes * num_resources_per_node
 
-    fh = os.path.join(path_dir, "parameters.csv")
-    df = pd.read_csv(fh)
-    nruns = df.shape[0]
+    job_num_nodes = int(1)
+    job_node_cpus = int(112)
+    job_node_gpus = int(0)
+    # Walltime is in minutes
+    job_walltime  = int(120.0)
+    job_max_nodes_fail = int(10)
+    job_max_walltime_fail = int(240.0)
+    num_resources_per_node = int(112)
+    rve_job_num_nodes = int(1)
+    rve_job_num_ranks = rve_job_num_nodes * num_resources_per_node
+    rve_job_time = int(10.0)
+
+    # Location of the ExaConstit binary
+    exaconstit_binary = os.environ.get("exaconstit_binary", "mechanics")
+    # Location of shell script file that will be used to source/load our necessary modules needed to run ExaConstit 
+    exaconstit_module_source_file = os.path.abspath("./")
+
+    nruns = 1
 
     for iruns in range(nruns):
-
-        rve_base_name = str(df["caseID"][iruns])
-        test_base_name = rve_base_name+"_ExaConstit.csv"
-        inputs["exaca_input_file_dir"].append(os.path.join(exaca_dir_base, rve_base_name, ""))
-        inputs["exaca_input_file"].append(test_base_name)
-        inputs["unique_ori_filename"].append(uni_ori_file)
-        inputs["coarsening"].append(coarse_level)
-        inputs["mesh_generator"].append(True)
-        inputs["mesh_generator_dir"].append(mesh_gen_dir)
-        inputs["rve_unique_name"].append("rve_"+rve_base_name)
+        inputs["rve_unique_name"].append(rve_base_name)
+        inputs["grain_file_name"].append(grain_file_name)
+        inputs["ngrains"].append(ngrains)
+        inputs["shortcut_name"].append(shortcut_name)
+        inputs["rve_base_name"].append(rve_base_name)
+        inputs["matl_name"].append(matl_name)
         inputs["temperature"].append(temperatures)
         inputs["property_file_names"].append(property_files)
         inputs["num_properties"].append(num_props)
         inputs["state_file_names"].append(state_files)
         inputs["num_states"].append(num_states)
-        inputs["dt_file_name"].append(dt_file_name)
-        inputs["number_time_steps"].append(num_time_steps)
+        inputs["ori_file_name"].append(ori_file_name)
         inputs["common_file_directory"].append(common_file_directory)
         inputs["input_job_filename"].append(input_job_filename)
         inputs["input_job_filedir"].append(input_job_filedir)
-        inputs["bsub_jobs"].append(bsub_jobs)
         inputs["input_master_toml"].append(input_master_toml)
         inputs["input_output_toml"].append(input_output_toml)
-        inputs["rtmodel"].append(rtmodel)
+        inputs["strain_rate"].append(strain_rate)
+        inputs["ang_spacing"].append(ang_spacing)
+        #Requirements related to our job
         inputs["exaconstit_binary"].append(exaconstit_binary)
         inputs["exaconstit_module_source_file"].append(exaconstit_module_source_file)
+        inputs["job_num_nodes"].append(job_num_nodes)
+        inputs["job_walltime"].append(job_walltime)
+        inputs["job_node_cpus"].append(job_node_cpus)
+        inputs["job_node_gpus"].append(job_node_gpus)
+        inputs["job_max_nodes_fail"].append(job_max_nodes_fail)
+        inputs["job_max_walltime_fail"].append(job_max_walltime_fail)
+        inputs["rve_job_num_nodes"].append(rve_job_num_nodes)
         inputs["rve_job_num_ranks"].append(rve_job_num_ranks)
+        inputs["rve_job_time"].append(rve_job_time)
 
     input_cases = pd.DataFrame(data=inputs)
 
@@ -771,4 +705,4 @@ if __name__ == "__main__":
     # Once run all of our jobs should be submitted to the LSF system
     # If we're on a Flux system then we could actually modify things so that
     # we use the python interface to submit and wait on all the jobs
-    exaconstit_job_generation(input_cases, output_file_dir, True, False)
+    exaconstit_job_generation(input_cases, output_file_dir, True, False, False)

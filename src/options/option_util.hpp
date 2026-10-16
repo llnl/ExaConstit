@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mfem.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -11,15 +13,45 @@
 
 /**
  * Macro to simplify warning's so it only does it on Rank 0 and nowhere else
+ *
+ * Options are parsed before the UnifiedLogger is initialized, so this checks the rank
+ * directly rather than going through MFEM_WARNING_0.
  */
-#define WARNING_0_OPT(...)                           \
-    {                                                \
-        int mpi_rank;                                \
-        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);    \
-        if (mpi_rank == 0) {                         \
-            std::cerr << (__VA_ARGS__) << std::endl; \
-        }                                            \
+#define WARNING_0_OPT(...)                        \
+    {                                             \
+        int mpi_rank;                             \
+        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank); \
+        if (mpi_rank == 0) {                      \
+            MFEM_WARNING((__VA_ARGS__));          \
+        }                                         \
     }
+
+/**
+ * Macro to abort on every rank while only printing the message on Rank 0
+ *
+ * Like WARNING_0_OPT, this is the options parsing counterpart to MFEM_ABORT_0 for use
+ * before the UnifiedLogger is initialized.
+ */
+#define ABORT_0_OPT(...)                          \
+    {                                             \
+        int mpi_rank;                             \
+        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank); \
+        if (mpi_rank == 0) {                      \
+            MFEM_ABORT(__VA_ARGS__);              \
+        } else {                                  \
+            mfem::mfem_error("");                 \
+        }                                         \
+    }
+
+/**
+ * Options parsing counterpart to MFEM_VERIFY_0, see ABORT_0_OPT
+ */
+#define VERIFY_0_OPT(condition, ...)  \
+    do {                              \
+        if (!(condition)) {           \
+            ABORT_0_OPT(__VA_ARGS__); \
+        }                             \
+    } while (0)
 
 #define INFO_0_OPT(...)                              \
     {                                                \
@@ -55,7 +87,7 @@ inline EnumType string_to_enum(const std::string& str,
         return it->second;
     }
     std::ostringstream err;
-    err << "Warning: Unknown " << enum_name << " type '" << str << "', using default.";
+    err << "Unknown " << enum_name << " type '" << str << "', using default.";
     WARNING_0_OPT(err.str());
     return default_value;
 }
@@ -90,7 +122,7 @@ inline std::vector<double> load_vector_from_file(const std::filesystem::path& fi
 
     if (expected_size > 0 && result.size() != static_cast<size_t>(expected_size)) {
         std::ostringstream err;
-        err << "Warning: File " << filename << " contains " << result.size() << " values, but "
+        err << "File " << filename << " contains " << result.size() << " values, but "
             << expected_size << " were expected.";
         WARNING_0_OPT(err.str());
     }

@@ -12,7 +12,7 @@
 void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 
@@ -55,7 +55,7 @@ void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> 
 void VolumeProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 
@@ -186,15 +186,12 @@ void StateVariableProjection::Execute(std::shared_ptr<SimulationState> sim_state
     const int vdim = state_qf->GetVDim();
     m_component_length = (m_component_length == -1) ? vdim : m_component_length;
 
-    if ((m_component_length + m_component_index) > vdim) {
-        MFEM_ABORT_0("StateVariableProjection provided a length and index that pushes us past the "
-                     "state variable length");
-    };
-
-    if (m_component_length > state_gf->VectorDim()) {
-        MFEM_ABORT_0("StateVariableProjection provided length is greater than the gridfunction "
-                     "vector length");
-    };
+    MFEM_VERIFY_0((m_component_length + m_component_index) <= vdim,
+                  "StateVariableProjection provided a length and index that pushes us past the "
+                  "state variable length");
+    MFEM_VERIFY_0(m_component_length <= state_gf->VectorDim(),
+                  "StateVariableProjection provided length is greater than the gridfunction "
+                  "vector length");
 
     const auto l2g = qpts2mesh.Read();
     const auto state_qf_data = mfem::Reshape(state_qf->Read(), vdim, local_nelems);
@@ -265,15 +262,12 @@ void ElasticStrainProjection::Execute(std::shared_ptr<SimulationState> sim_state
     const int gf_vdim = elastic_strain_gf->VectorDim();
     m_component_length = (m_component_length == -1) ? vdim : m_component_length;
 
-    if ((m_component_length + m_component_index) > vdim) {
-        MFEM_ABORT_0("ElasticStrainProjection provided a length and index that pushes us past the "
-                     "state variable length");
-    };
-
-    if (m_component_length > elastic_strain_gf->VectorDim()) {
-        MFEM_ABORT_0("ElasticStrainProjection provided length is greater than the gridfunction "
-                     "vector length");
-    };
+    MFEM_VERIFY_0((m_component_length + m_component_index) <= vdim,
+                  "ElasticStrainProjection provided a length and index that pushes us past the "
+                  "state variable length");
+    MFEM_VERIFY_0(m_component_length <= gf_vdim,
+                  "ElasticStrainProjection provided length is greater than the gridfunction "
+                  "vector length");
 
     const int estrain_ind =
         sim_state->GetQuadratureFunctionStatePair("elastic_strain", region).first;

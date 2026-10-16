@@ -64,7 +64,7 @@ void BCData::SetScales() {
     }
 }
 
-void BCData::GetComponents(int id, mfem::Array<bool>& component) {
+void BCData::GetComponents(int id, std::array<bool, 3>& component) {
     switch (id) {
     case 0:
         component[0] = false;

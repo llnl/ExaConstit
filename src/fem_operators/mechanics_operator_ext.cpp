@@ -5,9 +5,10 @@
 #include "fem_operators/mechanics_operator.hpp"
 #include "utilities/mechanics_log.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 MechOperatorJacobiSmoother::MechOperatorJacobiSmoother(const mfem::Vector& d,
                                                        const mfem::Array<int>& ess_tdofs,

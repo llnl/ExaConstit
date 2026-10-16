@@ -211,7 +211,17 @@ int main(int argc, char* argv[]) {
          */
         mfem::Device device;
         if (toml_opt.solvers.rtmodel == RTModel::GPU) {
+#if defined(MFEM_USE_UMPIRE)
+            device.SetMemoryTypes(mfem::MemoryType::HOST_UMPIRE, mfem::MemoryType::DEVICE_UMPIRE);
+#else
             device.SetMemoryTypes(mfem::MemoryType::HOST_64, mfem::MemoryType::DEVICE);
+#endif
+        } else {
+#if defined(MFEM_USE_UMPIRE)
+            device.SetMemoryTypes(mfem::MemoryType::HOST_UMPIRE, mfem::MemoryType::DEVICE_UMPIRE);
+#else
+            device.SetMemoryTypes(mfem::MemoryType::HOST_64, mfem::MemoryType::DEVICE);
+#endif
         }
         device.Configure(device_config.c_str());
 

@@ -13,14 +13,12 @@ void BCManager::UpdateBCData(std::unordered_map<std::string, mfem::Array<int>>& 
     ess_bdr["total"] = 0;
     scale = 0.0;
 
-    auto ess_comp = map_ess_comp["total"].find(step)->second;
-    auto ess_id = map_ess_id["total"].find(step)->second;
+    const auto& ess_comp = map_ess_comp["total"].find(step)->second;
+    const auto& ess_id = map_ess_id["total"].find(step)->second;
 
-    mfem::Array<bool> cmp_row;
-    cmp_row.SetSize(3);
+    std::array<bool, 3> cmp_row;
 
     component["total"] = false;
-    cmp_row = false;
 
     for (size_t i = 0; i < ess_id.size(); ++i) {
         // set the active boundary attributes
@@ -48,19 +46,17 @@ void BCManager::UpdateBCData(mfem::Array<int>& ess_bdr,
 
     // The size here is set explicitly
     component.SetSize(ess_bdr.Size(), 3);
-    mfem::Array<bool> cmp_row;
-    cmp_row.SetSize(3);
+    std::array<bool, 3> cmp_row;
 
     component = false;
-    cmp_row = false;
 
     if (map_ess_vel.find(step) == map_ess_vel.end()) {
         return;
     }
 
-    auto ess_vel = map_ess_vel.find(step)->second;
-    auto ess_comp = map_ess_comp["ess_vel"].find(step)->second;
-    auto ess_id = map_ess_id["ess_vel"].find(step)->second;
+    const auto& ess_vel = map_ess_vel.find(step)->second;
+    const auto& ess_comp = map_ess_comp["ess_vel"].find(step)->second;
+    const auto& ess_id = map_ess_id["ess_vel"].find(step)->second;
 
     for (size_t i = 0; i < ess_id.size(); ++i) {
         // set the active boundary attributes
@@ -111,19 +107,17 @@ void BCManager::UpdateBCData(mfem::Array<int>& ess_bdr,
 
     // The size here is set explicitly
     component.SetSize(ess_bdr.Size(), 3);
-    mfem::Array<bool> cmp_row;
-    cmp_row.SetSize(3);
+    std::array<bool, 3> cmp_row;
 
     component = false;
-    cmp_row = false;
 
     if (map_ess_vgrad.find(step) == map_ess_vgrad.end()) {
         return;
     }
 
-    auto ess_vgrad = map_ess_vgrad.find(step)->second;
-    auto ess_comp = map_ess_comp["ess_vgrad"].find(step)->second;
-    auto ess_id = map_ess_id["ess_vgrad"].find(step)->second;
+    const auto& ess_vgrad = map_ess_vgrad.find(step)->second;
+    const auto& ess_comp = map_ess_comp["ess_vgrad"].find(step)->second;
+    const auto& ess_id = map_ess_id["ess_vgrad"].find(step)->second;
 
     for (size_t i = 0; i < ess_vgrad.size(); ++i) {
         data[i] = ess_vgrad.at(i);

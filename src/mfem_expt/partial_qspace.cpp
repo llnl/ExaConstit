@@ -43,6 +43,8 @@ const mfem::Vector& PartialQuadratureSpace::GetGeometricFactorWeights() const {
 void PartialQuadratureSpace::ConstructOffsets() {
     // Set up offsets based on our partial element set
     const int num_partial_elem = local2global.Size();
+    ne = num_partial_elem;
+    full_offset_cache.SetSize(0);
     offsets.SetSize(num_partial_elem + 1);
     int offset = 0;
     for (int i = 0; i < num_partial_elem; i++) {
@@ -79,6 +81,14 @@ void PartialQuadratureSpace::ConstructGlobalOffsets() {
 
 void PartialQuadratureSpace::Construct() {
     ConstructIntRules(mesh->Dimension());
+    // Mesh::GetGeometries() is empty on an MPI rank with no local elements,
+    // leaving the base-class integration-rule table uninitialized. Register
+    // the globally representative geometry so GetIntRule(0) remains valid on
+    // that rank just as FiniteElementSpace::GetTypicalFE() does.
+    const auto typical_geom = mesh->GetTypicalElementGeometry();
+    if (int_rule[typical_geom] == nullptr) {
+        int_rule[typical_geom] = &mfem::IntRules.Get(typical_geom, order);
+    }
     ConstructOffsets();
     ConstructGlobalOffsets();
 }

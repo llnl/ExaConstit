@@ -31,6 +31,15 @@ protected:
     /** @brief Initial local shape function gradients working space */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction> loc0_sf_grad;
 
+    /**
+     * @brief Quadrature weight times det(J) in the reference configuration, one value per point
+     *
+     * @details Filled with loc0_sf_grad in InitLocSFGrads. With IntegrationModel::BBAR it gives
+     * the volume weights of the F-bar treatment (exaconstit::kernel::FBarElement), whose
+     * element-averaged det F is the element's current-to-reference volume ratio.
+     */
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction> loc0_wdetj;
+
     /** @brief Incremental deformation gradients working space */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction> incr_def_grad;
 

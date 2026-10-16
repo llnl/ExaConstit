@@ -6,6 +6,7 @@
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/rotations.hpp"
+#include "utilities/unified_logger.hpp"
 
 #include "ECMech_const.h"
 #include "SNLS_linalg.h"
@@ -367,7 +368,8 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
     : m_sim_state(sim_state), m_mpi_rank(0), m_num_regions(sim_state->GetNumberOfRegions()),
       m_aggregation_mode(AggregationMode::BOTH),
       m_enable_visualization(options.visualization.visit || options.visualization.conduit ||
-                             options.visualization.paraview || options.visualization.adios2) {
+                             options.visualization.paraview || options.visualization.adios2),
+      m_viz_output_frequency(options.visualization.output_frequency) {
     MPI_Comm_rank(MPI_COMM_WORLD, &m_mpi_rank);
 
     MPI_Comm_size(MPI_COMM_WORLD, &m_num_mpi_rank);
@@ -377,10 +379,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
 
     // Ensure output directory exists
     if (!m_file_manager->EnsureOutputDirectoryExists()) {
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: Failed to create output directory. Volume averaging may fail."
-                      << std::endl;
-        }
+        MFEM_WARNING_0("Failed to create output directory. Volume averaging may fail.");
     }
 
     // Initialize region-specific data structures
@@ -531,16 +530,17 @@ void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
 void PostProcessingDriver::Update(const int step, const double time) {
     CALI_CXX_MARK_SCOPE("postprocessing_update");
     UpdateFields(step, time);
+
+    // Update data collections for visualization
+    if (ShouldOutputVisualizationAtStep(step) && m_enable_visualization) {
+        UpdateDataCollections(step, time);
+    }
+
     // Check if we should output volume averages at this step
     if (ShouldOutputAtStep(step)) {
         PrintVolValues(time, m_aggregation_mode);
-        ClearVolumeAverageCache();
     }
-
-    // Update data collections for visualization
-    if (m_enable_visualization) {
-        UpdateDataCollections(step, time);
-    }
+    ClearVolumeAverageCache();
 
     if (m_light_up_instances.size() > 0) {
         UpdateLightUpAnalysis();
@@ -593,10 +593,7 @@ PostProcessingDriver::CalcType PostProcessingDriver::GetCalcType(const std::stri
         return CalcType::ELASTIC_STRAIN;
     } else {
         // Default fallback - could also throw an exception for strict validation
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: Unknown calculation type '" << calc_type_str
-                      << "', defaulting to stress" << std::endl;
-        }
+        MFEM_WARNING_0("Unknown calculation type '" << calc_type_str << "', defaulting to stress");
         return CalcType::STRESS;
     }
 }
@@ -648,9 +645,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
 
     default:
         // This should never happen due to enum type safety, but defensive programming
-        if (m_mpi_rank == 0) {
-            std::cerr << "Error: Unhandled calculation type in CalculateVolumeAverage" << std::endl;
-        }
+        MFEM_ABORT_0("Unhandled calculation type in CalculateVolumeAverage");
         return VolumeAverageData();
     }
 
@@ -998,10 +993,7 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
         }
     } else {
         // No valid regions found - issue warning
-        if (m_mpi_rank == 0) {
-            std::cerr << "Warning: No valid regions found for global " << calc_type_str
-                      << " calculation" << std::endl;
-        }
+        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
         return;
     }
 
@@ -1019,6 +1011,10 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
 
 bool PostProcessingDriver::ShouldOutputAtStep(int step) const {
     return m_file_manager->ShouldOutputAtStep(step);
+}
+
+bool PostProcessingDriver::ShouldOutputVisualizationAtStep(int step) const {
+    return (step % m_viz_output_frequency == 0);
 }
 
 void PostProcessingDriver::VolumeAvgStress(const int region, const double time) {
@@ -1267,7 +1263,7 @@ void PostProcessingDriver::CalcElementAvg(mfem::expt::PartialQuadratureFunction*
 
     auto pqs = qf->GetPartialSpaceShared();
     auto mesh = pqs->GetMeshShared();
-    const mfem::FiniteElement& el = *m_sim_state->GetMeshParFiniteElementSpace()->GetFE(0);
+    const mfem::FiniteElement& el = *m_sim_state->GetMeshParFiniteElementSpace()->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 
@@ -1280,8 +1276,9 @@ void PostProcessingDriver::CalcElementAvg(mfem::expt::PartialQuadratureFunction*
         *ir, mfem::GeometricFactors::DETERMINANTS);
 
     // KEY DIFFERENCE: Get the local-to-global element mapping for partial space
-    auto l2g = pqs->GetLocal2Global().Read();    // Maps local element index to global element index
-    auto loc_offsets = pqs->getOffsets().Read(); // Offsets for local data layout
+    auto l2g = pqs->GetLocal2Global().Read(); // Maps local element index to global element index
+    auto loc_offsets =
+        pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED).Read(); // Offsets for local data layout
     // auto global_offsets = (pqs->GetGlobalOffset().Size() > 1) ?
     //                        pqs->GetGlobalOffset().Read() : loc_offsets; // Offsets for global
     //                        data layout
@@ -1393,6 +1390,9 @@ void PostProcessingDriver::InitializeGridFunctions() {
                     const auto gf_name = GetGridFunctionName(reg.display_name, reg_int);
                     // Determine vector dimension from quadrature function
                     const int vdim = reg.region_length[region];
+                    if (vdim < 1) {
+                        continue;
+                    }
                     max_vdim = (vdim > max_vdim) ? vdim : max_vdim;
                     auto fe_space = GetParFiniteElementSpace(reg_int, vdim);
                     m_map_gfs.emplace(gf_name,
@@ -1467,18 +1467,31 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
         return input.substr(0, pos);
     };
 
+    auto has_registered_fields = [this](const std::string& display_region_postfix) {
+        for (const auto& [key, value] : m_map_gfs) {
+            (void)value;
+            if (key.find(display_region_postfix) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     if (m_aggregation_mode == AggregationMode::PER_REGION ||
         m_aggregation_mode == AggregationMode::BOTH) {
         for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
             auto mesh = m_map_submesh[region];
             std::string region_postfix = "region_" + std::to_string(region + 1);
             std::string display_region_postfix = " " + m_sim_state->GetRegionDisplayName(region);
+            if (!has_registered_fields(display_region_postfix)) {
+                continue;
+            }
             fs::path output_dir = output_dir_base / region_postfix;
             fs::path output_dir_vizs = output_dir / m_file_manager->GetBaseFilename();
-            if (m_sim_state->IsRegionActive(region)) {
-                auto region_comm = m_sim_state->GetRegionCommunicator(region);
-                m_file_manager->EnsureDirectoryExists(output_dir, region_comm);
-            }
+            // The subsequent DataCollection::Save() is a parallel operation on the submesh's
+            // communicator, which is still the parent MPI communicator. Prepare directories on
+            // that same communicator so all participating ranks observe the same path state.
+            m_file_manager->EnsureDirectoryExists(output_dir, MPI_COMM_WORLD);
             std::vector<std::string> dcs_keys;
             if (options.visualization.visit) {
                 std::string key = visit_key + region_postfix;
@@ -1534,6 +1547,9 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
 
         std::string region_postfix = "global";
         std::string display_region_postfix = " " + m_sim_state->GetRegionDisplayName(-1);
+        if (!has_registered_fields(display_region_postfix)) {
+            return;
+        }
         fs::path output_dir = output_dir_base / region_postfix;
         fs::path output_dir_vizs = output_dir / m_file_manager->GetBaseFilename();
         m_file_manager->EnsureDirectoryExists(output_dir);
@@ -1608,11 +1624,9 @@ void PostProcessingDriver::InitializeLightUpAnalysis() {
 
     // Create LightUp instance for each enabled configuration
     for (const auto& light_config : enabled_configs) {
-        if (!light_config.region_id.has_value() && m_mpi_rank == 0) {
-            std::cerr << "Error: LightUp config for material '" << light_config.material_name
-                      << "' has unresolved region_id" << std::endl;
-            continue;
-        }
+        MFEM_VERIFY_0(light_config.region_id.has_value(),
+                      "LightUp config for material '" << light_config.material_name
+                                                      << "' has unresolved region_id");
 
         int region_id = light_config.region_id.value() - 1;
 

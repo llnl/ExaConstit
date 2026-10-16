@@ -76,12 +76,12 @@ double test_main_body()
    mfem::QuadratureFunction raderiv(qspace, 9);
    mfem::QuadratureFunction rderiv(qspace, 9);
 
-   const IntegrationRule *ir = &(IntRules.Get(fes.GetFE(0)->GetGeomType(), intOrder));
+   const IntegrationRule *ir = &(IntRules.Get(fes.GetTypicalFE()->GetGeomType(), intOrder));
 
    const int nqpts = ir->GetNPoints();
-   const int ndofs = fes.GetFE(0)->GetDof();
+   const int ndofs = fes.GetTypicalFE()->GetDof();
    const int nelems = fes.GetNE();
-   const int space_dims = fes.GetFE(0)->GetDim();
+   const int space_dims = fes.GetTypicalFE()->GetDim();
 
    {
       auto coord = mfem::Reshape(raderiv.ReadWrite(), 3, 3, nqpts, nelems);
@@ -165,7 +165,7 @@ double test_main_body()
          }
       });
 
-      const FiniteElement &el = *fes.GetFE(0);
+      const FiniteElement &el = *fes.GetTypicalFE();
       Vector qpts_dshape;
       qpts_dshape.SetSize(nqpts * space_dims * ndofs, Device::GetMemoryType());
       qpts_dshape.UseDevice(true);

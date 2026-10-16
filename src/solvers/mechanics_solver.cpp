@@ -56,6 +56,61 @@ void ExaNewtonSolver::SetOperator(const std::shared_ptr<mfem::NonlinearForm> op)
 }
 
 /**
+ * @brief Per-iteration residual output shared by all nonlinear solvers
+ *
+ * @details print_level is set through SetPrintLevel() which sets it to -1 on all
+ * ranks other than rank 0, so only rank 0 ever prints anything here.
+ */
+void ExaNewtonSolver::PrintIterationInfo(int it, double norm, double norm0) const {
+    if (print_level < 1) {
+        return;
+    }
+    mfem::out << "Newton iteration " << std::setw(2) << it << " : ||r|| = " << norm;
+    if (it > 0) {
+        mfem::out << ", ||r||/||r_0|| = " << norm / norm0;
+    }
+    mfem::out << '\n';
+}
+
+/**
+ * @brief Step scale output shared by all nonlinear solvers
+ *
+ * @details Uses the same "Newton iteration N : " prefix as PrintIterationInfo so all
+ * per-iteration output follows a single "key = value" format across solvers.
+ */
+void ExaNewtonSolver::PrintStepScaleInfo(int it, double scale) const {
+    if (print_level < 1) {
+        return;
+    }
+    mfem::out << "Newton iteration " << std::setw(2) << it << " : step scale = " << scale << '\n';
+}
+
+/**
+ * @brief Final summary output shared by all nonlinear solvers
+ *
+ * @details Only used when the per-iteration output is turned off (print_level == 0).
+ */
+void ExaNewtonSolver::PrintSummaryInfo(
+    int it, double norm, double norm0, bool did_converge, int num_rejected) const {
+    if (print_level != 0) {
+        return;
+    }
+    // Guard against an initial residual of 0 which would converge right away
+    const double rel_norm = (norm0 > 0.0) ? norm / norm0 : 0.0;
+    const char* iter_str = (it == 1) ? " iteration" : " iterations";
+    if (did_converge) {
+        mfem::out << "Newton solver converged in " << it << iter_str;
+    } else {
+        mfem::out << "Newton solver failed to converge after " << it << iter_str;
+    }
+    mfem::out << " : ||r|| = " << norm << ", ||r||/||r_0|| = " << rel_norm;
+    if (num_rejected >= 0) {
+        mfem::out << ", rejected steps = " << num_rejected;
+    }
+    mfem::out << '\n';
+}
+
+/**
  * @brief Newton-Raphson iteration implementation
  *
  * @details The implementation includes several advanced features:
@@ -113,13 +168,7 @@ void ExaNewtonSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
     for (it = 0; true; it++) {
         // Make sure the norm is finite
         MFEM_ASSERT_0(mfem::IsFinite(norm), "norm = " << norm);
-        if (print_level >= 0) {
-            mfem::out << "Newton iteration " << std::setw(2) << it << " : ||r|| = " << norm;
-            if (it > 0) {
-                mfem::out << ", ||r||/||r_0|| = " << norm / norm0;
-            }
-            mfem::out << '\n';
-        }
+        PrintIterationInfo(it, norm, norm0);
         // See if our solution has converged and we can quit
         if (norm <= norm_max) {
             converged = 1;
@@ -143,6 +192,7 @@ void ExaNewtonSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
             break;
         }
 
+        PrintStepScaleInfo(it, c_scale);
         add(x, -c_scale, c, x); // full update to the current config
                                 // ExaConstit (srw)
 
@@ -165,10 +215,6 @@ void ExaNewtonSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
         if (norm_ratio > 5.0e-1) {
             scale = 0.5;
-            if (print_level >= 0) {
-                mfem::out << "The relaxation factor for the next iteration has been reduced to "
-                          << scale << "\n";
-            }
         } else {
             scale = 1.0;
         }
@@ -176,6 +222,7 @@ void ExaNewtonSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
     final_iter = it;
     final_norm = norm;
+    PrintSummaryInfo(it, norm, norm0, converged);
 }
 
 /**
@@ -265,13 +312,7 @@ void ExaNewtonLSSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
     for (it = 0; true; it++) {
         // Make sure the norm is finite
         MFEM_ASSERT_0(mfem::IsFinite(norm), "norm = " << norm);
-        if (print_level >= 0) {
-            mfem::out << "Newton iteration " << std::setw(2) << it << " : ||r|| = " << norm;
-            if (it > 0) {
-                mfem::out << ", ||r||/||r_0|| = " << norm / norm0;
-            }
-            mfem::out << '\n';
-        }
+        PrintIterationInfo(it, norm, norm0);
         // See if our solution has converged and we can quit
         if (norm <= norm_max) {
             converged = 1;
@@ -312,17 +353,18 @@ void ExaNewtonLSSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
             double eps = (3.0 * q1 - 4.0 * q2 + q3) / (4.0 * (q1 - 2.0 * q2 + q3));
 
+            // Smallest relaxation factor we'll allow the line search to take
+            constexpr double min_scale = 0.05;
+
             if ((q1 - 2.0 * q2 + q3) > 0 && eps > 0 && eps < 1) {
-                scale = eps;
+                // The quadratic minimum can land arbitrarily close to 0, so make sure
+                // we don't go below our minimum relaxation factor
+                scale = std::max(eps, min_scale);
             } else if (q3 < q1) {
                 scale = 1.0;
             } else {
                 // We should probably just quit if this is the case...
-                scale = 0.05;
-            }
-
-            if (print_level >= 0) {
-                mfem::out << "The relaxation factor for this iteration is " << scale << std::endl;
+                scale = min_scale;
             }
 
             x = x_prev;
@@ -334,6 +376,7 @@ void ExaNewtonLSSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
             break;
         }
 
+        PrintStepScaleInfo(it, c_scale);
         add(x, -c_scale, c, x); // full update to the current config
                                 // ExaConstit (srw)
 
@@ -349,4 +392,5 @@ void ExaNewtonLSSolver::Mult(const mfem::Vector& b, mfem::Vector& x) const {
 
     final_iter = it;
     final_norm = norm;
+    PrintSummaryInfo(it, norm, norm0, converged);
 }

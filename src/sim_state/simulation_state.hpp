@@ -1187,12 +1187,13 @@ private:
      * use the same grain structure.
      *
      * The data is loaded once, used by all regions that need it, then cleaned
-     * up to free memory. All quaternions are stored as unit quaternions representing
-     * passive rotations from the sample frame to the crystal frame.
+     * up to free memory. The values are stored exactly as they appear in the file;
+     * how they are interpreted depends on each region's material model (see
+     * PrepareOrientationForRegion).
      */
     struct SharedOrientationData {
-        /** @brief Unit quaternions (w,x,y,z format) for passive rotations */
-        std::vector<double> quaternions;
+        /** @brief Raw values read from the orientation file */
+        std::vector<double> values;
         /** @brief Number of grains loaded */
         int num_grains;
         /** @brief Flag indicating if data has been successfully loaded */
@@ -1208,11 +1209,10 @@ private:
     /**
      * @brief Per-region orientation configuration for crystal plasticity
      *
-     * @details Stores orientation data that has been converted to the specific
-     * format required by a particular material region. Different material models
-     * may require different orientation representations (quaternions, Euler angles,
-     * rotation matrices), so this structure holds the converted data along with
-     * indexing information.
+     * @details Stores the orientation data for a particular material region along
+     * with indexing information. ExaCMech models use unit quaternions, while other
+     * models (e.g. UMATs) use the values from the orientation file in whatever
+     * format they expect, with ori_stride values per grain.
      *
      * Used during state variable initialization to efficiently assign orientations
      * to elements based on their grain IDs and region membership.
@@ -1247,13 +1247,13 @@ private:
      *
      * @param orientation_file Path to orientation data file
      * @param num_grains Number of grains to load
-     * @return True if successful, false otherwise
      *
-     * @details Loads crystal orientation data (quaternions) that can be shared
-     * across multiple material regions. Handles file I/O, quaternion normalization,
-     * and validation.
+     * @details Reads all of the values in the orientation file so they can be shared
+     * across multiple material regions. The values are not interpreted here, as their
+     * format depends on each region's material model. Aborts if the file can't be read,
+     * has no values, or the grain count doesn't match previously loaded data.
      */
-    bool LoadSharedOrientationData(const std::string& orientation_file, int num_grains);
+    void LoadSharedOrientationData(const std::string& orientation_file, int num_grains);
 
     /**
      * @brief Convert quaternions to Euler angles
@@ -1280,7 +1280,12 @@ private:
     /**
      * @brief Prepare orientation data for a specific region/material
      * @param material Material options containing grain info and orientation requirements
-     * @return OrientationConfig with data converted to the format required by this material
+     * @return OrientationConfig with the orientation data for this material
+     *
+     * @details ExaCMech models require unit quaternions (w, x, y, z) representing passive
+     * rotations from the crystal to the sample frame, which are normalized if needed. Any
+     * other model is given the values from the orientation file as is, with a stride set by
+     * ori_type (4 for quat, 3 for euler, or ori_stride for custom).
      */
     OrientationConfig PrepareOrientationForRegion(const MaterialOptions& material);
 

@@ -371,6 +371,13 @@ public:
      */
     [[nodiscard]]
     virtual mfem::Geometry::Type GetGeometry(int idx) const override {
+        // QuadratureSpaceBase::GetIntRule(0) asks for a geometry even when this
+        // rank's partial space is empty. There is no local-to-global element in
+        // that case, so use MFEM's globally representative geometry instead of
+        // passing -1 to Mesh::GetElementGeometry().
+        if (local2global.Size() == 0) {
+            return mesh->GetTypicalElementGeometry();
+        }
         int global_idx = LocalToGlobal(idx);
         return mesh->GetElementGeometry(global_idx);
     }

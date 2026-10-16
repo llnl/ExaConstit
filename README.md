@@ -66,9 +66,9 @@ ExaConstit is a cutting-edge, **velocity-based finite element code** designed fo
 ```bash
 # Essential dependencies
 MPI implementation (OpenMPI, MPICH, Intel MPI)
-MFEM (v4.8+) with parallel/GPU support
+MFEM (v4.9+, ExaConstit fork) with parallel/GPU support
 ExaCMech (v0.4.3+) crystal plasticity library
-RAJA (≥2024.07.x) performance portability
+RAJA (≥2025.12.x) performance portability
 CMake (3.24+)
 ```
 
@@ -198,6 +198,17 @@ python scripts/postprocessing/adios2_example.py results.bp
 ```
 
 ## Output and Visualization
+
+### **Version 0.10 Updates**
+ExaConstit v0.10 focuses on solver robustness and moves to MFEM v4.9+. Highlights:
+- **Trust-region dogleg solver**: `nl_solver = "TRDOG"` for problems where Newton-Raphson struggles to converge
+- **Solver output control**: the new `print_info` option in `[Solvers.NR]` sets how much the nonlinear solvers print, using one output format for all solvers
+- **B-bar consistency**: material models now see the same volume-averaged kinematics as the B-bar integrator
+- **Light-up post-processing**: `xtal_light_up` supports all eight crystal systems
+- **Calibration workflows**: a new framework in `workflows/exaconstit-calibrate` with MPI and Flux backends
+- **Bug fixes**: multi-GPU results, symlinked output directories, time stepping options, and post-processing output cadence
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list of changes.
 
 ### **Version 0.9 Output Updates**
 ExaConstit v0.9 introduces significant improvements to output management and file organization:

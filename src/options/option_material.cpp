@@ -19,12 +19,21 @@ GrainInfo GrainInfo::from_toml(const toml::value& toml_input) {
         info.ori_state_var_loc = toml::find<int>(toml_input, "ori_state_var_loc");
     }
 
-    if (toml_input.contains("ori_stride")) {
+    const bool has_ori_stride = toml_input.contains("ori_stride");
+    if (has_ori_stride) {
         info.ori_stride = toml::find<int>(toml_input, "ori_stride");
     }
 
     if (toml_input.contains("ori_type")) {
         info.ori_type = string_to_ori_type(toml::find<std::string>(toml_input, "ori_type"));
+    }
+
+    if (!has_ori_stride) {
+        if (info.ori_type == OriType::QUAT) {
+            info.ori_stride = 4;
+        } else if (info.ori_type == OriType::EULER) {
+            info.ori_stride = 3;
+        }
     }
 
     if (toml_input.contains("num_grains")) {
@@ -58,9 +67,7 @@ MaterialProperties MaterialProperties::from_toml(const toml::value& toml_input) 
         try {
             props.properties = load_vector_from_file(props.properties_file, props.num_props);
         } catch (const std::exception& e) {
-            std::ostringstream err;
-            err << "Warning: " << e.what();
-            WARNING_0_OPT(err.str());
+            WARNING_0_OPT(e.what());
         }
     }
     return props;
@@ -86,9 +93,7 @@ StateVariables StateVariables::from_toml(const toml::value& toml_input) {
         try {
             vars.initial_values = load_vector_from_file(vars.state_file, vars.num_vars);
         } catch (const std::exception& e) {
-            std::ostringstream err;
-            err << "Warning: " << e.what();
-            WARNING_0_OPT(err.str());
+            WARNING_0_OPT(e.what());
         }
     }
     return vars;
@@ -204,8 +209,10 @@ ExaCMechModelOptions ExaCMechModelOptions::from_toml(const toml::value& toml_inp
 MaterialModelOptions MaterialModelOptions::from_toml(const toml::value& toml_input) {
     MaterialModelOptions model_options;
 
-    if (toml_input.contains("cp")) {
-        model_options.crystal_plasticity = toml::find<bool>(toml_input, "cp");
+    // Support both "crystal_plasticity" and the legacy "cp" key
+    if (toml_input.contains("crystal_plasticity") || toml_input.contains("cp")) {
+        const auto& key = toml_input.contains("crystal_plasticity") ? "crystal_plasticity" : "cp";
+        model_options.crystal_plasticity = toml::find<bool>(toml_input, key);
     }
 
     // Parse UMAT-specific options
@@ -225,8 +232,10 @@ MaterialModelOptions MaterialModelOptions::from_toml(const toml::value& toml_inp
 MaterialOptions MaterialOptions::from_toml(const toml::value& toml_input) {
     MaterialOptions options;
 
-    if (toml_input.contains("name")) {
-        options.material_name = toml::find<std::string>(toml_input, "name");
+    // Support both "material_name" and "name"
+    if (toml_input.contains("material_name") || toml_input.contains("name")) {
+        const auto& key = toml_input.contains("material_name") ? "material_name" : "name";
+        options.material_name = toml::find<std::string>(toml_input, key);
     }
 
     if (toml_input.contains("region_id")) {
@@ -320,6 +329,12 @@ bool GrainInfo::validate() const {
     if (ori_type == OriType::EULER && ori_stride != 3) {
         WARNING_0_OPT("Error: Orientation type `EULER` within the Grain table was not provided a "
                       "valid stride: 3");
+        return false;
+    }
+
+    if (ori_type == OriType::CUSTOM && ori_stride < 1) {
+        WARNING_0_OPT("Error: Orientation type `CUSTOM` within the Grain table requires a "
+                      "positive ori_stride");
         return false;
     }
 
@@ -467,6 +482,14 @@ bool MaterialOptions::validate() const {
             WARNING_0_OPT(err.str());
             return false;
         }
+    }
+
+    if (model.exacmech && grain_info && grain_info->ori_type != OriType::QUAT) {
+        std::ostringstream err;
+        err << "Error: Material table for material_name_region# " << mat_name
+            << " uses an ExaCMech model, which requires ori_type = \"quat\" in the Grain table";
+        WARNING_0_OPT(err.str());
+        return false;
     }
 
     if (model.exacmech) {

@@ -5,6 +5,7 @@
 #include "mfem.hpp"
 #include "mfem/linalg/vector.hpp"
 
+#include <array>
 #include <fstream>
 
 /**
@@ -101,6 +102,6 @@ public:
      * - id = 6: (true, false, true)
      * - id = 7: (true, true, true)
      */
-    static void GetComponents(int id, mfem::Array<bool>& component);
+    static void GetComponents(int id, std::array<bool, 3>& component);
 };
 #endif

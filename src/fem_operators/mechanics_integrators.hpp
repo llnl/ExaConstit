@@ -351,6 +351,35 @@ public:
      */
     virtual void AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
 
+    /**
+     * @brief Apply transposed gradient action via partial assembly.
+     *
+     * @param x Input vector for transposed Jacobian-vector product
+     * @param y Output vector for accumulated result
+     *
+     * Native PA kernel computing y += K^T * x where K = B^T D B is the
+     * tangent stiffness operator. The only computational difference from
+     * AddMultGradPA is the contraction order with the assembled 4th-order
+     * tensor D:
+     *
+     *   Forward (AddMultGradPA):
+     *     T(i,k) = D(i,k,l,n,qpt,elem) * Gx(l,n)   — contract last pair
+     *     Y(a,k) += Gt(a,i,qpt) * T(i,k)
+     *
+     *   Transpose (this method):
+     *     T(l,n) = D(i,k,l,n,qpt,elem) * Gx(i,k)   — contract first pair
+     *     Y(a,n) += Gt(a,l,qpt) * T(l,n)
+     *
+     * For symmetric material tangent C, the two operations are identical.
+     * For non-symmetric C (crystal plasticity), they differ. The transpose
+     * is required for trust-region dogleg solver Cauchy point computation
+     * where the merit function gradient is g = J^T * r, not J * r.
+     *
+     * @note GPU-compatible via mfem::forall
+     * @note Requires prior AssembleGradPA() call for the D tensor
+     */
+    virtual void AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
+
     using mfem::NonlinearFormIntegrator::AssemblePA;
     /**
      * @brief Initialize partial assembly data structures for residual operations.
@@ -723,10 +752,83 @@ public:
                                      const mfem::Vector& /*elfun*/,
                                      mfem::DenseMatrix& elmat) override;
 
-    // This method doesn't easily extend to PA formulation, so we're punting on
-    // it for now.
-    using ExaNLFIntegrator::AddMultGradPA;
-    using ExaNLFIntegrator::AssembleGradPA;
+    /**
+     * @brief Initialize partial assembly data structures for B-bar gradient operations.
+     *
+     * @param fes Finite element space providing mesh and element information
+     *
+     * Sets up the geometric data needed by AddMultGradPA() and
+     * AddMultTransposeGradPA() for the B-bar tangent stiffness operator.
+     *
+     * Unlike the base class AssembleGradPA() which pre-assembles a 4th-order
+     * tensor D, the B-bar version stores only the geometric data (Jacobians,
+     * reference shape function derivatives, and element-averaged derivatives)
+     * and applies the material tangent C on-the-fly inside the kernel. This
+     * is because the B-bar correction couples element-constant data (the
+     * volume-averaged derivatives) with quadrature-point-local data (C and
+     * adj(J)) in a way that doesn't fold cleanly into a single pre-assembled
+     * tensor.
+     *
+     * Setup steps:
+     *   1. Cache space_dims, nqpts, nnodes, nelems from the FES
+     *   2. Get geometric factors (Jacobians at quadrature points) from the mesh
+     *   3. Compute and cache reference shape function derivatives Gt(a, k, qpt)
+     *   4. Ensure element-averaged derivatives N̄(a, k, elem) are available
+     *      (calling AssemblePA() if not yet computed)
+     *
+     * @note Must be called before AddMultGradPA() or AddMultTransposeGradPA()
+     * @note Material tangent C is accessed directly from the simulation state
+     *       quadrature function during the AddMult kernels
+     */
+    virtual void AssembleGradPA(const mfem::FiniteElementSpace& fes) override;
+
+    /// State-ful overload that ignores the state vector @a x.
+    virtual void AssembleGradPA(const mfem::Vector& x,
+                                const mfem::FiniteElementSpace& fes) override;
+
+    /**
+     * @brief Apply partial-assembly B-bar tangent stiffness action.
+     *
+     * @param x Input E-vector (nodal velocities)
+     * @param y Output E-vector (accumulated)
+     *
+     * Computes y += K̄ * x where K̄ = ∫ B̄^T C B̄ dΩ is the B-bar tangent.
+     *
+     * Algorithm per element, per quadrature point:
+     *   1. Compute adj(J) and detJ from the cached Jacobian
+     *   2. Compute physical derivatives dN(a,j) on-the-fly from Gt and adj(J)
+     *   3. Compute physical velocity gradient L(i,j) = dN(a,j) V(a,i)
+     *   4. Compute B-bar trace correction Δtr = (tr_bar - tr(L)) / 3
+     *      where tr_bar = N̄(a,k) V(a,k) is element-constant (hoisted)
+     *   5. Modified velocity gradient L̄ = L + δ_ij * Δtr
+     *   6. Apply C: σ'(j,k) = C(j,k,l,m) * L̄(l,m)
+     *   7. Pressure correction p' = (1/3) tr(σ')
+     *   8. Accumulate into Y: standard force + B-bar pressure redirection
+     *      Y(a,k) += [Σ_j dN(a,j) σ'(j,k) + (N̄(a,k) - dN(a,k)) p'] * w * detJ
+     *
+     * @note GPU-compatible via mfem::forall
+     * @note Requires prior AssembleGradPA() call
+     */
+    virtual void AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
+
+    /**
+     * @brief Apply transposed B-bar tangent stiffness action.
+     *
+     * @param x Input E-vector
+     * @param y Output E-vector (accumulated)
+     *
+     * Computes y += K̄^T * x. Identical to AddMultGradPA except the C
+     * contraction order is swapped:
+     *   Forward:   σ'(j,k) = C(j,k,l,m) * L̄(l,m)
+     *   Transpose: σ'(j,k) = C(l,m,j,k) * L̄(l,m)
+     *
+     * The B-bar geometry (N̄, dN, trace correction, pressure redirection)
+     * is identical for both directions because B̄ appears on both the
+     * trial and test sides of K̄ = B̄^T C B̄, and (B̄^T C B̄)^T = B̄^T C^T B̄.
+     *
+     * @note For symmetric C, this produces identical results to AddMultGradPA
+     */
+    virtual void AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vector& y) const override;
 
     /**
      * @brief Initialize partial assembly data structures for B-bar residual operations.

@@ -1,0 +1,134 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exaconstit-calibrate"
+version = "0.1.0"
+description = "Calibration infrastructure for ExaConstit: NSGA-III parameter fitting, yield-surface fitting (planned), and a code-agnostic framework for driving external simulation codes from Python."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Lawrence Livermore National Laboratory" },
+]
+keywords = [
+    "ExaConstit",
+    "crystal plasticity",
+    "material parameter calibration",
+    "yield surface",
+    "NSGA-III",
+    "genetic algorithm",
+    "finite element",
+    "LLNL",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# Runtime dependencies required by the core framework. Kept minimal
+# on purpose: numpy, pandas, scipy are the only hard requirements.
+# SQLite is stdlib. DEAP, matplotlib, and flux-core are all optional.
+dependencies = [
+    "numpy>=1.21",
+    "pandas>=1.3",
+    "scipy>=1.7",
+]
+
+[project.optional-dependencies]
+# The NSGA-III driver needs the rcarson3 DEAP fork for the
+# U-NSGA-III niching step. Installable from the fork's GitHub URL;
+# users who pin the SHA can do so via direct-url installs instead.
+nsga3 = [
+    "deap @ git+https://github.com/rcarson3/deap.git",
+]
+# Soft dep for the postprocess plotting helpers. Framework data
+# loading / analysis works fine without this.
+plot = [
+    "matplotlib>=3.5",
+]
+# Flux is an HPC scheduler; its Python bindings are available only
+# on systems where flux-core is installed. Listing here makes the
+# intent explicit even though "pip install" won't always succeed.
+flux = [
+    "flux-python>=0.50",
+]
+# Test suite dependencies. "pip install .[test]" is what CI runs.
+test = [
+    "pytest>=7",
+    "matplotlib>=3.5",
+    "deap @ git+https://github.com/rcarson3/deap.git",
+]
+# Catch-all for "install everything installable on a laptop". Drop
+# the flux entry from this set since it fails on non-HPC dev
+# machines.
+all = [
+    "matplotlib>=3.5",
+    "deap @ git+https://github.com/rcarson3/deap.git",
+]
+
+[project.urls]
+Homepage = "https://github.com/LLNL/ExaConstit"
+Repository = "https://github.com/LLNL/ExaConstit"
+Documentation = "https://github.com/LLNL/ExaConstit/tree/main/workflows"
+
+# --- Package discovery --------------------------------------------------
+#
+# Two top-level packages ship together:
+#
+#   workflow_common/   - the framework (code-agnostic; no DEAP dep)
+#   workflows/         - currently contains workflows.optimization with
+#                        the NSGA-III driver. Uses the "workflows"
+#                        top-level name because that's where the
+#                        pre-refactor scripts live in the ExaConstit
+#                        repo; keeping the name preserves import paths
+#                        in migrated user code.
+#
+# The distribution name ("exaconstit-calibrate") and the importable
+# names ("workflow_common", "workflows") are deliberately different:
+# the distribution name captures scope (CP calibration, yield-surface
+# fitting to come), while the importable names capture the role of
+# each subpackage. Renaming the imports would break every migrated
+# driver.
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["workflow_common*", "workflows*"]
+exclude = ["tests*"]
+
+# Include the two top-level Markdown docs inside the workflow_common
+# package so pip-installed users can find them via
+# importlib.resources.files("workflow_common") / "ARCHITECTURE.md".
+[tool.setuptools.package-data]
+workflow_common = ["*.md"]
+
+# --- Tooling ------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+# tests/conftest.py adds the repo root to sys.path so the in-tree
+# workflow_common imports cleanly during development. No rootdir
+# override needed beyond that.
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+]
+# Warnings-as-errors for anything that looks like a real bug in
+# framework code. DEAP's fork emits a few deprecation warnings from
+# older numpy APIs; filter those.
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:deap.*",
+    "ignore::DeprecationWarning:pandas.*",
+    # SyntaxWarning from the rcarson3 DEAP fork's older regex patterns.
+    "ignore::SyntaxWarning",
+]

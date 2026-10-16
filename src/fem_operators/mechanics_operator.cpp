@@ -6,12 +6,22 @@
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+
+namespace {
+void GetTrueDofsParallel(const mfem::ParGridFunction& gf, mfem::Vector& true_dofs) {
+    // used to do something like:
+    // gf.GetTrueDofs(true_dofs);
+    // but looks like there are issues with that on the GPUs with newer versions of MFEM
+    gf.ParallelAverage(true_dofs);
+}
+} // namespace
 
 NonlinearMechOperator::NonlinearMechOperator(mfem::Array<int>& ess_bdr,
                                              mfem::Array2D<bool>& ess_bdr_comp,
@@ -72,7 +82,7 @@ NonlinearMechOperator::NonlinearMechOperator(mfem::Array<int>& ess_bdr,
     px.UseDevice(true);
 
     {
-        const mfem::FiniteElement& el = *loc_fe_space->GetFE(0);
+        const mfem::FiniteElement& el = *loc_fe_space->GetTypicalFE();
         const int space_dims = el.GetDim();
         const mfem::IntegrationRule* ir = &(
             mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -150,7 +160,7 @@ void NonlinearMechOperator::Setup(const mfem::Vector& k) const {
     // stress update, and other stuff that might be needed in the integrators.
     auto loc_fe_space = m_sim_state->GetMeshParFiniteElementSpace();
 
-    const mfem::FiniteElement& el = *loc_fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *loc_fe_space->GetTypicalFE();
     const int space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -191,7 +201,7 @@ void NonlinearMechOperator::Setup(const mfem::Vector& k) const {
 void NonlinearMechOperator::SetupJacobianTerms() const {
     auto mesh = m_sim_state->GetMesh();
     auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
-    const mfem::FiniteElement& el = *fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *fe_space->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
@@ -239,14 +249,14 @@ void NonlinearMechOperator::SetupJacobianTerms() const {
 void NonlinearMechOperator::CalculateDeformationGradient(mfem::QuadratureFunction& def_grad) const {
     auto mesh = m_sim_state->GetMesh();
     auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
-    const mfem::FiniteElement& el = *fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *fe_space->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
 
     const int nqpts = ir->GetNPoints();
     const int nelems = fe_space->GetNE();
-    const int ndofs = fe_space->GetFE(0)->GetDof();
+    const int ndofs = fe_space->GetTypicalFE()->GetDof();
 
     auto x_ref = m_sim_state->GetRefCoords();
     auto x_cur = m_sim_state->GetCurrentCoords();
@@ -259,7 +269,7 @@ void NonlinearMechOperator::CalculateDeformationGradient(mfem::QuadratureFunctio
 
     mfem::Vector x_true(fe_space->TrueVSize(), mfem::Device::GetMemoryType());
 
-    x_cur->GetTrueDofs(x_true);
+    GetTrueDofsParallel(*x_cur, x_true);
     // Takes in k vector and transforms into into our E-vector array
     P->Mult(x_true, px);
     elem_restrict_lex->Mult(px, el_x);
