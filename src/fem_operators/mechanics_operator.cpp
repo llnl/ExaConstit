@@ -82,7 +82,7 @@ NonlinearMechOperator::NonlinearMechOperator(mfem::Array<int>& ess_bdr,
     px.UseDevice(true);
 
     {
-        const mfem::FiniteElement& el = *loc_fe_space->GetFE(0);
+        const mfem::FiniteElement& el = *loc_fe_space->GetTypicalFE();
         const int space_dims = el.GetDim();
         const mfem::IntegrationRule* ir = &(
             mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -160,7 +160,7 @@ void NonlinearMechOperator::Setup(const mfem::Vector& k) const {
     // stress update, and other stuff that might be needed in the integrators.
     auto loc_fe_space = m_sim_state->GetMeshParFiniteElementSpace();
 
-    const mfem::FiniteElement& el = *loc_fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *loc_fe_space->GetTypicalFE();
     const int space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -201,7 +201,7 @@ void NonlinearMechOperator::Setup(const mfem::Vector& k) const {
 void NonlinearMechOperator::SetupJacobianTerms() const {
     auto mesh = m_sim_state->GetMesh();
     auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
-    const mfem::FiniteElement& el = *fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *fe_space->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
@@ -249,14 +249,14 @@ void NonlinearMechOperator::SetupJacobianTerms() const {
 void NonlinearMechOperator::CalculateDeformationGradient(mfem::QuadratureFunction& def_grad) const {
     auto mesh = m_sim_state->GetMesh();
     auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
-    const mfem::FiniteElement& el = *fe_space->GetFE(0);
+    const mfem::FiniteElement& el = *fe_space->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
 
     const int nqpts = ir->GetNPoints();
     const int nelems = fe_space->GetNE();
-    const int ndofs = fe_space->GetFE(0)->GetDof();
+    const int ndofs = fe_space->GetTypicalFE()->GetDof();
 
     auto x_ref = m_sim_state->GetRefCoords();
     auto x_cur = m_sim_state->GetCurrentCoords();

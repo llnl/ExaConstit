@@ -1263,7 +1263,7 @@ void PostProcessingDriver::CalcElementAvg(mfem::expt::PartialQuadratureFunction*
 
     auto pqs = qf->GetPartialSpaceShared();
     auto mesh = pqs->GetMeshShared();
-    const mfem::FiniteElement& el = *m_sim_state->GetMeshParFiniteElementSpace()->GetFE(0);
+    const mfem::FiniteElement& el = *m_sim_state->GetMeshParFiniteElementSpace()->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 

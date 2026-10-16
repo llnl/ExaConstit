@@ -157,7 +157,7 @@ void ExaNLFIntegrator::AssembleElementGrad(const mfem::FiniteElement& el,
 void ExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
     CALI_CXX_MARK_SCOPE("enlfi_assemblePA");
     mfem::Mesh* mesh = fes.GetMesh();
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -330,7 +330,7 @@ void ExaNLFIntegrator::AssembleGradPA(const mfem::Vector& /* x */,
 void ExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     CALI_CXX_MARK_SCOPE("enlfi_assemblePAG");
     mfem::Mesh* mesh = fes.GetMesh();
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -884,7 +884,7 @@ void ExaNLFIntegrator::AssembleGradEA(const mfem::Vector& /*x*/,
 void ExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::Vector& emat) {
     CALI_CXX_MARK_SCOPE("enlfi_assembleEA");
     mfem::Mesh* mesh = fes.GetMesh();
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -1345,7 +1345,7 @@ void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     CALI_CXX_MARK_SCOPE("icenlfi_assembleGradPA");
 
     mfem::Mesh* mesh = fes.GetMesh();
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -1395,7 +1395,7 @@ void ICExaNLFIntegrator::AssembleGradEA(const mfem::Vector& /*x*/,
 
 void ICExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::Vector& emat) {
     CALI_CXX_MARK_SCOPE("icenlfi_assembleEA");
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
@@ -1934,7 +1934,7 @@ void ICExaNLFIntegrator::AssembleGradDiagonalPA(mfem::Vector& diag) const {
 void ICExaNLFIntegrator::AssemblePA(const mfem::FiniteElementSpace& fes) {
     CALI_CXX_MARK_SCOPE("icenlfi_assemblePA");
     mfem::Mesh* mesh = fes.GetMesh();
-    const mfem::FiniteElement& el = *fes.GetFE(0);
+    const mfem::FiniteElement& el = *fes.GetTypicalFE();
     space_dims = el.GetDim();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));

@@ -167,7 +167,7 @@ void ComputeVolAvgTensor(const mfem::ParFiniteElementSpace* fes,
                          int size,
                          RTModel& class_device) {
     mfem::Mesh* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
@@ -341,7 +341,7 @@ double ComputeVolAvgTensorFilter(const mfem::ParFiniteElementSpace* fes,
                                  int size,
                                  const RTModel& class_device) {
     mfem::Mesh* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
     ;
@@ -526,7 +526,7 @@ double ComputeVolAvgTensorFilterFromPartial(const mfem::expt::PartialQuadratureF
     // Note: We need to get this from the global finite element space since
     // the PartialQuadratureSpace doesn't have direct FE access
     const int fe_order = pqs->GetOrder();
-    mfem::Geometry::Type geom_type = mesh->GetElementBaseGeometry(0); // Assume uniform elements
+    mfem::Geometry::Type geom_type = mesh->GetTypicalElementGeometry(); // Assume uniform elements
     const mfem::IntegrationRule* ir = &(mfem::IntRules.Get(geom_type, fe_order));
 
     const int nqpts = ir->GetNPoints();
@@ -748,7 +748,7 @@ double ComputeVolAvgTensorFromPartial(const mfem::expt::PartialQuadratureFunctio
     // Note: We need to get this from the global finite element space since
     // the PartialQuadratureSpace doesn't have direct FE access
     const int fe_order = pqs->GetOrder();
-    mfem::Geometry::Type geom_type = mesh->GetElementBaseGeometry(0); // Assume uniform elements
+    mfem::Geometry::Type geom_type = mesh->GetTypicalElementGeometry(); // Assume uniform elements
     const mfem::IntegrationRule* ir = &(mfem::IntRules.Get(geom_type, fe_order));
 
     const int nqpts = ir->GetNPoints();

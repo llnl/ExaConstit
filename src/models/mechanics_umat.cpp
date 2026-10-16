@@ -80,9 +80,9 @@ void AbaqusUmatModel::InitLocSFGrads(std::shared_ptr<mfem::ParFiniteElementSpace
     const int NE = qspace->GetNE();
     const int NQPTS = ir->GetNPoints();
 
-    // get element transformation for the 0th element
+    // get a typical element (valid even if this rank has no elements)
     // We just want to get some basic stuff for now
-    fe = fes->GetFE(0);
+    fe = fes->GetTypicalFE();
 
     // declare data to store shape function gradients
     // and element Jacobians

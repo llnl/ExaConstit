@@ -12,7 +12,7 @@
 void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 
@@ -55,7 +55,7 @@ void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> 
 void VolumeProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetFE(0);
+    const mfem::FiniteElement& el = *fes->GetTypicalFE();
     const mfem::IntegrationRule* ir = &(
         mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
 

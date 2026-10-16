@@ -555,7 +555,7 @@ void ExaCMechModel::ModelSetup(const int nqpts,
     // rate. Only the diagonal of L changes: the deviatoric rate and the spin are untouched.
     if (m_sim_state->GetOptions().solvers.integ_model == IntegrationModel::BBAR) {
         const auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
-        const mfem::FiniteElement& fe = *fe_space->GetFE(0);
+        const mfem::FiniteElement& fe = *fe_space->GetTypicalFE();
         const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(),
                                                              2 * fe.GetOrder() + 1);
         MFEM_VERIFY_0(ir.GetNPoints() == nqpts,
