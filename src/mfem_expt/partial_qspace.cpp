@@ -81,6 +81,14 @@ void PartialQuadratureSpace::ConstructGlobalOffsets() {
 
 void PartialQuadratureSpace::Construct() {
     ConstructIntRules(mesh->Dimension());
+    // Mesh::GetGeometries() is empty on an MPI rank with no local elements,
+    // leaving the base-class integration-rule table uninitialized. Register
+    // the globally representative geometry so GetIntRule(0) remains valid on
+    // that rank just as FiniteElementSpace::GetTypicalFE() does.
+    const auto typical_geom = mesh->GetTypicalElementGeometry();
+    if (int_rule[typical_geom] == nullptr) {
+        int_rule[typical_geom] = &mfem::IntRules.Get(typical_geom, order);
+    }
     ConstructOffsets();
     ConstructGlobalOffsets();
 }
