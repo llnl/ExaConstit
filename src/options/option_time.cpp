@@ -125,19 +125,6 @@ void TimeOptions::determine_time_type(const std::optional<TimeStepType>& request
 TimeOptions TimeOptions::from_toml(const toml::value& toml_input) {
     TimeOptions options;
 
-    // Check for restart options
-    if (toml_input.contains("restart")) {
-        options.restart = toml::find<bool>(toml_input, "restart");
-    }
-
-    if (toml_input.contains("restart_time")) {
-        options.restart_time = toml::find<double>(toml_input, "restart_time");
-    }
-
-    if (toml_input.contains("restart_cycle")) {
-        options.restart_cycle = toml::find<size_t>(toml_input, "restart_cycle");
-    }
-
     // Check for nested time stepping sections
     if (toml_input.contains("Auto")) {
         options.auto_time = AutoTimeOptions::from_toml(toml::find(toml_input, "Auto"));

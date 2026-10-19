@@ -297,15 +297,16 @@ std::vector<MaterialOptions> MaterialOptions::from_toml_array(const toml::value&
     return materials;
 }
 
-bool GrainInfo::validate() const {
-    // Implement validation logic
-    if (!orientation_file) {
+bool GrainInfo::validate(bool check_input_files) const {
+    // On a restart the orientations come from the checkpointed state variables, so the
+    // orientation file is neither required nor read.
+    if (check_input_files && !orientation_file) {
         WARNING_0_OPT("Error: Grain table was provided without providing an orientation file this "
                       "is required");
         return false;
     }
 
-    if (orientation_file) {
+    if (check_input_files && orientation_file) {
         if (!std::filesystem::exists(*orientation_file)) {
             std::ostringstream err;
             err << "Error: Orientation file does not exist provided value: " << *orientation_file;
@@ -354,8 +355,10 @@ bool MaterialProperties::validate() const {
     return true;
 }
 
-bool StateVariables::validate() const {
-    if (static_cast<size_t>(num_vars) != initial_values.size()) {
+bool StateVariables::validate(bool check_input_files) const {
+    // initial_values only seed a fresh run; on a restart the state comes from the checkpoint
+    // (a deleted state file leaves initial_values empty after StateVariables::from_toml).
+    if (check_input_files && static_cast<size_t>(num_vars) != initial_values.size()) {
         WARNING_0_OPT("Error: StateVariables num_vars != initial_values.size()");
         return false;
     }
@@ -422,7 +425,7 @@ bool MaterialModelOptions::validate() const {
     return true;
 }
 
-bool MaterialOptions::validate() const {
+bool MaterialOptions::validate(bool check_input_files) const {
     std::string mat_name = material_name + "_" + std::to_string(region_id);
 
     if (mech_type == MechType::NOTYPE) {
@@ -448,7 +451,7 @@ bool MaterialOptions::validate() const {
         WARNING_0_OPT(err.str());
         return false;
     }
-    if (!state_vars.validate()) {
+    if (!state_vars.validate(check_input_files)) {
         std::ostringstream err;
         err << "Error: Material table for material_name_region# " << mat_name
             << " the State_Vars table had errors";
@@ -464,7 +467,7 @@ bool MaterialOptions::validate() const {
     }
 
     if (grain_info) {
-        if (!grain_info->validate()) {
+        if (!grain_info->validate(check_input_files)) {
             std::ostringstream err;
             err << "Error: Material table for material_name_region# " << mat_name
                 << " the Grain table had errors";

@@ -315,13 +315,6 @@ grain_file = "grains.txt"
     # 3. Fixed (if [Time.Fixed] exists or as default)
     time_type = "custom"
     
-    # ===== Restart Options (Optional) =====
-    # Continue from a previous simulation
-    # Currently ignored but will be coming in a near-future release
-    # restart = true
-    # restart_time = 0.5  # Time to restart from
-    # restart_cycle = 100  # Cycle number to restart from
-    
     # ===== Automatic Time Stepping =====
     # Adjusts time step based on convergence behavior
     [Time.Auto]
@@ -560,7 +553,6 @@ grain_file = "grains.txt"
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
-        #   [output_directory]/[basename]/restart/            <- Restart files (if enabled)
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":
         #   ./results/tensile_test/                          <- All outputs go here

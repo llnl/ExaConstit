@@ -335,13 +335,6 @@ grain_file = "grains.txt"
     # 3. Fixed (if [Time.Fixed] exists or as default)
     time_type = "custom"
     
-    # ===== Restart Options (Optional) =====
-    # Continue from a previous simulation
-    # Currently ignored but will be coming in a near-future release
-    # restart = true
-    # restart_time = 0.5  # Time to restart from
-    # restart_cycle = 100  # Cycle number to restart from
-    
     # ===== Automatic Time Stepping =====
     # Adjusts time step based on convergence behavior
     # After each converged step dt is multiplied by
@@ -642,7 +635,6 @@ grain_file = "grains.txt"
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
-        #   [output_directory]/[basename]/restart/            <- Restart files (if enabled)
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":
         #   ./results/tensile_test/                          <- All outputs go here
@@ -901,3 +893,49 @@ grain_file = "grains.txt"
         # Number of elements [X_elements, Y_elements, Z_elements]
         # Total elements = product of these numbers
         nxyz = [10, 10, 10]
+
+# =====================================
+# CHECKPOINT / RESTART
+# =====================================
+# Writes binary checkpoints during a run and restarts later runs from them.
+# Requires ExaConstit built with Axom (Axom with Sidre, Conduit and HDF5; the
+# install scripts build all three). See doc/restart.md for the full details.
+#
+# A restart needs only the checkpoint and this options file: the mesh, grain,
+# region-mapping, orientation and state-variable files are not read.
+# A restart must use the same number of MPI ranks, the same mesh order and the
+# same materials (names, model types and state variable counts) as the run that
+# wrote the checkpoint. The final time, time steps, solver settings, output
+# settings and material properties may change; boundary conditions for steps
+# already completed must stay the same.
+
+[Restart]
+    # Write checkpoints during this run
+    write = false
+
+    # Write a checkpoint every this many completed time steps
+    # 0 = only write the final checkpoint (if write_final = true)
+    interval = 0
+
+    # Also write a checkpoint when the simulation finishes
+    write_final = true
+
+    # Number of checkpoints to keep on disk; older ones are removed
+    # 0 = keep every checkpoint
+    keep_last = 2
+
+    # Directory checkpoints are written to, one subdirectory per checkpoint
+    # (cycle_<number of completed steps>)
+    directory = "restart"
+
+    # Restart this run from a checkpoint
+    read = false
+
+    # Which checkpoint to restart from, by number of completed steps
+    # If omitted, the newest complete checkpoint is used
+    # read_cycle = 100
+
+    # Read the checkpoint from this directory instead of `directory`
+    # Useful for restarting from another run's checkpoints without touching
+    # them; this run still writes its own checkpoints to `directory`
+    # read_directory = "other_run/restart"

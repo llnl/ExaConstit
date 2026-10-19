@@ -53,6 +53,7 @@ set(EXACONSTIT_SOURCES
     options/option_material.cpp
     options/option_mesh.cpp
     options/option_post_processing.cpp
+    options/option_restart.cpp
     options/option_solvers.cpp
     options/option_time.cpp
     postprocessing/postprocessing_driver.cpp

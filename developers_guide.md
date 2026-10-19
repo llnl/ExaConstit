@@ -218,6 +218,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - **`option_solvers.cpp`**: Linear and nonlinear solver settings
 - **`option_time.cpp`**: Time-stepping parameters
 - **`option_post_processing.cpp`**: Post-processing configuration
+- **`option_restart.cpp`**: Checkpoint/restart configuration
 - **`option_enum.cpp`**: Enumeration type conversions
 - **`option_util.hpp`**: Utility functions for option parsing
 

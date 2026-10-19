@@ -181,8 +181,9 @@ struct MeshOptions {
      */
     bool periodicity = false;
 
-    // Validation
-    bool validate() const;
+    // Validation (check_input_files = false skips the checks on input files a restart does
+    // not read, since they may no longer exist)
+    bool validate(bool check_input_files = true) const;
 
     // Conversion from toml
     static MeshOptions from_toml(const toml::value& toml_input);
@@ -222,8 +223,9 @@ struct GrainInfo {
      */
     int num_grains = 0;
 
-    // Validation
-    bool validate() const;
+    // Validation (check_input_files = false skips the checks on input files a restart does
+    // not read, since they may no longer exist)
+    bool validate(bool check_input_files = true) const;
 
     // Conversion from toml
     static GrainInfo from_toml(const toml::value& toml_input);
@@ -274,8 +276,9 @@ struct StateVariables {
      */
     std::vector<double> initial_values;
 
-    // Validation
-    bool validate() const;
+    // Validation (check_input_files = false skips the checks on input files a restart does
+    // not read, since they may no longer exist)
+    bool validate(bool check_input_files = true) const;
 
     // Conversion from toml
     static StateVariables from_toml(const toml::value& toml_input);
@@ -441,8 +444,9 @@ struct MaterialOptions {
      */
     double temperature = 298.0;
 
-    // Validation
-    bool validate() const;
+    // Validation (check_input_files = false skips the checks on input files a restart does
+    // not read, since they may no longer exist)
+    bool validate(bool check_input_files = true) const;
 
     // Conversion from toml
     static MaterialOptions from_toml(const toml::value& toml_input);
@@ -561,21 +565,6 @@ struct TimeOptions {
      * @brief Custom time stepping configuration (if using CUSTOM mode)
      */
     std::optional<CustomTimeOptions> custom_time;
-
-    /**
-     * @brief Whether this is a restart simulation
-     */
-    bool restart = false;
-
-    /**
-     * @brief Time to restart from (if restart is enabled)
-     */
-    double restart_time = 0.0;
-
-    /**
-     * @brief Cycle number to restart from (if restart is enabled)
-     */
-    size_t restart_cycle = 0;
 
     /**
      * @brief Determine which time stepping mode is active
@@ -1353,6 +1342,78 @@ struct PostProcessingOptions {
 };
 
 /**
+ * @brief Checkpoint and restart configuration ([Restart] table)
+ *
+ * @details Checkpoints are binary Axom Sidre files, one per MPI rank, written to
+ * `directory/cycle_<completed cycles>/`. A restart needs only the checkpoint and the options
+ * file; the mesh, grain, region-mapping, orientation and state-variable files are not read.
+ * Writing or reading checkpoints requires ExaConstit built with Axom (EXACONSTIT_USE_AXOM).
+ * See doc/restart.md for the full description.
+ */
+struct RestartOptions {
+    /**
+     * @brief Whether to write checkpoints during the run
+     */
+    bool write = false;
+
+    /**
+     * @brief Number of completed cycles between checkpoints (0 disables interval checkpoints)
+     */
+    int interval = 0;
+
+    /**
+     * @brief Whether to also write a checkpoint when the simulation finishes
+     */
+    bool write_final = true;
+
+    /**
+     * @brief Number of complete checkpoints to keep on disk; older ones are removed (0 keeps
+     * all of them)
+     */
+    int keep_last = 2;
+
+    /**
+     * @brief Whether to restart this run from a checkpoint
+     */
+    bool read = false;
+
+    /**
+     * @brief Completed-cycle count of the checkpoint to restart from; the newest complete
+     * checkpoint if unset
+     */
+    std::optional<size_t> read_cycle;
+
+    /**
+     * @brief Directory checkpoints are written to (and read from unless read_directory is set)
+     */
+    std::filesystem::path directory = "restart";
+
+    /**
+     * @brief Directory to read the restart checkpoint from instead of directory
+     *
+     * @details Lets a continuation restart from another run's checkpoints while writing its own
+     * to directory. Writing, superseding and keep_last pruning only ever act on directory, so
+     * the other run's checkpoints are never renamed or removed.
+     */
+    std::optional<std::filesystem::path> read_directory;
+
+    /**
+     * @brief Directory a restart reads from
+     *
+     * @return read_directory if it is set, otherwise directory
+     */
+    const std::filesystem::path& GetReadDirectory() const {
+        return read_directory ? *read_directory : directory;
+    }
+
+    // Validation
+    bool validate() const;
+
+    // Conversion from toml
+    static RestartOptions from_toml(const toml::value& toml_input);
+};
+
+/**
  * @brief Main options class for ExaConstit simulation configuration
  */
 class ExaOptions {
@@ -1401,6 +1462,11 @@ public:
      * @brief Post-processing and analysis options
      */
     PostProcessingOptions post_processing;
+
+    /**
+     * @brief Checkpoint/restart options
+     */
+    RestartOptions restart;
 
     /**
      * @brief Paths to external material configuration files
@@ -1463,6 +1529,12 @@ private:
      * @param toml_input TOML value containing time configuration
      */
     void parse_time_options(const toml::value& toml_input);
+
+    /**
+     * @brief Parse checkpoint and restart options from TOML input
+     * @param toml_input TOML value containing the [Restart] table
+     */
+    void parse_restart_options(const toml::value& toml_input);
 
     /**
      * @brief Parse solver options from TOML input

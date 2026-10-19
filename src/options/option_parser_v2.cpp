@@ -242,6 +242,7 @@ void ExaOptions::parse_from_toml(const toml::value& toml_input) {
     // Parse component sections
     parse_mesh_options(toml_input);
     parse_time_options(toml_input);
+    parse_restart_options(toml_input);
     parse_solver_options(toml_input);
     parse_boundary_options(toml_input);
     parse_visualization_options(toml_input);
@@ -275,6 +276,12 @@ void ExaOptions::parse_time_options(const toml::value& toml_input) {
 
     // Same parsing (restart options, nested sections, time_type) as TimeOptions::from_toml
     time = TimeOptions::from_toml(toml::find(toml_input, "Time"));
+}
+
+void ExaOptions::parse_restart_options(const toml::value& toml_input) {
+    if (toml_input.contains("Restart")) {
+        restart = RestartOptions::from_toml(toml::find(toml_input, "Restart"));
+    }
 }
 
 void ExaOptions::parse_solver_options(const toml::value& toml_input) {
@@ -466,7 +473,11 @@ void ExaOptions::load_post_processing_file() {
 bool ExaOptions::validate() {
     // Basic validation - could be expanded with more comprehensive checks
 
-    if (!mesh.validate())
+    // On a restart, the mesh, grain, region-mapping, orientation and state-variable inputs
+    // are replaced by the checkpoint and may no longer exist.
+    const bool inputs_from_checkpoint = restart.read;
+
+    if (!mesh.validate(!inputs_from_checkpoint))
         return false;
     if (!time.validate())
         return false;
@@ -476,6 +487,8 @@ bool ExaOptions::validate() {
         return false;
     if (!boundary_conditions.validate())
         return false;
+    if (!restart.validate())
+        return false;
 
     // Check that we have at least one material
     if (materials.empty()) {
@@ -483,19 +496,7 @@ bool ExaOptions::validate() {
         return false;
     }
 
-    if (materials.size() > 1) {
-        if (!region_mapping_file) {
-            WARNING_0_OPT("Error: region_mapping_file was not provided even though multiple "
-                          "materials were asked for.");
-            return false;
-        } else if (mesh.mesh_type == MeshType::AUTO && !grain_file) {
-            WARNING_0_OPT("Error: region_mapping_file was provided but no grain_file was provided "
-                          "when using auto mesh.");
-            return false;
-        }
-    }
-
-    if (materials.size() > 1) {
+    if (materials.size() > 1 && !inputs_from_checkpoint) {
         if (!region_mapping_file) {
             WARNING_0_OPT("Error: region_mapping_file was not provided even though multiple "
                           "materials were asked for.");
@@ -509,7 +510,7 @@ bool ExaOptions::validate() {
 
     size_t index = 1;
     for (auto& mat : materials) {
-        if (!mat.validate())
+        if (!mat.validate(!inputs_from_checkpoint))
             return false;
         // Update the region_id value after validating
         // everything so to make it easier for users to
@@ -630,31 +631,34 @@ bool ExaOptions::validate() {
     if (!post_processing.validate())
         return false;
 
-    if (region_mapping_file) {
-        if (!std::filesystem::exists(*region_mapping_file)) {
-            std::ostringstream err;
-            err << "Error: Region mapping file: " << *region_mapping_file << " does not exist";
-            WARNING_0_OPT(err.str());
-            return false;
+    if (!inputs_from_checkpoint) {
+        if (region_mapping_file) {
+            if (!std::filesystem::exists(*region_mapping_file)) {
+                std::ostringstream err;
+                err << "Error: Region mapping file: " << *region_mapping_file << " does not exist";
+                WARNING_0_OPT(err.str());
+                return false;
+            }
         }
-    }
 
-    if (grain_file) {
-        if (!std::filesystem::exists(*grain_file)) {
-            std::ostringstream err;
-            err << "Error: Grain file provided at top level: " << *grain_file << " does not exist";
-            WARNING_0_OPT(err.str());
-            return false;
+        if (grain_file) {
+            if (!std::filesystem::exists(*grain_file)) {
+                std::ostringstream err;
+                err << "Error: Grain file provided at top level: " << *grain_file
+                    << " does not exist";
+                WARNING_0_OPT(err.str());
+                return false;
+            }
         }
-    }
 
-    if (orientation_file) {
-        if (!std::filesystem::exists(*orientation_file)) {
-            std::ostringstream err;
-            err << "Error: Orientation file provided at top level: " << *orientation_file
-                << " does not exist";
-            WARNING_0_OPT(err.str());
-            return false;
+        if (orientation_file) {
+            if (!std::filesystem::exists(*orientation_file)) {
+                std::ostringstream err;
+                err << "Error: Orientation file provided at top level: " << *orientation_file
+                    << " does not exist";
+                WARNING_0_OPT(err.str());
+                return false;
+            }
         }
     }
 
@@ -678,6 +682,21 @@ void ExaOptions::print_options() const {
     std::cout << "\nSimulation Information:\n";
     std::cout << "  Base name: " << basename << "\n";
     std::cout << "  Version: " << version << "\n";
+    if (restart.write || restart.read) {
+        std::cout << "  Restart: write=" << (restart.write ? "yes" : "no")
+                  << " interval=" << restart.interval
+                  << " write_final=" << (restart.write_final ? "yes" : "no")
+                  << " keep_last=" << restart.keep_last
+                  << " read=" << (restart.read ? "yes" : "no");
+        if (restart.read_cycle) {
+            std::cout << " read_cycle=" << *restart.read_cycle;
+        }
+        std::cout << " directory=" << restart.directory.string();
+        if (restart.read && restart.read_directory) {
+            std::cout << " read_directory=" << restart.read_directory->string();
+        }
+        std::cout << "\n";
+    }
 
     // Print each component
     print_mesh_options();
@@ -772,12 +791,6 @@ void ExaOptions::print_time_options() const {
         }
     } else {
         std::cout << "  Type: none (time_type has no matching [Time.*] section)\n";
-    }
-
-    if (time.restart) {
-        std::cout << "  Restart enabled:\n";
-        std::cout << "    Restart time: " << time.restart_time << "\n";
-        std::cout << "    Restart cycle: " << time.restart_cycle << "\n";
     }
 }
 
