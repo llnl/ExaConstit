@@ -961,9 +961,13 @@ void ExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::Vec
         m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
 
     // Our field variables that are inputs and outputs
+    // E(test, trial, elem) is written below, but MFEM's EA kernels (EAGradient::Mult,
+    // FillJAndData) read ea_data(trial, test, elem) with the first index fastest. Storing E
+    // with the second index fastest makes MFEM apply K rather than K^T, which matters
+    // because the material tangent is not symmetric.
     RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
-        {{nnodes * dim, nnodes * dim, nelems}}, perm3);
-    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(), layout_field);
+        {{nnodes * dim, nnodes * dim, nelems}}, std::array<RAJA::idx_t, DIM3>{{2, 0, 1}});
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 1>> E(emat.ReadWrite(), layout_field);
 
     RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
                                                                  perm4);
@@ -1440,9 +1444,13 @@ void ICExaNLFIntegrator::AssembleEA(const mfem::FiniteElementSpace& fes, mfem::V
         m_sim_state->GetQuadratureFunction("tangent_stiffness")->Read(), layout_tensor);
 
     // Our field variables that are inputs and outputs
+    // E(test, trial, elem) is written below, but MFEM's EA kernels (EAGradient::Mult,
+    // FillJAndData) read ea_data(trial, test, elem) with the first index fastest. Storing E
+    // with the second index fastest makes MFEM apply K rather than K^T, which matters
+    // because the material tangent is not symmetric.
     RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout(
-        {{nnodes * dim, nnodes * dim, nelems}}, perm3);
-    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> E(emat.ReadWrite(), layout_field);
+        {{nnodes * dim, nnodes * dim, nelems}}, std::array<RAJA::idx_t, DIM3>{{2, 0, 1}});
+    RAJA::View<double, RAJA::Layout<DIM3, RAJA::Index_type, 1>> E(emat.ReadWrite(), layout_field);
 
     RAJA::Layout<DIM4> layout_jacob = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}},
                                                                  perm4);
