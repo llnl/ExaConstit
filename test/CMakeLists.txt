@@ -47,6 +47,36 @@ blt_add_executable(NAME      test_grad_oper
 blt_add_test(NAME    test_gradient_operation
              COMMAND test_grad_oper)
 
+####################################
+# Checkpoint/restart tests (Axom Sidre)
+####################################
+if(ENABLE_AXOM)
+    # Mesh round trip through the checkpoint mesh I/O, including a case with empty ranks
+    blt_add_executable(NAME       test_restart_mesh_roundtrip
+                       SOURCES    test_restart_mesh_roundtrip.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+
+    # MPI tests never use more ranks than the machine has cores, so the suite does not
+    # oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
+    # ranks than slots by default). The default is the number of logical cores CMake detects;
+    # set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank counts above the cap are skipped.
+    cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
+    if(NOT _detected_cores OR _detected_cores LESS 1)
+        set(_detected_cores 1)
+    endif()
+    set(EXACONSTIT_TEST_MAX_MPI_TASKS ${_detected_cores} CACHE STRING
+        "Largest number of MPI ranks any test may use (default: detected logical cores)")
+
+    foreach(_np 1 2 3 4)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            blt_add_test(NAME          test_restart_mesh_roundtrip_np${_np}
+                         COMMAND       test_restart_mesh_roundtrip
+                         NUM_MPI_TASKS ${_np})
+        endif()
+    endforeach()
+endif()
+
 if (NOT DEFINED PYTHON_EXECUTABLE)
         message(FATAL_ERROR "cmake: PYTHON_EXECUTABLE must be defined if running test suite current value: ${PYTHON_EXECUTABLE}")
 endif()

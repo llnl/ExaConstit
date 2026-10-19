@@ -243,6 +243,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 #### `sim_state/`
 **Purpose**: Simulation state management and field storage
 - **`simulation_state.hpp/cpp`**: Central state container class
+- **`exa_sidre_parmesh.hpp/cpp`**: Writing and rebuilding the parallel mesh for checkpoints
 
 **Manages**:
 - Finite element spaces and mesh data

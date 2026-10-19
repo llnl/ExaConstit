@@ -20,6 +20,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/postprocessing_driver.hpp
     postprocessing/mechanics_lightup.hpp
     sim_state/simulation_state.hpp
+    sim_state/exa_sidre_parmesh.hpp
     solvers/mechanics_solver.hpp
     solvers/trust_region_solver.hpp
     utilities/dynamic_function_loader.hpp
@@ -60,6 +61,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/projection_class.cpp
     postprocessing/mechanics_lightup.cpp
     sim_state/simulation_state.cpp
+    sim_state/exa_sidre_parmesh.cpp
     solvers/mechanics_solver.cpp
     solvers/trust_region_solver.cpp
     utilities/mechanics_kernels.cpp
@@ -115,6 +117,10 @@ if(ENABLE_CALIPER)
     list(APPEND EXACONSTIT_DEPENDS caliper)
 endif()
 
+if(ENABLE_AXOM)
+    list(APPEND EXACONSTIT_DEPENDS axom)
+endif()
+
 if(UNIX AND NOT APPLE AND TARGET Threads::Threads)
     # Check if we determined explicit linking is needed
     if(EXACONSTIT_THREADS_EXPLICIT_LINK)
@@ -132,6 +138,9 @@ message("-- EXACONSTIT_DEPENDS: ${EXACONSTIT_DEPENDS}")
 set(EXACONSTIT_DEFINES HAVE_EXACONSTIT)
 if(ENABLE_CALIPER)
     list(APPEND EXACONSTIT_DEFINES HAVE_CALIPER)
+endif()
+if(ENABLE_AXOM)
+    list(APPEND EXACONSTIT_DEFINES EXACONSTIT_USE_AXOM)
 endif()
 #------------------------------------------------------------------------------
 # Includes

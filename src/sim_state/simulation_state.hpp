@@ -459,14 +459,6 @@ private:
     /** @brief Reference to simulation options */
     ExaOptions& m_options;
 
-#if defined(EXACONSTIT_USE_AXOM)
-    // We want this to be something akin to a axom::sidre::MFEMSidreDataCollection
-    // However, we need it flexible enough to handle multiple different mesh topologies in it that
-    // we might due to different mfem::SubMesh objects that correspond to each
-    // PartialQuadraturePoint
-    /** @brief Simulation restart data store (optional Axom/Sidre support) */
-    std::unique_ptr<axom::sidre::DataStore> m_simulation_restart;
-#endif
     /** @brief MPI rank identifier */
     int my_id;
 
