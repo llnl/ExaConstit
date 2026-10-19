@@ -122,6 +122,12 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
             const int gmap_size = mesh.GetNE();
             mfem::Vector gmap(gmap_size);
             gmap.Load(gfile, gmap_size);
+            // A short file leaves grain ids of 0 or uninitialized values, which are
+            // later used as (id - 1) indices
+            MFEM_VERIFY_0(!gfile.fail(),
+                          "Grain map file " << *options.grain_file << " has fewer than the "
+                                            << gmap_size << " entries needed for the "
+                                            << "auto-generated mesh (one per element)");
             gfile.close();
 
             // set grain ids as element attributes on the mesh
