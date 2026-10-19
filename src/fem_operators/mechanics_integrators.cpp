@@ -669,9 +669,11 @@ void ExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) con
 //      of the gradient transposition.
 //
 //   2. Apply the TRANSPOSED D tensor contraction:
-//         T(l,n) = sum_{i,k} D(i,k,l,n,qpt,elem) * Gx(i,k)
+//         T(l,n) = sum_{i,k} D(i,k,n,l,qpt,elem) * Gx(i,k)
 //      whereas the forward kernel does
-//         T(i,k) = sum_{l,n} D(i,k,l,n,qpt,elem) * Gx(l,n)
+//         T(i,k) = sum_{l,n} D(i,k,n,l,qpt,elem) * Gx(l,n)
+//      (D's last two indices are (component, gradient direction) of the trial
+//      field, while Gx is indexed (gradient direction, component))
 //      The difference is *which pair* of D's indices are summed against Gx.
 //      For symmetric C, D has major symmetry D(i,k,l,n) = D(l,n,i,k) and the
 //      two contractions agree; for non-symmetric C they disagree.
@@ -691,14 +693,11 @@ void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vecto
     const int DIM6 = 6;
 
     std::array<RAJA::idx_t, DIM3> perm3{{2, 1, 0}};
-    std::array<RAJA::idx_t, DIM6> perm6{{5, 4, 3, 2, 1, 0}};
 
-    // D tensor from AssembleGradPA: D(elem, qpt, i, k, l, n)
-    // The leading dim being elem matches the ordering used in the forward kernel.
-    RAJA::Layout<DIM6> layout_tensor = RAJA::make_permuted_layout(
-        {{dim, dim, dim, dim, nqpts, nelems}}, perm6);
-    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> D(pa_dmat.Read(),
-                                                                        layout_tensor);
+    // D tensor from AssembleGradPA: D(elem, qpt, i, k, l, n), row-major with elem slowest,
+    // the same view the forward kernel uses.
+    RAJA::View<const double, RAJA::Layout<DIM6>> D(
+        pa_dmat.Read(), nelems, nqpts, dim, dim, dim, dim);
 
     // Field variables: input/output E-vectors
     RAJA::Layout<DIM3> layout_field = RAJA::make_permuted_layout({{nnodes, dim, nelems}}, perm3);
@@ -728,16 +727,16 @@ void ExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vecto
             }
 
             // Step 2: Apply TRANSPOSED D contraction
-            //   T(l, n) = sum_{i,k} D(i, k, l, n, qpt, elem) * Gx(i, k)
+            //   T(l, n) = sum_{i,k} D(i, k, n, l, qpt, elem) * Gx(i, k)
             // Compare to forward kernel:
-            //   T(i, k) = sum_{l,n} D(i, k, l, n, qpt, elem) * Gx(l, n)
+            //   T(i, k) = sum_{l,n} D(i, k, n, l, qpt, elem) * Gx(l, n)
             double T[3][3];
             for (int ll = 0; ll < dim_; ll++) {
                 for (int nn = 0; nn < dim_; nn++) {
                     T[ll][nn] = 0.0;
                     for (int ii = 0; ii < dim_; ii++) {
                         for (int kk = 0; kk < dim_; kk++) {
-                            T[ll][nn] += D(i_elems, j_qpts, ii, kk, ll, nn) * Gx[ii][kk];
+                            T[ll][nn] += D(i_elems, j_qpts, ii, kk, nn, ll) * Gx[ii][kk];
                         }
                     }
                 }
