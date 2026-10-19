@@ -67,6 +67,7 @@ For detailed installation instructions, refer to the build scripts in `scripts/i
 **Optional Dependencies:**
 - **ADIOS2**: (MFEM-based) High-performance I/O for visualization
 - **Caliper**: Performance profiling
+- **Axom** (with Sidre, Conduit and HDF5): Checkpoint/restart support, enabled with `-DAXOM_DIR=<axom install>/lib/cmake`
 
 ### Basic Build Process
 ```bash

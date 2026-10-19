@@ -9,6 +9,7 @@ set(_tpls
     exacmech
     mfem
     caliper
+    axom
     threads)
 
 foreach(_tpl ${_tpls})
@@ -121,6 +122,43 @@ if(SNLS_USE_RAJA_PORT_SUITE)
         message(FATAL_ERROR "UMPIRE_DIR was not provided. It is needed to find UMPIRE.")
     endif()
 endif() # End SNLS_USE_RAJA_PORT_SUITE check
+
+################################
+# Axom (optional)
+################################
+# Axom installs a proper CMake package config (axom-config.cmake under
+# ${AXOM_DIR}/lib/cmake/axom). find_package CONFIG mode picks it up
+# automatically and imports the roll-up `axom` target plus per-component
+# targets (axom::core, axom::sidre, axom::slic, ...). We consume the
+# roll-up target so whatever components Axom was built with come along
+# transitively -- including sidre and its Conduit / HDF5 dependencies,
+# which axom-config.cmake locates from the paths Axom was built against.
+
+if (DEFINED AXOM_DIR)
+    find_package(axom REQUIRED CONFIG
+                 NO_DEFAULT_PATH
+                 PATHS ${AXOM_DIR})
+    if (axom_FOUND)
+        # ---- Workaround for upstream Axom export bug ----
+        # axom::slic's INTERFACE_LINK_LIBRARIES contains a bare 'lumberjack'
+        # entry inherited from BLT's internal target tracking when Axom is
+        # built with AXOM_ENABLE_LUMBERJACK=ON. Lumberjack is not in
+        # AXOM_COMPONENTS_ENABLED (it's a feature folded into slic, not a
+        # component built as its own library), so the reference is dangling.
+        # Without a stub here, every consumer of axom::slic gets -llumberjack
+        # on its link line and the linker fails to find it.
+        if (NOT TARGET lumberjack)
+            add_library(lumberjack INTERFACE IMPORTED)
+        endif()
+        option(ENABLE_AXOM "Enable Axom" ON)
+        message(STATUS "Found Axom: ${AXOM_DIR}")
+    else()
+        message(FATAL_ERROR "Unable to find Axom with given path ${AXOM_DIR}")
+    endif()
+else()
+    message(STATUS "Axom support disabled")
+endif()
+
 
 ################################
 # Caliper

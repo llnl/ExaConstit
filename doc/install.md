@@ -80,7 +80,11 @@ scripts/install/
 ├── common/
 │   ├── dependency_versions.sh    # Centralized version control
 │   ├── preflight_checks.sh       # Validation and utilities
-│   └── build_functions.sh        # Shared build logic
+│   ├── build_functions.sh        # Loader that sources the files below
+│   ├── build_helpers.sh          # Logging, cloning, build-dir helpers
+│   ├── build_functions_common.sh # BLT, CAMP, RAJA, Umpire, CHAI
+│   ├── build_functions_mfem.sh   # Hypre, METIS, MFEM
+│   └── build_functions_exaconstit.sh # SNLS, ExaCMech, HDF5, Conduit, Axom, ExaConstit
 ├── configs/
 │   ├── cpu_intel_config.sh       # Intel compiler configuration
 │   ├── cpu_mac_config.sh         # macOS configuration
@@ -319,11 +323,22 @@ All dependency versions are centralized in `common/dependency_versions.sh`:
 code ExaConstit/scripts/install/common/dependency_versions.sh
 ```
 ```bash
+# Build infrastructure (shared by every RADIUSS-stack package via BLT_SOURCE_DIR)
+export BLT_VER="v0.7.2"
+
 # Portability libraries
 export CAMP_VER="v2025.12.0"
 export RAJA_VER="v2025.12.2"
 export UMPIRE_VER="v2025.12.0"
 export CHAI_VER="v2025.12.0"
+
+# Standalone SNLS (batch solvers enabled)
+export SNLS_VER="v0.4.4"
+
+# Restart / checkpoint I/O (Axom Sidre and its dependencies)
+export HDF5_VER="hdf5_1.14.6"        # Stay on the 1.14 series
+export CONDUIT_VER="v0.9.7"
+export AXOM_VER="v0.14.0"
 
 # Material models
 export EXACMECH_REPO="https://github.com/LLNL/ExaCMech.git"
@@ -453,16 +468,29 @@ your_build_directory/
 ├── camp/
 │   ├── build_${BUILD_SUFFIX}/        # Build artifacts
 │   └── install_${BUILD_SUFFIX}/      # Installed library
+├── blt/                               # Shared BLT checkout (no build step)
 ├── RAJA/
 │   ├── build_${BUILD_SUFFIX}/
 │   └── install_${BUILD_SUFFIX}/
-├── Umpire/                            # GPU builds only
+├── Umpire/
 │   ├── build_${BUILD_SUFFIX}/
 │   └── install_${BUILD_SUFFIX}/
-├── CHAI/                              # GPU builds only
+├── CHAI/
+│   ├── build_${BUILD_SUFFIX}/
+│   └── install_${BUILD_SUFFIX}/
+├── SNLS/
 │   ├── build_${BUILD_SUFFIX}/
 │   └── install_${BUILD_SUFFIX}/
 ├── ExaCMech/
+│   ├── build_${BUILD_SUFFIX}/
+│   └── install_${BUILD_SUFFIX}/
+├── hdf5/
+│   ├── build_${BUILD_SUFFIX}/
+│   └── install_${BUILD_SUFFIX}/
+├── conduit/
+│   ├── build_${BUILD_SUFFIX}/
+│   └── install_${BUILD_SUFFIX}/
+├── axom/
 │   ├── build_${BUILD_SUFFIX}/
 │   └── install_${BUILD_SUFFIX}/
 ├── hypre/
@@ -499,10 +527,8 @@ less my_raja_build  # View the build log
 ### **Disk Space Requirements**
 
 Typical disk space usage:
-- **CPU build**: ~1 GB total
-- **GPU build (CUDA/HIP)**: ~2 GB total
-  - Includes additional Umpire and CHAI libraries
-  - GPU architectures add to binary sizes
+- **CPU build**: a few GB total (HDF5, Conduit, and Axom checkouts make up a large share)
+- **GPU build (CUDA/HIP)**: larger still, since GPU architectures add to binary sizes
 
 ---
 
@@ -740,16 +766,21 @@ If you prefer to build manually or need more control over the build process:
 ### **Prerequisites**
 
 You'll need to manually build all dependencies first:
-1. **CAMP** (v2025.12.0)
-2. **RAJA** (v2025.12.2)
-3. **Umpire** (v2025.12.0) - GPU builds only
-4. **CHAI** (v2025.12.0) - GPU builds only
-5. **ExaCMech** (v0.4.3)
+1. **BLT** (v0.7.2) - shared by every package below via `-DBLT_SOURCE_DIR`
+2. **CAMP** (v2025.12.0)
+3. **RAJA** (v2025.12.2)
+4. **Umpire** (v2025.12.0)
+5. **CHAI** (v2025.12.0)
 6. **Hypre** (v3.1.0)
 7. **METIS** (5.1.0)
 8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 was tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40`)
+9. **SNLS** (v0.4.4) - built with `USE_BATCH_SOLVERS=ON`
+10. **ExaCMech** (v0.4.3) - built against the standalone SNLS via `SNLS_DIR`
+11. **HDF5** (1.14.6) - serial, C library only
+12. **Conduit** (v0.9.7) - with MPI and HDF5
+13. **Axom** (v0.14.0) - with Sidre (optional for ExaConstit; enabled when `AXOM_DIR` is given)
 
-See `scripts/install/common/build_functions.sh` for the exact build commands and CMake options.
+See the `scripts/install/common/build_functions_*.sh` files for the exact build commands and CMake options.
 
 ### **Building ExaConstit**
 
@@ -772,11 +803,16 @@ cmake .. \
   -DENABLE_OPENMP=OFF \
   -DENABLE_FORTRAN=OFF \
   -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+  -DBLT_SOURCE_DIR=${BLT_DIR} \
   -DMFEM_DIR=${MFEM_INSTALL_DIR}/lib/cmake/mfem/ \
   -DECMECH_DIR=${EXACMECH_INSTALL_DIR}/ \
-  -DSNLS_DIR=${EXACMECH_INSTALL_DIR}/ \
+  -DSNLS_DIR=${SNLS_INSTALL_DIR}/lib/cmake/snls/ \
+  -DAXOM_DIR=${AXOM_INSTALL_DIR}/lib/cmake/ \
   -DRAJA_DIR=${RAJA_INSTALL_DIR}/lib/cmake/raja/ \
   -Dcamp_DIR=${CAMP_INSTALL_DIR}/lib/cmake/camp/ \
+  -DFMT_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/fmt \
+  -DUMPIRE_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/umpire \
+  -DCHAI_DIR=${CHAI_INSTALL_DIR}/lib/cmake/chai \
   -DCMAKE_BUILD_TYPE=Release
 
 # 4. Build
@@ -796,10 +832,7 @@ cmake .. \
   -DCMAKE_CUDA_COMPILER=${CUDA_ROOT}/bin/nvcc \
   -DCMAKE_CUDA_HOST_COMPILER=${HOST_CXX_COMPILER} \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
-  -DENABLE_CUDA=ON \
-  -DFMT_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/fmt \
-  -DUMPIRE_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/umpire \
-  -DCHAI_DIR=${CHAI_INSTALL_DIR}/lib/cmake/chai
+  -DENABLE_CUDA=ON
 ```
 
 For HIP builds, add:
@@ -809,10 +842,7 @@ cmake .. \
   -DCMAKE_CXX_COMPILER=${ROCM_ROOT}/bin/amdclang++ \
   -DCMAKE_HIP_COMPILER=${ROCM_ROOT}/bin/amdclang++ \
   -DCMAKE_HIP_ARCHITECTURES=gfx942 \
-  -DENABLE_HIP=ON \
-  -DFMT_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/fmt \
-  -DUMPIRE_DIR=${UMPIRE_INSTALL_DIR}/lib64/cmake/umpire \
-  -DCHAI_DIR=${CHAI_INSTALL_DIR}/lib/cmake/chai
+  -DENABLE_HIP=ON
 ```
 
 ---

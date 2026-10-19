@@ -97,7 +97,7 @@ export CMAKE_GPU_ARCHITECTURES=""
 export CMAKE_GPU_FLAGS=""
 
 ###########################################
-# CHAI Options (Not Used in CPU Build)
+# CHAI Options (CPU build: GPU-specific features disabled)
 ###########################################
 export CHAI_DISABLE_RM="OFF"
 export CHAI_THIN_GPU_ALLOCATE="OFF"
@@ -106,7 +106,9 @@ export CHAI_ENABLE_PICK="OFF"
 export CHAI_DEBUG="OFF"
 export CHAI_ENABLE_GPU_SIMULATION_MODE="OFF"
 export CHAI_ENABLE_UM="OFF"
-export CHAI_ENABLE_MANAGED_PTR="OFF"
+# managed_ptr is required on CPU too: SNLS (batch solvers) and ExaCMech
+# use chai::managed_ptr whenever SNLS is built with the RAJA Portability Suite.
+export CHAI_ENABLE_MANAGED_PTR="ON"
 export CHAI_ENABLE_MANAGED_PTR_ON_GPU="OFF"
 
 ###########################################

@@ -18,16 +18,16 @@ resolve_base_dir() {
     BASE_DIR=$(pwd -P)
     echo "Using current directory as build directory: ${BASE_DIR}"
   fi
-  
+
   export BASE_DIR
-  
+
   echo "=========================================="
   echo "Build Configuration:"
   echo "  Base directory: ${BASE_DIR}"
   echo "  All dependencies will be cloned and built here"
   echo "=========================================="
   echo ""
-  
+
   # Optional: warn if running from ExaConstit source tree
   if [[ "${BASE_DIR}" == *"/ExaConstit"* ]]; then
     echo "⚠️  WARNING: You appear to be building inside the ExaConstit source tree."
@@ -50,18 +50,18 @@ check_required_paths() {
   local missing=0
   for p in "$@"; do
     if [[ "$p" == */bin/* ]]; then
-      if [ ! -x "$p" ]; then 
+      if [ ! -x "$p" ]; then
         echo "ERROR: Missing executable: $p" >&2
         missing=1
       fi
     else
-      if [ ! -e "$p" ]; then 
+      if [ ! -e "$p" ]; then
         echo "ERROR: Missing path: $p" >&2
         missing=1
       fi
     fi
   done
-  if [ "$missing" -ne 0 ]; then 
+  if [ "$missing" -ne 0 ]; then
     echo "ERROR: Required paths missing. Exiting." >&2
     exit 1
   fi
@@ -114,14 +114,17 @@ print_build_summary() {
   echo "  Linker:        ${CMAKE_EXE_LINKER_FLAGS}"
   echo ""
   echo "Key Versions:"
+  echo "  BLT:           ${BLT_VER}"
   echo "  CAMP:          ${CAMP_VER}"
   echo "  RAJA:          ${RAJA_VER}"
-  if [ "${BUILD_TYPE}" != "cpu" ]; then
-    echo "  Umpire:        ${UMPIRE_VER}"
-    echo "  CHAI:          ${CHAI_VER}"
-  fi
+  echo "  Umpire:        ${UMPIRE_VER}"
+  echo "  CHAI:          ${CHAI_VER}"
   echo "  Hypre:         ${HYPRE_VER}"
   echo "  MFEM:          ${MFEM_BRANCH}"
+  echo "  SNLS:          ${SNLS_VER}"
+  echo "  HDF5:          ${HDF5_VER}"
+  echo "  Conduit:       ${CONDUIT_VER}"
+  echo "  Axom:          ${AXOM_VER}"
   echo "  ExaCMech:      ${EXACMECH_BRANCH}"
   echo "  ExaConstit:    ${EXACONSTIT_BRANCH}"
   echo "=========================================="
@@ -130,19 +133,19 @@ print_build_summary() {
 # Validate configuration before proceeding
 validate_configuration() {
   echo "Validating configuration..."
-  
+
   # Check compilers exist
   check_required_paths "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  
+
   if [ "${BUILD_TYPE}" != "cpu" ]; then
     check_required_paths "${CMAKE_GPU_COMPILER}"
   fi
-  
+
   # Check MPI wrappers
   check_required_paths "${MPI_C_COMPILER}" "${MPI_CXX_COMPILER}" "${MPI_Fortran_COMPILER}"
-  
+
   # Check required commands
   check_required_commands git cmake make curl tar
-  
+
   echo "Configuration validation complete."
 }
