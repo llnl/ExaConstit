@@ -1,6 +1,9 @@
 #include "sim_state/simulation_state.hpp"
 
 #include "utilities/unified_logger.hpp"
+#if defined(EXACONSTIT_USE_AXOM)
+#include "sim_state/restart_checkpoint.hpp"
+#endif
 
 namespace {
 
@@ -403,11 +406,112 @@ bool TimeManagement::BCTime(const double desired_bc_time) {
     return false;
 }
 
+/**
+ * @details Implementation notes. After a successful step, UpdateDeltaTime() leaves the time
+ * manager describing the *next* step: `old_time` is the end of the completed step, `dt` and
+ * `time` are the next step's size and end time, `simulation_cycle` counts completed steps and
+ * the tracker says whether the next step is a NORMAL or the FINAL one. This function rebuilds
+ * exactly that state from the checkpoint, using this run's time-step settings so a
+ * continuation can change them:
+ *
+ * 1. Completed time and cycle count come from the checkpoint. The retrial and sub-step
+ *    counters are reset: checkpoints are only written when IsCheckpointSafe(), i.e. when no
+ *    retrial or sub-step sequence is in flight, so they were zero (or irrelevant) then too.
+ * 2. prev_dt and dt_orig come from the checkpoint. Only log messages use them, and taking them
+ *    from the checkpoint makes the restarted run print the same messages as the uninterrupted
+ *    run.
+ *    - prev_dt is the size of the last completed step. The driver prints it as "dt old was" at
+ *      the start of the next cycle. If this run's settings change dt, the message shows the
+ *      last step taken before the restart followed by the new dt.
+ *    - dt_orig is reset at the first failure of a retrial sequence, before it is ever printed.
+ *      It is restored only so both runs' time managers hold the same values.
+ * 3. The next dt is chosen the way the success branch of UpdateDeltaTime() would choose it:
+ *    CUSTOM takes custom_dt[completed cycles] (or the stored dt if this run's list is shorter),
+ *    FIXED takes dt_fixed, and AUTO takes the stored next dt, which the writing run had
+ *    already computed from its last Newton iteration count, clamped to this run's
+ *    [dt_min, dt_max]. With unchanged settings this reproduces the writing run's dt exactly.
+ * 4. The final-time logic of UpdateDeltaTime() is applied against this run's time_final (same
+ *    1e-3 * dt tolerance): the next step becomes FINAL if it reaches t_final, and its dt is
+ *    shortened if it would overshoot. One case UpdateDeltaTime() never meets is added: a
+ *    checkpoint written at t_final (by write_final) resumes as FINISHED, so the driver loop
+ *    does not run at all unless t_final has been increased.
+ */
+void TimeManagement::ResumeFromCheckpoint(const CheckpointState& state) {
+    // Step 1: completed time and cycles; no retrial or sub-step sequence is in flight.
+    old_time = state.completed_time;
+    simulation_cycle = state.completed_cycles;
+    num_failures = 0;
+    num_sub_steps = 0;
+    required_num_sub_steps = 0;
+
+    // Step 2: the time steps used only in log messages.
+    prev_dt = state.previous_dt;
+    dt_orig = state.original_dt;
+
+    // Step 3: next dt from this run's scheme.
+    if (time_type == TimeStepType::CUSTOM) {
+        dt = (simulation_cycle < custom_dt.size()) ? custom_dt[simulation_cycle] : state.next_dt;
+    } else if (time_type == TimeStepType::FIXED) {
+        dt = dt_fixed;
+    } else {
+        dt = std::clamp(state.next_dt, dt_min, dt_max);
+    }
+
+    // Step 4: final-time logic against this run's time_final.
+    const double tolerance = std::abs(1e-3 * dt);
+    if (time_final - old_time <= tolerance) {
+        internal_tracker = TimeStep::FINISHED;
+        time = old_time;
+        return;
+    }
+    const double tnew = old_time + dt;
+    if (std::abs(tnew - time_final) <= tolerance) {
+        internal_tracker = TimeStep::FINAL;
+        time = tnew;
+    } else if (tnew > time_final) {
+        internal_tracker = TimeStep::FINAL;
+        dt = time_final - old_time;
+        time = time_final;
+    } else {
+        internal_tracker = TimeStep::NORMAL;
+        time = tnew;
+    }
+}
+
 SimulationState::SimulationState(ExaOptions& options)
     : m_time_manager(options), m_options(options), class_device(options.solvers.rtmodel) {
     MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
     m_time_manager = TimeManagement(options);
+
+    // Restart runs ([Restart] read = true) build this object exactly as a fresh run does,
+    // except that the few things a fresh run reads from input files are taken from the
+    // checkpoint instead, since those files may no longer exist ("phase 1" of a restart; see
+    // the background notes in restart_checkpoint.cpp). Each restart-specific step below is
+    // marked. The evolving state itself is restored later, from the driver, by
+    // RestoreFromCheckpoint() ("phase 2"), once every component has registered its
+    // quadrature functions.
+    //
+    // Restart step: open the checkpoint and rebuild the mesh from it instead of reading the
+    // mesh file. Both are collective, so they run on every rank, including ranks that end up
+    // owning no elements. m_restart is also created for runs that only write checkpoints.
+    const bool restart_run = options.restart.read;
+#if defined(EXACONSTIT_USE_AXOM)
+    if (options.restart.read || options.restart.write) {
+        m_restart = std::make_unique<exaconstit::RestartCheckpoint>(options.restart,
+                                                                    MPI_COMM_WORLD);
+    }
+    if (restart_run) {
+        m_restart->OpenForRestart();
+        m_mesh = m_restart->ReconstructMesh();
+    } else {
+        m_mesh = ::makeMesh(options, my_id);
+    }
+#else
+    // RestartOptions::validate() already rejects this; kept as a safeguard for callers that
+    // construct SimulationState without validating their options.
+    MFEM_VERIFY_0(!restart_run, "Restarting from a checkpoint requires ExaConstit built with Axom");
     m_mesh = ::makeMesh(options, my_id);
+#endif
     ::setupBoundaryConditions(options);
     // m_bc_manager = BCManager::GetInstance();
 
@@ -460,6 +564,20 @@ SimulationState::SimulationState(ExaOptions& options)
         m_primal_field_prev->UseDevice(true);
         (*m_primal_field) = 0.0;
         (*m_primal_field_prev) = 0.0;
+
+#if defined(EXACONSTIT_USE_AXOM)
+        // Restart step: overwrite the coordinate fields just created with the checkpointed
+        // reference coordinates, and verify the DOF layout, before anything reads them. The
+        // rebuilt mesh has no Nodes, so GetNodes() above projected from the vertex positions,
+        // which differs from the original run's coordinates in the last bits. Components built
+        // before RestoreFromCheckpoint() keep values derived from the starting geometry
+        // (SystemDriver's mono_def_bcs DOF search, the UMAT reference shape gradients), so they
+        // must see exactly the original coordinates for the restart to be bitwise exact. See
+        // RestartCheckpoint::RestoreReferenceConfiguration(). Collective.
+        if (restart_run) {
+            m_restart->RestoreReferenceConfiguration(*this);
+        }
+#endif
     }
 
     {
@@ -512,23 +630,67 @@ SimulationState::SimulationState(ExaOptions& options)
         region_map = false;
         mfem::Array<int> grains(loc_nelems);
 
+        // Grain IDs. A fresh run reads them from the mesh's element attributes. In a
+        // checkpointed mesh the element attributes already hold region IDs (they are
+        // overwritten below on a fresh run), so the restart step reads the grain IDs the
+        // checkpoint stored separately. Collective on restart runs.
+        if (restart_run) {
+#if defined(EXACONSTIT_USE_AXOM)
+            m_restart->ReadElementGrainIds(grains);
+#endif
+        } else {
+            for (int i = 0; i < loc_nelems; i++) {
+                grains.operator[](i) = m_mesh->GetAttribute(i);
+            }
+        }
+
         {
             auto pfes = GetParFiniteElementSpace(1);
             m_grains = std::make_shared<mfem::ParGridFunction>(pfes.get());
             m_grains->HostWrite();
             for (int i = 0; i < loc_nelems; i++) {
-                grains.operator[](i) = m_mesh->GetAttribute(i);
-                m_grains->operator[](i) = m_mesh->GetAttribute(i);
+                m_grains->operator[](i) = grains.operator[](i);
             }
         }
 
-        const auto grains2region = ::create_grains_to_map(options, grains);
+        std::map<int, int> grains2region;
+        if (!restart_run) {
+            grains2region = ::create_grains_to_map(options, grains);
 
-        for (int i = 0; i < loc_nelems; i++) {
-            const int grain_id = grains.operator[](i);
-            const int region_id = grains2region.at(grain_id);
-            m_mesh->SetAttribute(i, region_id);
-            region_map(region_id - 1, i) = true;
+            for (int i = 0; i < loc_nelems; i++) {
+                const int grain_id = grains.operator[](i);
+                const int region_id = grains2region.at(grain_id);
+                m_mesh->SetAttribute(i, region_id);
+                region_map(region_id - 1, i) = true;
+            }
+        } else {
+            // Restart step: a fresh run maps grains to regions with the region-mapping file and
+            // then stores the region IDs in the element attributes. The checkpointed mesh
+            // already carries those 1-based region IDs, so the region map is built from them
+            // directly and the region-mapping file is never read.
+            //
+            // A region ID outside [1, number of materials] means the material list shrank
+            // since the checkpoint was written. That check depends on each rank's own
+            // elements, so the ranks agree on it with an MPI_Allreduce and all abort together;
+            // a rank with no elements contributes "no problem".
+            const int num_regions = static_cast<int>(options.materials.size());
+            int local_out_of_range = 0;
+            for (int i = 0; i < loc_nelems; i++) {
+                const int region_id = m_mesh->GetAttribute(i);
+                if (region_id < 1 || region_id > num_regions) {
+                    local_out_of_range = 1;
+                    continue;
+                }
+                region_map(region_id - 1, i) = true;
+            }
+            int any_out_of_range = 0;
+            MPI_Allreduce(
+                &local_out_of_range, &any_out_of_range, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+            MFEM_VERIFY_0(any_out_of_range == 0,
+                          "The checkpoint has elements in regions beyond the "
+                              << num_regions
+                              << " material(s) configured for this run; the material list "
+                                 "cannot change on a restart");
         }
 
         // update all of our attributes
@@ -626,8 +788,20 @@ SimulationState::SimulationState(ExaOptions& options)
         }
 
         CreateRegionCommunicators();
-        InitializeStateVariables(grains2region);
+        // Restart step: skip the state-variable and orientation initialization. Its input
+        // files may no longer exist, and RestoreFromCheckpoint() overwrites all state
+        // variables (orientations included) with the checkpointed values anyway.
+        if (!restart_run) {
+            InitializeStateVariables(grains2region);
+        }
     }
+#if defined(EXACONSTIT_USE_AXOM)
+    // Restart step: the mesh and grain IDs have been copied out of the checkpoint, so free
+    // those arrays now; the rest of the checkpoint stays loaded for RestoreFromCheckpoint().
+    if (restart_run) {
+        m_restart->ReleaseMeshArrays();
+    }
+#endif
 }
 
 SimulationState::~SimulationState() {
@@ -636,6 +810,34 @@ SimulationState::~SimulationState() {
             MPI_Comm_free(&comm);
         }
     }
+}
+
+void SimulationState::RestoreFromCheckpoint() {
+#if defined(EXACONSTIT_USE_AXOM)
+    MFEM_VERIFY_0(m_restart && m_options.restart.read,
+                  "RestoreFromCheckpoint() was called on a run that is not restarting");
+    m_restart->RestoreState(*this);
+#else
+    MFEM_ABORT_0("Restarting from a checkpoint requires ExaConstit built with Axom");
+#endif
+}
+
+void SimulationState::WriteCheckpointIfDue(const size_t driver_step) {
+#if defined(EXACONSTIT_USE_AXOM)
+    if (m_restart) {
+        m_restart->WriteCheckpointIfDue(*this, driver_step);
+    }
+#else
+    static_cast<void>(driver_step);
+#endif
+}
+
+size_t SimulationState::GetRestartDriverStep() const {
+#if defined(EXACONSTIT_USE_AXOM)
+    return m_restart ? m_restart->GetRestartDriverStep() : 0;
+#else
+    return 0;
+#endif
 }
 
 bool SimulationState::AddQuadratureFunction(const std::string_view& qf_name,
@@ -647,7 +849,7 @@ bool SimulationState::AddQuadratureFunction(const std::string_view& qf_name,
     }
     // find(), not operator[]: a region with no elements on this rank has no quadrature space
     // here, and operator[] would insert a null entry into m_map_qs, which every loop over the
-    // spaces would then dereference.
+    // spaces (including the checkpoint writer) would then dereference.
     const auto space = m_map_qs.find(GetRegionName(region));
     if (space == m_map_qs.end() || !space->second) {
         return false;

@@ -67,7 +67,7 @@ For detailed installation instructions, refer to the build scripts in `scripts/i
 **Optional Dependencies:**
 - **ADIOS2**: (MFEM-based) High-performance I/O for visualization
 - **Caliper**: Performance profiling
-- **Axom** (with Sidre, Conduit and HDF5): Checkpoint/restart support, enabled with `-DAXOM_DIR=<axom install>/lib/cmake`
+- **Axom** (with Sidre, Conduit and HDF5): Checkpoint/restart support, enabled with `-DAXOM_DIR=<axom install>/lib/cmake` (see `doc/restart.md`)
 
 ### Basic Build Process
 ```bash
@@ -243,6 +243,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 #### `sim_state/`
 **Purpose**: Simulation state management and field storage
 - **`simulation_state.hpp/cpp`**: Central state container class
+- **`restart_checkpoint.hpp/cpp`**: Writing checkpoints and restarting from them (requires Axom; see `doc/restart.md`)
 - **`exa_sidre_parmesh.hpp/cpp`**: Writing and rebuilding the parallel mesh for checkpoints
 
 **Manages**:
@@ -617,13 +618,49 @@ The `test/data/` directory contains various example cases:
 1. Create header/source in `models/mechanics_newmodel.hpp/cpp`
 2. Inherit from `ExaModel` base class
 3. Implement required virtual methods
-4. Add configuration parsing support
-5. Update `CMakeLists.txt`
+4. Register every per-point quantity that carries history between steps with `SimulationState::AddQuadratureFunction()` (see [Keeping New State Restartable](#keeping-new-state-restartable))
+5. Add configuration parsing support
+6. Update `CMakeLists.txt`
 
 #### New Boundary Condition Type
 1. Extend `BCManager` class
 2. Add parsing support in `option_boundary_conditions.cpp`
 3. Update documentation and examples
+
+#### Keeping New State Restartable
+Checkpoints (`src/sim_state/restart_checkpoint.*`, described in `doc/restart.md`) save some
+state automatically and some only because it is listed explicitly. Any new feature that
+carries state from one step to the next must fit one of the cases below, or a restarted run
+will silently continue from the wrong state.
+
+**Quadrature point data is saved automatically if it is registered.** Every function in
+SimulationState's quadrature-function registry is written and restored, whichever component
+registered it; the only exception is `tangent_stiffness`, which is recomputed before use.
+- Create history data with `SimulationState::AddQuadratureFunction()`. Data kept in a model's
+  own `mfem::Vector` or `PartialQuadratureFunction` is not saved, and nothing warns about it.
+  Scratch data recomputed every step can stay private.
+- Register it while the objects are being constructed (SimulationState, SystemDriver, the
+  models, PostProcessingDriver). The driver restores the checkpoint after all of them exist;
+  anything registered later keeps its initial value.
+- Register beginning/end-of-step pairs with `AddUpdateVariablePairNames()` as usual; the
+  checkpoint then stores an identical end-of-step function as a reference to its partner.
+- Data computed once in a constructor is fine if it depends only on the reference
+  configuration, the mesh and the options, since a restarted run reproduces those exactly.
+
+**Nodal data is not automatic.** Only the reference and current coordinates and the velocity
+are saved; the other SimulationState grid functions are derived from them after a restart. A
+new grid function or solution vector that carries history (an additional primal variable,
+Lagrange multipliers, and so on) must be added explicitly to `WriteNodalFields()` and to the
+binding in `BindFieldsAndQuadratureFunctions()`, with a check that the rebuilt space has the
+same size. Store true DOFs where possible.
+
+**Only the volume mesh is saved.** Submeshes, surface meshes and other topologies built on top
+of it must be rebuilt in the restarted run from the restored mesh, which is identical to the
+original, local numbering included. Anything that cannot be rebuilt that way needs its own
+checkpoint data.
+
+**Test it.** `test/test_restart_e2e.cpp` compares a restarted SimulationState with the
+original bitwise; add any new state to it.
 
 ### Performance Considerations
 - **GPU kernels**: Use RAJA for performance portability

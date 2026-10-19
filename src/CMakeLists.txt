@@ -21,6 +21,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/mechanics_lightup.hpp
     sim_state/simulation_state.hpp
     sim_state/exa_sidre_parmesh.hpp
+    sim_state/restart_checkpoint.hpp
     solvers/mechanics_solver.hpp
     solvers/trust_region_solver.hpp
     utilities/dynamic_function_loader.hpp
@@ -62,6 +63,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/mechanics_lightup.cpp
     sim_state/simulation_state.cpp
     sim_state/exa_sidre_parmesh.cpp
+    sim_state/restart_checkpoint.cpp
     solvers/mechanics_solver.cpp
     solvers/trust_region_solver.cpp
     utilities/mechanics_kernels.cpp

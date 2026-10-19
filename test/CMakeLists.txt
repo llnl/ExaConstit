@@ -57,6 +57,12 @@ if(ENABLE_AXOM)
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
 
+    # SimulationState checkpoint, delete the input files, restart, compare bitwise
+    blt_add_executable(NAME       test_restart_e2e
+                       SOURCES    test_restart_e2e.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+
     # MPI tests never use more ranks than the machine has cores, so the suite does not
     # oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
     # ranks than slots by default). The default is the number of logical cores CMake detects;
@@ -75,6 +81,26 @@ if(ENABLE_AXOM)
                          NUM_MPI_TASKS ${_np})
         endif()
     endforeach()
+
+    foreach(_np 2 3)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            blt_add_test(NAME          test_restart_e2e_np${_np}
+                         COMMAND       test_restart_e2e
+                         NUM_MPI_TASKS ${_np})
+        endif()
+    endforeach()
+
+    # Diagnostic: lists how each quadrature function is stored in a checkpoint rank file
+    blt_add_executable(NAME       inspect_restart_rank_file
+                       SOURCES    ${CMAKE_SOURCE_DIR}/scripts/restart/inspect_restart_rank_file.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON axom)
+
+    # Compares two checkpoint directories view by view (bitwise by default)
+    blt_add_executable(NAME       compare_restart_checkpoints
+                       SOURCES    ${CMAKE_SOURCE_DIR}/scripts/restart/compare_restart_checkpoints.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON axom)
 endif()
 
 if (NOT DEFINED PYTHON_EXECUTABLE)

@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+namespace exaconstit {
+class RestartCheckpoint;
+} // namespace exaconstit
+
 /**
  * @brief Enumeration for time step status and control
  *
@@ -253,20 +257,76 @@ public:
     }
 
     /**
-     * @brief Restart simulation from a specific time and cycle
+     * @brief Time state needed to resume a run exactly after a completed cycle.
      *
-     * @param time_restart Time to restart from
-     * @param dt_restart Time step size to use
-     * @param cycle Cycle number to restart from
+     * @details Stored as unambiguous quantities because the raw members change meaning
+     * with the tracker: after a successful UpdateDeltaTime() that returns NORMAL/FINAL,
+     * `time` is the END time of the NEXT step and `simulation_cycle` counts completed
+     * steps; after FINAL->FINISHED, `time` is the end of the step just completed and
+     * `simulation_cycle` was NOT incremented. `old_time` is the end time of the step just
+     * completed in both cases.
      *
-     * @details Used for simulation restarts from checkpoint data.
-     * Sets all time-related state to the specified restart values.
-     * Does not modify time step type or other configuration parameters.
+     * `previous_dt` and `original_dt` are carried along so that a restarted run's time-step
+     * logging (PrintTimeStats(), PrintRetrialStats(), PrintSubStepStats()) behaves exactly as
+     * the uninterrupted run's would.
      */
-    void RestartTimeState(const double time_restart, const double dt_restart, const size_t cycle) {
-        simulation_cycle = cycle;
-        time = time_restart;
-        dt = dt_restart;
+    struct CheckpointState {
+        /** @brief End time of the last completed step (old_time) */
+        double completed_time = 0.0;
+        /** @brief Time step the writing run would have taken next */
+        double next_dt = 0.0;
+        /** @brief Time step of the last completed step (prev_dt) */
+        double previous_dt = 0.0;
+        /** @brief Time step saved at the start of the last retrial sequence (dt_orig) */
+        double original_dt = 0.0;
+        /** @brief Number of completed cycles (the index into custom_dt of the next step) */
+        size_t completed_cycles = 0;
+    };
+
+    /**
+     * @brief Snapshot the resumable time state (see CheckpointState).
+     * @pre IsCheckpointSafe()
+     */
+    CheckpointState GetCheckpointState() const {
+        CheckpointState state;
+        state.completed_time = old_time;
+        state.next_dt = dt;
+        state.previous_dt = prev_dt;
+        state.original_dt = dt_orig;
+        state.completed_cycles = simulation_cycle +
+                                 ((internal_tracker == TimeStep::FINISHED) ? 1 : 0);
+        return state;
+    }
+
+    /**
+     * @brief True when no retrial or sub-step sequence is in flight, i.e. the retrial /
+     *        sub-step counters carry no information a checkpoint would lose.
+     */
+    bool IsCheckpointSafe() const {
+        return internal_tracker == TimeStep::NORMAL || internal_tracker == TimeStep::FINAL ||
+               internal_tracker == TimeStep::FINISHED;
+    }
+
+    /**
+     * @brief Resume from a CheckpointState using THIS run's time-step configuration.
+     *
+     * @details The next dt comes from the current scheme (CUSTOM: custom_dt[completed
+     * cycles] when available; FIXED: dt_fixed; AUTO: the stored dt clamped to
+     * [dt_min, dt_max]), then the same final-time logic as UpdateDeltaTime() is applied
+     * against the current time_final, so extending t_final (or the custom dt list) on a
+     * restart continues the run and a checkpoint already at t_final reports FINISHED.
+     * The logging-only previous and original time steps are restored as stored.
+     */
+    void ResumeFromCheckpoint(const CheckpointState& state);
+
+    /** @brief Active time stepping mode */
+    TimeStepType GetTimeStepType() const {
+        return time_type;
+    }
+
+    /** @brief Configured final simulation time */
+    double GetFinalTime() const {
+        return time_final;
     }
 
     /**
@@ -459,6 +519,17 @@ private:
     /** @brief Reference to simulation options */
     ExaOptions& m_options;
 
+    /**
+     * @brief Binary Sidre checkpoint/restart driver; null unless [Restart] read or write.
+     *
+     * @details Owned here. It borrows `*this` for the duration of each call and never
+     * stores a pointer back to its owner (a stored shared_ptr would form a cycle, and
+     * shared_from_this() is unavailable inside the constructor where the mesh is rebuilt).
+     * Friend access lets it enumerate the QSpace/QF registries and resume TimeManagement
+     * without widening the public API. See doc/restart.md.
+     */
+    std::unique_ptr<exaconstit::RestartCheckpoint> m_restart;
+    friend class exaconstit::RestartCheckpoint;
     /** @brief MPI rank identifier */
     int my_id;
 
@@ -603,6 +674,27 @@ public:
      * - Stress/strain tensors: vdim = 6 (Voigt notation)
      * - Deformation gradients: vdim = 9 (3x3 matrix)
      * - State variables: vdim = model-dependent
+     *
+     * **Checkpoint/restart contract.** Every registered quadrature function is written to
+     * restart checkpoints and restored on restart automatically, with no restart code
+     * needed for it (the one exception is `tangent_stiffness`, which is recomputed before
+     * use). Quadrature point data held anywhere else, such as a model's own mfem::Vector or
+     * PartialQuadratureFunction, is NOT checkpointed, and nothing warns about it. So:
+     * - Any per-point quantity that carries history from one step to the next must be
+     *   registered here. Scratch data that is fully recomputed every step does not need to
+     *   be.
+     * - Register it while the simulation objects are being constructed (SimulationState,
+     *   SystemDriver, the models, PostProcessingDriver), i.e. before the driver restores a
+     *   checkpoint. A function registered later keeps its initial value on restart.
+     * - The writing and restarted runs must register the same functions with the same vector
+     *   dimension. A function only one of them registers is reported as a warning and starts
+     *   from its initial value.
+     * - For a beginning/end-of-step pair, also register the pair with
+     *   AddUpdateVariablePairNames(). This is optional for restart (an unregistered pair is
+     *   simply stored in full), but lets the checkpoint store an identical end-of-step
+     *   function as a reference to its partner.
+     * - Call this on every rank. Ranks that own none of the region's elements get false back
+     *   and have no function of that name, which the checkpoint handles.
      */
     bool AddQuadratureFunction(const std::string_view& qf_name,
                                const int vdim = 1,
@@ -1148,6 +1240,55 @@ public:
     void PrintRetrialTimeStats() const {
         m_time_manager.PrintRetrialStats();
     }
+
+    // =========================================================================
+    // CHECKPOINT / RESTART
+    // =========================================================================
+
+    /**
+     * @brief Check whether this run restarts from a checkpoint
+     *
+     * @return True if [Restart] read is set
+     *
+     * @details On a restart run the constructor rebuilt the mesh and took the grain and
+     * region IDs from the checkpoint, and skipped the orientation and state-variable
+     * initialization. The driver must call RestoreFromCheckpoint() before the first time step.
+     */
+    bool IsRestartRun() const {
+        return m_options.restart.read;
+    }
+
+    /**
+     * @brief Overwrite the evolving state with the checkpointed values (restart phase 2)
+     *
+     * @details Call exactly once on a restart run, after SystemDriver and PostProcessingDriver
+     * have been constructed (so every quadrature function they register exists) and before the
+     * first time step. Restores the nodal fields and every quadrature function present both in
+     * this run and in the checkpoint, resumes the time state and recomputes the derived fields.
+     * Aborts if the checkpoint does not match this run. Collective over MPI_COMM_WORLD.
+     * See exaconstit::RestartCheckpoint::RestoreState().
+     */
+    void RestoreFromCheckpoint();
+
+    /**
+     * @brief Write a checkpoint if one is due
+     *
+     * @param driver_step The driver's loop counter `ti` for the step just completed
+     *
+     * @details Call at the end of every driver-loop iteration, after FinishCycle(), the model
+     * update and post-processing. Does nothing unless [Restart] write is set; when it is, the
+     * [Restart] interval and write_final settings decide whether this step is written.
+     * Collective over MPI_COMM_WORLD, so every rank must call it every iteration.
+     */
+    void WriteCheckpointIfDue(size_t driver_step);
+
+    /**
+     * @brief Driver loop counter recorded in the checkpoint
+     *
+     * @return The `ti` of the last step completed before the checkpoint, or 0 if this run is
+     * not a restart; the first restarted iteration is this value + 1
+     */
+    size_t GetRestartDriverStep() const;
 
 private:
     /** @brief Create MPI communicators for each region containing only ranks with that region

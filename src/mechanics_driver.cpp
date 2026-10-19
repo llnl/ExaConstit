@@ -318,6 +318,39 @@ int main(int argc, char* argv[]) {
          * - Performs material state updates and post-processing at each step
          */
         int ti = 0;
+        if (sim_state->IsRestartRun()) {
+            // Restart phase 2. Every object above has been built exactly as in a fresh run, so
+            // the checkpoint now overwrites the evolving state (coordinates, velocity, state
+            // variables, stresses and time). Whatever the constructors initialized, such as
+            // ExaCMechModel::InitStateVars(), is simply replaced.
+            sim_state->RestoreFromCheckpoint();
+            ti = static_cast<int>(sim_state->GetRestartDriverStep());
+
+            // Bring the boundary conditions to the segment that was active after step ti.
+            //
+            // SystemDriver's constructor set up the boundary conditions of step 1. In an
+            // uninterrupted run, each later update step s calls GetUpdateStep(s), which makes s
+            // BCManager's current step, and then UpdateEssBdr() rebuilds the boundary data and
+            // essential DOFs for it (followed by UpdateVelocity() and SolveInit()).
+            // GetUpdateStep(s) has no other side effects and only changes the current step when
+            // s is an update step, so replaying it for s = 1..ti leaves BCManager on the last
+            // update step <= ti, and UpdateEssBdr() then rebuilds that segment's boundary data.
+            //
+            // UpdateVelocity() and SolveInit() are not repeated. UpdateVelocity() is called by
+            // the loop before every Solve(). SolveInit() was the corrector applied at the start of
+            // that segment, and its effect is already part of the restored velocity. If ti + 1
+            // is itself an update step, the loop below handles it exactly as an uninterrupted
+            // run would.
+            int last_bc_update_step = 0;
+            for (int step = 1; step <= ti; ++step) {
+                if (BCManager::GetInstance().GetUpdateStep(step)) {
+                    last_bc_update_step = step;
+                }
+            }
+            if (last_bc_update_step > 0) {
+                oper.UpdateEssBdr();
+            }
+        }
         auto v_sol = sim_state->GetPrimalField();
         while (!sim_state->IsFinished()) {
             ti++;
@@ -367,6 +400,7 @@ int main(int argc, char* argv[]) {
             sim_state->FinishCycle();
             oper.UpdateModel();
             post_process.Update(ti, sim_state->GetTrueCycleTime());
+            sim_state->WriteCheckpointIfDue(static_cast<size_t>(ti));
         } // end loop over time steps
 
         /**
