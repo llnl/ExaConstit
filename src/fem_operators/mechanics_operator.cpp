@@ -289,7 +289,15 @@ void NonlinearMechOperator::CalculateDeformationGradient(mfem::QuadratureFunctio
 
 // Update the end coords used in our model
 void NonlinearMechOperator::UpdateEndCoords(const mfem::Vector& vel) const {
-    m_sim_state->GetPrimalField()->operator=(vel);
+    // vel is usually the primal field itself (the Newton iterate). mfem::Vector's
+    // copy-assignment has no self-assignment check and calls Write() first, which
+    // throws away a valid host copy in favor of a stale device copy. That happens
+    // after UpdateVelocity(), whose ParallelAverage finishes on the host, and on
+    // multiple GPUs left the shared dofs at their un-averaged (2x) values.
+    auto primal_field = m_sim_state->GetPrimalField();
+    if (primal_field.get() != &vel) {
+        primal_field->operator=(vel);
+    }
     m_sim_state->UpdateNodalEndCoords();
 }
 
@@ -329,7 +337,8 @@ mfem::Operator& NonlinearMechOperator::GetUpdateBCsAction(const mfem::Vector& k,
     {
         auto I = ess_tdof_list.Read();
         auto size = ess_tdof_list.Size();
-        auto Y = y.Write();
+        // ReadWrite (not Write) since only the constrained entries are overwritten
+        auto Y = y.ReadWrite();
         // Need to get rid of all the constrained values here
         mfem::forall(size, [=] MFEM_HOST_DEVICE(int i) {
             Y[I[i]] = 0.0;

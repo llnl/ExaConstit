@@ -508,7 +508,15 @@ void LightUp::CalculateLightUpData(
     const size_t gdot_length = static_cast<size_t>(
         m_sim_state->GetQuadratureFunctionStatePair(s_gdot, m_region).second);
 
-    m_in_fibers[0] = true;
+    {
+        // Every point belongs to the hkl = [0,0,0] "fiber". Fill through Write() so the
+        // device copy is the one marked valid; mfem::Array's scalar assignment writes
+        // the host copy without updating the host/device validity flags.
+        auto in_fiber_all = m_in_fibers[0].Write();
+        mfem::forall(static_cast<int>(m_npts), [=] MFEM_HOST_DEVICE(int i) {
+            in_fiber_all[i] = true;
+        });
+    }
     for (size_t ihkl = 0; ihkl < m_rmat_fr_qsym_c_dir.size(); ihkl++) {
         CalculateInFibers(history, quats_offset, ihkl);
     }
