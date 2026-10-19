@@ -1381,6 +1381,16 @@ void ICExaNLFIntegrator::AssembleGradPA(const mfem::FiniteElementSpace& fes) {
     if (elem_deriv_shapes.Size() != (nnodes * space_dims * nelems)) {
         this->AssemblePA(fes);
     }
+
+    // The gradient PA kernels read the material tangent as a full 3x3x3x3 tensor per
+    // quadrature point, while the "tangent_stiffness" QF stores 6x6 Voigt matrices.
+    // Expand it into pa_mat the same way ExaNLFIntegrator::AssembleGradPA does.
+    const int ntensor = space_dims * space_dims * space_dims * space_dims * nqpts * nelems;
+    if (pa_mat.Size() != ntensor) {
+        pa_mat.SetSize(ntensor, mfem::Device::GetMemoryType());
+        pa_mat.UseDevice(true);
+    }
+    TransformMatGradTo4D(m_sim_state->GetQuadratureFunction("tangent_stiffness"), pa_mat);
 }
 
 /// Method defining element assembly.
@@ -2087,17 +2097,19 @@ void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) c
     RAJA::View<const double, RAJA::Layout<DIM3, RAJA::Index_type, 0>> Nbar(elem_deriv_shapes.Read(),
                                                                            layout_field);
 
-    // Mesh Jacobians J(dim, dim, qpt, elem) — column-major mfem convention
+    // Mesh Jacobians J(dim, dim, qpt, elem)
     RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}}, perm4);
-    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+    // Use the reordered `jacobian` (filled in AssemblePA): geom->J itself is stored
+    // quadrature-point-fastest, (nqpts, dim, dim, nelems), not in this layout.
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(jacobian.Read(),
                                                                              layout_jac);
 
-    // Material tangent C(j, k, l, m, qpt, elem) from quadrature function
+    // Quadrature function holding the 6x6 material tangent (used for its integration rule)
     auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
     RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout({{dim, dim, dim, dim, nqpts, nelems}},
                                                              perm6);
-    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
-                                                                        layout_C);
+    // 3x3x3x3 tangent built from the 6x6 "tangent_stiffness" QF in AssembleGradPA
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(pa_mat.Read(), layout_C);
 
     // Integration weights from the tangent stiffness QF integration rule
     const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
@@ -2118,11 +2130,12 @@ void ICExaNLFIntegrator::AddMultGradPA(const mfem::Vector& x, mfem::Vector& y) c
 
         for (int q = 0; q < nqpts_; q++) {
             // Step 2: Compute adjugate and Jacobian determinant
-            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                         J13 = J_data(2, 0, q, e);
-            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                         J23 = J_data(2, 1, q, e);
-            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+            // J_data(r, c) = J_rc = dx_r / dxi_c
+            const double J11 = J_data(0, 0, q, e), J12 = J_data(0, 1, q, e),
+                         J13 = J_data(0, 2, q, e);
+            const double J21 = J_data(1, 0, q, e), J22 = J_data(1, 1, q, e),
+                         J23 = J_data(1, 2, q, e);
+            const double J31 = J_data(2, 0, q, e), J32 = J_data(2, 1, q, e),
                          J33 = J_data(2, 2, q, e);
 
             double adj[9];
@@ -2250,14 +2263,16 @@ void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vec
                                                                            layout_field);
 
     RAJA::Layout<DIM4> layout_jac = RAJA::make_permuted_layout({{dim, dim, nqpts, nelems}}, perm4);
-    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(geom->J.Read(),
+    // Use the reordered `jacobian` (filled in AssemblePA): geom->J itself is stored
+    // quadrature-point-fastest, (nqpts, dim, dim, nelems), not in this layout.
+    RAJA::View<const double, RAJA::Layout<DIM4, RAJA::Index_type, 0>> J_data(jacobian.Read(),
                                                                              layout_jac);
 
     auto tangent_qf = m_sim_state->GetQuadratureFunction("tangent_stiffness");
     RAJA::Layout<DIM6> layout_C = RAJA::make_permuted_layout({{dim, dim, dim, dim, nqpts, nelems}},
                                                              perm6);
-    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(tangent_qf->Read(),
-                                                                        layout_C);
+    // 3x3x3x3 tangent built from the 6x6 "tangent_stiffness" QF in AssembleGradPA
+    RAJA::View<const double, RAJA::Layout<DIM6, RAJA::Index_type, 0>> C(pa_mat.Read(), layout_C);
 
     const mfem::IntegrationRule& ir = tangent_qf->GetSpaceShared()->GetIntRule(0);
     auto W = ir.GetWeights().Read();
@@ -2277,11 +2292,12 @@ void ICExaNLFIntegrator::AddMultTransposeGradPA(const mfem::Vector& x, mfem::Vec
 
         for (int q = 0; q < nqpts_; q++) {
             // Step 2: Adjugate and Jacobian determinant
-            const double J11 = J_data(0, 0, q, e), J12 = J_data(1, 0, q, e),
-                         J13 = J_data(2, 0, q, e);
-            const double J21 = J_data(0, 1, q, e), J22 = J_data(1, 1, q, e),
-                         J23 = J_data(2, 1, q, e);
-            const double J31 = J_data(0, 2, q, e), J32 = J_data(1, 2, q, e),
+            // J_data(r, c) = J_rc = dx_r / dxi_c
+            const double J11 = J_data(0, 0, q, e), J12 = J_data(0, 1, q, e),
+                         J13 = J_data(0, 2, q, e);
+            const double J21 = J_data(1, 0, q, e), J22 = J_data(1, 1, q, e),
+                         J23 = J_data(1, 2, q, e);
+            const double J31 = J_data(2, 0, q, e), J32 = J_data(2, 1, q, e),
                          J33 = J_data(2, 2, q, e);
 
             double adj[9];
