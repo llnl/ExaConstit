@@ -97,7 +97,7 @@ ExaConstit requires a specific MFEM development branch with ExaConstit-specific 
 - **Repository**: https://github.com/rcarson3/mfem.git
 - **Branch**: `exaconstit-dev`
 - **Version Dependencies**:
-  - **v0.10.0**: Compatible with MFEM hash `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based)
+  - **v0.10.0**: Compatible with MFEM hash `3cb179f78508c75d47413b231d0893ef8b5a44c0` (MFEM v4.9.1 based)
   - **v0.9.0**: Compatible with MFEM hashes `a6bb7b7c2717e991b52ad72460f212f7aec1173e`
   - **v0.8.0**: Compatible with MFEM hashes `31b42daa3cdddeff04ce3f59befa769b262facd7` or `29a8e15382682babe0f5c993211caa3008e1ec96`
   - **v0.7.0**: Compatible with MFEM hash `78a95570971c5278d6838461da6b66950baea641`

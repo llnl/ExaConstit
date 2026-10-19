@@ -6,9 +6,9 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 ## [v0.10.0] - Unreleased
 
 Requires the `exaconstit-dev` branch of the ExaConstit MFEM fork (https://github.com/rcarson3/mfem),
-tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based).
-Element assembly (EA) on the GPU requires commit `3cb179f78508c75d47413b231d0893ef8b5a44c0` or later of the fork,
-which applies EA gradients with `BatchedLinAlg`; with an older fork, GPU EA runs use a wrong Jacobian.
+tested with commit `3cb179f78508c75d47413b231d0893ef8b5a44c0` (MFEM v4.9.1 based).
+Element assembly (EA) on the GPU requires that commit or later, which applies EA gradients with `BatchedLinAlg`;
+with an older fork, GPU EA runs use a wrong Jacobian.
 
 ### Added
 - Trust-region dogleg nonlinear solver (`nl_solver = "TRDOG"`), ported from SNLS's `SNLSTrDlDenseG`, with options under `[Solvers.NR.trust_region]`.
