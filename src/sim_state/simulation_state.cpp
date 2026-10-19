@@ -7,7 +7,8 @@ namespace {
 void setupBoundaryConditions(ExaOptions& options) {
     BCManager& bcm = BCManager::GetInstance();
     auto& bcs_opts = options.boundary_conditions;
-    bcm.Init(bcs_opts.time_info.cycles,
+    // update_steps (not time_info.cycles) also covers BCs.time_info being omitted
+    bcm.Init(bcs_opts.update_steps,
              bcs_opts.map_ess_vel,
              bcs_opts.map_ess_vgrad,
              bcs_opts.map_ess_comp,
