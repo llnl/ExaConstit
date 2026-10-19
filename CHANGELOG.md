@@ -7,6 +7,8 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 
 Requires the `exaconstit-dev` branch of the ExaConstit MFEM fork (https://github.com/rcarson3/mfem),
 tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based).
+Element assembly (EA) on the GPU requires commit `3cb179f78508c75d47413b231d0893ef8b5a44c0` or later of the fork,
+which applies EA gradients with `BatchedLinAlg`; with an older fork, GPU EA runs use a wrong Jacobian.
 
 ### Added
 - Trust-region dogleg nonlinear solver (`nl_solver = "TRDOG"`), ported from SNLS's `SNLSTrDlDenseG`, with options under `[Solvers.NR.trust_region]`.
@@ -21,6 +23,8 @@ tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based
 - Output directories that are dangling symlinks now have their targets created automatically.
 - New calibration / optimization workflow framework (`workflows/exaconstit-calibrate`) with MPI and Flux backends, data smoothers, an SQL results archive, restart support, and a refactored NSGA-III driver.
 - Updated Barlat yield-function optimization workflow (`barlat_optimize_v2.py`).
+- GPU install builds tune MFEM's batched gemv kernels on the build machine's GPU and rebuild MFEM with the result (`MFEM_GEMV_TUNING` = `AUTO`/`OFF`/header path, `MFEM_GEMV_TUNING_LAUNCHER` for build nodes without a GPU, `MFEM_GEMV_RETUNE`, `MFEM_GEMV_TUNING_ARGS`); the tuning header is saved and reused by later builds.
+- `unix_gpu_cuda_workstation_install.sh` and `gpu_cuda_workstation_config.sh` for Linux workstations with an NVIDIA GPU, which detect the CUDA toolkit, compilers, MPI, Python and GPU architecture instead of needing the config edited.
 
 ### Changed
 - Updated to MFEM v4.9+ (enables newer Hypre versions, which work better with ROCm v7+).
@@ -33,6 +37,8 @@ tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based
 - PyO3-based Rust extensions (`xtal_light_up`, `voxel_coarsen`) updated to PyO3/numpy 0.29 to fix RustSec advisories; they now require Python 3.9+ and Rust 1.88+.
 - Boundary condition types use `std::array<bool, 3>` instead of `mfem::Array<bool>`, avoiding GPU memory issues.
 - Updated `.clang-format` so header groups are handled correctly by newer clang-format versions.
+- EA element matrices are stored in MFEM's `ea_data(trial, test, elem)` order, and ExaCMech's tangent is no longer handled differently for EA runs on the GPU.
+- CUDA builds no longer fail to compile post-processing code: the access specifiers of methods holding device lambdas (and the private types those lambdas use) become `public` in CUDA builds only (`src/utilities/cuda_access.hpp`), since nvcc does not allow extended lambdas there.
 
 ### Fixed
 - Orientation files for non-ExaCMech models (e.g. UMATs) were always read as quaternions and converted; their values are now passed through as is with the stride set by `ori_type` / `ori_stride`, while ExaCMech models still require unit quaternions.
@@ -58,6 +64,14 @@ tested with commit `4a13eddcf5e6dcbccd4ba67f3aa703eb22a0fb40` (MFEM v4.9.1 based
 - The `avg_*_fname` options in `[PostProcessing.volume_averages]` were ignored, and `enabled = false` did not turn volume averaging off.
 - `options.toml` documentation brought up to date, including the new `[Solvers.NR.trust_region]` options.
 - Broken link in the README.
+- EA applied the transpose of the element Jacobians, so EA Newton residuals differed from full and partial assembly in the 3rd to 4th digit and the trust-region solver's `J^T r` was wrong.
+- The transpose PA gradient of `ExaNLFIntegrator` read the wrong entries of the D tensor and contracted it with swapped indices (adjointness off by about 35% with a non-symmetric tangent).
+- The B-bar (`ICExaNLFIntegrator`) PA gradient read the 6x6 Voigt tangent as a 3x3x3x3 tensor (reading past the end of the data) and the mesh Jacobians in the wrong layout, giving a wrong Jacobian action.
+- Host/device validity bugs that only show up on GPUs with separate memory: velocity self-assignment in `UpdateEndCoords` (diverging multi-GPU runs), `Write()` used where `ReadWrite()` was needed for partial updates of BC vectors, the light-up fiber flags set on the host only, and the fill order in `PartialQuadratureFunction::FillQuadratureFunction`.
+- Boundary conditions were never applied when `[BCs.time_info]` was omitted, and the BC option validation read an empty `time_info.cycles`.
+- A grain map file with fewer entries than the auto-generated mesh has elements left grain ids of 0 or uninitialized values, leading to out-of-range grain indices; the run now aborts with an error.
+- Install scripts assumed Umpire's CMake config directory is under `lib64`, so ExaCMech and ExaConstit could not find Umpire on systems that install into `lib` (Debian, Ubuntu).
+- CUDA builds with nvcc as the C++ compiler and g++ as its host compiler failed to configure or link because CMake passed gcc-style options to nvcc; `scripts/install/common/nvcc_cxx_rules_override.cmake` makes CMake emit nvcc-style options.
 
 ## [v0.9.0] - 2025-10-31
 
