@@ -106,6 +106,19 @@ MPI_CRAY_LINK_FLAGS="-lxpmem"  # Cray xpmem for shared memory
 export CMAKE_EXE_LINKER_FLAGS="-lroctx64 -Wl,-rpath,${MPICH_OFI_AMD_LIB} ${MPI_CRAY_RPATH_FLAGS} -L${MPICH_GTL_LIB} -lmpi_gtl_hsa -Wl,-rpath,${MPICH_GTL_LIB} ${MPI_CRAY_LINK_FLAGS}"
 
 ###########################################
+# MFEM Batched Gemv Tuning
+###########################################
+# AUTO: after building MFEM, tune its batched gemv GPU kernels on this GPU
+# (if one is reachable) and rebuild MFEM with the result; later builds reuse
+# the saved mfem/gemv_tuning_*.hpp (MFEM_GEMV_RETUNE=ON tunes again).
+# OFF: MFEM's defaults. Or the path of a tuning header.
+# See tune_mfem_gemv in common/build_functions.sh.
+export MFEM_GEMV_TUNING="${MFEM_GEMV_TUNING:-AUTO}"
+# Command prefix to run the tuning benchmark on a GPU node when building on a
+# node without a GPU, e.g. "flux run -n1 -g1"
+export MFEM_GEMV_TUNING_LAUNCHER="${MFEM_GEMV_TUNING_LAUNCHER:-}"
+
+###########################################
 # Build Options
 ###########################################
 export OPENMP_ON="OFF"
