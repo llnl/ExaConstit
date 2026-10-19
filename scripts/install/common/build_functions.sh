@@ -216,7 +216,16 @@ build_umpire() {
     FMT_DIR="${UMPIRE_ROOT}"
   fi
   export FMT_DIR
-  
+
+  # Find Umpire's CMake config dir (lib64 on RHEL-like systems, lib on Debian/Ubuntu)
+  UMPIRE_CMAKE_CONFIG=$(find "${UMPIRE_ROOT}" -name 'umpire-config.cmake' -print -quit || true)
+  if [ -n "${UMPIRE_CMAKE_CONFIG}" ]; then
+    UMPIRE_CMAKE_DIR=$(dirname "${UMPIRE_CMAKE_CONFIG}")
+  else
+    UMPIRE_CMAKE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+  fi
+  export UMPIRE_CMAKE_DIR
+
   echo "Umpire installed to: ${UMPIRE_ROOT}"
   echo "fmt found at: ${FMT_DIR}"
   cd "${BASE_DIR}"
@@ -322,7 +331,7 @@ build_exacmech() {
       -DCMAKE_${GPU_BACKEND}_FLAGS="${CMAKE_GPU_FLAGS}"
       -DENABLE_${GPU_BACKEND}=ON
       -DFMT_DIR="${FMT_DIR}"
-      -DUMPIRE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+      -DUMPIRE_DIR="${UMPIRE_CMAKE_DIR}"
       -DCHAI_DIR="${CHAI_ROOT}/lib/cmake/chai"
     )
   fi
@@ -518,7 +527,7 @@ build_exaconstit() {
       -DCMAKE_${GPU_BACKEND}_ARCHITECTURES="${CMAKE_GPU_ARCHITECTURES}"
       -DENABLE_${GPU_BACKEND}=ON
       -DFMT_DIR="${FMT_DIR}"
-      -DUMPIRE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+      -DUMPIRE_DIR="${UMPIRE_CMAKE_DIR}"
       -DCHAI_DIR="${CHAI_ROOT}/lib/cmake/chai"
     )
     
