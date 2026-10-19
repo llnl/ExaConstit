@@ -63,6 +63,12 @@ See the [Installation Guide](docs/install.md) for detailed configuration instruc
 ../ExaConstit/scripts/install/unix_gpu_cuda_install.sh
 ```
 
+For a Linux workstation with an NVIDIA GPU, the CUDA toolkit, the system GCC and a packaged MPI (no environment modules), there is a config that needs no editing. It finds the CUDA toolkit, compilers, MPI and Python from `PATH`, and the GPU architecture from `nvidia-smi`. Any of these can be overridden from the environment, e.g. when the default GCC is newer than the CUDA release supports:
+```bash
+CUDA_BASE=/opt/cuda-12.9 GCC_VERSION=13 \
+  ../ExaConstit/scripts/install/unix_gpu_cuda_workstation_install.sh
+```
+
 #### **AMD GPU Systems (HIP/ROCm)**
 ```bash
 ../ExaConstit/scripts/install/unix_gpu_hip_install.sh
@@ -85,6 +91,7 @@ scripts/install/
 │   ├── cpu_intel_config.sh       # Intel compiler configuration
 │   ├── cpu_mac_config.sh         # macOS configuration
 │   ├── gpu_cuda_config.sh        # NVIDIA CUDA configuration
+│   ├── gpu_cuda_workstation_config.sh # NVIDIA CUDA on a Linux workstation (auto-detected)
 │   └── gpu_hip_config.sh         # AMD HIP configuration
 └── unix_*_install.sh              # Platform-specific entry points
 ```
