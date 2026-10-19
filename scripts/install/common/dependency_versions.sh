@@ -35,7 +35,8 @@ export SNLS_VER="v0.4.4"
 # series has caused CMake configuration issues downstream.
 export HDF5_REPO="https://github.com/HDFGroup/hdf5.git"
 export HDF5_VER="hdf5_1.14.6"
-# Conduit v0.9.7 is the version Axom v0.15.0 was released against.
+# Conduit v0.9.7 is the version Axom v0.15.0 was released against
+# even though we use v0.14.0 below.
 export CONDUIT_REPO="https://github.com/LLNL/conduit.git"
 export CONDUIT_VER="v0.9.7"
 

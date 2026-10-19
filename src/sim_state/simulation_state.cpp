@@ -642,14 +642,20 @@ bool SimulationState::AddQuadratureFunction(const std::string_view& qf_name,
                                             const int vdim,
                                             const int region) {
     std::string qf_name_mat = GetQuadratureFunctionMapName(qf_name, region);
-    if (m_map_qfs.find(qf_name_mat) == m_map_qfs.end()) {
-        std::string qspace_name = GetRegionName(region);
-        m_map_qfs.emplace(qf_name_mat,
-                          std::make_shared<mfem::expt::PartialQuadratureFunction>(
-                              m_map_qs[qspace_name], vdim, 0.0));
-        return true;
+    if (m_map_qfs.find(qf_name_mat) != m_map_qfs.end()) {
+        return false;
     }
-    return false;
+    // find(), not operator[]: a region with no elements on this rank has no quadrature space
+    // here, and operator[] would insert a null entry into m_map_qs, which every loop over the
+    // spaces would then dereference.
+    const auto space = m_map_qs.find(GetRegionName(region));
+    if (space == m_map_qs.end() || !space->second) {
+        return false;
+    }
+    m_map_qfs.emplace(
+        qf_name_mat,
+        std::make_shared<mfem::expt::PartialQuadratureFunction>(space->second, vdim, 0.0));
+    return true;
 }
 
 std::pair<int, int>

@@ -566,7 +566,8 @@ public:
      * @param qf_name Quadrature function name
      * @param region Region index (-1 for global)
      * @return Shared pointer to the quadrature function
-     * @throws std::runtime_error if quadrature function doesn't exist
+     * @return The quadrature function, or nullptr if no function is registered under the
+     *         resolved name (the lookup never inserts into the registry).
      *
      * @details Primary interface for accessing simulation data. Automatically resolves
      * region-specific names and returns the appropriate quadrature function.
@@ -585,7 +586,10 @@ public:
      */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction>
     GetQuadratureFunction(const std::string_view& qf_name, const int region = -1) {
-        return m_map_qfs[GetQuadratureFunctionMapName(qf_name, region)];
+        // find(), not operator[]: a lookup of an unregistered name (e.g. a region inactive on
+        // this rank) must not insert a nullptr entry into m_map_qfs.
+        const auto it = m_map_qfs.find(GetQuadratureFunctionMapName(qf_name, region));
+        return (it != m_map_qfs.end()) ? it->second : nullptr;
     }
 
     /**
@@ -594,7 +598,9 @@ public:
      * @param qf_name Base quadrature function name
      * @param vdim Vector dimension of the quadrature function
      * @param region Region index (-1 for global)
-     * @return True if successfully added, false if already exists
+     * @return True if added; false if a function of that name is already registered, or if
+     *         the region has no quadrature space on this rank (it owns none of the region's
+     *         elements)
      *
      * @details Creates a new quadrature function with the specified vector dimension
      * and associates it with the given region. The function is initialized with zeros
@@ -680,7 +686,7 @@ public:
      */
     void UpdateModel() {
         for (auto [name_prev, name_cur] : m_model_update_qf_pairs) {
-            m_map_qfs[name_prev]->Swap(*m_map_qfs[name_cur]);
+            m_map_qfs.at(name_prev)->Swap(*m_map_qfs.at(name_cur));
         }
     }
 
@@ -693,7 +699,8 @@ public:
      */
     void SetupModelVariables() {
         for (auto [name_prev, name_cur] : m_model_update_qf_pairs) {
-            m_map_qfs[name_cur]->operator=(*m_map_qfs[name_prev]);
+            // Value copy (PartialQuadratureFunction's explicit copy assignment).
+            *m_map_qfs.at(name_cur) = *m_map_qfs.at(name_prev);
         }
     }
 
@@ -1093,14 +1100,14 @@ public:
      * @brief Update time step based on solver performance
      *
      * @param nr_steps Number of Newton-Raphson iterations required
-     * @param failure Whether the time step failed to converge
+     * @param success Whether the time step converged (true) or failed (false)
      * @return Updated time step status
      *
      * @details Delegates to TimeManagement for comprehensive adaptive time step control.
      * See TimeManagement::UpdateDeltaTime() for detailed algorithm description.
      */
-    TimeStep UpdateDeltaTime(const int nr_steps, const bool failure = false) {
-        return m_time_manager.UpdateDeltaTime(nr_steps, failure);
+    TimeStep UpdateDeltaTime(const int nr_steps, const bool success) {
+        return m_time_manager.UpdateDeltaTime(nr_steps, success);
     }
 
     /**
