@@ -463,6 +463,8 @@ build_mfem() {
         -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_GPU_ARCHITECTURES}"
         -DCMAKE_CUDA_FLAGS="${CMAKE_GPU_FLAGS}"
         -DENABLE_CUDA=ON
+        # nvcc is the CXX compiler here; make CMake emit nvcc-style link options
+        -DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX="${SCRIPT_DIR}/common/nvcc_cxx_rules_override.cmake"
       )
     elif [ "${GPU_BACKEND}" = "HIP" ]; then
       CMAKE_ARGS+=(
@@ -535,6 +537,8 @@ build_exaconstit() {
       CMAKE_ARGS+=(
         -DCMAKE_CUDA_FLAGS="${CMAKE_GPU_FLAGS}"
         -DBLT_EXE_LINKER_FLAGS="${CMAKE_EXE_LINKER_FLAGS}"
+        # nvcc is the CXX compiler here; make CMake emit nvcc-style link options
+        -DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX="${SCRIPT_DIR}/common/nvcc_cxx_rules_override.cmake"
       )
     elif [ "${GPU_BACKEND}" = "HIP" ]; then
       CMAKE_ARGS+=(
