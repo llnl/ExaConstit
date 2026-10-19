@@ -597,6 +597,16 @@ cd test/data
 mpirun -np 4 ../../build/mechanics -opt example.toml
 ```
 
+### Long Tests
+Some tests take too long for CI and are only registered when configured with
+`-DEXACONSTIT_ENABLE_LONG_TESTS=ON`. They currently cover the checkpoint/restart code on real
+simulations; anyone changing that code must run them locally and make sure they pass:
+```bash
+ctest -L long --output-on-failure
+```
+No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults to the
+number of logical cores detected at configure time.
+
 ### Example Workflows
 The `test/data/` directory contains various example cases:
 - **Crystal plasticity simulations**
@@ -660,7 +670,8 @@ original, local numbering included. Anything that cannot be rebuilt that way nee
 checkpoint data.
 
 **Test it.** `test/test_restart_e2e.cpp` compares a restarted SimulationState with the
-original bitwise; add any new state to it.
+original bitwise; add any new state to it, and run the [long tests](#long-tests) for anything
+that changes what a simulation evolves.
 
 ### Performance Considerations
 - **GPU kernels**: Use RAJA for performance portability

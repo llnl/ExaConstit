@@ -101,6 +101,45 @@ if(ENABLE_AXOM)
                        SOURCES    ${CMAKE_SOURCE_DIR}/scripts/restart/compare_restart_checkpoints.cpp
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON axom)
+
+    # Restart tests on real runs (test_restart_runs.py): cyclic loading chained every 1 and 2
+    # cycles, long monotonic tension chained halfway, a run with empty ranks, restarts from past
+    # reference checkpoints, and a negative control. They take 10-15 minutes on 8 ranks, so they
+    # are not part of the default (CI) test suite. Developers working on the restart code must
+    # enable them locally with -DEXACONSTIT_ENABLE_LONG_TESTS=ON and make sure they pass:
+    #     ctest -L long --output-on-failure
+    option(EXACONSTIT_ENABLE_LONG_TESTS
+           "Register the long-running tests (run-level restart tests); not for CI" OFF)
+    set(EXACONSTIT_RESTART_RUN_TEST_NP 8 CACHE STRING
+        "MPI ranks for test_restart_runs (capped at EXACONSTIT_TEST_MAX_MPI_TASKS)")
+    if(EXACONSTIT_ENABLE_LONG_TESTS)
+        set(_restart_runs_np ${EXACONSTIT_RESTART_RUN_TEST_NP})
+        if(_restart_runs_np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            message(STATUS "test_restart_runs: using ${EXACONSTIT_TEST_MAX_MPI_TASKS} MPI ranks "
+                           "instead of ${EXACONSTIT_RESTART_RUN_TEST_NP} "
+                           "(EXACONSTIT_TEST_MAX_MPI_TASKS)")
+            set(_restart_runs_np ${EXACONSTIT_TEST_MAX_MPI_TASKS})
+        endif()
+        set(_restart_runs_mpiexec "${MPIEXEC_EXECUTABLE}")
+        if(NOT _restart_runs_mpiexec)
+            set(_restart_runs_mpiexec "mpirun")
+        endif()
+        add_custom_command(TARGET compare_restart_checkpoints POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy
+            ${CMAKE_SOURCE_DIR}/test/test_restart_runs.py
+            $<TARGET_FILE_DIR:test_grad_oper>/../test/test_restart_runs.py)
+        add_test(NAME test_restart_runs
+                 COMMAND ${PYTHON_EXECUTABLE} test_restart_runs.py
+                         --np ${_restart_runs_np}
+                         --mpiexec ${_restart_runs_mpiexec}
+                         --exe $<TARGET_FILE:mechanics>
+                         --compare-tool $<TARGET_FILE:compare_restart_checkpoints>
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/test)
+        set_tests_properties(test_restart_runs PROPERTIES
+                             LABELS "restart;long"
+                             PROCESSORS ${_restart_runs_np}
+                             TIMEOUT 3600)
+    endif()
 endif()
 
 if (NOT DEFINED PYTHON_EXECUTABLE)

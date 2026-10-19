@@ -177,6 +177,29 @@ No test uses more MPI ranks than the machine has cores: rank counts above
 `EXACONSTIT_TEST_MAX_MPI_TASKS` (default: the logical core count detected at configure time)
 are skipped.
 
+**Long tests** (not on CI; developers changing the restart code must run them locally):
+configure with `-DEXACONSTIT_ENABLE_LONG_TESTS=ON`, then run
+
+```bash
+ctest -L long --output-on-failure
+```
+
+This runs `test/test_restart_runs.py` on real simulations (Voce FCC crystal plasticity on a
+4096-element mesh, 8 ranks by default via `EXACONSTIT_RESTART_RUN_TEST_NP`, capped at
+`EXACONSTIT_TEST_MAX_MPI_TASKS`), which takes 10 to 15 minutes:
+- **cyclic**: four ±1% strain cycles, chained every cycle and every two cycles, and restarted
+  from each past checkpoint of the uninterrupted reference;
+- **monotonic**: 10% tension, chained halfway and restarted from the reference's halfway
+  checkpoint;
+- **empty_ranks**: a 2-element mesh, so all but two ranks own no elements.
+
+Every checkpoint a restarted run writes is compared bitwise with the reference checkpoint of
+the same step, and its volume-average output row by row. Each restarted run's log is checked to
+confirm it really restarted from the expected checkpoint and ran only the remaining steps, and
+a negative control restarts from a slightly perturbed checkpoint and requires the result to
+differ. `python3 test_restart_runs.py --help` lists the options, including a smaller mesh, fewer
+steps and fewer ranks for quick local checks.
+
 ## Limitations
 
 - **Same rank count.** Restarting on a different number of ranks would need a
