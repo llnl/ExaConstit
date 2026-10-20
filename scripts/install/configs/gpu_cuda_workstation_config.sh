@@ -112,8 +112,9 @@ export BLT_EXE_LINKER_FLAGS="${CMAKE_EXE_LINKER_FLAGS}"
 # MFEM Batched Gemv Tuning
 ###########################################
 # AUTO: after building MFEM, tune its batched gemv GPU kernels on this GPU
-# (if one is reachable) and rebuild MFEM with the result; later builds reuse
-# the saved mfem/gemv_tuning_*.hpp (MFEM_GEMV_RETUNE=ON tunes again).
+# and rebuild MFEM with the result (if tuning fails, MFEM keeps its default
+# parameters); later builds reuse the saved mfem/gemv_tuning_*.hpp
+# (MFEM_GEMV_RETUNE=ON tunes again).
 # OFF: MFEM's defaults. Or the path of a tuning header.
 # See tune_mfem_gemv in common/build_functions.sh.
 export MFEM_GEMV_TUNING="${MFEM_GEMV_TUNING:-AUTO}"

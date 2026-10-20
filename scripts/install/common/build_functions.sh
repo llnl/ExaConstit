@@ -421,14 +421,14 @@ build_metis() {
 # header that MFEM is rebuilt with (only one MFEM source file recompiles).
 #
 # MFEM_GEMV_TUNING:
-#   AUTO   (default) tune after MFEM is built, if a GPU is reachable, and save
-#          the header as mfem/gemv_tuning_<suffix>_<arch>.hpp; later builds
-#          reuse it (MFEM_GEMV_RETUNE=ON tunes again)
+#   AUTO   (default) tune after MFEM is built and save the header as
+#          mfem/gemv_tuning_<suffix>_<arch>.hpp; later builds reuse it
+#          (MFEM_GEMV_RETUNE=ON tunes again)
 #   OFF    use MFEM's defaults
 #   <path> use this tuning header
 # MFEM_GEMV_TUNING_LAUNCHER: command prefix that runs the benchmark on a GPU
-#   node, e.g. "flux run -n1 -g1" or "srun -n1 -G1"; needed when building on a
-#   node without a GPU (otherwise tuning is skipped with a warning).
+#   node, e.g. "flux run -n1 -g1" or "srun -n1 -G1", for builds on a node
+#   without a GPU. Without it the benchmark runs directly on the build node.
 # MFEM_GEMV_TUNING_ARGS: extra arguments for tune_batched_gemv.py.
 
 # Saved tuning header for this build type and GPU architecture
@@ -457,15 +457,6 @@ mfem_gemv_tuning_header() {
   fi
 }
 
-# Is a GPU of the configured backend visible on this node?
-gpu_visible() {
-  if [ "${GPU_BACKEND}" = "CUDA" ]; then
-    nvidia-smi -L 2>/dev/null | grep -q "^GPU "
-  else
-    rocminfo 2>/dev/null | grep -q "gfx[0-9]"
-  fi
-}
-
 # Run in the MFEM build directory after MFEM is installed. Never fails the
 # build: if tuning is not possible, MFEM keeps its default parameters.
 tune_mfem_gemv() {
@@ -482,13 +473,6 @@ tune_mfem_gemv() {
     return 0
   fi
   local launcher="${MFEM_GEMV_TUNING_LAUNCHER:-}"
-  if [ -z "${launcher}" ] && ! gpu_visible; then
-    echo "WARNING: no GPU visible on this node, so MFEM's batched gemv kernels"
-    echo "  keep their default parameters. To tune them, rebuild with"
-    echo "  MFEM_GEMV_TUNING_LAUNCHER set (e.g. \"flux run -n1 -g1\"), or build"
-    echo "  on a GPU node."
-    return 0
-  fi
   echo "=========================================="
   echo "Tuning MFEM batched gemv kernels"
   echo "=========================================="
@@ -511,6 +495,10 @@ tune_mfem_gemv() {
     rm -f "${hdr}.new"
     echo "WARNING: batched gemv tuning failed (see my_mfem_tune in $PWD);"
     echo "  MFEM keeps its default parameters."
+    if [ -z "${launcher}" ]; then
+      echo "  If this node has no GPU, set MFEM_GEMV_TUNING_LAUNCHER"
+      echo "  (e.g. \"flux run -n1 -g1\") to run the benchmark on a GPU node."
+    fi
   fi
 }
 
