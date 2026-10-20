@@ -25,6 +25,7 @@ EA gradients with `BatchedLinAlg`; with an older fork, GPU EA runs use a wrong J
 - Updated Barlat yield-function optimization workflow (`barlat_optimize_v2.py`).
 - GPU install builds tune MFEM's batched gemv kernels on the build machine's GPU and rebuild MFEM with the result (`MFEM_GEMV_TUNING` = `AUTO`/`OFF`/header path, `MFEM_GEMV_TUNING_LAUNCHER` for build nodes without a GPU, `MFEM_GEMV_RETUNE`, `MFEM_GEMV_TUNING_ARGS`); the tuning header is saved and reused by later builds.
 - `unix_gpu_cuda_workstation_install.sh` and `gpu_cuda_workstation_config.sh` for Linux workstations with an NVIDIA GPU, which detect the CUDA toolkit, compilers, MPI, Python and GPU architecture instead of needing the config edited.
+- Per-surface output (`[PostProcessing.surface_quantities]`): for each listed mesh boundary attribute, one file with the current area, the mean displacement, the force from integrating the Cauchy traction over the surface, the average normal, and optionally the moment about the surface centroid. Works on hex and tet meshes.
 
 ### Changed
 - Updated to MFEM v4.9+ (enables newer Hypre versions, which work better with ROCm v7+).

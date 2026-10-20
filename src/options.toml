@@ -707,6 +707,52 @@ grain_file = "grains.txt"
         # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
         # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
         avg_elastic_strain_fname = "avg_elastic_strain.txt"
+
+    # ===== Surface Quantities =====
+    # Force, displacement, area and normal on chosen mesh surfaces, for comparing with
+    # load cell, grip or extensometer data from experiments
+    # Files go in the same directory as the volume averages: [output_directory]/[basename]/
+    [PostProcessing.surface_quantities]
+        # Master switch for surface quantity output (off by default)
+        enabled = false
+
+        # Mesh boundary attributes to report on: the same IDs used for BCs essential_ids
+        # Required when enabled. One output file is written per ID.
+        # For auto-generated meshes the IDs are:
+        #   1 = bottom (z = 0), 2 = left (x = 0), 3 = front (y = 0),
+        #   4 = top (z = max), 5 = right (x = max), 6 = back (y = max)
+        boundary_ids = [1, 4]
+
+        # Also output the moment of the traction about the current surface centroid
+        # Useful for torsion and bending
+        moments = false
+
+        # How often to write surface quantities (in time steps)
+        output_frequency = 1
+
+        # Base filename: creates surface_quantities_surface_[id].txt
+        fname = "surface_quantities.txt"
+
+        # File format:
+        # Comment lines at the top give the reference (undeformed) area, the reference normal,
+        # and the planarity (projected area / true area: 1 for a flat surface)
+        # Columns: time, surface ID, area, disp_x, disp_y, disp_z,
+        #          force_x, force_y, force_z, normal_x, normal_y, normal_z
+        #          (+ moment_x, moment_y, moment_z if moments = true)
+        #
+        # Definitions:
+        # - area: current (deformed) surface area
+        # - disp: displacement averaged over the reference surface
+        # - force: Cauchy traction σ·n integrated over the current surface. The stress at the
+        #   surface is extrapolated from the quadrature points of the element next to it, so
+        #   on coarse meshes with large stress jumps between grains the forces on opposite
+        #   faces can differ by several percent; refining the mesh reduces this.
+        # - normal: average outward normal of the current surface (normalized ∫ n da). It only
+        #   depends on the surface's edges, so roughening inside a free surface doesn't change
+        #   it. A closed surface (e.g. a full cylinder) has no average normal; it is written
+        #   as zero with a warning.
+        # Units follow the mesh length unit and the material stress unit
+        # (e.g. mm and MPa give forces in N and moments in N·mm)
     
     # ===== Crystal Orientation Analysis (Light-Up) =====
     # Tracks which crystals are favorably oriented for slip across all crystal systems
