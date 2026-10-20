@@ -1,13 +1,81 @@
 #include "postprocessing/surface_quantities.hpp"
 
+#include "postprocessing/postprocessing_file_manager.hpp"
+#include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
 #include "mfem/general/forall.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <set>
+#include <sstream>
 
 namespace {
+
+/// Number of per-face partial sums written by FaceSumsKernel
+constexpr int NUM_FACE_SUMS = 16;
+// Layout of the per-face partial sums
+constexpr int SUM_DA = 0;     // da
+constexpr int SUM_NDA = 1;    // n da (3)
+constexpr int SUM_FORCE = 4;  // sigma n da (3)
+constexpr int SUM_MOMENT = 7; // x cross (sigma n da) about the origin (3)
+constexpr int SUM_XDA = 10;   // x da (3)
+constexpr int SUM_DISP = 13;  // u dA0 (3)
+
+/**
+ * @brief Per-face partial sums of the surface integrals
+ *
+ * The Cauchy stress is in ExaConstit's Voigt order (xx, yy, zz, yz, xz, xy).
+ */
+void FaceSumsKernel(const int nfaces,
+                    const int* face_qoff,
+                    const double* x,
+                    const double* nda,
+                    const double* da,
+                    const double* disp,
+                    const double* dA0,
+                    const double* stress,
+                    double* sums) {
+    mfem::forall(nfaces, [=] MFEM_HOST_DEVICE(int i) {
+        double s[NUM_FACE_SUMS];
+        for (int k = 0; k < NUM_FACE_SUMS; k++) {
+            s[k] = 0.0;
+        }
+        for (int q = face_qoff[i]; q < face_qoff[i + 1]; q++) {
+            const double* xq = &x[3 * q];
+            const double* nq = &nda[3 * q];
+            const double* sig = &stress[6 * q];
+            const double t[3] = {sig[0] * nq[0] + sig[5] * nq[1] + sig[4] * nq[2],
+                                 sig[5] * nq[0] + sig[1] * nq[1] + sig[3] * nq[2],
+                                 sig[4] * nq[0] + sig[3] * nq[1] + sig[2] * nq[2]};
+            s[SUM_DA] += da[q];
+            for (int c = 0; c < 3; c++) {
+                s[SUM_NDA + c] += nq[c];
+                s[SUM_FORCE + c] += t[c];
+                s[SUM_XDA + c] += xq[c] * da[q];
+                s[SUM_DISP + c] += disp[3 * q + c] * dA0[q];
+            }
+            s[SUM_MOMENT + 0] += xq[1] * t[2] - xq[2] * t[1];
+            s[SUM_MOMENT + 1] += xq[2] * t[0] - xq[0] * t[2];
+            s[SUM_MOMENT + 2] += xq[0] * t[1] - xq[1] * t[0];
+        }
+        for (int k = 0; k < NUM_FACE_SUMS; k++) {
+            sums[NUM_FACE_SUMS * i + k] = s[k];
+        }
+    });
+}
+
+/// Mesh boundary attributes present on any rank
+std::set<int> GlobalBoundaryAttributes(const mfem::ParMesh& mesh) {
+    // ParMesh::bdr_attributes already holds the attributes of all ranks
+    std::set<int> attrs;
+    for (int i = 0; i < mesh.bdr_attributes.Size(); i++) {
+        attrs.insert(mesh.bdr_attributes[i]);
+    }
+    return attrs;
+}
 
 double Norm3(const double* v) {
     return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -364,4 +432,170 @@ void BoundarySurface::ExtrapolateQF(const mfem::expt::PartialQuadratureFunction&
             }
         }
     });
+}
+
+SurfaceQuantities::SurfaceQuantities(std::shared_ptr<SimulationState> sim_state,
+                                     const ExaOptions& options)
+    : m_sim_state(std::move(sim_state)),
+      m_boundary_ids(options.post_processing.surface_quantities.boundary_ids),
+      m_moments(options.post_processing.surface_quantities.moments),
+      m_output_frequency(options.post_processing.surface_quantities.output_frequency) {
+    auto mesh = m_sim_state->GetMesh();
+
+    const auto attrs = GlobalBoundaryAttributes(*mesh);
+    for (const int id : m_boundary_ids) {
+        if (attrs.count(id) == 0) {
+            std::ostringstream err;
+            err << "PostProcessing.surface_quantities: boundary ID " << id
+                << " is not a boundary attribute of the mesh. Available boundary attributes:";
+            for (const int a : attrs) {
+                err << " " << a;
+            }
+            MFEM_ABORT_0(err.str());
+        }
+    }
+
+    m_surface = std::make_unique<BoundarySurface>(
+        mesh, m_sim_state->GetMeshParFiniteElementSpace(), m_boundary_ids, options.mesh.order);
+
+    for (auto* v : {&m_dA0, &m_x, &m_nda, &m_da, &m_disp, &m_stress, &m_face_sums}) {
+        v->UseDevice(true);
+    }
+
+    // Reference surface: face-point weights dA0, area and vector area
+    m_surface->ComputeGeometry(*m_sim_state->GetRefCoords(), m_x, m_nda, m_dA0);
+
+    const int nsurf = m_surface->GetNumSurfaces();
+    std::vector<double> ref_sums(static_cast<size_t>(4 * nsurf), 0.0);
+    {
+        const auto& face_surface = m_surface->GetFaceSurface();
+        const auto& face_qoff = m_surface->GetFacePointOffsets();
+        const double* nda = m_nda.HostRead();
+        const double* dA0 = m_dA0.HostRead();
+        const int* fs = face_surface.HostRead();
+        const int* fq = face_qoff.HostRead();
+        for (int i = 0; i < m_surface->GetNumFaces(); i++) {
+            double* s = &ref_sums[static_cast<size_t>(4 * fs[i])];
+            for (int q = fq[i]; q < fq[i + 1]; q++) {
+                s[0] += dA0[q];
+                s[1] += nda[3 * q];
+                s[2] += nda[3 * q + 1];
+                s[3] += nda[3 * q + 2];
+            }
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, ref_sums.data(), 4 * nsurf, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    m_ref_area.resize(static_cast<size_t>(nsurf));
+    m_zero_normal.resize(static_cast<size_t>(nsurf));
+    m_preambles.resize(static_cast<size_t>(nsurf));
+    for (size_t s = 0; s < static_cast<size_t>(nsurf); s++) {
+        const double area = ref_sums[4 * s];
+        const double* vec_area = &ref_sums[4 * s + 1];
+        const double vec_area_norm = Norm3(vec_area);
+        // Projected area over true area: 1 for a planar surface, 0 for a closed one
+        const double planarity = (area > 0.0) ? vec_area_norm / area : 0.0;
+        m_ref_area[s] = area;
+        m_zero_normal[s] = planarity < 1.0e-3;
+        if (m_zero_normal[s]) {
+            MFEM_WARNING_0("PostProcessing.surface_quantities: surface "
+                           << m_boundary_ids[s]
+                           << " is (nearly) closed, so it has no meaningful average normal; "
+                              "its normal is written as zero");
+        }
+
+        std::ostringstream pre;
+        pre << std::scientific << std::setprecision(8);
+        pre << "# Surface quantities for mesh boundary attribute " << m_boundary_ids[s] << "\n";
+        pre << "# Area: current surface area\n";
+        pre << "# Disp: displacement averaged over the reference surface\n";
+        pre << "# Force: integral of the Cauchy traction sigma.n over the current surface\n";
+        pre << "# Normal: normalized vector area (integral of n da) of the current surface, "
+               "outward\n";
+        if (m_moments) {
+            pre << "# Moment: moment of the traction about the current surface centroid\n";
+        }
+        pre << "# Units follow the mesh length and material stress units "
+               "(force = stress x length^2)\n";
+        pre << "# Reference area: " << area << "\n";
+        pre << "# Reference normal:";
+        for (int c = 0; c < 3; c++) {
+            pre << " " << ((vec_area_norm > 0.0) ? vec_area[c] / vec_area_norm : 0.0);
+        }
+        pre << "\n";
+        pre << "# Reference planarity (projected area / true area): " << planarity << "\n";
+        m_preambles[s] = pre.str();
+    }
+}
+
+void SurfaceQuantities::Update(double time, PostProcessingFileManager& file_manager) {
+    CALI_CXX_MARK_SCOPE("surface_quantities_update");
+
+    const int nfaces = m_surface->GetNumFaces();
+    const int nsurf = m_surface->GetNumSurfaces();
+
+    m_surface->ComputeGeometry(*m_sim_state->GetCurrentCoords(), m_x, m_nda, m_da);
+    m_surface->InterpolateH1(*m_sim_state->GetDisplacement(), m_disp);
+    m_surface->ExtrapolateQF(*m_sim_state->GetQuadratureFunction("cauchy_stress_end"), m_stress);
+
+    m_face_sums.SetSize(NUM_FACE_SUMS * nfaces);
+    if (nfaces > 0) {
+        FaceSumsKernel(nfaces,
+                       m_surface->GetFacePointOffsets().Read(),
+                       m_x.Read(),
+                       m_nda.Read(),
+                       m_da.Read(),
+                       m_disp.Read(),
+                       m_dA0.Read(),
+                       m_stress.Read(),
+                       m_face_sums.Write());
+    }
+
+    std::vector<double> sums(static_cast<size_t>(NUM_FACE_SUMS * nsurf), 0.0);
+    {
+        const double* face_sums = m_face_sums.HostRead();
+        const int* face_surface = m_surface->GetFaceSurface().HostRead();
+        for (int i = 0; i < nfaces; i++) {
+            double* s = &sums[static_cast<size_t>(NUM_FACE_SUMS * face_surface[i])];
+            for (int k = 0; k < NUM_FACE_SUMS; k++) {
+                s[k] += face_sums[NUM_FACE_SUMS * i + k];
+            }
+        }
+    }
+    MPI_Allreduce(
+        MPI_IN_PLACE, sums.data(), NUM_FACE_SUMS * nsurf, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    for (size_t s = 0; s < static_cast<size_t>(nsurf); s++) {
+        const double* sm = &sums[NUM_FACE_SUMS * s];
+        const double area = sm[SUM_DA];
+        const double* force = &sm[SUM_FORCE];
+        const double vec_area_norm = Norm3(&sm[SUM_NDA]);
+
+        std::vector<double> values;
+        values.reserve(12);
+        for (int c = 0; c < 3; c++) {
+            values.push_back((m_ref_area[s] > 0.0) ? sm[SUM_DISP + c] / m_ref_area[s] : 0.0);
+        }
+        for (int c = 0; c < 3; c++) {
+            values.push_back(force[c]);
+        }
+        for (int c = 0; c < 3; c++) {
+            const bool valid = !m_zero_normal[s] && vec_area_norm > 0.0;
+            values.push_back(valid ? sm[SUM_NDA + c] / vec_area_norm : 0.0);
+        }
+        if (m_moments) {
+            // Shift the moment from the origin to the centroid: M_c = M_0 - x_c x F
+            double xc[3];
+            for (int c = 0; c < 3; c++) {
+                xc[c] = (area > 0.0) ? sm[SUM_XDA + c] / area : 0.0;
+            }
+            const double* m0 = &sm[SUM_MOMENT];
+            values.push_back(m0[0] - (xc[1] * force[2] - xc[2] * force[1]));
+            values.push_back(m0[1] - (xc[2] * force[0] - xc[0] * force[2]));
+            values.push_back(m0[2] - (xc[0] * force[1] - xc[1] * force[0]));
+        }
+
+        file_manager.WriteSurfaceQuantity(
+            m_boundary_ids[s], m_preambles[s], m_moments, time, area, values);
+    }
 }

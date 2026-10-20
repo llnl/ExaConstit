@@ -3,6 +3,7 @@
 #include "postprocessing/mechanics_lightup.hpp"
 #include "postprocessing/postprocessing_file_manager.hpp"
 #include "postprocessing/projection_class.hpp"
+#include "postprocessing/surface_quantities.hpp"
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/rotations.hpp"
@@ -457,6 +458,10 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
     }
 
     InitializeLightUpAnalysis();
+
+    if (options.post_processing.surface_quantities.enabled) {
+        m_surface_quantities = std::make_unique<SurfaceQuantities>(m_sim_state, options);
+    }
 }
 
 std::shared_ptr<mfem::ParFiniteElementSpace>
@@ -541,6 +546,10 @@ void PostProcessingDriver::Update(const int step, const double time) {
         PrintVolValues(time, m_aggregation_mode);
     }
     ClearVolumeAverageCache();
+
+    if (m_surface_quantities && m_surface_quantities->ShouldOutputAtStep(step)) {
+        m_surface_quantities->Update(time, *m_file_manager);
+    }
 
     if (m_light_up_instances.size() > 0) {
         UpdateLightUpAnalysis();

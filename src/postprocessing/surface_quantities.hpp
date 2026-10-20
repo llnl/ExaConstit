@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+class PostProcessingFileManager;
+
 /**
  * @brief Boundary faces of one or more mesh boundary attributes, with the tables needed to
  * evaluate element data at the face quadrature points
@@ -141,4 +143,63 @@ private:
     mfem::Array<double> m_tab_dn;   ///< H1 reference gradients, [nfq x ndof x 3] per table
     mfem::Array<double> m_tab_w;    ///< face weight times reference surface Jacobian, [nfq]
     mfem::Array<double> m_tab_nref; ///< outward unit reference normal, [3] per table
+};
+
+/**
+ * @brief Per-surface force, displacement, area and normal output
+ *
+ * @details For each requested boundary attribute, at every output step:
+ * - area = integral of da over the current surface;
+ * - displacement = integral of u dA0 over the reference surface divided by its area A0;
+ * - force = integral of the Cauchy traction sigma n da over the current surface, with sigma
+ *   extrapolated from the adjacent element's quadrature points;
+ * - normal = (integral of n da) / |integral of n da|, the normalized vector area. By Stokes'
+ *   theorem it only depends on the boundary loop of the surface, so roughening of a free
+ *   surface's interior does not change it;
+ * - optional moment = integral of (x - x_c) x (sigma n da) about the current area centroid x_c.
+ *
+ * Results are written to one file per attribute through PostProcessingFileManager.
+ */
+class SurfaceQuantities {
+public:
+    SurfaceQuantities(std::shared_ptr<SimulationState> sim_state, const ExaOptions& options);
+
+    /**
+     * @brief Compute the surface quantities for the converged state and write them
+     *
+     * @param time Current simulation time
+     * @param file_manager File manager providing paths and formatting
+     *
+     * Collective over MPI_COMM_WORLD.
+     */
+    void Update(double time, PostProcessingFileManager& file_manager);
+
+    /// Whether output should happen at this step
+    bool ShouldOutputAtStep(int step) const {
+        return (step % m_output_frequency == 0);
+    }
+
+private:
+    std::shared_ptr<SimulationState> m_sim_state;
+    std::unique_ptr<BoundarySurface> m_surface;
+    std::vector<int> m_boundary_ids;
+    bool m_moments;
+    int m_output_frequency;
+
+    /// Face-point weights dA0 of the reference surface
+    mfem::Vector m_dA0;
+    /// Per-surface reference area
+    std::vector<double> m_ref_area;
+    /// Per-surface comment lines written at the top of each file
+    std::vector<std::string> m_preambles;
+    /// Per-surface flag set when the surface is closed and has no meaningful normal
+    std::vector<bool> m_zero_normal;
+
+    // Work vectors, sized to the number of face points or faces
+    mfem::Vector m_x;
+    mfem::Vector m_nda;
+    mfem::Vector m_da;
+    mfem::Vector m_disp;
+    mfem::Vector m_stress;
+    mfem::Vector m_face_sums;
 };

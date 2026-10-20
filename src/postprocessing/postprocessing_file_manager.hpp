@@ -9,7 +9,9 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -202,6 +204,62 @@ public:
 
             WriteTimeAndVolume(*file, time, volume);
             WriteDataSafe(*file, data, data_size);
+            *file << "\n" << std::flush;
+        }
+    }
+
+    /**
+     * @brief Get the full file path for a surface quantity output
+     *
+     * @param surface_id Mesh boundary attribute of the surface
+     * @return Full file path, [stem]_surface_[id][extension] in the output directory
+     */
+    std::string GetSurfaceQuantityFilePath(int surface_id) const;
+
+    /**
+     * @brief Get the column header line for surface quantity output files
+     *
+     * @param moments Whether the moment columns are included
+     * @return Header string with column descriptions
+     */
+    std::string GetSurfaceQuantityHeader(bool moments) const;
+
+    /**
+     * @brief Write one row of surface quantity output (rank 0 of MPI_COMM_WORLD only)
+     *
+     * @param surface_id Mesh boundary attribute of the surface
+     * @param preamble Comment lines written once, before the column header, when the file is
+     *        empty
+     * @param moments Whether the moment columns are included in values
+     * @param time Current simulation time
+     * @param area Current surface area
+     * @param values Displacement (3), force (3), normal (3) and, if moments, moment (3)
+     */
+    void WriteSurfaceQuantity(int surface_id,
+                              const std::string& preamble,
+                              bool moments,
+                              double time,
+                              double area,
+                              const std::vector<double>& values) {
+        int rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        if (rank != 0)
+            return;
+
+        auto file = CreateOutputFile(GetSurfaceQuantityFilePath(surface_id), true);
+
+        if (file && file->is_open()) {
+            // Same header-if-empty check as WriteVolumeAverage(), so a restart continuation
+            // appends to the existing file.
+            file->seekp(0, std::ios_base::end);
+            if (file->tellp() == 0) {
+                *file << preamble;
+                *file << GetSurfaceQuantityHeader(moments);
+            }
+
+            *file << std::setw(COLUMN_WIDTH) << time << std::setw(COLUMN_WIDTH) << surface_id
+                  << std::setw(COLUMN_WIDTH) << area;
+            WriteDataSafe(*file, values, static_cast<int>(values.size()));
             *file << "\n" << std::flush;
         }
     }
@@ -556,6 +614,47 @@ inline std::unique_ptr<std::ofstream> PostProcessingFileManager::CreateOutputFil
         MFEM_WARNING("Error when creating file " << filepath << ": " << ex.what());
         return nullptr;
     }
+}
+
+inline std::string PostProcessingFileManager::GetSurfaceQuantityFilePath(int surface_id) const {
+    fs::path specific_filename = m_options.post_processing.surface_quantities.fname;
+
+    fs::path extension = specific_filename.extension();
+    fs::path base_name = specific_filename;
+    if (extension.string().empty()) {
+        extension = ".txt";
+    } else {
+        base_name = base_name.stem();
+    }
+
+    fs::path filename = base_name.string() + "_surface_" + std::to_string(surface_id) +
+                        extension.string();
+    return m_output_directory / filename;
+}
+
+inline std::string PostProcessingFileManager::GetSurfaceQuantityHeader(bool moments) const {
+    std::ostringstream header;
+
+    header << CenterText("# Time", COLUMN_WIDTH);
+    header << CenterText("Surface_ID", COLUMN_WIDTH);
+    header << CenterText("Area", COLUMN_WIDTH);
+    header << CenterText("Disp_x", COLUMN_WIDTH);
+    header << CenterText("Disp_y", COLUMN_WIDTH);
+    header << CenterText("Disp_z", COLUMN_WIDTH);
+    header << CenterText("Force_x", COLUMN_WIDTH);
+    header << CenterText("Force_y", COLUMN_WIDTH);
+    header << CenterText("Force_z", COLUMN_WIDTH);
+    header << CenterText("Normal_x", COLUMN_WIDTH);
+    header << CenterText("Normal_y", COLUMN_WIDTH);
+    header << CenterText("Normal_z", COLUMN_WIDTH);
+    if (moments) {
+        header << CenterText("Moment_x", COLUMN_WIDTH);
+        header << CenterText("Moment_y", COLUMN_WIDTH);
+        header << CenterText("Moment_z", COLUMN_WIDTH);
+    }
+
+    header << "\n";
+    return header.str();
 }
 
 // Updated GetVolumeAverageHeader method with proper alignment:

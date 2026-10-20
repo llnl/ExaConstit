@@ -11,6 +11,7 @@
 
 // Forward declaration to avoid circular includes
 class PostProcessingFileManager;
+class SurfaceQuantities;
 
 class LightUp;
 /**
@@ -1007,4 +1008,12 @@ private:
      * providing in-situ diffraction simulation capabilities.
      */
     std::vector<std::unique_ptr<LightUp>> m_light_up_instances;
+
+    /**
+     * @brief Per-surface force and displacement output
+     *
+     * Created only when [PostProcessing.surface_quantities] is enabled. Writes one file per
+     * requested mesh boundary attribute at its own output frequency.
+     */
+    std::unique_ptr<SurfaceQuantities> m_surface_quantities;
 };
