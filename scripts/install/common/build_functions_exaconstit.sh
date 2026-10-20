@@ -48,7 +48,7 @@ build_snls() {
     -DUSE_RAJA_ONLY=OFF
     -DRAJA_DIR="${RAJA_ROOT}/lib/cmake/raja"
     -DCAMP_DIR="${CAMP_ROOT}/lib/cmake/camp"
-    -DUMPIRE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+    -DUMPIRE_DIR="${UMPIRE_CMAKE_DIR}"
     -DCHAI_DIR="${CHAI_ROOT}/lib/cmake/chai"
     -DFMT_DIR="${FMT_DIR}"
   )
@@ -115,7 +115,7 @@ build_exacmech() {
     # SNLS was built with batch solvers, so ExaCMech needs the full
     # Portability Suite resolved transitively even on CPU builds.
     -DFMT_DIR="${FMT_DIR}"
-    -DUMPIRE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+    -DUMPIRE_DIR="${UMPIRE_CMAKE_DIR}"
     -DCHAI_DIR="${CHAI_ROOT}/lib/cmake/chai"
   )
 
@@ -375,7 +375,7 @@ build_exaconstit() {
     -DCAMP_DIR="${CAMP_ROOT}/lib/cmake/camp"
     # SNLS-batch transitive deps (now needed on CPU builds too).
     -DFMT_DIR="${FMT_DIR}"
-    -DUMPIRE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+    -DUMPIRE_DIR="${UMPIRE_CMAKE_DIR}"
     -DCHAI_DIR="${CHAI_ROOT}/lib/cmake/chai"
   )
 
@@ -398,6 +398,8 @@ build_exaconstit() {
       CMAKE_ARGS+=(
         -DCMAKE_CUDA_FLAGS="${CMAKE_GPU_FLAGS}"
         -DBLT_EXE_LINKER_FLAGS="${CMAKE_EXE_LINKER_FLAGS}"
+        # nvcc is the CXX compiler here; make CMake emit nvcc-style link options
+        -DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX="${SCRIPT_DIR}/common/nvcc_cxx_rules_override.cmake"
       )
     elif [ "${GPU_BACKEND}" = "HIP" ]; then
       CMAKE_ARGS+=(

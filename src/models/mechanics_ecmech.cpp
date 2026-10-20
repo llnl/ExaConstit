@@ -125,8 +125,7 @@ void kernel_postprocessing(const int npts,
                            const double* beg_state_vars_array,
                            double* state_vars_array,
                            double* stress_array,
-                           double* ddsdde_array,
-                           AssemblyType assembly) {
+                           double* ddsdde_array) {
     const int ind_int_eng = nstatev - ecmech::ne;
     const int ind_pl_work = ecmech::evptn::iHistA_flowStr;
     const int ind_vols = ind_int_eng - 1;
@@ -174,23 +173,18 @@ void kernel_postprocessing(const int npts,
         }
     }); // end of npts loop
 
-    // No need to transpose this if running on the GPU and doing EA
-    if ((assembly == AssemblyType::EA) and mfem::Device::Allows(mfem::Backend::DEVICE_MASK)) {
-        return;
-    } else {
-        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i_pts) {
-            // ExaCMech saves this in Row major, so we need to get out the transpose.
-            // The good thing is we can do this all in place no problem.
-            double* ddsdde = &(ddsdde_array[i_pts * ecmech::nsvec * ecmech::nsvec]);
-            for (int i = 0; i < ecmech::nsvec; ++i) {
-                for (int j = i + 1; j < ecmech::nsvec; ++j) {
-                    double tmp = ddsdde[(ecmech::nsvec * j) + i];
-                    ddsdde[(ecmech::nsvec * j) + i] = ddsdde[(ecmech::nsvec * i) + j];
-                    ddsdde[(ecmech::nsvec * i) + j] = tmp;
-                }
+    mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i_pts) {
+        // ExaCMech saves this in Row major, so we need to get out the transpose.
+        // The good thing is we can do this all in place no problem.
+        double* ddsdde = &(ddsdde_array[i_pts * ecmech::nsvec * ecmech::nsvec]);
+        for (int i = 0; i < ecmech::nsvec; ++i) {
+            for (int j = i + 1; j < ecmech::nsvec; ++j) {
+                double tmp = ddsdde[(ecmech::nsvec * j) + i];
+                ddsdde[(ecmech::nsvec * j) + i] = ddsdde[(ecmech::nsvec * i) + j];
+                ddsdde[(ecmech::nsvec * i) + j] = tmp;
             }
-        });
-    }
+        }
+    });
 } // end of post-processing func
 
 // The different CPU, OpenMP, and GPU kernels aren't needed here, since they're
@@ -628,8 +622,7 @@ void ExaCMechModel::ModelSetup(const int nqpts,
                           state_vars_beg,
                           state_vars_array,
                           stress_array,
-                          ddsdde_array,
-                          assembly);
+                          ddsdde_array);
     CALI_MARK_END("ecmech_postprocessing");
 
     // Fill global data structures with region-specific results

@@ -2,6 +2,7 @@
 
 #include "postprocessing/projection_class.hpp"
 #include "sim_state/simulation_state.hpp"
+#include "utilities/cuda_access.hpp"
 #include "utilities/mechanics_kernels.hpp"
 
 #include "mfem.hpp"
@@ -147,7 +148,7 @@ public:
     std::shared_ptr<mfem::ParFiniteElementSpace> GetParFiniteElementSpace(const int region,
                                                                           const int vdim);
 
-private:
+EXACONSTIT_CUDA_PRIVATE:
     /**
      * @brief Enumeration for volume average calculation types
      *
@@ -190,6 +191,7 @@ private:
             : volume(vol), data(vec), is_valid(true) {}
     };
 
+private:
     /**
      * @brief Cache storage for volume average data
      *
@@ -227,7 +229,9 @@ private:
      * This method encapsulates all calculation-specific logic and provides
      * a uniform interface for all volume averaging operations.
      */
+EXACONSTIT_CUDA_PRIVATE:
     VolumeAverageData CalculateVolumeAverage(CalcType calc_type, int region);
+private:
 
     /**
      * @brief Get cached data or calculate if not available
@@ -697,6 +701,7 @@ private:
      * Essential for converting quadrature point data to element-constant data
      * suitable for visualization and further processing operations.
      */
+EXACONSTIT_CUDA_PRIVATE:
     void CalcElementAvg(mfem::expt::PartialQuadratureFunction* elemVal,
                         const mfem::expt::PartialQuadratureFunction* qf);
 
@@ -714,6 +719,7 @@ private:
      * Used for global aggregation operations and cross-region analysis.
      */
     void CalcGlobalElementAvg(mfem::Vector* elemVal, const std::string& field_name);
+private:
 
     /**
      * @brief Get the size of quadrature functions

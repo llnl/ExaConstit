@@ -211,7 +211,8 @@ bool BoundaryOptions::validate() {
         return false;
     }
 
-    if (time_info.cycles[0] != 1) {
+    // cycles is empty when BCs.time_info is omitted, which defaults to step 1
+    if (!time_info.cycles.empty() && time_info.cycles[0] != 1) {
         WARNING_0_OPT("Error: `BCs.time_info` needs to have the first value be 1");
         return false;
     }

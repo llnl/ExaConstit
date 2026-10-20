@@ -492,7 +492,8 @@ void SystemDriver::SolveInit() const {
         deltaF = 0.0;
         auto I = mech_operator->GetEssentialTrueDofs().Read();
         auto size = mech_operator->GetEssentialTrueDofs().Size();
-        auto Y = deltaF.Write();
+        // ReadWrite (not Write) since only the essential dofs are overwritten
+        auto Y = deltaF.ReadWrite();
         auto XPREV = x_prev->Read();
         auto X = x->Read();
         mfem::forall(size, [=] MFEM_HOST_DEVICE(int i) {

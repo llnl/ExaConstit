@@ -204,6 +204,15 @@ build_umpire() {
   fi
   export FMT_DIR
 
+  # Find Umpire's CMake config dir (lib64 on RHEL-like systems, lib on Debian/Ubuntu)
+  UMPIRE_CMAKE_CONFIG=$(find "${UMPIRE_ROOT}" -name 'umpire-config.cmake' -print -quit || true)
+  if [ -n "${UMPIRE_CMAKE_CONFIG}" ]; then
+    UMPIRE_CMAKE_DIR=$(dirname "${UMPIRE_CMAKE_CONFIG}")
+  else
+    UMPIRE_CMAKE_DIR="${UMPIRE_ROOT}/lib64/cmake/umpire"
+  fi
+  export UMPIRE_CMAKE_DIR
+
   echo "Umpire installed to: ${UMPIRE_ROOT}"
   echo "fmt found at: ${FMT_DIR}"
   cd "${BASE_DIR}"

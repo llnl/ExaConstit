@@ -99,6 +99,7 @@ print_build_summary() {
   if [ "${BUILD_TYPE}" != "cpu" ]; then
     echo "  GPU:           ${CMAKE_GPU_COMPILER}"
     echo "  GPU Arch:      ${CMAKE_GPU_ARCHITECTURES}"
+    echo "  Gemv tuning:   ${MFEM_GEMV_TUNING:-AUTO}${MFEM_GEMV_TUNING_LAUNCHER:+ (launcher: ${MFEM_GEMV_TUNING_LAUNCHER})}"
   fi
   echo ""
   echo "MPI Wrappers:"
