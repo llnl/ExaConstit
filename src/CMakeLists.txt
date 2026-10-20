@@ -19,6 +19,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/projection_class.hpp
     postprocessing/postprocessing_driver.hpp
     postprocessing/mechanics_lightup.hpp
+    postprocessing/surface_quantities.hpp
     sim_state/simulation_state.hpp
     sim_state/exa_sidre_parmesh.hpp
     sim_state/restart_checkpoint.hpp
@@ -61,6 +62,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/postprocessing_driver.cpp
     postprocessing/projection_class.cpp
     postprocessing/mechanics_lightup.cpp
+    postprocessing/surface_quantities.cpp
     sim_state/simulation_state.cpp
     sim_state/exa_sidre_parmesh.cpp
     sim_state/restart_checkpoint.cpp
