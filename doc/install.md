@@ -63,6 +63,12 @@ See the [Installation Guide](docs/install.md) for detailed configuration instruc
 ../ExaConstit/scripts/install/unix_gpu_cuda_install.sh
 ```
 
+For a Linux workstation with an NVIDIA GPU, the CUDA toolkit, the system GCC and a packaged MPI (no environment modules), there is a config that needs no editing. It finds the CUDA toolkit, compilers, MPI and Python from `PATH`, and the GPU architecture from `nvidia-smi`. Any of these can be overridden from the environment, e.g. when the default GCC is newer than the CUDA release supports:
+```bash
+CUDA_BASE=/opt/cuda-12.9 GCC_VERSION=13 \
+  ../ExaConstit/scripts/install/unix_gpu_cuda_workstation_install.sh
+```
+
 #### **AMD GPU Systems (HIP/ROCm)**
 ```bash
 ../ExaConstit/scripts/install/unix_gpu_hip_install.sh
@@ -85,6 +91,7 @@ scripts/install/
 │   ├── cpu_intel_config.sh       # Intel compiler configuration
 │   ├── cpu_mac_config.sh         # macOS configuration
 │   ├── gpu_cuda_config.sh        # NVIDIA CUDA configuration
+│   ├── gpu_cuda_workstation_config.sh # NVIDIA CUDA on a Linux workstation (auto-detected)
 │   └── gpu_hip_config.sh         # AMD HIP configuration
 └── unix_*_install.sh              # Platform-specific entry points
 ```
@@ -320,17 +327,17 @@ code ExaConstit/scripts/install/common/dependency_versions.sh
 ```
 ```bash
 # Portability libraries
-export CAMP_VER="v2025.09.2"        # Update to newer version
-export RAJA_VER="v2025.09.1"
-export UMPIRE_VER="v2025.09.0"
-export CHAI_VER="v2025.09.1"
+export CAMP_VER="v2025.12.0"
+export RAJA_VER="v2025.12.2"
+export UMPIRE_VER="v2025.12.0"
+export CHAI_VER="v2025.12.0"
 
 # Material models
 export EXACMECH_REPO="https://github.com/LLNL/ExaCMech.git"
-export EXACMECH_BRANCH="develop"    # Change to different branch if needed
+export EXACMECH_BRANCH="v0.4.3"     # Tag or branch to check out
 
 # FEM infrastructure
-export HYPRE_VER="v2.32.0"          # Update to newer version
+export HYPRE_VER="v3.1.0"
 export METIS_VER="5.1.0"
 
 export MFEM_REPO="https://github.com/rcarson3/mfem.git"
@@ -740,14 +747,14 @@ If you prefer to build manually or need more control over the build process:
 ### **Prerequisites**
 
 You'll need to manually build all dependencies first:
-1. **CAMP** (v2025.09.2)
-2. **RAJA** (v2025.09.1)
-3. **Umpire** (v2025.09.0) - GPU builds only
-4. **CHAI** (v2025.09.1) - GPU builds only
-5. **ExaCMech** (develop branch)
-6. **Hypre** (v2.32.0)
+1. **CAMP** (v2025.12.0)
+2. **RAJA** (v2025.12.2)
+3. **Umpire** (v2025.12.0) - GPU builds only
+4. **CHAI** (v2025.12.0) - GPU builds only
+5. **ExaCMech** (v0.4.3)
+6. **Hypre** (v3.1.0)
 7. **METIS** (5.1.0)
-8. **MFEM** (exaconstit-smart-ptrs branch)
+8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 was tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364`)
 
 See `scripts/install/common/build_functions.sh` for the exact build commands and CMake options.
 

@@ -1,11 +1,14 @@
 #include "sim_state/simulation_state.hpp"
 
+#include "utilities/unified_logger.hpp"
+
 namespace {
 
 void setupBoundaryConditions(ExaOptions& options) {
     BCManager& bcm = BCManager::GetInstance();
     auto& bcs_opts = options.boundary_conditions;
-    bcm.Init(bcs_opts.time_info.cycles,
+    // update_steps (not time_info.cycles) also covers BCs.time_info being omitted
+    bcm.Init(bcs_opts.update_steps,
              bcs_opts.map_ess_vel,
              bcs_opts.map_ess_vgrad,
              bcs_opts.map_ess_comp,
@@ -91,10 +94,8 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
     }
     // We're using the auto mesh generator
     else {
-        if (options.mesh.nxyz[0] <= 0 || options.mesh.mxyz[0] <= 0) {
-            std::cerr << std::endl
-                      << "Must input mesh geometry/discretization for hex_mesh_gen" << std::endl;
-        }
+        MFEM_VERIFY_0(options.mesh.nxyz[0] > 0 && options.mesh.mxyz[0] > 0,
+                      "Must input mesh geometry/discretization for hex_mesh_gen");
 
         if (my_id == 0) {
             std::cout << "Using mfem's hex mesh generator" << std::endl;
@@ -116,14 +117,17 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
         // read in the grain map if using a MFEM auto generated cuboidal mesh
         if (options.grain_file) {
             std::ifstream gfile(*options.grain_file);
-            if (!gfile && my_id == 0) {
-                std::cerr << std::endl
-                          << "Cannot open grain map file: " << *options.grain_file << std::endl;
-            }
+            MFEM_VERIFY_0(gfile, "Cannot open grain map file: " << *options.grain_file);
 
             const int gmap_size = mesh.GetNE();
             mfem::Vector gmap(gmap_size);
             gmap.Load(gfile, gmap_size);
+            // A short file leaves grain ids of 0 or uninitialized values, which are
+            // later used as (id - 1) indices
+            MFEM_VERIFY_0(!gfile.fail(),
+                          "Grain map file " << *options.grain_file << " has fewer than the "
+                                            << gmap_size << " entries needed for the "
+                                            << "auto-generated mesh (one per element)");
             gfile.close();
 
             // set grain ids as element attributes on the mesh
@@ -188,9 +192,8 @@ std::map<int, int> create_grains_to_map(const ExaOptions& options, const mfem::A
     } else {
         std::ifstream file(*options.region_mapping_file);
 
-        if (!file.is_open()) {
-            std::cerr << "Failed to open file: " << *options.region_mapping_file << std::endl;
-        }
+        MFEM_VERIFY_0(file.is_open(),
+                      "Failed to open region mapping file: " << *options.region_mapping_file);
 
         std::string line;
         int key, value;
@@ -203,8 +206,9 @@ std::map<int, int> create_grains_to_map(const ExaOptions& options, const mfem::A
             }
             std::istringstream iss(line);
             if (!(iss >> key >> value)) {
-                std::cerr << "Error reading data on line " << lineNumber << " key " << key
-                          << " line " << line << std::endl;
+                MFEM_WARNING_0("Skipping unreadable line "
+                               << lineNumber << " of region mapping file "
+                               << *options.region_mapping_file << ": " << line);
                 continue;
             }
             // Insert into the map
@@ -285,6 +289,10 @@ TimeStep TimeManagement::UpdateDeltaTime(const int nr_steps, const bool success)
     if (!success) {
         // If we were already sub-stepping through a simulation and encouter this just fail out
         if (internal_tracker == TimeStep::SUBSTEP) {
+            return TimeStep::FAILED;
+        }
+        // If we're already at the smallest allowable dt then there's nothing left to try
+        if (dt <= dt_min) {
             return TimeStep::FAILED;
         }
         // For the very first failure we want to save off the initial guessed time step
@@ -782,14 +790,8 @@ void SimulationState::InitializeStateVariables(const std::map<int, int>& grains2
     // First, load shared orientation data if any material needs it
     for (const auto& material : m_options.materials) {
         if (material.grain_info.has_value() && material.grain_info->orientation_file.has_value()) {
-            if (!LoadSharedOrientationData(material.grain_info->orientation_file.value(),
-                                           material.grain_info->num_grains)) {
-                if (my_id == 0) {
-                    std::cerr << "Failed to load shared orientation data from "
-                              << material.grain_info->orientation_file.value() << std::endl;
-                }
-                return;
-            }
+            LoadSharedOrientationData(material.grain_info->orientation_file.value(),
+                                      material.grain_info->num_grains);
             break; // Only need to load once since it's shared
         }
     }
@@ -826,8 +828,10 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
     // Get the QuadratureSpace for this region
     std::string qspace_name = GetRegionName(region_id);
     auto qspace = m_map_qs[qspace_name];
-    // Prepare orientation data for this region (convert from shared quaternions if needed)
+    // Prepare orientation data for this region
     OrientationConfig orientation_config = PrepareOrientationForRegion(material);
+    MFEM_VERIFY_0(!material.grain_info.has_value() || orientation_config.is_valid,
+                  "Unable to set up the orientation data for material " << material.material_name);
 
     // Calculate effective state variable count (includes orientations)
     const int effective_state_var_size = material.state_vars.num_vars;
@@ -840,13 +844,8 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
     } else if (!material.state_vars.state_file.empty()) {
         // Load from file if not already loaded
         std::ifstream file(material.state_vars.state_file);
-        if (!file.is_open()) {
-            if (my_id == 0) {
-                std::cerr << "Error: Cannot open state variables file: "
-                          << material.state_vars.state_file << std::endl;
-            }
-            return;
-        }
+        MFEM_VERIFY_0(file.is_open(),
+                      "Cannot open state variables file: " << material.state_vars.state_file);
 
         double value;
         while (file >> value) {
@@ -857,11 +856,10 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
 
     // Validate state variable data size
     if (state_var_data.size() != static_cast<size_t>(base_state_var_size)) {
-        if (my_id == 0) {
-            std::cerr << "Warning: State variable data size (" << state_var_data.size()
-                      << ") doesn't match expected size (" << base_state_var_size
-                      << ") for material " << material.material_name << std::endl;
-        }
+        MFEM_WARNING_0("State variable data size ("
+                       << state_var_data.size() << ") doesn't match expected size ("
+                       << base_state_var_size << ") for material " << material.material_name
+                       << ". Any missing state variables are set to 0.");
     }
 
     // Get the data pointer for the QuadratureFunction
@@ -869,14 +867,10 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
     const int qf_vdim = state_var_qf->GetVDim();
 
     // Validate that our total size matches
-    if (qf_vdim != effective_state_var_size) {
-        if (my_id == 0) {
-            std::cerr << "Error: QuadratureFunction vdim (" << qf_vdim
-                      << ") doesn't match effective total size (" << effective_state_var_size
-                      << ") for material " << material.material_name << std::endl;
-        }
-        return;
-    }
+    MFEM_VERIFY_0(qf_vdim == effective_state_var_size,
+                  "QuadratureFunction vdim (" << qf_vdim << ") doesn't match effective total size ("
+                                              << effective_state_var_size << ") for material "
+                                              << material.material_name);
 
     // Get the local to global element mapping for this region
     const auto& local2global = qspace->GetLocal2Global();
@@ -915,11 +909,9 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
                 } else {
                     // This is state variable data
                     double var_data = 0.0;
+                    // Missing values were already reported by the size check above
                     if (state_var_idx < state_var_data.size()) {
                         var_data = state_var_data[state_var_idx];
-                    } else if (my_id == 0) {
-                        std::cerr << "Warning: Missing state variable data, component "
-                                  << state_var_idx << std::endl;
                     }
                     qf_data[qpt_base_index + k] = var_data;
                     state_var_idx++;
@@ -935,16 +927,10 @@ void SimulationState::InitializeRegionStateVariables(int region_id,
         std::cout << "Initialized state variables for material " << material.material_name
                   << " (region " << region_id << ")" << std::endl;
         if (orientation_config.is_valid) {
-            const auto& grain_info = material.grain_info.value();
-            std::string format_name = "custom";
-            if (grain_info.ori_type == OriType::QUAT)
-                format_name = "quaternions";
-            else if (grain_info.ori_type == OriType::EULER)
-                format_name = "Euler angles";
-            else if (grain_info.ori_type == OriType::CUSTOM && orientation_config.stride == 9)
-                format_name = "rotation matrices";
-
-            std::cout << "  - Converted orientation data to " << format_name << " (stride "
+            const std::string format_name = (material.mech_type == MechType::EXACMECH)
+                                                ? "unit quaternions"
+                                                : "values from the orientation file";
+            std::cout << "  - Orientation data: " << format_name << " (stride "
                       << orientation_config.stride << ")" << std::endl;
         }
     }
@@ -987,89 +973,43 @@ int SimulationState::CalculateEffectiveStateVarCount(const MaterialOptions& mate
     return base_count;
 }
 
-bool SimulationState::LoadSharedOrientationData(const std::string& orientation_file,
+void SimulationState::LoadSharedOrientationData(const std::string& orientation_file,
                                                 int num_grains) {
     if (m_shared_orientation_data.is_loaded) {
         // Already loaded, just verify grain count matches
-        if (m_shared_orientation_data.num_grains != num_grains) {
-            if (my_id == 0) {
-                std::cerr << "Error: Grain count mismatch. Expected " << num_grains
-                          << " but shared data has " << m_shared_orientation_data.num_grains
-                          << std::endl;
-            }
-            return false;
-        }
-        return true;
+        MFEM_VERIFY_0(m_shared_orientation_data.num_grains == num_grains,
+                      "Grain count mismatch. Expected " << num_grains << " but shared data has "
+                                                        << m_shared_orientation_data.num_grains);
+        return;
     }
 
     std::ifstream orient_file(orientation_file);
-    if (!orient_file.is_open()) {
-        if (my_id == 0) {
-            std::cerr << "Error: Cannot open orientation file: " << orientation_file << std::endl;
-        }
-        return false;
-    }
+    MFEM_VERIFY_0(orient_file.is_open(), "Cannot open orientation file: " << orientation_file);
 
-    // Load unit quaternions (passive rotations from crystal to sample reference)
-    const size_t expected_size = 4 * static_cast<size_t>(
-                                         num_grains); // Always 4 components per quaternion
-    m_shared_orientation_data.quaternions.reserve(expected_size);
-
+    // Read every value in the file. How these values are interpreted (quaternions for
+    // ExaCMech models, or whatever format a UMAT expects) depends on the material, so
+    // that is handled per region in PrepareOrientationForRegion.
     double value;
-    while (orient_file >> value && m_shared_orientation_data.quaternions.size() < expected_size) {
-        m_shared_orientation_data.quaternions.push_back(value);
+    while (orient_file >> value) {
+        m_shared_orientation_data.values.push_back(value);
     }
     orient_file.close();
 
-    if (m_shared_orientation_data.quaternions.size() != expected_size) {
-        if (my_id == 0) {
-            std::cerr << "Error: Orientation file size ("
-                      << m_shared_orientation_data.quaternions.size()
-                      << ") doesn't match expected size (" << expected_size << ") for "
-                      << num_grains << " grains" << std::endl;
-        }
-        m_shared_orientation_data.quaternions.clear();
-        return false;
-    }
-
-    // Validate that quaternions are properly normalized
-    for (size_t i = 0; i < static_cast<size_t>(num_grains); ++i) {
-        const size_t base_idx = i * 4;
-        const double w = m_shared_orientation_data.quaternions[base_idx];
-        const double x = m_shared_orientation_data.quaternions[base_idx + 1];
-        const double y = m_shared_orientation_data.quaternions[base_idx + 2];
-        const double z = m_shared_orientation_data.quaternions[base_idx + 3];
-
-        const double norm = sqrt(w * w + x * x + y * y + z * z);
-        const double tolerance = 1e-6;
-
-        if (fabs(norm - 1.0) > tolerance) {
-            if (my_id == 0) {
-                std::cerr << "Warning: Quaternion " << i << " is not normalized (norm = " << norm
-                          << "). Normalizing..." << std::endl;
-            }
-            // Normalize the quaternion
-            m_shared_orientation_data.quaternions[base_idx] = w / norm;
-            m_shared_orientation_data.quaternions[base_idx + 1] = x / norm;
-            m_shared_orientation_data.quaternions[base_idx + 2] = y / norm;
-            m_shared_orientation_data.quaternions[base_idx + 3] = z / norm;
-        }
-    }
+    MFEM_VERIFY_0(!m_shared_orientation_data.values.empty(),
+                  "Orientation file " << orientation_file << " has no values");
 
     m_shared_orientation_data.num_grains = num_grains;
     m_shared_orientation_data.is_loaded = true;
 
     if (my_id == 0) {
-        std::cout << "Loaded shared orientation data: " << num_grains
-                  << " unit quaternions (passive rotations)" << std::endl;
+        std::cout << "Loaded shared orientation data: " << m_shared_orientation_data.values.size()
+                  << " values for " << num_grains << " grains" << std::endl;
     }
-
-    return true;
 }
 
 void SimulationState::CleanupSharedOrientationData() {
-    m_shared_orientation_data.quaternions.clear();
-    m_shared_orientation_data.quaternions.shrink_to_fit();
+    m_shared_orientation_data.values.clear();
+    m_shared_orientation_data.values.shrink_to_fit();
     m_shared_orientation_data.num_grains = 0;
     m_shared_orientation_data.is_loaded = false;
 
@@ -1173,60 +1113,66 @@ SimulationState::PrepareOrientationForRegion(const MaterialOptions& material) {
     const auto& grain_info = material.grain_info.value();
 
     // Verify grain count consistency
-    if (m_shared_orientation_data.num_grains != grain_info.num_grains) {
-        if (my_id == 0) {
-            std::cerr << "Error: Grain count mismatch for material " << material.material_name
-                      << ". Expected " << grain_info.num_grains << " but shared data has "
-                      << m_shared_orientation_data.num_grains << std::endl;
-        }
-        return config;
+    MFEM_VERIFY_0(m_shared_orientation_data.num_grains == grain_info.num_grains,
+                  "Grain count mismatch for material "
+                      << material.material_name << ". Expected " << grain_info.num_grains
+                      << " but shared data has " << m_shared_orientation_data.num_grains);
+
+    // ExaCMech models always take unit quaternions (w, x, y, z) representing passive rotations
+    // from the crystal to the sample frame. Any other model (e.g. a UMAT) is given the values
+    // from the orientation file as is, ori_stride values per grain, in whatever format it expects.
+    const bool is_exacmech = (material.mech_type == MechType::EXACMECH);
+    int stride = 0;
+    if (is_exacmech || grain_info.ori_type == OriType::QUAT) {
+        stride = 4;
+    } else if (grain_info.ori_type == OriType::EULER) {
+        stride = 3;
+    } else if (grain_info.ori_type == OriType::CUSTOM) {
+        stride = grain_info.ori_stride;
     }
 
-    // Convert shared quaternions to the format required by this material
-    if (grain_info.ori_type == OriType::QUAT) {
-        // Material needs quaternions - use shared data directly
-        config.data = m_shared_orientation_data.quaternions;
-        config.stride = 4;
-        if (my_id == 0) {
-            std::cout << "Using quaternion format for material " << material.material_name
-                      << std::endl;
+    MFEM_VERIFY_0(stride > 0,
+                  "Invalid orientation stride (" << stride << ") for material "
+                                                 << material.material_name);
+
+    const auto& values = m_shared_orientation_data.values;
+    const size_t expected_size = static_cast<size_t>(stride) *
+                                 static_cast<size_t>(grain_info.num_grains);
+    MFEM_VERIFY_0(values.size() >= expected_size,
+                  "Orientation file has " << values.size() << " values but material "
+                                          << material.material_name << " needs " << expected_size
+                                          << " (" << grain_info.num_grains << " grains x " << stride
+                                          << " values per orientation)");
+    if (values.size() > expected_size) {
+        MFEM_WARNING_0("Orientation file has "
+                       << values.size() << " values but material " << material.material_name
+                       << " only uses the first " << expected_size << " (" << grain_info.num_grains
+                       << " grains x " << stride << " values per orientation)");
+    }
+
+    config.data.assign(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(expected_size));
+    config.stride = stride;
+
+    if (is_exacmech) {
+        // Make sure the quaternions are normalized
+        int num_normalized = 0;
+        for (size_t i = 0; i < static_cast<size_t>(grain_info.num_grains); ++i) {
+            double* quat = &config.data[i * 4];
+            const double norm = std::sqrt(quat[0] * quat[0] + quat[1] * quat[1] +
+                                          quat[2] * quat[2] + quat[3] * quat[3]);
+            MFEM_VERIFY_0(norm != 0.0,
+                          "Quaternion " << i << " for material " << material.material_name
+                                        << " has zero norm");
+            if (std::fabs(norm - 1.0) > 1e-6) {
+                num_normalized++;
+                for (int j = 0; j < 4; ++j) {
+                    quat[j] /= norm;
+                }
+            }
         }
-    } else if (grain_info.ori_type == OriType::EULER) {
-        // Material needs Euler angles - convert from quaternions
-        config.data = ConvertQuaternionsToEuler(m_shared_orientation_data.quaternions,
-                                                grain_info.num_grains);
-        config.stride = 3;
-        if (my_id == 0) {
-            std::cout << "Converted quaternions to Euler angles for material "
-                      << material.material_name << std::endl;
-        }
-    } else if (grain_info.ori_type == OriType::CUSTOM) {
-        // Handle custom formats
-        if (grain_info.ori_stride == 9) {
-            // Assume custom format wants rotation matrices
-            config.data = ConvertQuaternionsToMatrix(m_shared_orientation_data.quaternions,
-                                                     grain_info.num_grains);
-            config.stride = 9;
-            if (my_id == 0) {
-                std::cout << "Converted quaternions to rotation matrices for material "
-                          << material.material_name << std::endl;
-            }
-        } else if (grain_info.ori_stride == 4) {
-            // Custom format wants quaternions
-            config.data = m_shared_orientation_data.quaternions;
-            config.stride = 4;
-            if (my_id == 0) {
-                std::cout << "Using quaternion format for custom material "
-                          << material.material_name << std::endl;
-            }
-        } else {
-            // Unsupported custom stride
-            if (my_id == 0) {
-                std::cerr << "Error: Unsupported custom orientation stride ("
-                          << grain_info.ori_stride << ") for material " << material.material_name
-                          << std::endl;
-            }
-            return config;
+        if (num_normalized > 0) {
+            MFEM_WARNING_0(num_normalized << " quaternions for material " << material.material_name
+                                          << " were not normalized and have been normalized");
         }
     }
 
@@ -1246,18 +1192,20 @@ std::pair<int, int> SimulationState::CalculateOrientationOffsets(const MaterialO
     }
 
     const auto& grain_info = material.grain_info.value();
+    // UpdateExaOptionsWithOrientationCounts has already added the orientation
+    // components to num_vars, so this is the total state variable size
     const int state_var_size = material.state_vars.num_vars;
 
     int offset_start, offset_end;
 
     if (grain_info.ori_state_var_loc < 0) {
-        // Put orientation data at the end
+        // Put orientation data at the end, in the last orientation_stride components
         if (my_id == 0) {
             std::cout << "Note: Orientation data placed at end of state variable array "
                       << "for material " << material.material_name << std::endl;
         }
-        offset_start = state_var_size - 1;
-        offset_end = state_var_size + orientation_stride;
+        offset_start = state_var_size - orientation_stride - 1;
+        offset_end = state_var_size;
     } else if (grain_info.ori_state_var_loc == 0) {
         // Put orientation data at the beginning
         offset_start = -1;
@@ -1287,15 +1235,10 @@ void SimulationState::FillOrientationData(double* qf_data,
             const size_t orient_idx = static_cast<size_t>(
                 orientation_config.stride * (grain_id - 1) + grain_idx);
 
-            if (orient_idx < orientation_config.data.size()) {
-                qf_data[qpt_base_index + k] = orientation_config.data[orient_idx];
-            } else {
-                qf_data[qpt_base_index + k] = 0.0; // Default value if data is missing
-                if (my_id == 0) {
-                    std::cerr << "Warning: Missing orientation data for grain " << grain_id
-                              << ", component " << grain_idx << std::endl;
-                }
-            }
+            MFEM_VERIFY_0(orient_idx < orientation_config.data.size(),
+                          "Missing orientation data for grain " << grain_id << ", component "
+                                                                << grain_idx);
+            qf_data[qpt_base_index + k] = orientation_config.data[orient_idx];
         }
     }
 }

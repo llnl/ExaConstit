@@ -79,12 +79,13 @@ void PartialQuadratureFunction::FillQuadratureFunction(QuadratureFunction& qf, c
         auto global_offsets = (part_quad_space->global_offsets.Size() > 1)
                                   ? part_quad_space->global_offsets.Read()
                                   : offsets;
-        auto qf_data = qf.ReadWrite();
-        auto loc_data = this->Read();
-        // First set all values to default
+        // First set all values to default. Do this before taking the data pointer so the
+        // pointer refers to whichever copy (host/device) the fill left valid.
         if (fill) {
             qf = default_value;
         }
+        auto qf_data = qf.ReadWrite();
+        auto loc_data = this->Read();
         auto NE = part_quad_space->GetNE();
         // Then copy our partial values to their proper places
         const auto vdim_ = vdim;

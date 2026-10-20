@@ -3,14 +3,16 @@
 
 #include "boundary_conditions/BCData.hpp"
 #include "boundary_conditions/BCManager.hpp"
+#include "solvers/trust_region_solver.hpp"
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "ECMech_const.h"
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "ECMech_const.h"
+#include "RAJA/RAJA.hpp"
 
 #include <iostream>
 #include <limits>
@@ -44,6 +46,13 @@ void DirBdrFunc(int attr_id, mfem::Vector& y) {
 }
 
 namespace {
+
+void GetTrueDofsParallel(const mfem::ParGridFunction& gf, mfem::Vector& true_dofs) {
+    // used to do something like:
+    // gf.GetTrueDofs(true_dofs);
+    // but looks like there are issues with that on the GPUs with newer versions of MFEM
+    gf.ParallelAverage(true_dofs);
+}
 
 /**
  * @brief Helper function to find mesh bounding box for velocity gradient calculations
@@ -290,29 +299,11 @@ SystemDriver::SystemDriver(std::shared_ptr<SimulationState> sim_state)
     } else {
         if (linear_solvers.preconditioner == PreconditionerType::AMG) {
             auto prec_amg = std::make_shared<mfem::HypreBoomerAMG>();
-            HYPRE_Solver h_amg = static_cast<HYPRE_Solver>(*prec_amg);
-            HYPRE_Real st_val = 0.90;
-            HYPRE_Real rt_val = -10.0;
-            // HYPRE_Real om_val = 1.0;
-            //
-            [[maybe_unused]] int ml = HYPRE_BoomerAMGSetMaxLevels(h_amg, 30);
-            ml = HYPRE_BoomerAMGSetCoarsenType(h_amg, 0);
-            ml = HYPRE_BoomerAMGSetMeasureType(h_amg, 0);
-            ml = HYPRE_BoomerAMGSetStrongThreshold(h_amg, st_val);
-            ml = HYPRE_BoomerAMGSetNumSweeps(h_amg, 3);
-            ml = HYPRE_BoomerAMGSetRelaxType(h_amg, 8);
-            // int rwt = HYPRE_BoomerAMGSetRelaxWt(h_amg, rt_val);
-            // int ro = HYPRE_BoomerAMGSetOuterWt(h_amg, om_val);
-            // Dimensionality of our problem
-            ml = HYPRE_BoomerAMGSetNumFunctions(h_amg, 3);
-            ml = HYPRE_BoomerAMGSetSmoothType(h_amg, 6);
-            ml = HYPRE_BoomerAMGSetSmoothNumLevels(h_amg, 3);
-            ml = HYPRE_BoomerAMGSetSmoothNumSweeps(h_amg, 3);
-            ml = HYPRE_BoomerAMGSetVariant(h_amg, 0);
-            ml = HYPRE_BoomerAMGSetOverlap(h_amg, 0);
-            ml = HYPRE_BoomerAMGSetDomainType(h_amg, 1);
-            ml = HYPRE_BoomerAMGSetSchwarzRlxWeight(h_amg, rt_val);
-
+            const int problem_dim = m_sim_state->GetMesh()->SpaceDimension();
+            const bool order_bynodes = (fe_space->GetOrdering() == mfem::Ordering::byNODES);
+            // Use MFEM's supported systems-AMG configuration so Hypre sees
+            // the correct vector-valued DOF ordering on newer MFEM/Hypre builds.
+            prec_amg->SetSystemsOptions(problem_dim, order_bynodes);
             prec_amg->SetPrintLevel(linear_solvers.print_level);
             J_prec = prec_amg;
         } else if (linear_solvers.preconditioner == PreconditionerType::ILU) {
@@ -361,13 +352,49 @@ SystemDriver::SystemDriver(std::shared_ptr<SimulationState> sim_state)
     } else if (nonlinear_solver.nl_solver == NonlinearSolverType::NRLS) {
         newton_solver = std::make_unique<ExaNewtonLSSolver>(
             m_sim_state->GetMeshParFiniteElementSpace()->GetComm());
+    } else if (nonlinear_solver.nl_solver == NonlinearSolverType::TRDOG) {
+        // Build the trust-region dogleg solver and configure delta-control
+        // parameters from the parsed TOML options. If the user did not supply
+        // a [trust_region] sub-table, the solver's internal defaults (matching
+        // SNLS's TrDeltaControl defaults) are used.
+        auto tr_solver = std::make_unique<ExaTrustRegionSolver>(
+            m_sim_state->GetMeshParFiniteElementSpace()->GetComm());
+
+        if (nonlinear_solver.trust_region.has_value()) {
+            const auto& tr_opts = nonlinear_solver.trust_region.value();
+            TrDeltaControl ctrl;
+            ctrl.deltaInit = tr_opts.delta_init;
+            ctrl.deltaMin = tr_opts.delta_min;
+            ctrl.deltaMax = tr_opts.delta_max;
+            ctrl.xiLG = tr_opts.xi_lg;
+            ctrl.xiUG = tr_opts.xi_ug;
+            ctrl.xiLO = tr_opts.xi_lo;
+            ctrl.xiUO = tr_opts.xi_uo;
+            ctrl.xiIncDelta = tr_opts.xi_inc;
+            ctrl.xiDecDelta = tr_opts.xi_dec;
+            ctrl.xiForcedIncDelta = tr_opts.xi_forced_inc;
+            ctrl.rejectResIncrease = tr_opts.reject_increase;
+            tr_solver->SetTrustRegionControl(ctrl);
+        }
+
+        newton_solver = std::move(tr_solver);
+
+        // Sanity check: TRDOG requires gradient transpose support (J^T*r). For
+        // PA mode, this requires the native PA transpose kernels in the
+        // integrator. EA and FULL always support transpose. We warn rather than
+        // hard-fail here because PA support exists once the kernels are wired.
+        if (options.solvers.assembly == AssemblyType::PA) {
+            mfem::out << "Note: TRDOG with PA assembly requires native PA transpose "
+                      << "kernels in the gradient operator.\n";
+        }
     }
 
     // Set the newton solve parameters
     newton_solver->iterative_mode = true;
     newton_solver->SetSolver(J_solver);
     newton_solver->SetOperator(mech_operator);
-    newton_solver->SetPrintLevel(1);
+    // SetPrintLevel also makes sure only rank 0 prints the nonlinear solver output
+    newton_solver->SetPrintLevel(nonlinear_solver.print_info);
     newton_solver->SetRelTol(nonlinear_solver.rel_tol);
     newton_solver->SetAbsTol(nonlinear_solver.abs_tol);
     newton_solver->SetMaxIter(nonlinear_solver.iter);
@@ -381,6 +408,8 @@ const mfem::Array<int>& SystemDriver::GetEssTDofList() {
 void SystemDriver::Solve() {
     mfem::Vector zero;
     auto x = m_sim_state->GetPrimalField();
+    // Global convergence status across all ranks
+    bool converged = false;
     if (auto_time) {
         // This would only happen on the last time step
         const auto x_prev = m_sim_state->GetPrimalFieldPrev();
@@ -419,23 +448,29 @@ void SystemDriver::Solve() {
                 MPI_Allreduce(&succeed_t, &succeed, 1, MPI_C_BOOL, MPI_LAND, MPI_COMM_WORLD);
                 state = m_sim_state->UpdateDeltaTime(newton_solver->GetNumIterations(), succeed);
             } // Do final converge check outside of this while loop
+            if (state == TimeStep::FAILED) {
+                MFEM_WARNING_0("Solution did not converge and the minimum dt or maximum number "
+                               "of retries has been reached");
+            }
         }
+        converged = succeed;
     } else {
         // We provide an initial guess for what our current coordinates will look like
         // based on what our last time steps solution was for our velocity field.
         // The end nodes are updated before the 1st step of the solution here so we're good.
         newton_solver->Mult(zero, *x);
         m_sim_state->UpdateDeltaTime(newton_solver->GetNumIterations(), true);
+        converged = newton_solver->GetConverged();
     }
 
     // Just gotta be safe incase something in the solver wasn't playing nice and didn't swap things
     // back to the current configuration...
     // Once the system has finished solving, our current coordinates configuration are based on what
     // our converged velocity field ended up being equal to.
-    if (m_sim_state->GetMPIID() == 0 && newton_solver->GetConverged()) {
+    if (m_sim_state->GetMPIID() == 0 && converged) {
         ess_bdr_func->SetTime(m_sim_state->GetTime());
     }
-    MFEM_VERIFY_0(newton_solver->GetConverged(), "Newton Solver did not converge.");
+    MFEM_VERIFY_0(converged, "Newton Solver did not converge.");
 }
 
 // Solve the Newton system for the 1st time step
@@ -457,7 +492,8 @@ void SystemDriver::SolveInit() const {
         deltaF = 0.0;
         auto I = mech_operator->GetEssentialTrueDofs().Read();
         auto size = mech_operator->GetEssentialTrueDofs().Size();
-        auto Y = deltaF.Write();
+        // ReadWrite (not Write) since only the essential dofs are overwritten
+        auto Y = deltaF.ReadWrite();
         auto XPREV = x_prev->Read();
         auto X = x->Read();
         mfem::forall(size, [=] MFEM_HOST_DEVICE(int i) {
@@ -498,7 +534,7 @@ void SystemDriver::UpdateVelocity() {
                                                         // pulled off the
                                                         // VectorFunctionRestrictedCoefficient
         // populate the solution vector, v_sol, with the true dofs entries in v_cur.
-        velocity->GetTrueDofs(*vel_tdofs);
+        GetTrueDofsParallel(*velocity, *vel_tdofs);
     }
 
     if (ess_bdr["ess_vgrad"].Sum() > 0) {
@@ -587,7 +623,7 @@ void SystemDriver::UpdateVelocity() {
             mfem::Vector vel_tdof_tmp(*vel_tdofs);
             vel_tdof_tmp.UseDevice(true);
             vel_tdof_tmp = 0.0;
-            velocity->GetTrueDofs(vel_tdof_tmp);
+            GetTrueDofsParallel(*velocity, vel_tdof_tmp);
 
             mfem::Array<int> ess_tdofs(mech_operator->GetEssentialTrueDofs());
             if (!mono_def_flag) {

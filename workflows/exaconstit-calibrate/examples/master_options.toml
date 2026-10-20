@@ -1,0 +1,138 @@
+#The below show all of the options available and their default values
+#Although, it should be noted that the BCs options have no default values
+#and require you to input ones that are appropriate for your problem.
+#Also while the below is indented to make things easier to read the parser doesn't care.
+#More information on TOML files can be found at: https://en.wikipedia.org/wiki/TOML
+#and https://github.com/toml-lang/toml/blob/master/README.md 
+Version = "0.6.0"
+[Properties]
+    # A base temperature that all models will initially run at
+    temperature = %%temperature_k%%
+    #The below informs us about the material properties to use
+    [Properties.Matl_Props]
+        floc = "%%properties_file%%"
+        num_props = 17
+    #These options tell inform the program about the state variables
+    [Properties.State_Vars]
+        floc = "%%state_vars_file%%"
+        num_vars = 24
+    #These options are only used in xtal plasticity problems
+    [Properties.Grain]
+        # Tells us where the orientations are located for either a UMAT or
+        # ExaCMech problem. -1 indicates that it goes at the end of the state
+        # variable file.
+        # If ExaCMech is used the loc value will be overriden with values that are
+        # consistent with the library's expected location
+        ori_state_var_loc = 9
+        ori_stride = 4
+        #The following options are available for orientation type: euler, quat/quaternion, or custom.
+        #If one of these options is not provided the program will exit early.
+        ori_type = "quat"
+        num_grains = 500
+        ori_floc = "%%ori_file%%"
+        # If auto generating a mesh a grain file is needed that associates a given
+        # element to a grain. If you are using a mesh file this information should
+        # already be embedded in the mesh using something akin to the MFEM v1.0 mesh
+        # file element attributes, and therefore this option is ignored.
+        grain_floc = "%%grain_file%%"
+[BCs]
+    # Required - essential BC ids for the whole boundary
+    essential_ids = [1, 4]
+    # Required = component combo (free = 0, x = 1, y = 2, z = 3, xy = 4, yz = 5, xz = 6, xyz = 7)
+    # Note: ExaConstit v0.5.0 and earlier had xyz set to -1. This change was broken in v0.6.0
+    # These numbers tell us which degrees of freedom are constrained for the given
+    # list of attributes provided within essential_ids
+    # Negative values of the below signify that for a given essential BC id that
+    # we want to use a constant velocity gradient rather than directly supplying the
+    # velocity values.
+    essential_comps = [3, 3]
+    #Vector of vals to be applied for each attribute
+    #The length of this should be #ids * dim of problem
+    essential_vals = %%essential_vals%%
+[Model]
+    #This option tells us to run using a UMAT or exacmech
+    mech_type = "exacmech"
+    #This tells us that our model is a crystal plasticity problem
+    cp = true
+    [Model.ExaCMech]
+        #Need to specify the xtal type
+        #currently only FCC is supported
+        xtal_type = "fcc"
+        # Required - the slip kinetics and hardening form that we're going to be using
+        # The choices are either PowerVoce, PowerVoceNL, or MTSDD
+        # HCP is only available with MTSDD
+        slip_type = "powervoce"
+   
+# Options related to our time steps
+# For the time options if all three or some combination of the following tables
+# [Auto, Fixed, and Custom] are provided the priority of which one goes
+# 1. Custom
+# 2. Auto
+# 3. Fixed
+#
+# Note: For fixed and auto time steppings the final simulation step is satified if
+# abs(t_final - t_current) < abs(1e-3 * dt_current)
+# Generally, the simulation driver will try to satisfy this to even tighter bounds
+# but that is not always possible.
+[Time]
+    [Time.Auto]
+        dt_start = %%dt_min%%
+        dt_min = %%dt_min%%
+        dt_max = %%dt_max%%
+        dt_scale = %%dt_scale%%
+        t_final = %%t_final%%
+#Our visualizations options
+[Visualizations]
+    #The stride that we want to use for when to take save off data for visualizations
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+    additional_avgs = true
+[Solvers]
+    # Option for how our assembly operation is conducted. Possible choices are
+    # FULL, PA, EA
+    # Full assembly fully assembles the stiffness matrix
+    # Partial assembly is completely matrix free and only performs the action of
+    # the stiffness matrix.
+    # Element assembly only assembles the elemental contributions to the stiffness
+    # matrix in order to perform the actions of the overall matrix.
+    assembly = "EA"
+    #Option for what our runtime is set to. Possible choices are CPU, OPENMP, or CUDA
+    rtmodel = "CPU"
+    #Options for our nonlinear solver
+    #The number of iterations should probably be low
+    #Some problems might have difficulty converging so you might need to relax
+    #the default tolerances
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    #Options for our iterative linear solver
+    #A lot of times the iterative solver converges fairly quickly to a solved value
+    #However, the solvers could at worst take DOFs iterations to converge. In most of these
+    #solid mechanics problems that almost never occcurs unless the mesh is incredibly coarse.
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        #The following Krylov solvers are available GMRES, PCG, and MINRES
+        #If one of these options is not used the program will exit early.
+        solver = "CG"
+        preconditioner = "JACOBI"
+[Mesh]
+    #Serial refinement level
+    ref_ser = 1
+    #Parallel refinement level
+    ref_par = 0
+    #The polynomial refinement/order of our shape functions
+    p_refinement = %%p_refinement%%
+    #Possible values here are cubit, auto, or other
+    #If one of these is not provided the program will exit early
+    type = "auto"
+    #The below shows the necessary options needed to automatically generate a mesh
+    [Mesh.Auto]
+    #The mesh length is needed
+        length = %%mesh_lengths%%
+    #The number of cuts along an edge of the mesh are also needed
+        ncuts = %%mesh_cuts%%

@@ -104,5 +104,60 @@ void GradCalc(const int nqpts,
         }
     });
 } // end GradCalc
+
+void ElementAveragedShapeGradients(const int nqpts,
+                                   const int nelems,
+                                   const int nnodes,
+                                   const double* jacobian_data,
+                                   const double* loc_grad_data,
+                                   const double* weights,
+                                   double* bbar_data,
+                                   const int* const local2global) {
+    const std::ptrdiff_t jac_elem_stride = 9 * static_cast<std::ptrdiff_t>(nqpts);
+    const int dshape_qpt_stride = 3 * nnodes;
+    const int bbar_elem_stride = 3 * nnodes;
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_local) {
+        // Input arrays are indexed by the global element, output by the local one.
+        const int i_input = local2global ? local2global[i_local] : i_local;
+        const double* jac_elem = jacobian_data + i_input * jac_elem_stride;
+        double* bbar = bbar_data + static_cast<std::ptrdiff_t>(i_local) * bbar_elem_stride;
+        for (int i = 0; i < bbar_elem_stride; ++i) {
+            bbar[i] = 0.0;
+        }
+        double volume = 0.0;
+        for (int q = 0; q < nqpts; ++q) {
+            BBarAccumulateQpt(nnodes,
+                              jac_elem + 9 * q,
+                              loc_grad_data + q * dshape_qpt_stride,
+                              weights[q],
+                              bbar,
+                              volume);
+        }
+        BBarFinalize(nnodes, volume, bbar);
+    });
+}
+
+void ApplyBBarVelocityGradient(const int nqpts,
+                               const int nelems,
+                               const int nnodes,
+                               const double* bbar_data,
+                               const double* vel_data,
+                               double* vel_grad_data,
+                               const int* const local2global) {
+    const int elem_stride = 3 * nnodes;
+    const std::ptrdiff_t vgrad_elem_stride = 9 * static_cast<std::ptrdiff_t>(nqpts);
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_local) {
+        const int i_input = local2global ? local2global[i_local] : i_local;
+        // tr_bar is element-constant: computed once, applied at every point.
+        const double tr_bar = BBarTrace(
+            nnodes,
+            bbar_data + static_cast<std::ptrdiff_t>(i_local) * elem_stride,
+            vel_data + static_cast<std::ptrdiff_t>(i_input) * elem_stride);
+        double* vgrad_elem = vel_grad_data + i_local * vgrad_elem_stride;
+        for (int q = 0; q < nqpts; ++q) {
+            BBarCorrectVelocityGradient(tr_bar, vgrad_elem + 9 * q);
+        }
+    });
+}
 } // end namespace kernel
 } // end namespace exaconstit

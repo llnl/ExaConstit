@@ -48,7 +48,7 @@ fs::path resolveUmatLibraryPath(const fs::path& library_path,
         return fs::absolute(library_path);
     }
 
-    MFEM_WARNING_0("Warning: UMAT library not found: " << library_path);
+    MFEM_WARNING_0("UMAT library not found: " << library_path);
     return library_path; // Return original path, let loader handle the error
 }
 
@@ -70,7 +70,7 @@ inline exaconstit::LoadStrategy stringToLoadStrategy(const std::string& strategy
     if (strategy_str == "lazy_load")
         return exaconstit::LoadStrategy::LAZY_LOAD;
 
-    MFEM_WARNING_0("Warning: Unknown load strategy '" << strategy_str << "', using 'persistent'");
+    MFEM_WARNING_0("Unknown load strategy '" << strategy_str << "', using 'persistent'");
     return exaconstit::LoadStrategy::PERSISTENT;
 }
 
@@ -242,12 +242,11 @@ bool MultiExaModel::SetupChildModel(size_t region_idx,
 
         return true;
     } catch (const std::exception& e) {
-        MFEM_WARNING_0("[Cycle " << std::to_string(m_sim_state->GetSimulationCycle() + 1)
-                                 << " ]Region " + std::to_string(actual_region_id) +
-                                        " failed: " + e.what());
+        MFEM_WARNING_0("[Cycle " << m_sim_state->GetSimulationCycle() + 1 << "] Region "
+                                 << actual_region_id << " failed: " << e.what());
         return false;
     } catch (...) {
-        MFEM_WARNING_0("Region " + std::to_string(actual_region_id) + " failed with unknown error");
+        MFEM_WARNING_0("Region " << actual_region_id << " failed with unknown error");
         return false;
     }
 }

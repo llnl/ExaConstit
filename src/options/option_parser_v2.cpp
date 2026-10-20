@@ -2,8 +2,9 @@
 
 #include "options/option_util.hpp"
 
-#include "ECMech_cases.h"
 #include "mfem.hpp"
+
+#include "ECMech_cases.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,112 @@
 #include "TOML_Reader/toml.hpp"
 
 namespace fs = std::filesystem;
+
+namespace {
+
+void apply_exacmech_grain_defaults(MaterialOptions& material) {
+    if (material.mech_type != MechType::EXACMECH || !material.model.exacmech ||
+        !material.grain_info) {
+        return;
+    }
+
+    auto& grain = material.grain_info.value();
+    auto index_map = ecmech::modelParamIndexMap(material.model.exacmech->shortcut);
+
+    if (grain.ori_state_var_loc < 0) {
+        grain.ori_state_var_loc = static_cast<int>(index_map["index_lattice_ori"]);
+    }
+    if (grain.ori_stride == 0) {
+        grain.ori_stride = 4;
+    }
+    if (grain.ori_type == OriType::NOTYPE) {
+        grain.ori_type = OriType::QUAT;
+    }
+}
+
+void finalize_material_options(ExaOptions& options) {
+    int max_grains = -1;
+    int index = 0;
+
+    for (auto& mat : options.materials) {
+        apply_exacmech_grain_defaults(mat);
+
+        // Grain info (if crystal plasticity)
+        if (mat.grain_info.has_value()) {
+            const auto& grain = mat.grain_info.value();
+            if (grain.orientation_file.has_value()) {
+                if (!options.orientation_file.has_value()) {
+                    options.orientation_file = grain.orientation_file.value();
+                }
+                VERIFY_0_OPT(grain.orientation_file.value() == options.orientation_file.value(),
+                             "Check material grain tables as orientation files in there are not "
+                             "consistent between values listed elsewhere");
+            }
+
+            if (grain.grain_file.has_value()) {
+                if (!options.grain_file.has_value()) {
+                    options.grain_file = grain.grain_file.value();
+                }
+                VERIFY_0_OPT(grain.grain_file.value() == options.grain_file.value(),
+                             "Check material grain tables as grain files in there are not "
+                             "consistent between values listed elsewhere");
+            }
+
+            VERIFY_0_OPT(max_grains >= grain.num_grains || index == 0,
+                         "Check material grain tables as values in there are not consistent "
+                         "between multiple materials");
+
+            max_grains = grain.num_grains;
+            index++;
+        }
+    }
+}
+
+/**
+ * @brief Create the targets of any dangling symlinks along a path
+ *
+ * @param path Path to check component by component
+ * @param depth Current recursion depth (guards against symlink cycles)
+ * @return false if a dangling symlink's target could not be created
+ *
+ * @details create_directories() does not create the target of a dangling symlink, it
+ * just fails since the link itself already exists. A dangling link in the output path
+ * is a realistic setup though, e.g. `ln -s /remote/storage/location results` done before
+ * the storage directory itself has been created. So walk the path and create the
+ * target of every dangling link along it (which may itself contain dangling links).
+ */
+bool create_dangling_symlink_targets(const fs::path& path, int depth = 0) {
+    constexpr int max_depth = 40;
+    if (depth > max_depth) {
+        return false;
+    }
+    fs::path prefix;
+    for (const auto& part : path) {
+        prefix /= part;
+        std::error_code ec;
+        const auto link_status = fs::symlink_status(prefix, ec);
+        if (ec || !fs::is_symlink(link_status) || fs::exists(prefix, ec)) {
+            continue;
+        }
+        fs::path target = fs::read_symlink(prefix, ec);
+        if (ec) {
+            return false;
+        }
+        if (target.is_relative()) {
+            target = prefix.parent_path() / target;
+        }
+        if (!create_dangling_symlink_targets(target, depth + 1)) {
+            return false;
+        }
+        fs::create_directories(target, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
 
 // Implementation of the struct conversion methods
 void ExaOptions::parse_options(const std::string& filename, int my_id) {
@@ -30,25 +137,72 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
         parse_from_toml(toml_input);
 
         // Validate the complete configuration
-        if (!validate()) {
-            WARNING_0_OPT("Error: Configuration validation failed.");
-            if (my_id == 0) {
-                mfem::mfem_error("MFEM_ABORT: Configuration validation failed for option file");
-            } else {
-                mfem::mfem_error("");
+        VERIFY_0_OPT(validate(), "Configuration validation failed for option file");
+    } catch (const std::exception& e) {
+        ABORT_0_OPT("Error parsing options: " << e.what());
+    }
+
+    // Resolve the output directory exactly once, on rank 0, and broadcast it so every
+    // rank and every later consumer (post-processing, logger, visualization) works from
+    // the same absolute path. Previously each rank resolved symlinks in this path on its
+    // own, several times over the course of a run, and paired filesystem checks with
+    // later actions (exists() followed by create_directories(), etc.). With the output
+    // directory being a symlink to another file system, ranks could see different
+    // states of that path between those checks and actions (a TOCTOU race).
+    //
+    // The directory is created *before* it is resolved: create_directories() follows a
+    // symlink that is already in place and otherwise creates a real directory, and
+    // canonical() then returns the physical directory that now exists. Nothing after
+    // this point goes back through a symlink in the user provided path, so another run
+    // (e.g. a different ExaConstit run on the same node) creating or changing that
+    // symlink later on cannot redirect where this run writes. If the path changes in
+    // the brief window between the two calls, canonical() fails rather than silently
+    // resolving to somewhere unexpected, and we report it.
+    //
+    // All error paths above abort on every rank, so every rank reaches this collective.
+    //
+    // If the output directory can't be created or resolved, every rank aborts here rather
+    // than running the whole simulation only to have none of its output saved.
+    auto& output_dir = post_processing.volume_averages.output_directory;
+    std::string resolved_str;
+    std::string output_err;
+    bool output_ok = true;
+    if (my_id == 0) {
+        fs::path dir = output_dir.empty() ? fs::path(".") : output_dir;
+        std::error_code ec;
+        fs::path abs_dir = fs::absolute(dir, ec);
+        if (ec) {
+            abs_dir = dir;
+        }
+        fs::path resolved;
+        if (!create_dangling_symlink_targets(abs_dir)) {
+            output_err = "the output directory " + abs_dir.string() +
+                         " contains a symlink whose target does not exist and could not be "
+                         "created";
+            output_ok = false;
+        } else {
+            fs::create_directories(abs_dir, ec);
+            if (!ec) {
+                resolved = fs::canonical(abs_dir, ec);
+            }
+            if (!ec && !fs::is_directory(resolved, ec)) {
+                ec = std::make_error_code(std::errc::not_a_directory);
+            }
+            if (ec || resolved.empty()) {
+                output_err = "unable to create and resolve the output directory " +
+                             abs_dir.string() + ": " + ec.message();
+                output_ok = false;
             }
         }
-    } catch (const std::exception& e) {
-        std::ostringstream oss;
-        oss << "Error parsing options: " << e.what();
-        std::string err = oss.str();
-        WARNING_0_OPT(err);
-        if (my_id == 0) {
-            mfem::mfem_error("MFEM_ABORT: Configuration validation failed for option file");
-        } else {
-            mfem::mfem_error("");
-        }
+        resolved_str = resolved.string();
     }
+    MPI_Bcast(&output_ok, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+    VERIFY_0_OPT(output_ok, "Unable to set up the output directory, " << output_err);
+    int length = static_cast<int>(resolved_str.size());
+    MPI_Bcast(&length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    resolved_str.resize(static_cast<size_t>(length));
+    MPI_Bcast(resolved_str.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
+    output_dir = resolved_str;
 }
 
 void ExaOptions::parse_from_toml(const toml::value& toml_input) {
@@ -98,6 +252,7 @@ void ExaOptions::parse_from_toml(const toml::value& toml_input) {
     } else {
         load_material_files();
     }
+    finalize_material_options(*this);
 
     // Parse post-processing from main file if no external file is specified
     if (!post_processing_file) {
@@ -118,38 +273,8 @@ void ExaOptions::parse_time_options(const toml::value& toml_input) {
         return;
     }
 
-    const auto time_section = toml::find(toml_input, "Time");
-
-    // Parse restart options
-    if (time_section.contains("restart")) {
-        time.restart = toml::find<bool>(time_section, "restart");
-    }
-
-    if (time_section.contains("restart_time")) {
-        time.restart_time = toml::find<double>(time_section, "restart_time");
-    }
-
-    if (time_section.contains("restart_cycle")) {
-        time.restart_cycle = toml::find<size_t>(time_section, "restart_cycle");
-    }
-
-    // Parse nested time stepping sections
-    if (time_section.contains("Auto")) {
-        time.auto_time = TimeOptions::AutoTimeOptions::from_toml(toml::find(time_section, "Auto"));
-    }
-
-    if (time_section.contains("Fixed")) {
-        time.fixed_time = TimeOptions::FixedTimeOptions::from_toml(
-            toml::find(time_section, "Fixed"));
-    }
-
-    if (time_section.contains("Custom")) {
-        time.custom_time = TimeOptions::CustomTimeOptions::from_toml(
-            toml::find(time_section, "Custom"));
-    }
-
-    // Determine which time stepping mode to use
-    time.determine_time_type();
+    // Same parsing (restart options, nested sections, time_type) as TimeOptions::from_toml
+    time = TimeOptions::from_toml(toml::find(toml_input, "Time"));
 }
 
 void ExaOptions::parse_solver_options(const toml::value& toml_input) {
@@ -213,42 +338,6 @@ void ExaOptions::parse_material_options(const toml::value& toml_input) {
         // Add the single material
         materials.push_back(single_material);
     }
-
-    int max_grains = -1;
-    int index = 0;
-    for (auto& mat : materials) {
-        // Grain info (if crystal plasticity)
-        if (mat.grain_info.has_value()) {
-            const auto& grain = mat.grain_info.value();
-            if (grain.orientation_file.has_value()) {
-                if (!orientation_file.has_value()) {
-                    orientation_file = grain.orientation_file.value();
-                }
-                if (grain.orientation_file.value().compare(orientation_file.value()) != 0) {
-                    MFEM_ABORT("Check material grain tables as orientation files in there are not "
-                               "consistent between values listed elsewhere");
-                }
-            }
-
-            if (grain.grain_file.has_value()) {
-                if (!grain_file.has_value()) {
-                    grain_file = grain.grain_file.value();
-                }
-                if (grain.grain_file.value().compare(grain_file.value()) != 0) {
-                    MFEM_ABORT("Check material grain tables as grain files in there are not "
-                               "consistent between values listed elsewhere");
-                }
-            }
-
-            if (max_grains < grain.num_grains && index > 0) {
-                MFEM_ABORT("Check material grain tables as values in there are not consistent "
-                           "between multiple materials");
-            }
-
-            max_grains = grain.num_grains;
-            index++;
-        }
-    }
 }
 
 void ExaOptions::parse_model_options(const toml::value& toml_input, MaterialOptions& material) {
@@ -264,8 +353,10 @@ void ExaOptions::parse_model_options(const toml::value& toml_input, MaterialOpti
         material.mech_type = string_to_mech_type(mech_type_str);
     }
 
-    if (model_section.contains("cp")) {
-        material.model.crystal_plasticity = toml::find<bool>(model_section, "cp");
+    if (model_section.contains("crystal_plasticity") || model_section.contains("cp")) {
+        const auto& key = model_section.contains("crystal_plasticity") ? "crystal_plasticity"
+                                                                       : "cp";
+        material.model.crystal_plasticity = toml::find<bool>(model_section, key);
     }
 
     // Parse ExaCMech-specific options
@@ -652,19 +743,24 @@ void ExaOptions::print_mesh_options() const {
 void ExaOptions::print_time_options() const {
     std::cout << "\nTime Stepping Options:\n";
 
-    if (time.time_type == TimeStepType::FIXED) {
-        std::cout << "  Type: Fixed time stepping\n";
+    // Which mode was picked and how: an explicit time_type wins over the section priority
+    const char* selected_by = time.time_type_explicit
+                                  ? "set by time_type"
+                                  : "selected by section priority Custom > Auto > Fixed";
+
+    if (time.time_type == TimeStepType::FIXED && time.fixed_time.has_value()) {
+        std::cout << "  Type: Fixed time stepping (" << selected_by << ")\n";
         std::cout << "  Time step (dt): " << time.fixed_time->dt << "\n";
         std::cout << "  Final time: " << time.fixed_time->t_final << "\n";
-    } else if (time.time_type == TimeStepType::AUTO) {
-        std::cout << "  Type: Automatic time stepping\n";
+    } else if (time.time_type == TimeStepType::AUTO && time.auto_time.has_value()) {
+        std::cout << "  Type: Automatic time stepping (" << selected_by << ")\n";
         std::cout << "  Initial dt: " << time.auto_time->dt_start << "\n";
         std::cout << "  Minimum dt: " << time.auto_time->dt_min << "\n";
         std::cout << "  Maximum dt: " << time.auto_time->dt_max << "\n";
         std::cout << "  Scaling factor: " << time.auto_time->dt_scale << "\n";
         std::cout << "  Final time: " << time.auto_time->t_final << "\n";
-    } else if (time.time_type == TimeStepType::CUSTOM) {
-        std::cout << "  Type: Custom time stepping\n";
+    } else if (time.time_type == TimeStepType::CUSTOM && time.custom_time.has_value()) {
+        std::cout << "  Type: Custom time stepping (" << selected_by << ")\n";
         std::cout << "  Number of steps: " << time.custom_time->nsteps << "\n";
         std::cout << "  Custom dt file: " << time.custom_time->floc << "\n";
         if (!time.custom_time->dt_values.empty()) {
@@ -674,6 +770,8 @@ void ExaOptions::print_time_options() const {
                                          0.0)
                       << "\n";
         }
+    } else {
+        std::cout << "  Type: none (time_type has no matching [Time.*] section)\n";
     }
 
     if (time.restart) {
@@ -790,6 +888,9 @@ void ExaOptions::print_solver_options() const {
     case NonlinearSolverType::NRLS:
         std::cout << "Newton-Raphson with line search\n";
         break;
+    case NonlinearSolverType::TRDOG:
+        std::cout << "Trust-region dogleg (SNLS port)\n";
+        break;
     default:
         std::cout << "Unknown\n";
         break;
@@ -798,6 +899,43 @@ void ExaOptions::print_solver_options() const {
     std::cout << "    Maximum iterations: " << solvers.nonlinear_solver.iter << "\n";
     std::cout << "    Relative tolerance: " << solvers.nonlinear_solver.rel_tol << "\n";
     std::cout << "    Absolute tolerance: " << solvers.nonlinear_solver.abs_tol << "\n";
+    std::cout << "    Print info level: " << solvers.nonlinear_solver.print_info << "\n";
+
+    // Trust-region parameters: print if either the solver is TRDOG or the user
+    // supplied a [trust_region] sub-table. The latter case is informational —
+    // it lets the user spot misconfigurations where they set TR options without
+    // selecting the TRDOG solver.
+    const bool is_trdog = (solvers.nonlinear_solver.nl_solver == NonlinearSolverType::TRDOG);
+    const bool tr_supplied = solvers.nonlinear_solver.trust_region.has_value();
+
+    if (is_trdog || tr_supplied) {
+        std::cout << "\n    Trust-region parameters";
+        if (is_trdog && !tr_supplied) {
+            std::cout << " (using defaults)";
+        } else if (!is_trdog && tr_supplied) {
+            std::cout << " (WARNING: supplied but solver is not TRDOG)";
+        }
+        std::cout << ":\n";
+
+        // Use the supplied options if present, otherwise default-construct
+        // a TrustRegionOptions to print the defaults
+        const TrustRegionOptions tr_opts = tr_supplied
+                                               ? solvers.nonlinear_solver.trust_region.value()
+                                               : TrustRegionOptions{};
+
+        std::cout << "      delta_init      = " << tr_opts.delta_init << "\n";
+        std::cout << "      delta_min       = " << tr_opts.delta_min << "\n";
+        std::cout << "      delta_max       = " << tr_opts.delta_max << "\n";
+        std::cout << "      xi_lg           = " << tr_opts.xi_lg << "\n";
+        std::cout << "      xi_ug           = " << tr_opts.xi_ug << "\n";
+        std::cout << "      xi_lo           = " << tr_opts.xi_lo << "\n";
+        std::cout << "      xi_uo           = " << tr_opts.xi_uo << "\n";
+        std::cout << "      xi_inc          = " << tr_opts.xi_inc << "\n";
+        std::cout << "      xi_dec          = " << tr_opts.xi_dec << "\n";
+        std::cout << "      xi_forced_inc   = " << tr_opts.xi_forced_inc << "\n";
+        std::cout << "      reject_increase = " << (tr_opts.reject_increase ? "true" : "false")
+                  << "\n";
+    }
 }
 
 void ExaOptions::print_material_options() const {

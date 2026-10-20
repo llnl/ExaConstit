@@ -5,11 +5,12 @@
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
 
+#include "mfem.hpp"
+#include "mfem/general/forall.hpp"
+
 #include "ECMech_cases.h"
 #include "ECMech_const.h"
 #include "RAJA/RAJA.hpp"
-#include "mfem.hpp"
-#include "mfem/general/forall.hpp"
 
 #include <algorithm>
 #include <iostream> // cerr
@@ -124,8 +125,7 @@ void kernel_postprocessing(const int npts,
                            const double* beg_state_vars_array,
                            double* state_vars_array,
                            double* stress_array,
-                           double* ddsdde_array,
-                           AssemblyType assembly) {
+                           double* ddsdde_array) {
     const int ind_int_eng = nstatev - ecmech::ne;
     const int ind_pl_work = ecmech::evptn::iHistA_flowStr;
     const int ind_vols = ind_int_eng - 1;
@@ -173,23 +173,18 @@ void kernel_postprocessing(const int npts,
         }
     }); // end of npts loop
 
-    // No need to transpose this if running on the GPU and doing EA
-    if ((assembly == AssemblyType::EA) and mfem::Device::Allows(mfem::Backend::DEVICE_MASK)) {
-        return;
-    } else {
-        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i_pts) {
-            // ExaCMech saves this in Row major, so we need to get out the transpose.
-            // The good thing is we can do this all in place no problem.
-            double* ddsdde = &(ddsdde_array[i_pts * ecmech::nsvec * ecmech::nsvec]);
-            for (int i = 0; i < ecmech::nsvec; ++i) {
-                for (int j = i + 1; j < ecmech::nsvec; ++j) {
-                    double tmp = ddsdde[(ecmech::nsvec * j) + i];
-                    ddsdde[(ecmech::nsvec * j) + i] = ddsdde[(ecmech::nsvec * i) + j];
-                    ddsdde[(ecmech::nsvec * i) + j] = tmp;
-                }
+    mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i_pts) {
+        // ExaCMech saves this in Row major, so we need to get out the transpose.
+        // The good thing is we can do this all in place no problem.
+        double* ddsdde = &(ddsdde_array[i_pts * ecmech::nsvec * ecmech::nsvec]);
+        for (int i = 0; i < ecmech::nsvec; ++i) {
+            for (int j = i + 1; j < ecmech::nsvec; ++j) {
+                double tmp = ddsdde[(ecmech::nsvec * j) + i];
+                ddsdde[(ecmech::nsvec * j) + i] = ddsdde[(ecmech::nsvec * i) + j];
+                ddsdde[(ecmech::nsvec * i) + j] = tmp;
             }
-        });
-    }
+        }
+    });
 } // end of post-processing func
 
 // The different CPU, OpenMP, and GPU kernels aren't needed here, since they're
@@ -547,6 +542,44 @@ void ExaCMechModel::ModelSetup(const int nqpts,
                                  vel_grad_array_data,
                                  local2global_ptr);
 
+    // B-bar integrator: the material gets the same volume-averaged kinematics that Bbar
+    // applies in the residual and tangent (shared implementation in
+    // utilities/mechanics_kernels.hpp): Lbar = L + (tr_bar - tr L)/3 I in every element, so
+    // pressure-dependent behavior (porosity, damage) sees an element-constant dilatation
+    // rate. Only the diagonal of L changes: the deviatoric rate and the spin are untouched.
+    if (m_sim_state->GetOptions().solvers.integ_model == IntegrationModel::BBAR) {
+        const auto fe_space = m_sim_state->GetMeshParFiniteElementSpace();
+        const mfem::FiniteElement& fe = *fe_space->GetTypicalFE();
+        const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(),
+                                                             2 * fe.GetOrder() + 1);
+        MFEM_VERIFY_0(ir.GetNPoints() == nqpts,
+                      "B-bar velocity gradient: the integration rule differs from the model's");
+        const int bbar_size = 3 * nnodes * local_nelems;
+        if (!bbar_shape_grads) {
+            bbar_shape_grads = std::make_unique<mfem::Vector>(bbar_size,
+                                                              mfem::Device::GetMemoryType());
+            bbar_shape_grads->UseDevice(true);
+        } else if (bbar_shape_grads->Size() != bbar_size) {
+            bbar_shape_grads->SetSize(bbar_size, mfem::Device::GetMemoryType());
+        }
+        double* bbar_data = bbar_shape_grads->Write();
+        exaconstit::kernel::ElementAveragedShapeGradients(nqpts,
+                                                          local_nelems,
+                                                          nnodes,
+                                                          jacobian_array,
+                                                          loc_grad_array,
+                                                          ir.GetWeights().Read(),
+                                                          bbar_data,
+                                                          local2global_ptr);
+        exaconstit::kernel::ApplyBBarVelocityGradient(nqpts,
+                                                      local_nelems,
+                                                      nnodes,
+                                                      bbar_data,
+                                                      vel_array,
+                                                      vel_grad_array_data,
+                                                      local2global_ptr);
+    }
+
     kernel_setup(npts,
                  nstatev,
                  dt,
@@ -589,8 +622,7 @@ void ExaCMechModel::ModelSetup(const int nqpts,
                           state_vars_beg,
                           state_vars_array,
                           stress_array,
-                          ddsdde_array,
-                          assembly);
+                          ddsdde_array);
     CALI_MARK_END("ecmech_postprocessing");
 
     // Fill global data structures with region-specific results

@@ -14,7 +14,7 @@ runs:
   steps:
     - name: Install RAJA
       run: |
-        git clone --single-branch --branch v2025.09.1 --depth 1 ${{ inputs.raja-repo }} ${{ inputs.raja-dir }};
+        git clone --single-branch --branch v2025.12.2 --depth 1 ${{ inputs.raja-repo }} ${{ inputs.raja-dir }};
         cd ${{ inputs.raja-dir }};
         git submodule init;
         git submodule update;

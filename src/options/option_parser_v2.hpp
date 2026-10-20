@@ -99,6 +99,7 @@ enum class LinearSolverType {
 enum class NonlinearSolverType {
     NR,    /**< Newton-Raphson method */
     NRLS,  /**< Newton-Raphson with line search */
+    TRDOG, /**< Trust-region dogleg method (ported from SNLS) */
     NOTYPE /**< Uninitialized or invalid nonlinear solver type */
 };
 
@@ -464,6 +465,12 @@ struct TimeOptions {
     TimeStepType time_type = TimeStepType::FIXED;
 
     /**
+     * @brief Whether time_type came from the time_type option (true) or from the
+     * Custom > Auto > Fixed section priority (false)
+     */
+    bool time_type_explicit = false;
+
+    /**
      * @brief Auto time stepping options
      */
     struct AutoTimeOptions {
@@ -571,9 +578,16 @@ struct TimeOptions {
     size_t restart_cycle = 0;
 
     /**
-     * @brief Determine which time stepping mode is active based on priority (Custom > Auto > Fixed)
+     * @brief Determine which time stepping mode is active
+     *
+     * @param requested_type Mode given by the time_type option, if any
+     *
+     * @details An explicit time_type wins regardless of which sections are present (Fixed
+     * falls back to default fixed options if [Time.Fixed] is missing). Otherwise, or if the
+     * time_type string was not recognized, the mode follows the priority Custom > Auto > Fixed
+     * based on which sections exist.
      */
-    void determine_time_type();
+    void determine_time_type(const std::optional<TimeStepType>& requested_type = std::nullopt);
 
     // Static conversion from TOML
     static TimeOptions from_toml(const toml::value& toml_input);
@@ -624,6 +638,103 @@ struct LinearSolverOptions {
 };
 
 /**
+ * @brief Trust-region dogleg solver configuration
+ *
+ * @details Controls the trust-region radius management and dogleg step
+ * computation for the ExaTrustRegionSolver. Parameters are ported from
+ * SNLS's TrDeltaControl with sane defaults suitable for solid mechanics
+ * applications. Power users can tune these for difficult crystal plasticity
+ * problems.
+ *
+ * The trust-region radius delta is updated based on the ratio
+ *     rho = actual_residual_change / predicted_residual_change
+ * where predicted change comes from the linearized model at the current iterate.
+ *
+ * Acceptance/rejection bands:
+ *   - "Good" band [xi_lg, xi_ug]: increase delta when rho falls here
+ *   - "OK"  band [xi_lo, xi_uo]: keep delta when rho falls here (outside good)
+ *   - Outside [xi_lo, xi_uo]: decrease delta
+ *
+ * TOML configuration example:
+ * @code
+ * [Solvers.NR.trust_region]
+ *     delta_init      = 1.0
+ *     delta_min       = 1e-12
+ *     delta_max       = 1e4
+ *     xi_lg           = 0.75
+ *     xi_ug           = 1.4
+ *     xi_lo           = 0.35
+ *     xi_uo           = 5.0
+ *     xi_inc          = 1.5
+ *     xi_dec          = 0.25
+ *     xi_forced_inc   = 1.2
+ *     reject_increase = true
+ * @endcode
+ */
+struct TrustRegionOptions {
+    /**
+     * @brief Initial trust-region radius
+     */
+    double delta_init = 1.0;
+
+    /**
+     * @brief Minimum allowed trust-region radius. Solver fails if delta drops below this.
+     */
+    double delta_min = 1e-12;
+
+    /**
+     * @brief Maximum allowed trust-region radius
+     */
+    double delta_max = 1e4;
+
+    /**
+     * @brief Lower bound of the "good" rho band (increase delta when rho > xi_lg)
+     */
+    double xi_lg = 0.75;
+
+    /**
+     * @brief Upper bound of the "good" rho band
+     */
+    double xi_ug = 1.4;
+
+    /**
+     * @brief Lower bound of the "ok" rho band (decrease delta when rho < xi_lo)
+     */
+    double xi_lo = 0.35;
+
+    /**
+     * @brief Upper bound of the "ok" rho band (decrease delta when rho > xi_uo)
+     */
+    double xi_uo = 5.0;
+
+    /**
+     * @brief Factor used to increase delta when a step is accepted in the "good" band
+     */
+    double xi_inc = 1.5;
+
+    /**
+     * @brief Factor used to decrease delta when a step quality is outside the "ok" band
+     */
+    double xi_dec = 0.25;
+
+    /**
+     * @brief Forced-increase factor when the predicted residual change is exactly zero
+     */
+    double xi_forced_inc = 1.2;
+
+    /**
+     * @brief Whether to reject steps that increase the residual norm
+     */
+    bool reject_increase = true;
+
+    // Validation
+    bool validate() const;
+
+    // Conversion from toml
+    static TrustRegionOptions from_toml(const toml::value& toml_input);
+};
+
+/**
  * @brief Nonlinear solver configuration
  */
 struct NonlinearSolverOptions {
@@ -646,6 +757,25 @@ struct NonlinearSolverOptions {
      * @brief Type of nonlinear solver algorithm to use
      */
     NonlinearSolverType nl_solver = NonlinearSolverType::NR;
+
+    /**
+     * @brief Verbosity of the nonlinear solver output
+     *
+     * - 0: only a one line summary (number of iterations, final residual, and final
+     *      relative residual) once the solver converges or fails
+     * - 1: residual and step scale information for every iteration (default)
+     * - 2+: also prints detailed per-iteration information for solvers that have it
+     *       (currently the trust-region dogleg solver)
+     */
+    int print_info = 1;
+
+    /**
+     * @brief Trust-region configuration (only used when nl_solver == TRDOG).
+     *
+     * If left empty, default TrustRegionOptions values are used. Users with
+     * difficult convergence problems should provide custom values.
+     */
+    std::optional<TrustRegionOptions> trust_region;
 
     // Validation
     bool validate() const;
@@ -1235,7 +1365,7 @@ public:
     /**
      * @brief Version string for ExaConstit
      */
-    std::string version = "0.8.0";
+    std::string version = "0.10.0";
 
     /**
      * @brief Mesh generation and refinement options

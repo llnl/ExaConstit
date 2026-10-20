@@ -2,11 +2,13 @@
 
 #include "boundary_conditions/BCManager.hpp"
 #include "utilities/assembly_ops.hpp"
+#include "utilities/mechanics_kernels.hpp"
 #include "utilities/strain_measures.hpp"
 #include "utilities/unified_logger.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem/fem/qfunction.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <algorithm>
 #include <iostream> // cerr
@@ -78,9 +80,9 @@ void AbaqusUmatModel::InitLocSFGrads(std::shared_ptr<mfem::ParFiniteElementSpace
     const int NE = qspace->GetNE();
     const int NQPTS = ir->GetNPoints();
 
-    // get element transformation for the 0th element
+    // get a typical element (valid even if this rank has no elements)
     // We just want to get some basic stuff for now
-    fe = fes->GetFE(0);
+    fe = fes->GetTypicalFE();
 
     // declare data to store shape function gradients
     // and element Jacobians
@@ -96,6 +98,8 @@ void AbaqusUmatModel::InitLocSFGrads(std::shared_ptr<mfem::ParFiniteElementSpace
     // We now have enough information to create our loc0_sf_grad
     loc0_sf_grad = std::make_shared<mfem::expt::PartialQuadratureFunction>(qspace, VDIM);
     double* data = loc0_sf_grad->HostReadWrite();
+    loc0_wdetj = std::make_shared<mfem::expt::PartialQuadratureFunction>(qspace, 1);
+    double* wdetj_data = loc0_wdetj->HostReadWrite();
     auto l2g = qspace->GetLocal2Global();
 
     // loop over elements
@@ -120,6 +124,7 @@ void AbaqusUmatModel::InitLocSFGrads(std::shared_ptr<mfem::ParFiniteElementSpace
 
             const mfem::IntegrationPoint& ip = ir->IntPoint(j);
             Ttr->SetIntPoint(&ip);
+            wdetj_data[i * NQPTS + j] = ip.weight * Ttr->Weight();
             CalcInverse(Ttr->Jacobian(), Jrt);
 
             fe->CalcDShape(ip, DSh);
@@ -176,12 +181,11 @@ void AbaqusUmatModel::InitIncrEndDefGrad() {
 // UPDATED: CalcIncrEndDefGrad now gets defGrad0 from SimulationState
 void AbaqusUmatModel::CalcIncrEndDefGrad(const mfem::ParGridFunction& x0) {
     auto loc_fes = m_sim_state->GetMeshParFiniteElementSpace();
+
     const mfem::IntegrationRule* ir;
     auto defGrad0 = GetDefGrad0();
     auto qspace = defGrad0->GetPartialSpaceShared();
-
     ir = &(qspace->GetIntRule(0));
-
     const int nqpts = ir->GetNPoints();
     // We've got the same type of elements everywhere so we can do this.
     // If this assumption is no longer true we need to update the code
@@ -192,6 +196,14 @@ void AbaqusUmatModel::CalcIncrEndDefGrad(const mfem::ParGridFunction& x0) {
     const int dim = 3;
     const int vdim2 = loc0_sf_grad->GetVDim();
     const int dof = vdim2 / dim;
+
+    // B-bar integrator: the UMAT gets the deformation-gradient form of the same volume
+    // averaging (F-bar, shared implementation in utilities/mechanics_kernels.hpp), so its
+    // strain increments carry the element-constant volume change V_end / V_beg.
+    const bool use_fbar = (m_sim_state->GetOptions().solvers.integ_model == IntegrationModel::BBAR);
+    MFEM_VERIFY_0(!use_fbar || vdim == dim * dim,
+                  "F-bar: deformation gradients must be stored as 3x3");
+    const double* wdetj_data = use_fbar ? loc0_wdetj->HostRead() : nullptr;
 
     double* incr_data = incr_def_grad->HostReadWrite();
     double* end_data = end_def_grad->HostReadWrite();
@@ -210,36 +222,35 @@ void AbaqusUmatModel::CalcIncrEndDefGrad(const mfem::ParGridFunction& x0) {
     mfem::Array<int> vdofs(vdim2);
     mfem::Vector el_x(PMatI.Data(), vdim2);
     auto l2g = qspace->GetLocal2Global();
-
     // loop over elements
     for (int i = 0; i < ne; ++i) {
         const int ge = l2g[i];
         loc_fes->GetElementVDofs(ge, vdofs);
         // Our PMatI is now updated to the correct elemental values
         x_gf.GetSubVector(vdofs, el_x);
-        // loop over integration points where the quadrature function is
-        // stored
+        // End time step def. grad. at every point of the element
         for (int j = 0; j < nqpts; ++j) {
-            // The offset is the current location of the data
-            int offset = (i * nqpts * vdim) + (j * vdim);
-            int offset2 = (i * nqpts * vdim2) + (j * vdim2);
-            double* incr_data_offset = incr_data + offset;
-            double* end_data_offset = end_data + offset;
-            double* int_data_offset = int_data + offset;
-            double* ds_data_offset = ds_data + offset2;
-
-            f_end.UseExternalData(end_data_offset, dim, dim);
-            f_beg.UseExternalData(int_data_offset, dim, dim);
-            f_incr.UseExternalData(incr_data_offset, dim, dim);
-            DS.UseExternalData(ds_data_offset, dof, dim);
-
+            const int offset = (i * nqpts * vdim) + (j * vdim);
+            const int offset2 = (i * nqpts * vdim2) + (j * vdim2);
+            f_end.UseExternalData(end_data + offset, dim, dim);
+            DS.UseExternalData(ds_data + offset2, dof, dim);
+            MultAtB(PMatI, DS, f_end);
+        }
+        // F-bar: replace each point's volume ratio by the element's (all points of the
+        // element are needed first, hence the separate loops)
+        if (use_fbar) {
+            exaconstit::kernel::FBarElement(
+                nqpts, vdim, wdetj_data + i * nqpts, end_data + i * nqpts * vdim);
+        }
+        // Incremental def. grad. from the (possibly F-bar) end def. grad.
+        for (int j = 0; j < nqpts; ++j) {
+            const int offset = (i * nqpts * vdim) + (j * vdim);
+            f_end.UseExternalData(end_data + offset, dim, dim);
+            f_beg.UseExternalData(int_data + offset, dim, dim);
+            f_incr.UseExternalData(incr_data + offset, dim, dim);
             // Get the inverse of the beginning time step def. grad
             f_beg_invr = f_beg;
             f_beg_invr.Invert();
-
-            // Find the end time step def. grad
-            MultAtB(PMatI, DS, f_end);
-
             // Our incremental def. grad is now
             Mult(f_end, f_beg_invr, f_incr);
         }
@@ -778,10 +789,9 @@ bool AbaqusUmatModel::LoadUmatLibrary() {
         umat_library_path.string(), load_strategy, umat_function_name);
 
     if (!umat_function) {
-        std::ostringstream err;
-        err << "Failed to load UMAT library: " << umat_library_path.string()
-            << "\nError: " << exaconstit::UnifiedUmatLoader::GetLastError();
-        MFEM_ABORT_0(err.str());
+        MFEM_ABORT_0("Failed to load UMAT library: "
+                     << umat_library_path.string()
+                     << "\nError: " << exaconstit::UnifiedUmatLoader::GetLastError());
         return false;
     }
 
@@ -832,9 +842,7 @@ void AbaqusUmatModel::CallUmat(double* stress,
                                int* kspt,
                                int* kstep,
                                int* kinc) {
-    if (!umat_function) {
-        MFEM_ABORT_0("UMAT function not available");
-    }
+    MFEM_VERIFY_0(umat_function, "UMAT function not available");
 
     umat_function(stress,
                   statev,

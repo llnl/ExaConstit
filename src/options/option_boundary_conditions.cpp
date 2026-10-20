@@ -1,7 +1,10 @@
 #include "options/option_parser_v2.hpp"
 #include "options/option_util.hpp"
 
+#include <array>
+#include <cstdlib>
 #include <iostream>
+#include <sstream>
 
 BCTimeInfo BCTimeInfo::from_toml(const toml::value& toml_input) {
     BCTimeInfo info;
@@ -96,11 +99,11 @@ bool BoundaryOptions::validate() {
              ++i) {
             // Add to velocity-specific maps
             if (vel_bc.essential_ids[i] <= 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_bcs` has an `essential_ids` that <= 0. We've "
+                WARNING_0_OPT("`BCs.velocity_bcs` has an `essential_ids` that <= 0. We've "
                               "fixed any negative values");
             }
             if (vel_bc.essential_comps[i] < 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_bcs` has an `essential_comps` that < 0. "
+                WARNING_0_OPT("`BCs.velocity_bcs` has an `essential_comps` that < 0. "
                               "We've fixed any negative values");
             }
         }
@@ -123,11 +126,11 @@ bool BoundaryOptions::validate() {
              ++i) {
             // Add to velocity-specific maps
             if (vgrad_bc.essential_ids[i] <= 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_gradient_bcs` has an `essential_ids` that <= "
+                WARNING_0_OPT("`BCs.velocity_gradient_bcs` has an `essential_ids` that <= "
                               "0. We've fixed any negative values");
             }
             if (vgrad_bc.essential_comps[i] < 0) {
-                WARNING_0_OPT("WARNING: `BCs.velocity_gradient_bcs` has an `essential_comps` that "
+                WARNING_0_OPT("`BCs.velocity_gradient_bcs` has an `essential_comps` that "
                               "< 0. We've fixed any negative values");
             }
         }
@@ -145,7 +148,71 @@ bool BoundaryOptions::validate() {
         }
     }
 
-    if (time_info.cycles[0] != 1) {
+    // Make sure the velocity and velocity gradient BCs aren't constraining the same DOFs
+    // on the same boundary attribute. The essential_comps values map to the constrained
+    // {x, y, z} directions as follows (same convention as BCData::GetComponents):
+    // 0 = none, 1 = x, 2 = y, 3 = z, 4 = xy, 5 = yz, 6 = xz, 7 = xyz
+    auto constrained_directions = [](int comp) -> std::array<bool, 3> {
+        switch (std::abs(comp)) {
+        case 1:
+            return {true, false, false};
+        case 2:
+            return {false, true, false};
+        case 3:
+            return {false, false, true};
+        case 4:
+            return {true, true, false};
+        case 5:
+            return {false, true, true};
+        case 6:
+            return {true, false, true};
+        case 7:
+            return {true, true, true};
+        default:
+            return {false, false, false};
+        }
+    };
+    const std::array<std::string, 3> direction_names = {"x", "y", "z"};
+
+    bool overlap_found = false;
+    for (const auto& [step, vel_ids] : map_ess_id["ess_vel"]) {
+        const auto& vel_comps = map_ess_comp["ess_vel"][step];
+        const auto& vgrad_ids = map_ess_id["ess_vgrad"][step];
+        const auto& vgrad_comps = map_ess_comp["ess_vgrad"][step];
+        for (size_t i = 0; i < vel_ids.size() && i < vel_comps.size(); ++i) {
+            for (size_t j = 0; j < vgrad_ids.size() && j < vgrad_comps.size(); ++j) {
+                // Only BCs applied to the same boundary attribute can conflict
+                if (vel_ids[i] != vgrad_ids[j]) {
+                    continue;
+                }
+                const auto vel_dirs = constrained_directions(vel_comps[i]);
+                const auto vgrad_dirs = constrained_directions(vgrad_comps[j]);
+                std::string shared_dirs;
+                for (size_t d = 0; d < 3; ++d) {
+                    if (vel_dirs[d] && vgrad_dirs[d]) {
+                        shared_dirs += direction_names[d] + " ";
+                    }
+                }
+                if (!shared_dirs.empty()) {
+                    std::ostringstream err;
+                    err << "Error: `BCs` for update step " << step << " has boundary attribute "
+                        << vel_ids[i] << " with the " << shared_dirs
+                        << "component(s) constrained by both `velocity_bcs` (essential_comps = "
+                        << vel_comps[i]
+                        << ") and `velocity_gradient_bcs` (essential_comps = " << vgrad_comps[j]
+                        << "). A DOF may only be constrained by one BC type.";
+                    WARNING_0_OPT(err.str());
+                    overlap_found = true;
+                }
+            }
+        }
+    }
+    if (overlap_found) {
+        return false;
+    }
+
+    // cycles is empty when BCs.time_info is omitted, which defaults to step 1
+    if (!time_info.cycles.empty() && time_info.cycles[0] != 1) {
         WARNING_0_OPT("Error: `BCs.time_info` needs to have the first value be 1");
         return false;
     }

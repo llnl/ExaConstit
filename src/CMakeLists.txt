@@ -21,6 +21,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/mechanics_lightup.hpp
     sim_state/simulation_state.hpp
     solvers/mechanics_solver.hpp
+    solvers/trust_region_solver.hpp
     utilities/dynamic_function_loader.hpp
     utilities/mechanics_kernels.hpp
     utilities/mechanics_log.hpp
@@ -59,6 +60,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/mechanics_lightup.cpp
     sim_state/simulation_state.cpp
     solvers/mechanics_solver.cpp
+    solvers/trust_region_solver.cpp
     utilities/mechanics_kernels.cpp
     utilities/unified_logger.cpp
     )

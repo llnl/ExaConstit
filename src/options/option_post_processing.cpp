@@ -130,7 +130,7 @@ LightUpOptions LightUpOptions::from_toml(const toml::value& toml_input) {
     if (toml_input.contains("material_name")) {
         options.material_name = toml::find<std::string>(toml_input, "material_name");
     } else {
-        WARNING_0_OPT("Warning: LightUp configuration missing 'material_name' field");
+        WARNING_0_OPT("LightUp configuration missing 'material_name' field");
     }
 
     if (toml_input.contains("light_up_hkl")) {
@@ -259,7 +259,7 @@ std::vector<LightUpOptions> LightUpOptions::from_toml_with_legacy(const toml::va
                     auto light_options = LightUpOptions::from_toml(light_config);
                     if (light_options.enabled) {
                         if (light_options.material_name.empty()) {
-                            WARNING_0_OPT("Warning: LightUp config in array missing material_name. "
+                            WARNING_0_OPT("LightUp config in array missing material_name. "
                                           "Skipping.");
                             continue;
                         }
@@ -552,6 +552,33 @@ VolumeAverageOptions VolumeAverageOptions::from_toml(const toml::value& toml_inp
         options.output_frequency = toml::find<int>(toml_input, "output_frequency");
     }
 
+    if (toml_input.contains("avg_stress_fname")) {
+        options.avg_stress_fname = toml::find<std::string>(toml_input, "avg_stress_fname");
+    }
+
+    if (toml_input.contains("avg_def_grad_fname")) {
+        options.avg_def_grad_fname = toml::find<std::string>(toml_input, "avg_def_grad_fname");
+    }
+
+    if (toml_input.contains("avg_euler_strain_fname")) {
+        options.avg_euler_strain_fname = toml::find<std::string>(toml_input,
+                                                                 "avg_euler_strain_fname");
+    }
+
+    if (toml_input.contains("avg_pl_work_fname")) {
+        options.avg_pl_work_fname = toml::find<std::string>(toml_input, "avg_pl_work_fname");
+    }
+
+    if (toml_input.contains("avg_eq_pl_strain_fname")) {
+        options.avg_eq_pl_strain_fname = toml::find<std::string>(toml_input,
+                                                                 "avg_eq_pl_strain_fname");
+    }
+
+    if (toml_input.contains("avg_elastic_strain_fname")) {
+        options.avg_elastic_strain_fname = toml::find<std::string>(toml_input,
+                                                                   "avg_elastic_strain_fname");
+    }
+
     return options;
 }
 
@@ -562,7 +589,8 @@ VolumeAverageOptions VolumeAverageOptions::from_toml_with_legacy(const toml::val
     VolumeAverageOptions options;
 
     // First check if we have legacy format in [Visualizations]
-    if (has_legacy_volume_averaging(toml_input)) {
+    const bool has_legacy = has_legacy_volume_averaging(toml_input);
+    if (has_legacy) {
         options = parse_legacy_volume_averaging(toml_input);
     }
 
@@ -573,8 +601,10 @@ VolumeAverageOptions VolumeAverageOptions::from_toml_with_legacy(const toml::val
         if (post_proc.contains("volume_averages")) {
             auto modern_options = VolumeAverageOptions::from_toml(
                 toml::find(post_proc, "volume_averages"));
-            // Only override legacy settings if modern ones are explicitly enabled
-            if (modern_options.enabled) {
+            // Only override legacy settings if modern ones are explicitly enabled, but
+            // without legacy settings the modern table is always used so that
+            // enabled = false turns volume averaging off
+            if (modern_options.enabled || !has_legacy) {
                 options = modern_options;
             }
         }

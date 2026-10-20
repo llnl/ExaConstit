@@ -2,9 +2,10 @@
 
 #include "utilities/mechanics_log.hpp"
 
-#include "RAJA/RAJA.hpp"
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
+
+#include "RAJA/RAJA.hpp"
 
 #include <algorithm>
 #include <iostream> // cerr

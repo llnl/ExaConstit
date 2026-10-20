@@ -1,3 +1,60 @@
+"""
+Computes lattice strain / "light-up" quantities from an ExaConstit ADIOS2
+visualization output (.bp) using the xtal_light_up Rust module.
+
+For each HKL fiber (elements whose crystal orientation puts one of the HKL's
+symmetrically equivalent plane normals within a tolerance of the sample
+direction) and every output step it computes the volume averaged:
+
+- lattice strain (sample frame elastic strain projected on the sample direction)
+- directional stiffness (sample frame 33 Cauchy stress / 33 elastic strain)
+- Taylor factor (sum of |slip system shear rates| / equivalent plastic strain rate)
+- equivalent plastic strain rate
+- in-fiber volume
+
+These are the same quantities ExaConstit's in-situ light-up computes, just done
+afterwards from the visualization output, for every crystal system ExaConstit
+supports.
+
+Requirements on the ExaConstit run (ExaCMech material model):
+
+- [Visualizations] adios2 = true, which needs MFEM built with ADIOS2
+  (MFEM_USE_ADIOS2). The .bp output is written to the visualization output
+  location ([output_directory]/[basename]/[floc], see Visualizations.floc in
+  options.toml); runs with output split by region write one .bp per region.
+- [PostProcessing.projections] must include these fields, which is the default
+  with auto_enable_compatible = true, or otherwise list them in
+  enabled_projections:
+
+  ===================  ===============================  ==========================
+  enabled_projections  ADIOS2 variable read             used for
+  ===================  ===============================  ==========================
+  "volume"             Element Volumes                  volume weighting
+  "xtal_ori"           Crystal Orientations             which elements are in fiber
+  "elastic_strain"     Elastic Strains                  lattice strain, stiffness
+  "cauchy"             Cauchy Stress                    directional stiffness
+  "shear_rate"         Shearing Rate                    Taylor factor
+  "dpeff"              Equivalent Plastic Strain Rate   Taylor factor, eq. pl. rate
+  ===================  ===============================  ==========================
+
+- The number of MPI ranks the simulation ran on (-nranks), since the ADIOS2
+  output is written as one block per rank and every block has to be read.
+
+Elastic strains are expected in the sample frame, which ExaConstit v0.9+ writes.
+The directional stiffness, Taylor factor and equivalent plastic strain rate have
+one fewer entry than the number of output steps, since the initial (undeformed)
+output has no stress / rate data to go with it.
+
+Usage:
+    python fiber_calcs_rank.py -in_dir <path to the .bp output> \
+        -out_dir ./outdir -out_basename rve_ -nranks 48 \
+        -lattice_type hexagonal -lattice_params 2.95 4.68 -distance_tolerance_deg 5
+
+The HKLs and sample direction are set near the top of fiber_calc_ranks. Results
+are printed and saved to <out_dir>/<out_basename>lattice_avg_quants.npz with the
+arrays lattice_strains, lattice_vols (nhkl, steps), lattice_dir_stiff,
+lattice_tay_fact, lattice_eps_rate (nhkl, steps - 1), hkls and total_volume.
+"""
 # Python standard library imports
 import argparse
 import os
@@ -11,6 +68,18 @@ import adios2
 import xtal_light_up.xtal_light_up as xlup
 
 def fiber_calc_ranks(args):
+    """
+    Reads the ExaConstit ADIOS2 output one rank's block at a time, accumulates the
+    volume weighted light-up quantities for every HKL fiber, then normalizes them
+    by the in-fiber volumes and prints / saves the results.
+
+    Parameters
+    ----------
+    args : dict
+        The command line options (see the module docstring / -h): in_dir,
+        out_dir, out_basename, nranks, lattice_type, lattice_params and
+        distance_tolerance_deg.
+    """
     ts_total = time.time()
     # path to ExaConstit ADIOS2 binary-pack (.bp)
     in_dir = args["in_dir"]
@@ -110,6 +179,8 @@ def fiber_calc_ranks(args):
 
     # initialize
 
+    # HKL planes to compute the fibers for (Miller indices, 3-index form for
+    # hexagonal / trigonal too) and the sample direction they're measured along
     hkl = np.zeros((4, 3))
     hkl[0, :] = [1,1,1]
     hkl[1, :] = [2,0,0]
@@ -117,6 +188,16 @@ def fiber_calc_ranks(args):
     hkl[3, :] = [3,1,1]
 
     s_dir = np.asarray([0.0,0.0,1.0])
+
+    # Crystal system and lattice parameters, using the same names / parameters as
+    # ExaConstit's in-situ light-up options (laue_type and lattice_params) with any
+    # angles in radians:
+    #   cubic -> a; hexagonal / trigonal / tetragonal -> a, c; rhombohedral -> a, alpha;
+    #   orthorhombic -> a, b, c; monoclinic -> a, b, c, beta;
+    #   triclinic -> a, b, c, alpha, beta, gamma
+    lattice_type = args["lattice_type"]
+    lattice_params = args["lattice_params"]
+    distance_tolerance = np.deg2rad(args["distance_tolerance_deg"])
 
     top = fh.read('Element Volumes' , block_id = 0)
 
@@ -157,25 +238,31 @@ def fiber_calc_ranks(args):
         top = fh.read('Shearing Rate' , block_id = 0)
         gdots_local = np.ascontiguousarray(fh.read('Shearing Rate', start = [0, 0], count = [isize, top.shape[1]], step_selection = [0 , steps - 1] , block_id = ii).reshape((steps - 1, isize, top.shape[1]))[:, con1d[ii], :])
 
+        # ExaCMech's equivalent plastic strain rate, used for the Taylor factor the same way the in-situ light-up does
+        dpeff_local = np.ascontiguousarray(fh.read('Equivalent Plastic Strain Rate', start = [0], count = [isize], step_selection = [0 , steps - 1] , block_id = ii).reshape((steps - 1, isize))[:, con1d[ii]])
+
         in_fibers_local = np.zeros((hkl.shape[0], steps, elas_strain_local.shape[1]), dtype=bool)
 
-        xlup.calc_within_fibers(xtal_oris_local, s_dir, hkl, 3.60, np.deg2rad(5.0), in_fibers_local)
+        xlup.calc_within_fibers(xtal_oris_local, s_dir, hkl, lattice_params, distance_tolerance, in_fibers_local, lattice_type=lattice_type)
         in_fiber_local1 = np.ascontiguousarray(in_fibers_local[:,1:steps,:])
         ev_local1 = np.ascontiguousarray(ev_local[1:steps,:])
 
-        # All of our local calculations
+        # All of our local calculations. The per_rank_update = True argument makes these
+        # add volume weighted sums so every rank's block can be accumulated; they're
+        # divided by the in-fiber volumes once all blocks have been processed below.
         # We're already in the sample frame as ExaConstit as of v0.9 automatically converts it for us
         # xlup.strain_lattice2sample(xtal_oris_local, elas_strain_local)
         xlup.calc_lattice_strains(elas_strain_local, s_dir, ev_local, in_fibers_local, lattice_strains, lattice_vols, True)
         xlup.calc_directional_stiffness_lattice_fiber(stress_local, elas_strain_local[1:steps,:,:], lattice_dir_stiff, ev_local1, in_fiber_local1, True)
-        xlup.calc_taylor_factors_lattice_fiber(gdots_local, lattice_tay_fact, lattice_eps_rate, ev_local1, in_fiber_local1, True)
+        xlup.calc_taylor_factors_lattice_fiber(gdots_local, dpeff_local, lattice_tay_fact, lattice_eps_rate, ev_local1, in_fiber_local1, True)
 
         # If we want per element quantities then uncomment below block
         # direct_stiffness_local = np.zeros_like(ev_local[1:steps, :])
         # tay_fact_local = np.zeros_like(ev_local[1:steps, :])
         # eps_rate_local = np.zeros_like(ev_local[1:steps, :])
         # xlup.calc_directional_stiffness(stress_local, elas_strain_local[1:steps,:,:], direct_stiffness_local)
-        # xlup.calc_taylor_factors(gdots_local, tay_fact_local, eps_rate_local)
+        # xlup.calc_taylor_factors(gdots_local, dpeff_local, tay_fact_local)
+        # eps_rate_local = dpeff_local
 
         # elem_vols[:, index[ii,0]:index[ii,1]] = ev_local
         # strains[:, index[ii,0]:index[ii,1], :] = elas_strain_local
@@ -197,7 +284,7 @@ def fiber_calc_ranks(args):
     print("Lattice taylor factor:")
     lattice_tay_fact = lattice_tay_fact / lattice_vols[:,1:steps]
     print(lattice_tay_fact.T)
-    print("Lattice plastic deformation rate:")
+    print("Lattice equivalent plastic strain rate:")
     lattice_eps_rate = lattice_eps_rate / lattice_vols[:,1:steps]
     print(lattice_eps_rate.T)
     print("Lattice directional stiffness:")
@@ -250,6 +337,19 @@ if (__name__ == '__main__') :
                         help = 'number of resource sets used for the simulation (IMPORTANT)' ,
                         type = int,
                         default=int(1))
+    parser.add_argument('-lattice_type' ,
+                        help = 'crystal system (same names as ExaConstit laue_type): cubic, hexagonal, trigonal, rhombohedral, tetragonal, orthorhombic, monoclinic, triclinic' ,
+                        type = str,
+                        default='cubic')
+    parser.add_argument('-lattice_params' ,
+                        help = 'lattice parameters for the crystal system with any angles in radians (cubic: a; hexagonal/trigonal/tetragonal: a c; rhombohedral: a alpha; orthorhombic: a b c; monoclinic: a b c beta; triclinic: a b c alpha beta gamma)' ,
+                        type = float,
+                        nargs = '+',
+                        default=[3.60])
+    parser.add_argument('-distance_tolerance_deg' ,
+                        help = 'angular tolerance in degrees for an orientation to be considered in a fiber' ,
+                        type = float,
+                        default=5.0)
 
     args = parser.parse_args()
     print(args)

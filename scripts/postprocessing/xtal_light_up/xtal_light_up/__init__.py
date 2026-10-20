@@ -1,10 +1,12 @@
-# # import the contents of the Rust library into the Python extension
-# from xtal_light_up import *
+"""
+xtal_light_up: lattice strain / "light-up" post-processing for ExaConstit results.
 
-# # optional: include the documentation from the Rust module
-# from xtal_light_up import __doc__  # noqa: F401
+The compiled Rust extension lives in the ``xtal_light_up.xtal_light_up``
+submodule, and is typically imported as::
 
+    import xtal_light_up.xtal_light_up as xlup
 
-# class PythonClass:
-#     def __init__(self, value: int) -> None:
-#         self.value = value
+Use ``help(xlup)`` or ``help(xlup.<function>)`` for the documentation of each
+function, including the expected array shapes, and see README.md in the
+xtal_light_up source directory for the ExaConstit outputs these need.
+"""

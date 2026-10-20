@@ -48,18 +48,19 @@ ExaConstit is a high-performance, velocity-based, updated Lagrangian finite elem
 ### Quick Start
 For detailed installation instructions, refer to the build scripts in `scripts/install/`:
 
-- **Linux/Unix**: `scripts/install/unix_install_example.sh`
-- **GPU (CUDA)**: `scripts/install/unix_gpu_cuda_install_example.sh`
-- **GPU (HIP/AMD)**: `scripts/install/unix_gpu_hip_install_example.sh`
+- **Linux/Unix (Intel CPU)**: `scripts/install/unix_cpu_intel_install.sh`
+- **macOS (CPU)**: `scripts/install/unix_cpu_mac_install.sh`
+- **GPU (CUDA)**: `scripts/install/unix_gpu_cuda_install.sh`
+- **GPU (HIP/AMD)**: `scripts/install/unix_gpu_hip_install.sh`
 
 ### Dependencies
 
 **Core Dependencies:**
-- **MFEM** (v4.8+): Finite element library with parallel/GPU support
+- **MFEM** (v4.9+, ExaConstit fork): Finite element library with parallel/GPU support
 - **ExaCMech** (v0.4.3+): Crystal plasticity constitutive model library
-- **RAJA** (≥2024.07.x): Performance portability framework
-- **UMPIRE** (≥2024.07.x): (GPU-only) Performance portability framework
-- **CHAI** (≥2024.07.x): (GPU-only) Performance portability framework
+- **RAJA** (≥2025.12.x): Performance portability framework
+- **UMPIRE** (≥2025.12.x): (GPU-only) Performance portability framework
+- **CHAI** (≥2025.12.x): (GPU-only) Performance portability framework
 - **BLT**: LLNL build system
 - **SNLS**: Nonlinear solver library
 
@@ -96,6 +97,7 @@ ExaConstit requires a specific MFEM development branch with ExaConstit-specific 
 - **Repository**: https://github.com/rcarson3/mfem.git
 - **Branch**: `exaconstit-dev`
 - **Version Dependencies**:
+  - **v0.10.0**: Compatible with MFEM hash `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based)
   - **v0.9.0**: Compatible with MFEM hashes `a6bb7b7c2717e991b52ad72460f212f7aec1173e`
   - **v0.8.0**: Compatible with MFEM hashes `31b42daa3cdddeff04ce3f59befa769b262facd7` or `29a8e15382682babe0f5c993211caa3008e1ec96`
   - **v0.7.0**: Compatible with MFEM hash `78a95570971c5278d6838461da6b66950baea641`
@@ -108,8 +110,8 @@ ExaConstit requires a specific MFEM development branch with ExaConstit-specific 
 cmake .. \
   -DMFEM_USE_MPI=ON \
   -DMFEM_USE_METIS_5=ON \
-  -DMFEM_USE_HYPRE=ON \    # v2.26.0-v2.30.0
-  -DMFEM_USE_RAJA=ON \     # v2022.x+
+  -DMFEM_USE_HYPRE=ON \    # v3.1.0 tested
+  -DMFEM_USE_RAJA=ON \     # v2025.12.x+
   -DMFEM_USE_ADIOS2=ON \   # Optional: high-performance I/O
   -DMFEM_USE_ZLIB=ON       # Optional: compressed mesh support
 ```
@@ -118,8 +120,7 @@ cmake .. \
 
 ### **ExaCMech Version Requirements**
 - **Repository**: https://github.com/LLNL/ExaCMech.git
-- **Branch**: `develop` (required)
-- **Version**: v0.4.3+ required
+- **Version**: v0.4.3+ required (`v0.4.3` tag used by the install scripts and CI)
 - **SNLS Dependency**: https://github.com/LLNL/SNLS.git
 
 ### **RAJA Portability Suite**
@@ -131,13 +132,13 @@ For GPU builds of ExaCMech >= v0.4.3:
 - **CHAI**: Array abstraction
 
 #### **Version Requirements**
-- **Tag**: `v2024.07.0` for all RAJA Portability Suite repositories
+- **Tag**: `v2025.12.x` for all RAJA Portability Suite repositories (see `scripts/install/common/dependency_versions.sh` for the exact tags)
 - **Important**: All RAJA suite components (RAJA, Umpire, CHAI) must use matching versions
-- **Minimum RAJA**: v2024.07.0
-- **Note**: Version mismatch between RAJA components can cause build failures or runtime errors. For GPU builds, we recommend v2025.09.x as the base version for the RAJA Portability Suite. Although, we do require a slightly newer version of Umpire for a small bug fix related to an API: git hash 091305d8ef40aa8f2d75d684fbabeabff2e0c1fc . This fix is necessary for us to address a segfault noted during the program shutdown due to conflicts with their internal logging features and our own.    
+- **Minimum RAJA**: v2025.12.0
+- **Note**: Version mismatch between RAJA components can cause build failures or runtime errors. Umpire must be v2025.12.0 or newer, as it includes a fix (git hash 091305d8ef40aa8f2d75d684fbabeabff2e0c1fc) for a segfault at program shutdown caused by conflicts between Umpire's internal logging and our own.
 
 ### **Additional Dependencies**
-- **HYPRE**: v2.26.0 - v2.30.0 (algebraic multigrid / various preconditioners)
+- **HYPRE**: v3.1.0 tested (algebraic multigrid / various preconditioners)
 - **METIS**: Version 5 (mesh partitioning)
 - **ADIOS2**: Optional (high-performance parallel I/O)
 - **ZLIB**: Optional (compressed mesh and data support)
@@ -373,7 +374,7 @@ ExaConstit uses TOML-based configuration files for all simulation parameters:
 ### Main Configuration File (`options.toml`)
 ```toml
 basename = "simulation_name"
-version = "0.9.0"
+version = "0.10.0"
 
 [Mesh]
 filename = "mesh.mesh"
