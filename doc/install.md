@@ -754,7 +754,7 @@ You'll need to manually build all dependencies first:
 5. **ExaCMech** (v0.4.3)
 6. **Hypre** (v3.1.0)
 7. **METIS** (5.1.0)
-8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 was tested with commit `3cb179f78508c75d47413b231d0893ef8b5a44c0`)
+8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 was tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364`)
 
 See `scripts/install/common/build_functions.sh` for the exact build commands and CMake options.
 
