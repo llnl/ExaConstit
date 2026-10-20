@@ -1303,6 +1303,20 @@ void ExaOptions::print_post_processing_options() const {
                   << "\n";
     }
 
+    // Surface quantities
+    const auto& surf = post_processing.surface_quantities;
+    std::cout << "  Surface quantities: " << (surf.enabled ? "Enabled" : "Disabled") << "\n";
+    if (surf.enabled) {
+        std::cout << "    Boundary IDs:";
+        for (const int id : surf.boundary_ids) {
+            std::cout << " " << id;
+        }
+        std::cout << "\n";
+        std::cout << "    Moments: " << (surf.moments ? "Yes" : "No") << "\n";
+        std::cout << "    Output frequency: " << surf.output_frequency << "\n";
+        std::cout << "    Base filename: " << surf.fname << "\n";
+    }
+
     // Projections
     const auto& proj = post_processing.projections;
     std::cout << "  Projections:\n";

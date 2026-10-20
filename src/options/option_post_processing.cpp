@@ -1,6 +1,7 @@
 #include "options/option_parser_v2.hpp"
 #include "options/option_util.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <set>
 
@@ -646,6 +647,65 @@ bool ProjectionOptions::validate() const {
     return true;
 }
 
+SurfaceQuantityOptions SurfaceQuantityOptions::from_toml(const toml::value& toml_input) {
+    SurfaceQuantityOptions options;
+
+    if (toml_input.contains("enabled")) {
+        options.enabled = toml::find<bool>(toml_input, "enabled");
+    }
+
+    if (toml_input.contains("boundary_ids")) {
+        options.boundary_ids = toml::find<std::vector<int>>(toml_input, "boundary_ids");
+    }
+
+    if (toml_input.contains("moments")) {
+        options.moments = toml::find<bool>(toml_input, "moments");
+    }
+
+    if (toml_input.contains("output_frequency")) {
+        options.output_frequency = toml::find<int>(toml_input, "output_frequency");
+    }
+
+    if (toml_input.contains("fname")) {
+        options.fname = toml::find<std::string>(toml_input, "fname");
+    }
+
+    return options;
+}
+
+bool SurfaceQuantityOptions::validate() const {
+    if (!enabled) {
+        return true;
+    }
+    if (boundary_ids.empty()) {
+        WARNING_0_OPT("Error: SurfaceQuantities table is enabled but boundary_ids is empty. "
+                      "List the mesh boundary attributes to report on, e.g. "
+                      "boundary_ids = [1, 4]");
+        return false;
+    }
+    std::vector<int> sorted_ids(boundary_ids);
+    std::sort(sorted_ids.begin(), sorted_ids.end());
+    if (sorted_ids.front() < 1) {
+        WARNING_0_OPT("Error: SurfaceQuantities table boundary_ids must be positive mesh "
+                      "boundary attributes");
+        return false;
+    }
+    if (std::adjacent_find(sorted_ids.begin(), sorted_ids.end()) != sorted_ids.end()) {
+        WARNING_0_OPT("Error: SurfaceQuantities table boundary_ids contains duplicate IDs");
+        return false;
+    }
+    if (output_frequency < 1) {
+        WARNING_0_OPT("Error: SurfaceQuantities table did not provide a valid output frequency "
+                      "as it was less than 1");
+        return false;
+    }
+    if (fname.empty()) {
+        WARNING_0_OPT("Error: SurfaceQuantities table fname must not be empty");
+        return false;
+    }
+    return true;
+}
+
 PostProcessingOptions PostProcessingOptions::from_toml(const toml::value& toml_input) {
     PostProcessingOptions options;
 
@@ -662,6 +722,10 @@ PostProcessingOptions PostProcessingOptions::from_toml(const toml::value& toml_i
             options.projections = ProjectionOptions::from_toml(
                 toml::find(post_proc, "projections"));
         }
+        if (post_proc.contains("surface_quantities")) {
+            options.surface_quantities = SurfaceQuantityOptions::from_toml(
+                toml::find(post_proc, "surface_quantities"));
+        }
     }
 
     return options;
@@ -672,6 +736,8 @@ bool PostProcessingOptions::validate() const {
     if (!volume_averages.validate())
         return false;
     if (!projections.validate())
+        return false;
+    if (!surface_quantities.validate())
         return false;
 
     // Validate each light_up configuration
