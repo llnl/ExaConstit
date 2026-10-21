@@ -315,7 +315,11 @@ build_axom() {
 
   if [ "${BUILD_TYPE}" != "cpu" ]; then
     # Spin's GPU paths run through RAJA -> Umpire memory plumbing.
+    # AXOM_ENABLE_CUDA / AXOM_ENABLE_HIP are cmake_dependent_options gated on
+    # BLT's ENABLE_CUDA / ENABLE_HIP (AxomOptions.cmake), so without
+    # ENABLE_${GPU_BACKEND}=ON Axom silently builds CPU-only.
     CMAKE_ARGS+=(
+      -DENABLE_${GPU_BACKEND}=ON
       -DAXOM_ENABLE_${GPU_BACKEND}=ON
       -DCMAKE_${GPU_BACKEND}_ARCHITECTURES="${CMAKE_GPU_ARCHITECTURES}"
       -DCMAKE_${GPU_BACKEND}_COMPILER="${CMAKE_GPU_COMPILER}"

@@ -65,13 +65,28 @@ endif()
 ################################
 include(cmake/CMakeBasics.cmake)
 
+# ENABLE_AXOM is only known after the third-party setup above. A normal variable shadows the
+# cache option so that a later configure with Axom picks the cached ON value back up.
+if(ENABLE_MICROSTRUCTURE AND NOT ENABLE_AXOM)
+    message(STATUS "ENABLE_MICROSTRUCTURE requires Axom (AXOM_DIR); "
+                   "the microstructure generator is disabled")
+    set(ENABLE_MICROSTRUCTURE OFF)
+endif()
+
 ################################
 # Add source subdirectories
 ################################
+if(ENABLE_MICROSTRUCTURE)
+    add_subdirectory(src/microstructure)
+endif()
+
 add_subdirectory(src/)
 
 if(ENABLE_TESTS)
     add_subdirectory(test)
+    if(ENABLE_MICROSTRUCTURE)
+        add_subdirectory(test/microstructure)
+    endif()
 endif(ENABLE_TESTS)
 
 add_subdirectory(scripts/meshing)
