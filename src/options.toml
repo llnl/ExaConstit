@@ -6,7 +6,7 @@
 # Version of ExaConstit this configuration is designed for
 # This is recorded as metadata (it's echoed in the options summary printed at startup)
 # so you know which version of ExaConstit a configuration was written for / run with
-Version = "0.10.0"
+Version = "0.10.1"
 
 # Base name for the simulation output directory
 # This creates a subdirectory to organize all outputs from this simulation
