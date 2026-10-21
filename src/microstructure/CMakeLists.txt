@@ -152,7 +152,8 @@ ms_add_module(NAME ms_io       GLOBS io/*)
 ms_add_module(NAME ms_geometry GLOBS geometry/*)
 ms_add_module(NAME ms_seeding  GLOBS seeding/*
               DEPENDS_ON ms_mesh)
-# orientation/ (orientation samplers, header-only so far) is part of ms_labeling
+# orientation/ (random orientation sampler and the per-grain orientation assigner) is part of
+# ms_labeling
 ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/*
               DEPENDS_ON ms_mesh ms_geometry)
 

@@ -14,7 +14,9 @@
  * counter-based RNG.
  *
  * Header-only and `MFEM_HOST_DEVICE`, so usable inside mfem::forall kernels over grains. The
- * result for (rng_seed, RngPurpose::ORIENTATION, grain id) is independent of rank count. Output
+ * result for (rng_seed, RngPurpose::ORIENTATION, id) is independent of rank count. The generator
+ * uses id = SeedSet::source_id of the grain's seed (orientation_assigner.hpp), not the grain id,
+ * so a grain keeps its orientation when grains are renumbered. Output
  * follows ExaConstit's quaternion convention, `w x y z` order; a uniform random rotation has no
  * preferred frame, so crystal-to-sample and sample-to-crystal readings are equally uniform.
  */
@@ -33,7 +35,8 @@ namespace exaconstit::microstructure {
  *
  * Reads the same bits as UniformUnitCube(rng, sample, ...). Host and device; never fails.
  *
- * @param rng    stream of the grain (normally purpose ORIENTATION, id = global grain id).
+ * @param rng    stream of the grain (normally purpose ORIENTATION, id = source id of the
+ *               grain's seed).
  * @param sample sample index (0 unless several orientations per grain are needed).
  * @param q      the quaternion, written to q[0..3] as w x y z (unit norm up to round-off).
  */

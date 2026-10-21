@@ -1,0 +1,96 @@
+# ExaConstit deck for the microstructure generator end-to-end test (tet mesh file, 2 MPI ranks).
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_labeling.cmake copies
+# this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the build
+# directory, runs
+#     microstructure_generator -i test/data/microstructure/voronoi_cube_tet.toml
+#                              -m test/data/cube_tet.mesh --parts 2
+# (paths shown relative to the repository root; CTest passes the same files as absolute
+# paths, because it runs in the scratch directory)
+# there (20 Voronoi grains on cube_tet.mesh, basename "voronoi_cube_tet"; writes the gzip serial
+# mesh voronoi_cube_tet.mesh.gz and the 2-part decomposition voronoi_cube_tet.mesh.00000{0,1}),
+# and then runs mechanics on this deck with 2 MPI ranks. The test passes when mechanics completes.
+#
+# What it exercises: the generator's serial mesh file, whose element attributes are the grain
+# ids, read through ExaConstit's type = "file" mesh path (gzip detected from the contents), and
+# its orientation file. Five fixed steps of 0.1 s keep it short.
+Version = "0.8.0"
+basename = "ms_tet_np2"
+
+[[Materials]]
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (20 seeds, all win elements)
+        num_grains = 20
+        orientation_file = "voronoi_cube_tet.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z, with the boundary ids of test/data/cube_tet.mesh (the same BCs as
+# test/data/voce_full_multi_tet.toml); the generator keeps the boundary ids of a file mesh.
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "file"
+    floc = "voronoi_cube_tet.mesh.gz"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1

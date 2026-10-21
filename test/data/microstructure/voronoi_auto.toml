@@ -1,7 +1,8 @@
 # Microstructure generator example: 8 Voronoi grains on an 8x8x8 auto-generated hex mesh.
 #
-# Run with (planned; the generator tool is not implemented yet):
+# Run with (from this directory, or give the path to this file):
 #     microstructure_generator -i voronoi_auto.toml
+# The outputs are written to the current working directory (Output.directory = ".").
 # Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
 # Unknown keys are ignored with a warning on rank 0, so check the log for typos.
 # Values written in a fixed list (e.g. "voronoi") are case-sensitive.

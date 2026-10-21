@@ -1,0 +1,88 @@
+# ExaConstit deck for the microstructure generator end-to-end test (2-part parallel mesh).
+#
+# Hand-written, not generated. Same case as ms_tet_np2.toml, but the mesh is the generator's
+# 2-part decomposition, read through ExaConstit's type = "parallel" mesh path (floc is the file
+# prefix; rank r reads prefix + r zero-padded to 6 digits, so this deck needs exactly 2 MPI
+# ranks). The CTest chain runs both decks with 2 ranks and compares their result files
+# (test_parallel_mesh_input --compare-mechanics): reading the grains from the serial file or from
+# the decomposition must give the same mechanics result.
+Version = "0.8.0"
+basename = "ms_tet_parallel_np2"
+
+[[Materials]]
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (20 seeds, all win elements)
+        num_grains = 20
+        orientation_file = "voronoi_cube_tet.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z, with the boundary ids of test/data/cube_tet.mesh (the same BCs as
+# test/data/voce_full_multi_tet.toml); the generator keeps the boundary ids of a file mesh.
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "parallel"
+    floc = "voronoi_cube_tet.mesh."
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
