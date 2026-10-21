@@ -641,7 +641,17 @@ bool ExaOptions::validate() {
             }
         }
 
-        if (grain_file) {
+        // makeMesh reads grain_file only for auto-generated meshes (one grain ID per element of
+        // the generated box); file and parallel meshes carry their grain IDs as element
+        // attributes. Warn, rather than fail, so input decks that switch mesh types keep
+        // working, and skip the existence check for a file that is never opened.
+        if (grain_file && mesh.mesh_type != MeshType::AUTO) {
+            std::ostringstream warn;
+            warn << "Warning: grain_file " << *grain_file << " is ignored: it is only read for "
+                 << "Mesh type = \"auto\". With type = \"file\" or \"parallel\" the grain IDs "
+                 << "are the mesh's element attributes.";
+            WARNING_0_OPT(warn.str());
+        } else if (grain_file) {
             if (!std::filesystem::exists(*grain_file)) {
                 std::ostringstream err;
                 err << "Error: Grain file provided at top level: " << *grain_file
@@ -745,6 +755,9 @@ void ExaOptions::print_mesh_options() const {
     if (mesh.mesh_type == MeshType::FILE) {
         std::cout << "  Type: File-based mesh\n";
         std::cout << "  Mesh file: " << mesh.mesh_file << "\n";
+    } else if (mesh.mesh_type == MeshType::PARALLEL) {
+        std::cout << "  Type: Parallel mesh decomposition (one file per rank)\n";
+        std::cout << "  File prefix: " << mesh.mesh_file << "\n";
     } else if (mesh.mesh_type == MeshType::AUTO) {
         std::cout << "  Type: Auto-generated mesh\n";
         std::cout << "  Dimensions (nx, ny, nz): " << mesh.nxyz[0] << " x " << mesh.nxyz[1] << " x "

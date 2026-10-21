@@ -3,13 +3,14 @@
 
 /**
  * @brief Convert string to MeshType enum
- * @param str String representation of mesh type ("file", "auto")
+ * @param str String representation of mesh type ("file", "auto", "parallel")
  * @return Corresponding MeshType enum value
  */
 MeshType string_to_mesh_type(const std::string& str) {
     static const std::map<std::string, MeshType> mapping = {
         {"file", MeshType::FILE},
         {"auto", MeshType::AUTO},
+        {"parallel", MeshType::PARALLEL},
     };
 
     return string_to_enum(str, mapping, MeshType::NOTYPE, "mesh");

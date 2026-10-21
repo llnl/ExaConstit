@@ -19,9 +19,10 @@
  * @brief Enumeration for different mesh generation types
  */
 enum class MeshType {
-    AUTO,  /**< Automatically generated structured mesh */
-    FILE,  /**< Mesh loaded from external file */
-    NOTYPE /**< Uninitialized or invalid mesh type */
+    AUTO,     /**< Automatically generated structured mesh */
+    FILE,     /**< Mesh loaded from external file */
+    PARALLEL, /**< Parallel decomposition, one file per MPI rank, named prefix + rank */
+    NOTYPE    /**< Uninitialized or invalid mesh type */
 };
 
 /**
@@ -147,7 +148,16 @@ struct MeshOptions {
     MeshType mesh_type = MeshType::FILE;
 
     /**
-     * @brief Path to external mesh file (required when mesh_type = FILE)
+     * @brief Path to external mesh file (required when mesh_type = FILE), or the file prefix of
+     * a parallel decomposition (mesh_type = PARALLEL)
+     *
+     * @details For PARALLEL, rank r reads mfem::MakeParFilename(mesh_file, r), i.e. the prefix
+     * followed by the six-digit rank (for example `grains.mesh.000003` for the prefix
+     * `grains.mesh.`). Each part is in MFEM's parallel mesh format (as written by
+     * mfem::MeshPart::Print or ParMesh::ParPrint) and may be gzip-compressed without a `.gz`
+     * suffix; compression is detected from the file contents. The parts fix the partition, so
+     * the run must use exactly as many MPI ranks as there are parts. Both ref_ser and ref_par
+     * are applied as parallel uniform refinements, since the mesh is already distributed.
      */
     std::filesystem::path mesh_file;
 
@@ -1667,7 +1677,7 @@ private:
 
 /**
  * @brief Convert string to MeshType enum
- * @param str String representation of mesh type ("file", "auto")
+ * @param str String representation of mesh type ("file", "auto", "parallel")
  * @return Corresponding MeshType enum value, or NOTYPE if invalid
  */
 MeshType string_to_mesh_type(const std::string& str);

@@ -22,8 +22,6 @@ basename = "multi_material_tet_test"
 # Format should map element attribute IDs to material region IDs (0, 1, etc.)
 region_mapping_file = "region_mapping.txt"
 
-# For auto-generated mesh with multiple materials, grain file is required
-grain_file = "grains.txt"
 
 # Define multiple materials using the new Materials array structure
 [[Materials]]

@@ -47,6 +47,114 @@ blt_add_executable(NAME      test_grad_oper
 blt_add_test(NAME    test_gradient_operation
              COMMAND test_grad_oper)
 
+# MPI tests never use more ranks than the machine has cores, so the suite does not
+# oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
+# ranks than slots by default). The default is the number of logical cores CMake detects;
+# set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank counts above the cap are skipped.
+# It is defined here, outside if(ENABLE_AXOM), because the restart tests, the parallel mesh
+# tests below and test/microstructure all use it.
+cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
+if(NOT _detected_cores OR _detected_cores LESS 1)
+    set(_detected_cores 1)
+endif()
+set(EXACONSTIT_TEST_MAX_MPI_TASKS ${_detected_cores} CACHE STRING
+    "Largest number of MPI ranks any test may use (default: detected logical cores)")
+
+####################################
+# Parallel mesh decomposition input ([Mesh] type = "parallel")
+####################################
+# These tests are part of the extensive suite (EXACONSTIT_ENABLE_EXTENSIVE_TESTS, defined in
+# cmake/ExaConstitOptions.cmake, default OFF), so the default CI suite does not grow. Nothing
+# here is built or registered when the option is off. Turn it on locally to run them:
+#     cmake -DEXACONSTIT_ENABLE_EXTENSIVE_TESTS=ON ...
+#     ctest -R parallel_mesh --output-on-failure
+if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
+    # test_parallel_mesh_input checks the options (type = "parallel", floc as prefix), compares
+    # the makeMesh PARALLEL branch with the serial FILE read rank by rank, and checks that
+    # ref_ser/ref_par give the same refined mesh. It also has two helper modes used by the
+    # mechanics comparison below (see the comment at the top of test_parallel_mesh_input.cpp).
+    blt_add_executable(NAME       test_parallel_mesh_input
+                       SOURCES    test_parallel_mesh_input.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+    target_compile_definitions(test_parallel_mesh_input PRIVATE
+                               EXACONSTIT_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/test/data")
+
+    # A decomposition always has as many parts as ranks, so each rank count tests a different
+    # partition (the test writes its own decomposition for the rank count it runs with)
+    foreach(_np 1 2 3 4)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            blt_add_test(NAME          test_parallel_mesh_input_np${_np}
+                         COMMAND       test_parallel_mesh_input
+                         NUM_MPI_TASKS ${_np})
+        endif()
+    endforeach()
+
+    # mechanics on cube_tet.mesh read as a serial file and as a gzip decomposition must give
+    # the same results. The tests form a chain through CTest fixtures (FIXTURES_SETUP /
+    # FIXTURES_REQUIRED), which make CTest run them in order and skip a step whose
+    # prerequisite failed:
+    #   1. test_parallel_mesh_mechanics_setup writes, for each rank count, a decomposition and
+    #      a pair of input decks into a scratch directory. It is not the test directory,
+    #      because test_mechanics.py runs every .toml it finds there.
+    #   2. test_parallel_mesh_mechanics_{serial,parallel}_np<N> run the real mechanics driver
+    #      on each deck.
+    #   3. test_parallel_mesh_mechanics_compare_np<N> compares the two runs' result files.
+    # All mechanics runs share the scratch directory as working directory, and mechanics writes
+    # per-rank log files there (mfem_logging_rank_<r>.log, utilities/unified_logger.hpp:688).
+    # RESOURCE_LOCK parallel_mesh_case keeps CTest from running two of them at the same time
+    # under ctest -j, so they cannot overwrite each other's logs.
+    set(_pmi_case_dir ${CMAKE_CURRENT_BINARY_DIR}/parallel_mesh_mechanics)
+    set(_pmi_rank_counts)
+    foreach(_np 1 2)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            list(APPEND _pmi_rank_counts ${_np})
+        endif()
+    endforeach()
+    blt_add_test(NAME              test_parallel_mesh_mechanics_setup
+                 COMMAND           test_parallel_mesh_input --write-mechanics-case
+                                   ${_pmi_case_dir} ${_pmi_rank_counts}
+                 NUM_MPI_TASKS     1)
+    set_tests_properties(test_parallel_mesh_mechanics_setup PROPERTIES
+                         FIXTURES_SETUP parallel_mesh_case)
+    foreach(_np ${_pmi_rank_counts})
+        foreach(_kind serial parallel)
+            blt_add_test(NAME              test_parallel_mesh_mechanics_${_kind}_np${_np}
+                         COMMAND           $<TARGET_FILE:mechanics> -opt ${_kind}_np${_np}.toml
+                         NUM_MPI_TASKS     ${_np}
+                         WORKING_DIRECTORY ${_pmi_case_dir})
+            set_tests_properties(test_parallel_mesh_mechanics_${_kind}_np${_np} PROPERTIES
+                                 FIXTURES_REQUIRED parallel_mesh_case
+                                 FIXTURES_SETUP    parallel_mesh_runs_np${_np}
+                                 RESOURCE_LOCK     parallel_mesh_case)
+        endforeach()
+        blt_add_test(NAME    test_parallel_mesh_mechanics_compare_np${_np}
+                     COMMAND test_parallel_mesh_input --compare-mechanics
+                             ${_pmi_case_dir}/results/serial_np${_np}
+                             ${_pmi_case_dir}/results/parallel_np${_np}
+                     NUM_MPI_TASKS 1)
+        set_tests_properties(test_parallel_mesh_mechanics_compare_np${_np} PROPERTIES
+                             FIXTURES_REQUIRED "parallel_mesh_case;parallel_mesh_runs_np${_np}")
+    endforeach()
+
+    # The wrong-rank-count abort: running the 2-part decomposition on 1 rank must stop in
+    # makeMesh (verifyParallelMeshParts in simulation_state.cpp) with the "exactly as many MPI
+    # ranks as it has parts" message. The run ends with MPI_Abort, so the test passes on the
+    # message (PASS_REGULAR_EXPRESSION ignores the exit code) rather than on the exit status.
+    # It stops before any result file is written, so the parallel_np2 results stay untouched.
+    if("2" IN_LIST _pmi_rank_counts)
+        blt_add_test(NAME              test_parallel_mesh_mechanics_rank_mismatch
+                     COMMAND           $<TARGET_FILE:mechanics> -opt parallel_np2.toml
+                     NUM_MPI_TASKS     1
+                     WORKING_DIRECTORY ${_pmi_case_dir})
+        set_tests_properties(test_parallel_mesh_mechanics_rank_mismatch PROPERTIES
+                             FIXTURES_REQUIRED       parallel_mesh_case
+                             RESOURCE_LOCK           parallel_mesh_case
+                             PASS_REGULAR_EXPRESSION
+                                 "exactly as many MPI ranks as it has parts")
+    endif()
+endif()
+
 ####################################
 # Checkpoint/restart tests (Axom Sidre)
 ####################################
@@ -62,17 +170,6 @@ if(ENABLE_AXOM)
                        SOURCES    test_restart_e2e.cpp
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
-
-    # MPI tests never use more ranks than the machine has cores, so the suite does not
-    # oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
-    # ranks than slots by default). The default is the number of logical cores CMake detects;
-    # set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank counts above the cap are skipped.
-    cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
-    if(NOT _detected_cores OR _detected_cores LESS 1)
-        set(_detected_cores 1)
-    endif()
-    set(EXACONSTIT_TEST_MAX_MPI_TASKS ${_detected_cores} CACHE STRING
-        "Largest number of MPI ranks any test may use (default: detected logical cores)")
 
     foreach(_np 1 2 3 4)
         if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)

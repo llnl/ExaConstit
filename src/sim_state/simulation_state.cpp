@@ -1,9 +1,15 @@
 #include "sim_state/simulation_state.hpp"
 
+#include "utilities/auto_mesh.hpp"
 #include "utilities/unified_logger.hpp"
 #if defined(EXACONSTIT_USE_AXOM)
 #include "sim_state/restart_checkpoint.hpp"
 #endif
+
+#include <climits>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -16,42 +22,6 @@ void setupBoundaryConditions(ExaOptions& options) {
              bcs_opts.map_ess_vgrad,
              bcs_opts.map_ess_comp,
              bcs_opts.map_ess_id);
-}
-
-void setBdrConditions(mfem::Mesh& mesh) {
-    // modify MFEM auto cuboidal hex mesh generation boundary
-    // attributes to correspond to correct ExaConstit boundary conditions.
-    // Look at ../../mesh/mesh.cpp Make3D() to see how boundary attributes
-    // are set and modify according to ExaConstit convention
-
-    // loop over boundary elements
-    for (int i = 0; i < mesh.GetNBE(); ++i) {
-        int bdrAttr = mesh.GetBdrAttribute(i);
-
-        switch (bdrAttr) {
-        // note, srw wrote SetBdrAttribute() in ../../mesh/mesh.hpp
-        case 1:
-            mesh.SetBdrAttribute(i, 1); // bottom
-            break;
-        case 2:
-            mesh.SetBdrAttribute(i, 3); // front
-            break;
-        case 3:
-            mesh.SetBdrAttribute(i, 5); // right
-            break;
-        case 4:
-            mesh.SetBdrAttribute(i, 6); // back
-            break;
-        case 5:
-            mesh.SetBdrAttribute(i, 2); // left
-            break;
-        case 6:
-            mesh.SetBdrAttribute(i, 4); // top
-            break;
-        }
-    }
-
-    return;
 }
 
 void setElementGrainIDs(mfem::Mesh& mesh, const mfem::Vector& grainMap, int ncols, int offset) {
@@ -86,7 +56,205 @@ void setElementGrainIDs(mfem::Mesh& mesh, const mfem::Vector& grainMap, int ncol
 //    }
 // }
 
+/**
+ * @brief Check that a parallel mesh decomposition has exactly one part per MPI rank
+ *
+ * @param prefix File prefix of the decomposition (MeshOptions::mesh_file)
+ * @param my_id MPI rank of this process (0-based)
+ * @param num_ranks Number of MPI ranks in MPI_COMM_WORLD
+ *
+ * @details Collective: every rank must call it, because it contains an MPI_Allreduce and an
+ * MPI_Bcast ("collective" MPI calls, which every rank has to enter before any of them returns).
+ * Runs on the host.
+ *
+ * A decomposition is a mesh that was split into parts ahead of time, one file per part. The
+ * files fix which elements live on which rank, and ExaConstit does not repartition them, so
+ * rank r reads part r and nothing else. That only works when the run has exactly as many ranks
+ * as there are parts: with fewer ranks some elements would never be read, and with more ranks
+ * some ranks would have no file at all. Two checks cover both cases:
+ *  1. Too many ranks (or a missing file): every rank tests whether it can open its own part.
+ *     The ranks then take the minimum over all ranks of "my rank if my part is missing,
+ *     otherwise num_ranks", which is the lowest rank whose part is missing (or num_ranks if
+ *     none is).
+ *  2. Too few ranks: rank 0 tests whether a part numbered num_ranks exists, i.e. one past the
+ *     last rank, and broadcasts the answer to the other ranks.
+ *
+ * Every rank ends up with the same answer before anyone starts reading the mesh. The ParMesh
+ * constructor that follows is itself collective, so if one rank failed alone the others would
+ * wait inside it forever (a hang) instead of stopping. On failure every rank calls
+ * MFEM_VERIFY_0, ExaConstit's rank-0 variant of MFEM_VERIFY (utilities/unified_logger.hpp:738).
+ * Every rank runs the failing MFEM_VERIFY and so every rank aborts, through
+ * mfem_error -> MPI_Abort (mfem general/error.cpp:182); only rank 0 prints the message to the
+ * terminal, while the other ranks' output is captured to mfem_logging_rank_<r>.log in the
+ * working directory.
+ */
+void verifyParallelMeshParts(const std::string& prefix, const int my_id, const int num_ranks) {
+    // Check 1: can every rank open its own part? mfem::MakeParFilename(prefix, r) is the prefix
+    // followed by r zero-padded to six digits (mfem general/globals.hpp:84), the name
+    // MeshPart::Print / ParMesh::ParPrint users give each part.
+    const std::string my_part = mfem::MakeParFilename(prefix, my_id);
+    const bool have_part = std::ifstream(my_part).good();
+    // Each rank proposes its own id if its file is missing and num_ranks (an impossible rank)
+    // otherwise; MPI_MIN over all ranks then picks the lowest rank with a missing part.
+    const int local_missing = have_part ? num_ranks : my_id;
+    int first_missing = num_ranks;
+    MPI_Allreduce(&local_missing, &first_missing, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if (first_missing != num_ranks) {
+        std::ostringstream err;
+        err << "Parallel mesh decomposition " << prefix << ": the part for rank "
+            << first_missing << " (" << mfem::MakeParFilename(prefix, first_missing)
+            << ") does not exist or cannot be read. A decomposition must be run with exactly "
+            << "as many MPI ranks as it has parts; this run has " << num_ranks << " rank(s)";
+        MFEM_VERIFY_0(false, err.str());
+    }
+
+    // Check 2: is there a part beyond the last rank? Only rank 0 looks at the file system (one
+    // file system query instead of one per rank) and shares the answer with MPI_Bcast.
+    int extra_part = 0;
+    if (my_id == 0) {
+        extra_part = std::filesystem::exists(mfem::MakeParFilename(prefix, num_ranks)) ? 1 : 0;
+    }
+    MPI_Bcast(&extra_part, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (extra_part != 0) {
+        std::ostringstream err;
+        err << "Parallel mesh decomposition " << prefix << " has more parts than the "
+            << num_ranks << " MPI rank(s) of this run ("
+            << mfem::MakeParFilename(prefix, num_ranks) << " exists). A decomposition must be "
+            << "run with exactly as many MPI ranks as it has parts";
+        MFEM_VERIFY_0(false, err.str());
+    }
+}
+
+/**
+ * @brief Read a parallel mesh decomposition (Mesh type = "parallel"), one file per rank
+ *
+ * @param options Simulation options. options.mesh.mesh_file is the file prefix of the parts;
+ *        options.mesh.order is raised to 1 if it is lower (the same as on the serial path);
+ *        options.mesh.ref_ser and options.mesh.ref_par give the number of uniform refinements.
+ * @param my_id MPI rank of this process (0-based)
+ * @return The distributed mesh: rank r owns the elements of part r, the nodes are curved to
+ *         options.mesh.order, and the mesh is refined ref_ser + ref_par times
+ *
+ * @details Collective: every rank must call it (the part check, the ParMesh constructor,
+ * UniformRefinement and SetAttributes all communicate). Runs on the host. Aborts every rank
+ * with a message naming the file if the number of parts does not match the number of ranks.
+ *
+ * File format. Each part is a text file in MFEM's parallel mesh format: an ordinary MFEM mesh
+ * of the rank's own elements, ended by `mfem_serial_mesh_end`, followed by the
+ * "communication_groups" section, which lists the vertices, edges and faces this rank shares
+ * with each neighboring rank (mfem ParMesh::Load / LoadSharedEntities, mesh/pmesh.cpp:949-992).
+ * mfem::MeshPart::Print (from mfem::MeshPartitioner) and ParMesh::ParPrint write it, and so
+ * does the microstructure generator. Part r is named mfem::MakeParFilename(prefix, r), e.g.
+ * `grains.mesh.000003` for the prefix `grains.mesh.` and rank 3.
+ *
+ * Compression. The parts may be gzip-compressed or plain text, under the same name.
+ * mfem::ifgzstream looks at the first two bytes of the file: the gzip "magic number"
+ * 0x1F 0x8B (or a zlib header) means compressed, anything else is read as plain text
+ * (mfem general/zstr.hpp:415-427). No ".gz" suffix is needed or expected.
+ *
+ * Refinement. On the FILE path, ref_ser refinements are applied to the whole serial mesh
+ * before it is partitioned and ref_par refinements afterwards. A decomposition is already
+ * partitioned, so here both are parallel uniform refinements (ref_ser + ref_par in total).
+ * The two paths do not always produce identical refined meshes:
+ *  - Hexahedra refine identically (each splits into 8 at its edge and face midpoints), so only
+ *    the partition across ranks can differ.
+ *  - Tetrahedra: the element count and every element's (and grain's) volume agree, but the
+ *    child tets may have different shapes. Splitting a tet into 8 requires choosing one of three
+ *    interior diagonals, and MFEM picks it from a marking based on an edge ordering. The serial
+ *    read marks with the global edge ordering; ParMesh(comm, istream, refine = true) marks with
+ *    each rank's local edge ordering (made consistent only on shared edges,
+ *    ParMesh::MarkTetMeshForRefinement, mesh/pmesh.cpp:1752-1755). Mechanics results on refined
+ *    tet meshes can therefore differ slightly between a FILE read and a decomposition read.
+ *
+ * Steps: check the parts (verifyParallelMeshParts), read part my_id into a ParMesh, set the
+ * mesh order, refine, and rebuild the global attribute lists.
+ */
+std::shared_ptr<mfem::ParMesh> readParallelMesh(ExaOptions& options, const int my_id) {
+    int num_ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
+    const std::string prefix = options.mesh.mesh_file.string();
+    const std::string my_part = mfem::MakeParFilename(prefix, my_id);
+
+    if (my_id == 0) {
+        std::cout << "Opening parallel mesh decomposition: " << prefix << "*" << std::endl;
+    }
+
+    // Agree on all ranks that there is exactly one part per rank before anyone starts the
+    // collective ParMesh construction (see verifyParallelMeshParts for why)
+    verifyParallelMeshParts(prefix, my_id, num_ranks);
+
+    // Read this rank's part. The ifgzstream constructor throws if the file cannot be opened,
+    // which is why the parts are probed above first; it also detects gzip compression on its
+    // own. The stream is scoped so the file is closed as soon as the mesh is built.
+    std::shared_ptr<mfem::ParMesh> pmesh;
+    {
+        mfem::ifgzstream part_stream(my_part);
+        MFEM_VERIFY(part_stream.good(), "Cannot read parallel mesh part " << my_part);
+        // Note the argument order differs from mfem::Mesh (mfem mesh/pmesh.hpp:356):
+        //   refine = true          prepares tetrahedra for later uniform refinement; for a
+        //                          ParMesh the marking is made consistent on edges shared
+        //                          between ranks (ParMesh::MarkTetMeshForRefinement,
+        //                          mesh/pmesh.cpp:1752)
+        //   generate_edges = 1     build the edge information, as the serial read does
+        //   fix_orientation = true fix inverted element orientations, as the serial read does
+        pmesh = std::make_shared<mfem::ParMesh>(MPI_COMM_WORLD, part_stream, true, 1, true);
+    }
+
+    // Same order handling as the serial path in makeMesh: the mesh always gets nodes (a
+    // high-order "curvature" grid function) of at least order 1, matching the order of the
+    // finite element space built on it in the SimulationState constructor.
+    if (options.mesh.order < 1) {
+        options.mesh.order = 1;
+    }
+    if (my_id == 0) {
+        std::cout << "Increasing mesh order of the mesh to " << options.mesh.order << std::endl;
+    }
+    pmesh->SetCurvature(options.mesh.order);
+
+    // Both refinement counts are applied in parallel (see Refinement in the header comment).
+    // Each UniformRefinement splits every tet into 8 tets and every hex into 8 hexes.
+    const int num_refinements = options.mesh.ref_ser + options.mesh.ref_par;
+    if (my_id == 0 && num_refinements > 0) {
+        std::cout << "Applying " << num_refinements << " uniform refinement(s) to the parallel "
+                  << "mesh (ref_ser = " << options.mesh.ref_ser
+                  << " + ref_par = " << options.mesh.ref_par
+                  << "; the decomposition is already distributed, so both are parallel)"
+                  << std::endl;
+    }
+    for (int lev = 0; lev < num_refinements; lev++) {
+        pmesh->UniformRefinement();
+    }
+
+    // Rebuild the lists of element and boundary attributes found in the mesh. For a ParMesh
+    // these lists are global: each rank's local list is merged with the other ranks'
+    // (ParMesh::SetAttributes, mesh/pmesh.cpp:1593), so this is collective as well. The
+    // serial path ends with the same call.
+    pmesh->SetAttributes();
+
+    return pmesh;
+}
+
+/**
+ * @brief Build the simulation mesh from the [Mesh] options
+ *
+ * @param options Simulation options; options.mesh.order may be raised to 1
+ * @param my_id MPI rank of this process (0-based)
+ * @return The distributed mesh, curved to options.mesh.order and refined
+ *
+ * @details Collective: every rank must call it. Three mesh sources are supported:
+ *  - PARALLEL: a decomposition with one file per rank, read by readParallelMesh();
+ *  - FILE: one serial mesh file, read on every rank, refined ref_ser times, partitioned into a
+ *    ParMesh and refined ref_par more times;
+ *  - AUTO: a box of hexahedra from exaconstit::MakeAutoHexMesh, with grain IDs from grain_file
+ *    (without grain_file every element keeps attribute 1, i.e. the whole box is one grain),
+ *    then the same steps as FILE.
+ */
 std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
+    // A decomposition is already distributed, so it skips the serial mesh entirely
+    if (options.mesh.mesh_type == MeshType::PARALLEL) {
+        return readParallelMesh(options, my_id);
+    }
+
     mfem::Mesh mesh;
     if (options.mesh.mesh_type == MeshType::FILE) {
         if (my_id == 0) {
@@ -104,19 +272,8 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
             std::cout << "Using mfem's hex mesh generator" << std::endl;
         }
 
-        // use constructor to generate a 3D cuboidal mesh with 8 node hexes
-        // The false at the end is to tell the inline mesh generator to use the lexicographic
-        // ordering of the mesh The newer space-filling ordering option that was added in the
-        // pre-okina tag of MFEM resulted in a noticeable divergence of the material response for a
-        // monotonic tension test using symmetric boundary conditions out to 1% strain.
-        mesh = mfem::Mesh::MakeCartesian3D(options.mesh.nxyz[0],
-                                           options.mesh.nxyz[1],
-                                           options.mesh.nxyz[2],
-                                           mfem::Element::HEXAHEDRON,
-                                           options.mesh.mxyz[0],
-                                           options.mesh.mxyz[1],
-                                           options.mesh.mxyz[2],
-                                           false);
+        // 8-node hexes in lexicographic element order (see MakeAutoHexMesh for why)
+        mesh = exaconstit::MakeAutoHexMesh(options.mesh.nxyz, options.mesh.mxyz);
         // read in the grain map if using a MFEM auto generated cuboidal mesh
         if (options.grain_file) {
             std::ifstream gfile(*options.grain_file);
@@ -142,8 +299,8 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
         // No longer needed for the CA stuff. It's now ordered as X->Y->Z
         // reorderMeshElements(mesh, &toml_opt.nxyz[0]);
 
-        // reset boundary conditions from
-        ::setBdrConditions(mesh);
+        // remap MFEM's box boundary attributes to the ExaConstit convention
+        exaconstit::ApplyAutoMeshBoundaryAttributes(mesh);
     }
 
     // We need to check to see if our provided mesh has a different order than
@@ -222,6 +379,94 @@ std::map<int, int> create_grains_to_map(const ExaOptions& options, const mfem::A
     }
 
     return grain2regions;
+}
+
+/**
+ * @brief Check that the grain-to-region map covers this run's grains with valid region IDs
+ *
+ * @param options Simulation options: options.materials (one region per [[Materials]] block,
+ *        region IDs 1-based in input order) and options.region_mapping_file (used only for the
+ *        error message)
+ * @param grains Grain ID of each local element (the mesh's element attributes on a fresh run),
+ *        indexed by local element number 0 .. GetNE()-1
+ * @param grains2region Map from grain ID to region ID built by create_grains_to_map()
+ *
+ * @details Collective: every rank must call it, because the ranks combine their results with an
+ * MPI_Allreduce. Runs on the host. Only called on fresh runs; the restart path does the
+ * matching region-ID check on the checkpointed attributes in the SimulationState constructor.
+ *
+ * What is checked. The SimulationState constructor replaces each element's grain ID with its
+ * region ID, which selects the material model. For that, every grain ID in the mesh needs a
+ * "grain region" line in the region mapping file, and the region must be one of the configured
+ * materials, i.e. in [1, number of materials].
+ *
+ * Why collective. Each rank holds only its own elements, so a bad grain may sit on one rank
+ * only. Without this check that rank would throw std::out_of_range from std::map::at() while
+ * the others carried on, and the run would hang or die without a useful message. Now each rank
+ * finds the lowest bad grain ID among its own elements, the ranks take the minimum over all
+ * ranks with MPI_Allreduce(MPI_MIN), and every rank sees the same result. On failure every rank
+ * calls MFEM_VERIFY_0, ExaConstit's rank-0 variant of MFEM_VERIFY
+ * (utilities/unified_logger.hpp:738): every rank aborts (mfem_error -> MPI_Abort), rank 0
+ * prints the message, and the other ranks' output is captured to mfem_logging_rank_<r>.log.
+ * A rank with no elements contributes INT_MAX, meaning "no problem".
+ */
+void verifyGrainsToRegions(const ExaOptions& options,
+                           const mfem::Array<int>& grains,
+                           const std::map<int, int>& grains2region) {
+    const int num_regions = static_cast<int>(options.materials.size());
+
+    // Scan the local elements. Slot 0 keeps the lowest grain ID with no entry in the map,
+    // slot 1 the lowest grain ID mapped to a region outside [1, num_regions]. INT_MAX means
+    // "none found", so it never wins the minimum below.
+    int local_bad[2] = {INT_MAX, INT_MAX};
+    for (int i = 0; i < grains.Size(); i++) {
+        const int grain_id = grains[i];
+        const auto it = grains2region.find(grain_id);
+        if (it == grains2region.end()) {
+            local_bad[0] = std::min(local_bad[0], grain_id);
+        } else if (it->second < 1 || it->second > num_regions) {
+            local_bad[1] = std::min(local_bad[1], grain_id);
+        }
+    }
+
+    // Lowest bad grain IDs over all ranks; every rank receives the same two values
+    int global_bad[2] = {INT_MAX, INT_MAX};
+    MPI_Allreduce(local_bad, global_bad, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+
+    // Name the source of the map in the messages: the user's file, or the default map that
+    // create_grains_to_map() builds (every grain in region 1) when no file is given
+    std::string map_source;
+    if (options.region_mapping_file) {
+        map_source = "region mapping file " + options.region_mapping_file->string();
+    } else {
+        map_source = "default grain-to-region map";
+    }
+
+    // Failure 1: a grain in the mesh is missing from the map
+    MFEM_VERIFY_0(global_bad[0] == INT_MAX,
+                  "Grain " << global_bad[0] << " (an element attribute of the mesh) is not listed "
+                           << "in the " << map_source << "; every grain ID in the mesh needs a "
+                           << "'grain region' line");
+
+    // Failure 2: a grain maps to a region with no material. Every rank reads the whole mapping
+    // file, so rank 0, which prints the message, can look up the region of the reported grain
+    // even if none of rank 0's own elements belong to that grain.
+    if (global_bad[1] != INT_MAX) {
+        const auto it = grains2region.find(global_bad[1]);
+        int region_id = 0;
+        if (it != grains2region.end()) {
+            region_id = it->second;
+        } else {
+            // Only reachable with the default map, which create_grains_to_map() builds from
+            // each rank's own grains (all in region 1), so rank 0 may not know this grain. A
+            // mapping file is read whole on every rank and always contains it.
+            region_id = 0;
+        }
+        MFEM_VERIFY_0(false,
+                      "The " << map_source << " maps grain " << global_bad[1] << " to region "
+                             << region_id << ", but region IDs must be in [1, " << num_regions
+                             << "], one per [[Materials]] block in order");
+    }
 }
 
 /**
@@ -666,6 +911,9 @@ SimulationState::SimulationState(ExaOptions& options)
         std::map<int, int> grains2region;
         if (!restart_run) {
             grains2region = ::create_grains_to_map(options, grains);
+            // Collective check that every grain has a valid region, so that the at() calls
+            // below cannot throw on just one rank
+            ::verifyGrainsToRegions(options, grains, grains2region);
 
             for (int i = 0; i < loc_nelems; i++) {
                 const int grain_id = grains.operator[](i);

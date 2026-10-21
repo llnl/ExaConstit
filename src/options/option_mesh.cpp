@@ -12,7 +12,8 @@ MeshOptions MeshOptions::from_toml(const toml::value& toml_input) {
         options.mesh_type = string_to_mesh_type(toml::find<std::string>(toml_input, "type"));
     }
 
-    if (options.mesh_type == MeshType::FILE) {
+    // For a parallel decomposition floc is the file prefix (see MeshOptions::mesh_file)
+    if (options.mesh_type == MeshType::FILE || options.mesh_type == MeshType::PARALLEL) {
         if (toml_input.contains("floc")) {
             options.mesh_file = toml::find<std::string>(toml_input, "floc");
         }
@@ -95,6 +96,33 @@ bool MeshOptions::validate(bool check_input_files) const {
             err << "Error: Mesh file '" << mesh_file << "' does not exist." << std::endl;
             WARNING_0_OPT(err.str());
             return false;
+        }
+    }
+
+    // A parallel decomposition (one mesh file per MPI rank) needs a prefix, since every part's
+    // file name is built from it. Only part 0 is checked here, because validation runs before
+    // the mesh is built and a missing part 0 is the common mistake (a wrong prefix). Whether the
+    // number of parts equals the number of ranks is checked later in makeMesh
+    // (verifyParallelMeshParts in simulation_state.cpp), where every rank looks for its own part
+    // and the ranks agree on the result. As for FILE meshes, a restart (check_input_files =
+    // false) rebuilds the mesh from the checkpoint and does not need the parts.
+    if (mesh_type == MeshType::PARALLEL) {
+        if (mesh_file.empty()) {
+            WARNING_0_OPT("Error: Mesh table with type = \"parallel\" needs `floc`, the file "
+                          "prefix of the parallel mesh decomposition.");
+            return false;
+        }
+        if (check_input_files) {
+            // Part r is named prefix + r zero-padded to six digits (mfem::MakeParFilename)
+            const std::string first_part = mfem::MakeParFilename(mesh_file.string(), 0);
+            if (!fs::exists(first_part)) {
+                std::ostringstream err;
+                err << "Error: Parallel mesh decomposition '" << mesh_file.string()
+                    << "' not found: part 0 should be the file '" << first_part
+                    << "' (the prefix followed by the six-digit rank)." << std::endl;
+                WARNING_0_OPT(err.str());
+                return false;
+            }
         }
     }
 

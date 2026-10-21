@@ -29,6 +29,7 @@ set(EXACONSTIT_HEADERS
     utilities/mechanics_kernels.hpp
     utilities/mechanics_log.hpp
     utilities/assembly_ops.hpp
+    utilities/auto_mesh.hpp
     utilities/rotations.hpp
     utilities/strain_measures.hpp
     utilities/unified_logger.hpp
