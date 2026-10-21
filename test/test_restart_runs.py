@@ -171,7 +171,8 @@ def restart_block(restart: Dict[str, object]) -> str:
 
 
 def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: str,
-               t_final: float, restart: Dict[str, object]) -> None:
+               t_final: float, restart: Dict[str, object], rtmodel: str = "CPU",
+               assembly: str = "FULL") -> None:
     """
     Write the options file for one run
 
@@ -187,6 +188,8 @@ def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: 
         bcs: [BCs] table from bc_block()
         t_final: Final simulation time of this run
         restart: [Restart] keys and values
+        rtmodel: [Solvers] rtmodel (CPU, OPENMP or GPU)
+        assembly: [Solvers] assembly (FULL, PA or EA)
     """
     path.write_text(f"""Version = "0.10.0"
 basename = "{basename}"
@@ -235,8 +238,8 @@ grain_file = "{mesh.grain_file}"
         output_directory = "./results"
 
 [Solvers]
-    assembly = "FULL"
-    rtmodel = "CPU"
+    assembly = "{assembly}"
+    rtmodel = "{rtmodel}"
     [Solvers.NR]
         iter = 25
         rel_tol = 5e-5
@@ -500,7 +503,8 @@ def run_reference(h: Harness, name: str, mesh: MeshSpec, bcs: str, total_steps: 
     write_toml(h.workdir / f"{name}.toml", name, mesh, h.args.num_grains, bcs,
                time_of(total_steps),
                {"write": True, "interval": interval, "write_final": True,
-                "keep_last": h.args.keep_last, "directory": f"ckpt_{name}"})
+                "keep_last": h.args.keep_last, "directory": f"ckpt_{name}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly)
     h.run(name, h.workdir / f"{name}.toml")
     ref_cycles = sorted(int(p.name.split("_")[1])
                         for p in (h.workdir / f"ckpt_{name}").glob("cycle_*")
@@ -535,7 +539,7 @@ def run_chain(h: Harness, ref: str, ref_cycles: List[int], name: str, mesh: Mesh
         if i > 0:
             restart["read"] = True
         write_toml(h.workdir / f"{segment}.toml", name, mesh, h.args.num_grains, bcs,
-                   time_of(stop), restart)
+                   time_of(stop), restart, rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(segment, h.workdir / f"{segment}.toml")
         if i > 0:
             h.verify_restart_log(segment, f"ckpt_{name}", stops[i - 1], stop)
@@ -575,7 +579,8 @@ def run_from_reference(h: Harness, ref: str, ref_cycles: List[int], from_cycles:
                    time_of(total_steps),
                    {"write": True, "interval": 0, "write_final": True, "keep_last": 0,
                     "read": True, "read_cycle": cycle, "read_directory": f"ckpt_{ref}",
-                    "directory": f"ckpt_{name}"})
+                    "directory": f"ckpt_{name}"},
+                   rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(name, h.workdir / f"{name}.toml")
         h.verify_restart_log(name, f"ckpt_{ref}", cycle, total_steps)
         h.compare_checkpoints(f"{name} final cycle {total_steps}",
@@ -630,7 +635,8 @@ def run_negative_control(h: Harness, ref: str, ref_cycles: List[int], mesh: Mesh
                time_of(total_steps),
                {"write": True, "interval": 0, "write_final": True, "keep_last": 0,
                 "read": True, "read_cycle": cycle, "read_directory": source.name,
-                "directory": f"ckpt_{name}"})
+                "directory": f"ckpt_{name}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly)
     h.run(name, h.workdir / f"{name}.toml")
     h.verify_restart_log(name, source.name, cycle, total_steps)
     h.compare_checkpoints(f"{name} (negative control) final cycle {total_steps}",
@@ -764,6 +770,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--np", type=int, default=8, help="MPI ranks (default 8)")
+    p.add_argument("--rtmodel", default="CPU", choices=["CPU", "OPENMP", "GPU"],
+                   help="[Solvers] rtmodel of every run (default CPU)")
+    p.add_argument("--assembly", default="FULL", choices=["FULL", "PA", "EA"],
+                   help="[Solvers] assembly of every run (default FULL)")
     p.add_argument("--mpiexec", default="mpirun", help="MPI launcher (default mpirun)")
     p.add_argument("--always-mpiexec", action="store_true",
                    help="use the launcher even with --np 1 (default: run the binary directly)")
@@ -832,7 +842,8 @@ def main() -> int:
         prepare_inputs(workdir, find_data_dir(args.data_dir), list(meshes.values()),
                        args.num_grains, args.seed)
         h = Harness(args, workdir)
-        print(f"Restart run tests: {args.np} rank(s), workdir {workdir}")
+        print(f"Restart run tests: {args.np} rank(s), rtmodel {args.rtmodel}, assembly "
+              f"{args.assembly}, workdir {workdir}")
         for case in requested:
             run_case, mesh = cases[case]
             run_case(h, mesh)

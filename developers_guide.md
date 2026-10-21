@@ -604,8 +604,9 @@ simulations; anyone changing that code must run them locally and make sure they 
 ```bash
 ctest -L long --output-on-failure
 ```
-No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults to the
-number of logical cores detected at configure time.
+GPU builds also register a GPU version of them (`test_restart_runs_gpu`; `ctest -L gpu` runs
+only that one). No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults
+to the number of physical cores detected at configure time (Open MPI's default number of slots).
 
 ### Example Workflows
 The `test/data/` directory contains various example cases:

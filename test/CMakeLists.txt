@@ -65,14 +65,19 @@ if(ENABLE_AXOM)
 
     # MPI tests never use more ranks than the machine has cores, so the suite does not
     # oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
-    # ranks than slots by default). The default is the number of logical cores CMake detects;
-    # set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank counts above the cap are skipped.
-    cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
+    # ranks than slots by default). Open MPI counts physical cores as slots, not hardware
+    # threads, so the default is the number of physical cores CMake detects (falling back to
+    # logical cores if that is unknown); set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank
+    # counts above the cap are skipped.
+    cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_PHYSICAL_CORES)
+    if(NOT _detected_cores OR _detected_cores LESS 1)
+        cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
+    endif()
     if(NOT _detected_cores OR _detected_cores LESS 1)
         set(_detected_cores 1)
     endif()
     set(EXACONSTIT_TEST_MAX_MPI_TASKS ${_detected_cores} CACHE STRING
-        "Largest number of MPI ranks any test may use (default: detected logical cores)")
+        "Largest number of MPI ranks any test may use (default: detected physical cores)")
 
     foreach(_np 1 2 3 4)
         if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
@@ -153,7 +158,32 @@ if(ENABLE_AXOM)
         set_tests_properties(test_restart_runs PROPERTIES
                              LABELS "restart;long"
                              PROCESSORS ${_restart_runs_np}
+                             RESOURCE_LOCK restart_runs
                              TIMEOUT 3600)
+
+        # GPU builds also run the same tests on the device. Restored data is written on the
+        # host, so this checks that it reaches the device, and that GPU runs are bitwise
+        # reproducible across restarts. EA is the default since it is the fastest GPU assembly
+        # for these runs.
+        if(ENABLE_CUDA OR ENABLE_HIP)
+            set(EXACONSTIT_RESTART_RUN_TEST_GPU_ASSEMBLY "EA" CACHE STRING
+                "Assembly used by test_restart_runs_gpu (FULL, PA or EA)")
+            add_test(NAME test_restart_runs_gpu
+                     COMMAND ${PYTHON_EXECUTABLE} test_restart_runs.py
+                             --np ${_restart_runs_np}
+                             --rtmodel GPU
+                             --assembly ${EXACONSTIT_RESTART_RUN_TEST_GPU_ASSEMBLY}
+                             --mpiexec ${_restart_runs_mpiexec}
+                             --exe $<TARGET_FILE:mechanics>
+                             --compare-tool $<TARGET_FILE:compare_restart_checkpoints>
+                             --workdir ${CMAKE_BINARY_DIR}/test/restart_runs_gpu
+                     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/test)
+            set_tests_properties(test_restart_runs_gpu PROPERTIES
+                                 LABELS "restart;long;gpu"
+                                 PROCESSORS ${_restart_runs_np}
+                                 RESOURCE_LOCK restart_runs
+                                 TIMEOUT 7200)
+        endif()
     endif()
 endif()
 
