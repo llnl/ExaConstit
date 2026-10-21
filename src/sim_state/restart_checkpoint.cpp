@@ -1777,9 +1777,9 @@ void RestartCheckpoint::BindFieldsAndQuadratureFunctions(Group* root, Simulation
     // Binding only records the target pointer; the data is read later by RestoreState()'s
     // loadExternalData() call. HostReadWrite() marks the host copy as the valid one, so on a
     // GPU run the next device access copies the restored values to the device instead of
-    // using stale device data. On a rank with no elements both vectors are empty: the size
-    // check still runs (0 == 0), nothing is bound, and the zero-length stored view is dropped
-    // before the load.
+    // using stale device data. On a rank with no elements both vectors are empty. Their views
+    // were written without a data pointer, which Sidre stores as an EMPTY view rather than an
+    // external one, so only the size is checked (0 == 0) and nothing is bound or loaded.
     // ---------------------------------------------------------------------
     const auto bind_vector = [&](const std::string& path, mfem::Vector& target) {
         if (!root->hasView(path)) {
@@ -1787,6 +1787,13 @@ void RestartCheckpoint::BindFieldsAndQuadratureFunctions(Group* root, Simulation
             return;
         }
         View* view = root->getView(path);
+        if (target.Size() == 0) {
+            if (view->getNumElements() != 0) {
+                RecordFailure(path + " has " + std::to_string(view->getNumElements()) +
+                              " entries, but this rank owns no elements");
+            }
+            return;
+        }
         if (!view->isExternal() || view->getTypeID() != axom::sidre::FLOAT64_ID ||
             view->getNumElements() != target.Size()) {
             RecordFailure(path + " has " + std::to_string(view->getNumElements()) +
@@ -1794,9 +1801,7 @@ void RestartCheckpoint::BindFieldsAndQuadratureFunctions(Group* root, Simulation
                           std::to_string(target.Size()) + " doubles");
             return;
         }
-        if (target.Size() > 0) {
-            view->setExternalDataPtr(target.HostReadWrite());
-        }
+        view->setExternalDataPtr(target.HostReadWrite());
     };
     bind_vector("fields/mesh_current/values", *sim_state.m_mesh_nodes.at("mesh_current"));
     bind_vector("fields/primal_field/values", *sim_state.m_primal_field);
