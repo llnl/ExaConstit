@@ -3,7 +3,15 @@
 All notable changes to ExaConstit are documented in this file, one line per change.
 Entries for releases before v0.10.0 were reconstructed from the release tag notes.
 
-## [v0.10.0] - Unreleased
+## [v0.10.1] - 2026-10-21
+
+Requires the same MFEM fork commit as v0.10.0.
+
+### Fixed
+- Volume-averaged elastic strains (`avg_elastic_strain_*.txt`) only included the first quadrature points of each region on each rank (as many as the region had elements) and counted the rest as zero, so they were wrong and changed with the number of MPI ranks. Elastic strain averages written by v0.9.0 and v0.10.0 should not be used.
+- The `Elastic Strains` visualization field read the quadrature point state variables by element index instead of the element-averaged ones, so its values were wrong and changed with the number of MPI ranks (v0.9.0 and v0.10.0).
+
+## [v0.10.0] - 2026-10-20
 
 Requires the `exaconstit-dev` branch of the ExaConstit MFEM fork (https://github.com/rcarson3/mfem),
 tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based).

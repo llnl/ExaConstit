@@ -275,7 +275,8 @@ void ElasticStrainProjection::Execute(std::shared_ptr<SimulationState> sim_state
     const int rel_vol_ind =
         sim_state->GetQuadratureFunctionStatePair("relative_volume", region).first;
 
-    auto state_vars = sim_state->GetQuadratureFunction("state_var_end", region)->Read();
+    // Element-averaged state variables (one entry per element), like the other projections
+    auto state_vars = state_qf->Read();
     auto strain = mfem::Reshape(elastic_strain_gf->Write(), gf_vdim, nelems);
 
     mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
