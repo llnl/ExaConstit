@@ -90,17 +90,32 @@ if(ENABLE_AXOM)
         endif()
     endforeach()
 
+    # The two tools below only use Axom, but an Axom built with GPU support requires every
+    # file using axom::Array to be compiled as device code, so they need the GPU dependency
+    # that makes BLT compile them with the CUDA/HIP compiler.
+    set(_restart_tool_depends axom)
+    if(ENABLE_CUDA)
+        if (${BLT_VERSION} VERSION_GREATER_EQUAL 0.6.0)
+            list(APPEND _restart_tool_depends blt::cuda_runtime blt::cuda)
+        else()
+            list(APPEND _restart_tool_depends cuda cuda_runtime)
+        endif()
+    endif()
+    if(ENABLE_HIP)
+        list(APPEND _restart_tool_depends blt::hip blt::hip_runtime)
+    endif()
+
     # Diagnostic: lists how each quadrature function is stored in a checkpoint rank file
     blt_add_executable(NAME       inspect_restart_rank_file
                        SOURCES    ${CMAKE_SOURCE_DIR}/scripts/restart/inspect_restart_rank_file.cpp
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
-                       DEPENDS_ON axom)
+                       DEPENDS_ON ${_restart_tool_depends})
 
     # Compares two checkpoint directories view by view (bitwise by default)
     blt_add_executable(NAME       compare_restart_checkpoints
                        SOURCES    ${CMAKE_SOURCE_DIR}/scripts/restart/compare_restart_checkpoints.cpp
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
-                       DEPENDS_ON axom)
+                       DEPENDS_ON ${_restart_tool_depends})
 
     # Restart tests on real runs (test_restart_runs.py): cyclic loading chained every 1 and 2
     # cycles, long monotonic tension chained halfway, a run with empty ranks, restarts from past
