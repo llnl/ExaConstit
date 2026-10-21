@@ -54,14 +54,21 @@ namespace exaconstit::microstructure {
  * fit in 16 bits (they are shifted into the top half of ctr2).
  */
 enum class RngPurpose : std::uint32_t {
-    SEED_POSITION = 1,  ///< seed coordinates (rejection / element-weighted candidates)
+    SEED_POSITION = 1,  ///< seed coordinates of rejection-sampling candidates (id = candidate k)
     ORIENTATION = 2,    ///< random grain orientations
     LATTICE_JITTER = 3, ///< perturbation of lattice seed positions
     JOHNSON_MEHL = 4,   ///< nucleation times
     SEED_WEIGHT = 5,    ///< Laguerre / additive weights
     SEED_SHAPE = 6,     ///< per-seed quadric shape tensors
     PHASE = 7,          ///< phase assignment
-    GENERIC = 0xFFFF    ///< tests and ad-hoc use
+    /**
+     * Element-volume-weighted seed sampling: arrival times and in-element positions of the
+     * points an element emits (id = 64-bit hash of the element centroid, all 64 bits used).
+     * A purpose of its own keeps these streams disjoint from the SEED_POSITION candidate streams
+     * for every possible hash value.
+     */
+    ELEMENT_WEIGHTED_POSITION = 8,
+    GENERIC = 0xFFFF ///< tests and ad-hoc use
 };
 
 /**

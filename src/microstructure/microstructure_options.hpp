@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 /**
  * @file microstructure_options.hpp
@@ -104,11 +105,36 @@ struct SeedOptions {
      * (V/N)^(1/3), V = material volume, N = num_seeds. 0 disables it.
      */
     double min_distance_factor = 0.0;
+    /**
+     * @brief Absolute minimum seed spacing d for RSA, in mesh length units (TOML `min_distance`).
+     * When > 0 it is used instead of min_distance_factor; 0 (default) means "use the factor".
+     */
+    double min_distance = 0.0;
     /** @brief Minimum distance of a seed from the domain boundary, in mesh length units; 0
      * disables it. */
     double boundary_clearance = 0.0;
-    /** @brief "material" (seeds only inside the mesh) or "bbox" (anywhere in its bounding box). */
+    /**
+     * @brief "material" (seeds only inside the mesh) or "bbox" (anywhere in the sampling box: the
+     * mesh bounding box, or the user sampling_box when one is given).
+     */
     std::string sampling_domain = "material";
+    /**
+     * @brief True when the user gave a sampling box (TOML `sampling_box = [xlo, ylo, zlo, xhi,
+     * yhi, zhi]`, mesh length units). Seeds are then drawn only inside that box (and, for
+     * sampling_domain = "material", inside the material), instead of the whole mesh bounding box.
+     * Useful to put grains only in a sub-region (e.g. a gauge section).
+     */
+    bool use_sampling_box = false;
+    /** @brief Lower corner (x, y, z) of the sampling box; used when use_sampling_box is true. */
+    std::array<double, 3> sampling_box_lo = {0.0, 0.0, 0.0};
+    /** @brief Upper corner (x, y, z) of the sampling box; must exceed sampling_box_lo per axis. */
+    std::array<double, 3> sampling_box_hi = {0.0, 0.0, 0.0};
+    /**
+     * @brief If the RSA minimum distance (or a tiny material fraction) makes seed generation
+     * stall before num_seeds seeds are placed: false (default) stops with an error; true keeps
+     * the seeds placed so far and reports the achieved count (TOML `allow_fewer_seeds`).
+     */
+    bool allow_fewer_seeds = false;
     /** @brief Lattice for LATTICE placement: "cubic", "bcc", "fcc" or "hcp". */
     std::string lattice_type = "cubic";
     /** @brief Random lattice offset as a fraction of the lattice spacing (>= 0). */
@@ -304,11 +330,13 @@ struct MicrostructureOptions {
      * caller combines the results with MPI_Allreduce(MPI_MIN) before aborting. Requires MPI to be
      * initialized.
      *
+     * @param problems optional; each error message is also appended here (all ranks, not only
+     *                 rank 0), so a non-root rank whose checks fail alone can print them.
      * @return true if every check passed.
      * @throws nothing for invalid options (they are reported, not thrown); only
      *         std::filesystem::filesystem_error if the file system cannot be queried at all.
      */
-    bool validate() const;
+    bool validate(std::vector<std::string>* problems = nullptr) const;
 
     /**
      * @brief Applies the tool's command-line overrides on top of the parsed options (see

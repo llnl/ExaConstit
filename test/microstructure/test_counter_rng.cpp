@@ -124,6 +124,17 @@ TEST(CounterRng, StreamsAreIndependentOfCallOrder) {
         ms::CounterRng(seed ^ (1ull << 40), ms::RngPurpose::SEED_POSITION, 5u).UniformDouble(0u));
     EXPECT_NE(base.UniformDouble(0u),
               ms::CounterRng(seed, ms::RngPurpose::LATTICE_JITTER, 5u).UniformDouble(0u));
+    // Element-weighted seeding uses its own purpose with a full 64-bit centroid hash as id, so
+    // its streams differ from the rejection candidates' (SEED_POSITION, k) streams for the same
+    // id, including ids with the top bit set
+    const std::uint64_t top_bit_id = 5u | (1ull << 63);
+    EXPECT_NE(
+        base.UniformDouble(0u),
+        ms::CounterRng(seed, ms::RngPurpose::ELEMENT_WEIGHTED_POSITION, 5u).UniformDouble(0u));
+    EXPECT_NE(
+        ms::CounterRng(seed, ms::RngPurpose::SEED_POSITION, top_bit_id).UniformDouble(0u),
+        ms::CounterRng(seed, ms::RngPurpose::ELEMENT_WEIGHTED_POSITION, top_bit_id)
+            .UniformDouble(0u));
     EXPECT_NE(
         base.UniformDouble(0u),
         ms::CounterRng(seed, ms::RngPurpose::SEED_POSITION, 5u + (1ull << 32)).UniformDouble(0u));

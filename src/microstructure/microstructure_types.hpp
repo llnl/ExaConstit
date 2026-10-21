@@ -105,7 +105,14 @@ struct SeedSet {
      * sample, passive, passed through verbatim. Size 4N or empty.
      */
     std::vector<double> quat;
-    /** @brief Stable id from the source (row id of a table; random seeds: 0..N-1). Size N. */
+    /**
+     * @brief Stable id of each seed from its source, size N.
+     * Seed tables: the row id. Generated seeds: the candidate index (rejection-sampling candidate
+     * k, lattice point index, or position in the element-weighted arrival order), strictly
+     * increasing in seed order, so it is stable but not necessarily 0..N-1: candidates rejected
+     * by the material test, the minimum distance or the clearance leave gaps. Random orientations
+     * are keyed by it, so a seed keeps its orientation when other candidates are rejected.
+     */
     std::vector<std::int64_t> source_id;
     /** @brief Optional phase id per seed (size N or empty). */
     std::vector<int> phase;

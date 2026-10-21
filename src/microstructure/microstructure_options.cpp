@@ -349,16 +349,22 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
  *     If omitted and source = "file", it defaults to "file".
  *   - `min_distance_factor`: minimum seed spacing as a fraction of the mean grain size
  *     (V/N)^(1/3); 0 disables it.
+ *   - `min_distance`: absolute minimum seed spacing (mesh length units); when > 0 it replaces
+ *     min_distance_factor (validate() warns when both are > 0).
  *   - `boundary_clearance`: minimum distance of a seed from the domain boundary; 0 disables it.
  *   - `sampling_domain`: "material" (seeds only inside the mesh) or "bbox" (anywhere in the
- *     mesh's bounding box).
+ *     sampling box: the mesh's bounding box, or `sampling_box` when given).
+ *   - `sampling_box = [xlo, ylo, zlo, xhi, yhi, zhi]`: draw seeds only inside this box instead
+ *     of the whole mesh bounding box (mesh length units; corners checked in validate()).
+ *   - `allow_fewer_seeds`: if seed generation stalls (spacing too large for the volume), keep
+ *     the seeds placed so far instead of stopping with an error.
  *   - `lattice_type` ("cubic", "bcc", "fcc", "hcp") and `lattice_jitter` (random offset as a
  *     fraction of the lattice spacing), for placement = "lattice".
  *   - `file`, `units_scale`, `translate`: seed table path and the scale-then-translate applied
  *     to its positions to bring them into mesh coordinates.
  *
- * @throws std::invalid_argument for a negative rng_seed, an unknown placement, or a translate
- *         that does not have 3 entries.
+ * @throws std::invalid_argument for a negative rng_seed, an unknown placement, a translate
+ *         that does not have 3 entries, or a sampling_box that does not have 6 entries.
  */
 SeedOptions seeds_from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
@@ -368,8 +374,11 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
                        "rng_seed",
                        "placement",
                        "min_distance_factor",
+                       "min_distance",
                        "boundary_clearance",
                        "sampling_domain",
+                       "sampling_box",
+                       "allow_fewer_seeds",
                        "lattice_type",
                        "lattice_jitter",
                        "file",
@@ -419,11 +428,28 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
     if (toml_input.contains("min_distance_factor")) {
         seeds.min_distance_factor = get_number(toml::find(toml_input, "min_distance_factor"));
     }
+    if (toml_input.contains("min_distance")) {
+        seeds.min_distance = get_number(toml::find(toml_input, "min_distance"));
+    }
     if (toml_input.contains("boundary_clearance")) {
         seeds.boundary_clearance = get_number(toml::find(toml_input, "boundary_clearance"));
     }
     if (toml_input.contains("sampling_domain")) {
         seeds.sampling_domain = toml::find<std::string>(toml_input, "sampling_domain");
+    }
+    if (toml_input.contains("allow_fewer_seeds")) {
+        seeds.allow_fewer_seeds = toml::find<bool>(toml_input, "allow_fewer_seeds");
+    }
+
+    // User sampling box, written as one flat array [lo corner, hi corner]. Its presence switches
+    // the box on; whether hi > lo is checked in validate() so all problems are reported together.
+    if (toml_input.contains("sampling_box")) {
+        const std::array<double, 6> box = get_number_array<6>(toml_input, "sampling_box");
+        seeds.use_sampling_box = true;
+        for (std::size_t d = 0; d < 3; ++d) {
+            seeds.sampling_box_lo[d] = box[d];
+            seeds.sampling_box_hi[d] = box[d + 3];
+        }
     }
 
     // Lattice placement parameters.
@@ -638,13 +664,24 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
 }
 
 /**
- * @brief Records one validation error: prints it on rank 0 and marks the options invalid.
+ * @brief Where validate() also collects its error messages when its caller asked for them
+ * (validate(&problems)); null otherwise. Set and cleared by validate() itself, so it is only
+ * non-null during a validate() call. Not thread-safe (options are validated from one thread).
+ */
+std::vector<std::string>* validation_problem_sink = nullptr;
+
+/**
+ * @brief Records one validation error: prints it on rank 0, appends it to the caller's list
+ * (if validate() was given one) and marks the options invalid.
  *
  * validate() keeps going after an error so that the user sees every problem in one run instead
  * of fixing them one at a time.
  */
 void report_error(bool& valid, const std::string& message) {
     WARNING_0_OPT("Error: " + message);
+    if (validation_problem_sink != nullptr) {
+        validation_problem_sink->push_back(message);
+    }
     valid = false;
 }
 
@@ -830,10 +867,23 @@ MicrostructureOptions MicrostructureOptions::parse_options_file(const fs::path& 
  * Not collective (no MPI communication), but every rank holds the same options and so returns
  * the same value; the tool can therefore abort on all ranks together.
  *
+ * @param problems optional; every error message is also appended here, so a rank other than 0
+ *                 (which prints nothing) can report its own problems, e.g. when only it cannot
+ *                 see an input file.
  * @return true if every check passed.
  */
-bool MicrostructureOptions::validate() const {
+bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
     bool valid = true;
+    // Collect messages for the caller during this call only; the guard clears the sink again on
+    // every return path.
+    struct SinkGuard {
+        explicit SinkGuard(std::vector<std::string>* sink) {
+            validation_problem_sink = sink;
+        }
+        ~SinkGuard() {
+            validation_problem_sink = nullptr;
+        }
+    } sink_guard(problems);
 
     // --- Execution space --------------------------------------------------------------------
     // First the spelling, then whether this build actually has that backend. The backend is the
@@ -921,8 +971,32 @@ bool MicrostructureOptions::validate() const {
     if (!is_nonnegative_finite(seeds.min_distance_factor)) {
         report_error(valid, "Seeds.min_distance_factor must be finite and >= 0");
     }
+    if (!is_nonnegative_finite(seeds.min_distance)) {
+        report_error(valid, "Seeds.min_distance must be finite and >= 0");
+    }
+    // Both spacing forms given: the absolute distance wins (SeedingParameters), so the factor is
+    // ignored. Not an error, but worth a warning in case the user expected the factor.
+    if (seeds.min_distance > 0.0 && seeds.min_distance_factor > 0.0) {
+        WARNING_0_OPT("Warning: Seeds.min_distance and Seeds.min_distance_factor are both set; "
+                      "min_distance is used and min_distance_factor is ignored");
+    }
     if (!is_nonnegative_finite(seeds.boundary_clearance)) {
         report_error(valid, "Seeds.boundary_clearance must be finite and >= 0");
+    }
+    // A sampling box needs real corners and a positive extent along every axis; an empty or
+    // inverted box could never receive a seed. (Whether it overlaps the material is only known
+    // once the mesh is read, so the seed generator checks that.)
+    if (seeds.use_sampling_box) {
+        for (std::size_t d = 0; d < 3; ++d) {
+            const double lo = seeds.sampling_box_lo[d];
+            const double hi = seeds.sampling_box_hi[d];
+            if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) {
+                report_error(valid,
+                             "Seeds.sampling_box must be finite with upper corner > lower corner "
+                             "along every axis ([xlo, ylo, zlo, xhi, yhi, zhi])");
+                break;
+            }
+        }
     }
     if (!is_nonnegative_finite(seeds.lattice_jitter)) {
         report_error(valid, "Seeds.lattice_jitter must be finite and >= 0");

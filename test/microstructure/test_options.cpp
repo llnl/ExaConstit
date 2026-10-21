@@ -31,6 +31,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -117,6 +118,9 @@ TEST(MicrostructureOptions, DefaultsWhenKeysOmitted) {
     EXPECT_EQ(options.seeds.source, "random");
     EXPECT_EQ(options.seeds.placement, ms::SeedPlacement::REJECTION);
     EXPECT_EQ(options.seeds.min_distance_factor, 0.0);
+    EXPECT_EQ(options.seeds.min_distance, 0.0);
+    EXPECT_FALSE(options.seeds.use_sampling_box);
+    EXPECT_FALSE(options.seeds.allow_fewer_seeds);
     EXPECT_EQ(options.seeds.units_scale, 1.0);
     EXPECT_EQ(options.tessellation.metric, ms::MetricType::VORONOI);
     EXPECT_EQ(options.tessellation.global_tensor, defaults.tessellation.global_tensor);
@@ -192,6 +196,26 @@ paraview = false
         "[Seeds]\nplacement = \"johnson_mehl\"\n[Tessellation]\nmetric = \"laguerre\"\n");
     EXPECT_EQ(laguerre.seeds.placement, ms::SeedPlacement::JOHNSON_MEHL);
     EXPECT_EQ(laguerre.tessellation.metric, ms::MetricType::LAGUERRE);
+}
+
+// The seed-spacing keys added for the seed generator: an absolute minimum distance (an integer
+// is accepted for a real value), a sampling box given as one flat [lo corner, hi corner] array
+// (so [0, 0.25, 0.5, 1, 0.75, 2] means x in [0, 1], y in [0.25, 0.75], z in [0.5, 2]), and the
+// allow_fewer_seeds switch. A box with the wrong number of entries cannot be stored and throws.
+TEST(MicrostructureOptions, SeedSpacingAndSamplingBox) {
+    const auto options = FromString(R"(
+[Seeds]
+num_seeds = 10
+min_distance = 2
+sampling_box = [0, 0.25, 0.5, 1, 0.75, 2]
+allow_fewer_seeds = true
+)");
+    EXPECT_EQ(options.seeds.min_distance, 2.0);
+    EXPECT_TRUE(options.seeds.use_sampling_box);
+    EXPECT_EQ(options.seeds.sampling_box_lo, (std::array<double, 3>{0.0, 0.25, 0.5}));
+    EXPECT_EQ(options.seeds.sampling_box_hi, (std::array<double, 3>{1.0, 0.75, 2.0}));
+    EXPECT_TRUE(options.seeds.allow_fewer_seeds);
+    EXPECT_THROW(FromString("[Seeds]\nsampling_box = [0, 0, 0, 1, 1]\n"), std::invalid_argument);
 }
 
 // A typo (num_sedes) and a table of a later stage ([Conformal]) must only warn on rank 0 and
@@ -282,6 +306,26 @@ TEST(MicrostructureOptions, ValidationFailures) {
         o.seeds.file = "no_such_seeds.csv";
     }));
 
+    // Seed spacing and sampling box: a negative absolute distance, and boxes with no extent
+    // (hi == lo along x) or inverted (hi < lo along z), which could never receive a seed. A
+    // proper box validates.
+    EXPECT_FALSE(validate_with([](O& o) { o.seeds.min_distance = -1.0; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.use_sampling_box = true;
+        o.seeds.sampling_box_lo = {0.5, 0.0, 0.0};
+        o.seeds.sampling_box_hi = {0.5, 1.0, 1.0};
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.use_sampling_box = true;
+        o.seeds.sampling_box_lo = {0.0, 0.0, 1.0};
+        o.seeds.sampling_box_hi = {1.0, 1.0, 0.0};
+    }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.seeds.use_sampling_box = true;
+        o.seeds.sampling_box_lo = {0.0, 0.0, 0.0};
+        o.seeds.sampling_box_hi = {0.5, 0.5, 0.5};
+    }));
+
     // Tessellation: no seed group, and the two non-positive-definite tensors described above.
     EXPECT_FALSE(validate_with([](O& o) { o.tessellation.num_bins = 0; }));
     EXPECT_FALSE(validate_with([](O& o) { o.tessellation.global_tensor = {1, 1, -1, 0, 0, 0}; }));
@@ -295,6 +339,24 @@ TEST(MicrostructureOptions, ValidationFailures) {
         o.seeds.placement = ms::SeedPlacement::FILE;
         o.seeds.file = data_dir / "grains.txt";
     }));
+}
+
+// validate(&problems) also hands every error message to the caller (on every rank, while the
+// printed warnings appear on rank 0 only), so a non-root rank whose checks fail alone can report
+// them. Two independent problems (zero seeds, gzip level 10) give two messages; valid options
+// give none, and the list is not touched by a later validate() without a list.
+TEST(MicrostructureOptions, ValidationCollectsProblems) {
+    std::vector<std::string> problems;
+    EXPECT_TRUE(ValidAutoOptions().validate(&problems));
+    EXPECT_TRUE(problems.empty());
+
+    auto options = ValidAutoOptions();
+    options.seeds.num_seeds = 0;
+    options.output.compression = 10;
+    EXPECT_FALSE(options.validate(&problems));
+    EXPECT_EQ(problems.size(), 2u);
+    EXPECT_FALSE(options.validate());
+    EXPECT_EQ(problems.size(), 2u);
 }
 
 // TOML 1.0 accepts the floats nan and inf. They must not slip through validate(): NaN makes every
@@ -316,6 +378,11 @@ TEST(MicrostructureOptions, NonFiniteValuesFailValidation) {
     // Seed spacing, lattice jitter, and the seed-table transform.
     EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.min_distance_factor = nan; }));
     EXPECT_FALSE(validate_with([inf](O& o) { o.seeds.boundary_clearance = inf; }));
+    EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.min_distance = nan; }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.seeds.use_sampling_box = true;
+        o.seeds.sampling_box_hi = {inf, 1.0, 1.0};
+    }));
     EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.lattice_jitter = nan; }));
     EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.units_scale = nan; }));
     EXPECT_FALSE(validate_with([inf](O& o) { o.seeds.units_scale = inf; }));
