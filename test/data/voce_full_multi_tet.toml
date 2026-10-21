@@ -1,0 +1,218 @@
+# Tet mesh version of voce_full_multi.toml: the same problem on cube_tet.mesh, which splits
+# each cell of the 5x5x5 auto mesh into 6 tets that keep the cell's grain ID and uses the same
+# boundary attributes (generated with scripts/meshing/tet_cube_mesh.py 5 grains.txt cube_tet.mesh)
+#
+# Multi-material ExaConstit configuration using the new structured format
+# This example defines two identical materials for testing multi-material functionality
+# and demonstrates the new boundary condition format
+#
+# Key differences from single-material format:
+# 1. Uses [[Materials]] array instead of single Properties/Model sections
+# 2. Uses structured BCs with separate velocity_bcs and velocity_gradient_bcs
+# 3. Requires region_mapping_file to map mesh elements to materials
+# 4. Each material is self-contained with its own properties and configuration
+#
+# To test legacy format: comment out the new BCs structure and uncomment legacy format
+Version = "0.8.0"
+
+# Base simulation name
+basename = "multi_material_tet_test"
+
+# Region mapping file - this maps mesh element attributes to material indices
+# Format should map element attribute IDs to material region IDs (0, 1, etc.)
+region_mapping_file = "region_mapping.txt"
+
+# For auto-generated mesh with multiple materials, grain file is required
+grain_file = "grains.txt"
+
+# Define multiple materials using the new Materials array structure
+[[Materials]]
+    name = "material_A"
+    mech_type = "exacmech"
+    temperature = 298.0
+    
+    # Material properties for first material
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    
+    # State variables for first material
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    
+    # Grain information for first material
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "voce_quats.ori"
+    
+    # Model configuration for first material
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    name = "material_B"
+    mech_type = "exacmech"
+    temperature = 298.0
+    
+    # Material properties for second material (identical for testing)
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    
+    # State variables for second material (identical for testing)
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    
+    # Grain information for second material (identical for testing)
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "voce_quats.ori"
+    
+    # Model configuration for second material (identical for testing)
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Boundary conditions using new structured format
+[BCs]
+    # Modern structured boundary conditions - separates velocity and velocity gradient BCs
+    
+    # Velocity boundary conditions - directly specify velocity values
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]  # 3=xyz constrained, 1=x constrained, 2=y constrained
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 3 components × 3 boundaries
+    
+    # Velocity gradient boundary conditions - specify velocity gradient tensor
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]  # xyz components for velocity gradient
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]  # 3x3 matrix as flat array
+        origin = [0.0, 0.0, 0.0]  # Optional origin point for velocity gradient application
+    
+    # Time-dependent settings (optional)
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]  # Apply these BCs starting at cycle 1
+
+    # Legacy format (commented out for comparison/testing)
+    # essential_ids = [1, 2, 3, 4]
+    # essential_comps = [3, 1, 2, -3]  # Note: negative comp (-3) would indicate vgrad BC in legacy format
+    # essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.001]
+    # essential_vel_grad = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.001]]
+    
+    # For time-dependent BCs in legacy format, you would use:
+    # changing_ess_bcs = true
+    # update_steps = [1, 11, 21]
+    # essential_ids = [[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]]
+    # essential_comps = [[3, 1, 2, -3], [3, 1, 2, -3], [3, 1, 2, -3]]
+    # essential_vals = [[...], [...], [...]]
+    
+    # Example: Adding a third material (commented out)
+    # [[Materials]]
+    #     name = "material_C"
+    #     mech_type = "exacmech"
+    #     temperature = 350.0  # Different temperature
+    #     [Materials.Properties]
+    #         floc = "props_cp_different.txt"  # Different properties
+    #         num_props = 17
+    #     [Materials.State_Vars]
+    #         floc = "state_cp_different.txt"
+    #         num_vars = 28
+    #     [Materials.Grain]
+    #         ori_state_var_loc = 9
+    #         ori_stride = 4
+    #         ori_type = "quat"
+    #         num_grains = 1000  # Different grain count
+    #         orientation_file = "different_quats.ori"
+    #     [Materials.Model]
+    #         crystal_plasticity = true
+    #         [Materials.Model.ExaCMech]
+    #             xtal_type = "BCC"  # Different crystal type
+    #             slip_type = "PowerVoceNL"
+    
+    # Example: Time-dependent BCs in new format (commented out)
+    # [[BCs.velocity_bcs]]
+    #     essential_ids = [1, 2]
+    #     essential_comps = [3, 1]
+    #     essential_vals = [0.0, 0.0, 0.001, 0.0, 0.0, 0.0]  # Different loading
+    #     [BCs.velocity_bcs.time_info]
+    #         cycle_dependent = true
+    #         cycles = [1, 10, 20]  # Multiple time steps with different values
+
+# Time stepping options (unchanged from original)
+[Time]
+    [Time.Auto]
+        dt_start = 0.1
+        dt_min = 0.05
+        dt_scale = 0.333333
+        t_final = 10.0
+        auto_dt_file = "auto_dt_out.txt"
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 7.1
+    [Time.Custom]
+        nsteps = 40
+        floc = "custom_dt.txt"
+
+# Visualization options (unchanged from original)
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+# Post-processing options (unchanged from original)
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        def_grad = true
+        euler_strain = true
+        plastic_work = true
+        elastic_strain = true
+        output_frequency = 1
+        output_directory = "./results"
+    [PostProcessing.surface_quantities]
+        enabled = true
+        # All six faces of the cube:
+        # 1 bottom, 2 left, 3 front, 4 top, 5 right, 6 back
+        boundary_ids = [1, 2, 3, 4, 5, 6]
+        moments = true
+
+# Solver options (unchanged from original)
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+# Mesh options (unchanged from original)
+[Mesh]
+    ref_ser = 1
+    ref_par = 0
+    p_refinement = 1
+    floc = "cube_tet.mesh"
+    type = "file"
