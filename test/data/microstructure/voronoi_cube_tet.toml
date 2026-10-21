@@ -1,0 +1,61 @@
+# Microstructure generator example: 20 Voronoi grains on the tetrahedral mesh test/data/cube_tet.mesh,
+# written both as one serial mesh file and as a 4-part parallel mesh.
+#
+# Run with (planned; the generator tool is not implemented yet):
+#     mpirun -np N microstructure_generator -i voronoi_cube_tet.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+# Unknown keys are ignored with a warning on rank 0, so check the log for typos.
+
+# Where the labeling kernels run: "cpu", "openmp" or "gpu". Default "cpu".
+exec = "cpu"
+
+# [Mesh]: the finite element mesh the grains are painted onto.
+[Mesh]
+    # "file": one serial MFEM mesh file (plain or .gz).
+    type = "file"
+    # Path of the mesh. Relative paths are relative to the directory the tool is run from (the
+    # working directory), as in ExaConstit's options.toml, not to this file.
+    floc = "cube_tet.mesh"
+
+# [Seeds]: one seed point per grain. Each element joins the grain of its closest seed.
+[Seeds]
+    source = "random"
+    # Number of grains.
+    num_seeds = 20
+    # Random-number key: same value => same seeds, on any number of MPI ranks.
+    rng_seed = 42
+    # Uniform candidates in the bounding box, kept if they fall inside the mesh.
+    placement = "rejection"
+    # "material": seeds only inside the meshed material; "bbox": anywhere in its bounding box.
+    sampling_domain = "material"
+
+# [Tessellation]: how "closest seed" is measured.
+[Tessellation]
+    metric = "voronoi"
+    # Wrap-around per direction [x, y, z]. true makes grains cut by one face continue on the
+    # opposite face (a periodic microstructure). Default all false.
+    periodic = [false, false, false]
+
+# [Cleanup]: grains that come out split into disconnected pieces.
+[Cleanup]
+    # "auto" (split pieces into separate grains for random seeds, merge them for data sources),
+    # "split", "merge" or "none".
+    fragments = "auto"
+
+# [Regions]: how grains are grouped into ExaConstit material regions.
+[Regions]
+    # "single": every grain belongs to one region (one material). Others: "from_phase",
+    # "phase_fractions".
+    mode = "single"
+
+# [Output]: files written. Every file is named <directory>/<basename>.<extension>.
+[Output]
+    basename = "voronoi_cube_tet"
+    # "both": one serial mesh file plus a parallel mesh with one file per part, which ExaConstit
+    # can read with [Mesh] type = "parallel". ExaConstit reads one part per rank, so that run
+    # must use exactly num_parts (here 4) MPI ranks; the serial file works with any rank count.
+    mesh_format = "both"
+    # Number of parts of the parallel mesh; 0 means one part per MPI rank of this run.
+    num_parts = 4
+    # gzip level 0-9 of the mesh files; 0 writes plain text.
+    compression = 6

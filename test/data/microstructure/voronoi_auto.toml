@@ -1,0 +1,65 @@
+# Microstructure generator example: 8 Voronoi grains on an 8x8x8 auto-generated hex mesh.
+#
+# Run with (planned; the generator tool is not implemented yet):
+#     microstructure_generator -i voronoi_auto.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+# Unknown keys are ignored with a warning on rank 0, so check the log for typos.
+# Values written in a fixed list (e.g. "voronoi") are case-sensitive.
+
+# Where the labeling kernels run: "cpu", "openmp" or "gpu" (the latter two need a build with that
+# backend). Default "cpu".
+exec = "cpu"
+# Request results that are independent of the number of MPI ranks and of the execution space.
+# Default true. Not implemented yet: the value is read and stored, but nothing acts on it.
+deterministic = true
+
+# [Mesh]: the finite element mesh the grains are painted onto.
+[Mesh]
+    # "auto": build a Cartesian box of hexahedra from [Mesh.Auto] (same as ExaConstit's
+    # [Mesh] type = "auto"). Other choices: "file" (one serial MFEM mesh, set floc) and
+    # "parallel" (a mesh already split into one file per part, floc = file prefix).
+    type = "auto"
+    [Mesh.Auto]
+        # Box size [Lx, Ly, Lz] in mesh length units (alias: mxyz).
+        length = [1.0, 1.0, 1.0]
+        # Number of elements along x, y, z (alias: nxyz). 8x8x8 = 512 hex elements.
+        ncuts = [8, 8, 8]
+
+# [Seeds]: one seed point per grain. Each element joins the grain of its closest seed.
+[Seeds]
+    # "random" (generated) or "file" (read positions from a seed table, set file).
+    source = "random"
+    # Number of grains to generate. Required (> 0) for random seeds.
+    num_seeds = 8
+    # Integer >= 0 that keys the random numbers. The same rng_seed gives the same seeds on any
+    # number of MPI ranks; change it to get a different random microstructure.
+    rng_seed = 0
+    # How seeds are positioned: "rejection" (uniform in the bounding box, kept if inside the
+    # mesh), "element_weighted", "lattice", "johnson_mehl" or "file".
+    placement = "rejection"
+
+# [Tessellation]: how "closest seed" is measured.
+[Tessellation]
+    # "voronoi" (plain distance, flat grain boundaries), "laguerre", "quadric" (anisotropic,
+    # elongated grains) or "additive".
+    metric = "voronoi"
+    # Where each element is tested: "centroid" (its centroid) or "quadrature_vote" (majority vote
+    # over its quadrature points).
+    sampling = "centroid"
+
+# [Orientations]: crystal orientation of each grain.
+[Orientations]
+    # "random": uniformly random orientations (keyed by rng_seed, like the seeds).
+    source = "random"
+
+# [Output]: files written. Every file is named <directory>/<basename>.<extension>.
+[Output]
+    basename = "voronoi_auto"
+    # "serial" (one mesh file), "parallel" (one file per part) or "both".
+    mesh_format = "serial"
+    # gzip level 0-9 of the mesh file; 0 writes plain text. Default 6.
+    compression = 6
+    # Write the per-element grain ids to a separate grain file: "auto", "true" or "false".
+    # "auto" writes it only for auto meshes: ExaConstit rebuilds auto meshes itself, so the grain
+    # ids cannot travel inside the mesh file and are read from this grain file instead.
+    grain_file = "auto"
