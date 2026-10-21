@@ -704,8 +704,9 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     case CalcType::ELASTIC_STRAIN: {
         auto state_vars = m_sim_state->GetQuadratureFunction("state_var_end", region)->Read();
         const int vdim = m_sim_state->GetQuadratureFunction("state_var_end", region)->GetVDim();
-        const int ne =
-            m_sim_state->GetQuadratureFunction("state_var_end", region)->GetSpaceShared()->GetNE();
+        // One value per quadrature point (not per element): state_vars and data both hold
+        // every quadrature point of the region
+        const int npts = m_sim_state->GetQuadratureFunction("state_var_end", region)->Size() / vdim;
         const int estrain_ind =
             m_sim_state->GetQuadratureFunctionStatePair("elastic_strain", region).first;
         const int quats_ind = m_sim_state->GetQuadratureFunctionStatePair("quats", region).first;
@@ -714,7 +715,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
         qf->operator=(0.0);
         auto data = qf->Write();
 
-        mfem::forall(ne, [=] MFEM_HOST_DEVICE(int i) {
+        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i) {
             const auto strain_lat = &state_vars[i * vdim + estrain_ind];
             const auto quats = &state_vars[i * vdim + quats_ind];
             const auto rel_vol = state_vars[i * vdim + rel_vol_ind];
