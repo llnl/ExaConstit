@@ -649,4 +649,10 @@ void SystemDriver::UpdateModel() {
 
     auto def_grad = m_sim_state->GetQuadratureFunction("kinetic_grads");
     mech_operator->CalculateDeformationGradient(*def_grad.get());
+
+    // Internal nodal forces of the converged stresses, for the surface force output
+    if (m_sim_state->GetOptions().post_processing.surface_quantities.enabled) {
+        mech_operator->ComputeInternalForce(*m_sim_state->GetInternalForce());
+        m_sim_state->SetEssentialTrueDofs(mech_operator->GetEssentialTrueDofs());
+    }
 }

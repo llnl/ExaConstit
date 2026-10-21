@@ -11,23 +11,23 @@
 #include <iomanip>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 namespace {
 
 /// Number of per-face partial sums written by FaceSumsKernel
-constexpr int NUM_FACE_SUMS = 16;
+constexpr int NUM_FACE_SUMS = 10;
 // Layout of the per-face partial sums
-constexpr int SUM_DA = 0;     // da
-constexpr int SUM_NDA = 1;    // n da (3)
-constexpr int SUM_FORCE = 4;  // sigma n da (3)
-constexpr int SUM_MOMENT = 7; // x cross (sigma n da) about the origin (3)
-constexpr int SUM_XDA = 10;   // x da (3)
-constexpr int SUM_DISP = 13;  // u dA0 (3)
+constexpr int SUM_DA = 0;   // da
+constexpr int SUM_NDA = 1;  // n da (3)
+constexpr int SUM_XDA = 4;  // x da (3)
+constexpr int SUM_DISP = 7; // u dA0 (3)
+
+/// Number of per-node values written by NodeSumsKernel: force (3), x cross force (3)
+constexpr int NUM_NODE_SUMS = 6;
 
 /**
  * @brief Per-face partial sums of the surface integrals
- *
- * The Cauchy stress is in ExaConstit's Voigt order (xx, yy, zz, yz, xz, xy).
  */
 void FaceSumsKernel(const int nfaces,
                     const int* face_qoff,
@@ -36,7 +36,6 @@ void FaceSumsKernel(const int nfaces,
                     const double* da,
                     const double* disp,
                     const double* dA0,
-                    const double* stress,
                     double* sums) {
     mfem::forall(nfaces, [=] MFEM_HOST_DEVICE(int i) {
         double s[NUM_FACE_SUMS];
@@ -44,26 +43,40 @@ void FaceSumsKernel(const int nfaces,
             s[k] = 0.0;
         }
         for (int q = face_qoff[i]; q < face_qoff[i + 1]; q++) {
-            const double* xq = &x[3 * q];
-            const double* nq = &nda[3 * q];
-            const double* sig = &stress[6 * q];
-            const double t[3] = {sig[0] * nq[0] + sig[5] * nq[1] + sig[4] * nq[2],
-                                 sig[5] * nq[0] + sig[1] * nq[1] + sig[3] * nq[2],
-                                 sig[4] * nq[0] + sig[3] * nq[1] + sig[2] * nq[2]};
             s[SUM_DA] += da[q];
             for (int c = 0; c < 3; c++) {
-                s[SUM_NDA + c] += nq[c];
-                s[SUM_FORCE + c] += t[c];
-                s[SUM_XDA + c] += xq[c] * da[q];
+                s[SUM_NDA + c] += nda[3 * q + c];
+                s[SUM_XDA + c] += x[3 * q + c] * da[q];
                 s[SUM_DISP + c] += disp[3 * q + c] * dA0[q];
             }
-            s[SUM_MOMENT + 0] += xq[1] * t[2] - xq[2] * t[1];
-            s[SUM_MOMENT + 1] += xq[2] * t[0] - xq[0] * t[2];
-            s[SUM_MOMENT + 2] += xq[0] * t[1] - xq[1] * t[0];
         }
         for (int k = 0; k < NUM_FACE_SUMS; k++) {
             sums[NUM_FACE_SUMS * i + k] = s[k];
         }
+    });
+}
+
+/**
+ * @brief Gather each surface node's weighted internal force and its moment about the origin
+ */
+void NodeSumsKernel(const int nnodes,
+                    const int* node_tdofs,
+                    const double* weights,
+                    const double* force,
+                    const double* coords,
+                    double* sums) {
+    mfem::forall(nnodes, [=] MFEM_HOST_DEVICE(int j) {
+        const int* t = &node_tdofs[3 * j];
+        const double* w = &weights[3 * j];
+        const double f[3] = {w[0] * force[t[0]], w[1] * force[t[1]], w[2] * force[t[2]]};
+        const double x[3] = {coords[t[0]], coords[t[1]], coords[t[2]]};
+        double* s = &sums[NUM_NODE_SUMS * j];
+        s[0] = f[0];
+        s[1] = f[1];
+        s[2] = f[2];
+        s[3] = x[1] * f[2] - x[2] * f[1];
+        s[4] = x[2] * f[0] - x[0] * f[2];
+        s[5] = x[0] * f[1] - x[1] * f[0];
     });
 }
 
@@ -92,15 +105,13 @@ BoundarySurface::BoundarySurface(std::shared_ptr<mfem::ParMesh> mesh,
     const int dim = m_mesh->Dimension();
     MFEM_VERIFY(dim == 3 && m_fes->GetVDim() == 3,
                 "Surface quantities require a 3D mesh and a 3-component H1 space");
-    m_l2_fec = std::make_unique<mfem::L2_FECollection>(
-        m_order, dim, mfem::BasisType::GaussLegendre);
 
     std::map<int, int> attr_to_surface;
     for (int s = 0; s < m_num_surfaces; s++) {
         attr_to_surface[boundary_ids[static_cast<size_t>(s)]] = s;
     }
 
-    std::vector<int> face_surface, face_elem, face_table, face_qoff, face_vdof_off, vdofs;
+    std::vector<int> face_surface, face_table, face_qoff, face_vdof_off, vdofs;
     face_qoff.push_back(0);
     face_vdof_off.push_back(0);
     mfem::Array<int> elem_vdofs;
@@ -111,8 +122,8 @@ BoundarySurface::BoundarySurface(std::shared_ptr<mfem::ParMesh> mesh,
         }
         const int face = m_mesh->GetBdrElementFaceIndex(be);
         const auto info = m_mesh->GetFaceInformation(face);
-        // A boundary element always has its first adjacent element on this rank. For an
-        // interior face carrying a boundary attribute, the traction is taken from that side.
+        // A boundary element always has its first adjacent element on this rank, and for an
+        // interior face carrying a boundary attribute either side gives the same geometry
         const int elem = info.element[0].index;
         const int table = GetTable(m_mesh->GetElementBaseGeometry(elem),
                                    m_mesh->GetFaceGeometry(face),
@@ -128,7 +139,6 @@ BoundarySurface::BoundarySurface(std::shared_ptr<mfem::ParMesh> mesh,
         }
 
         face_surface.push_back(it->second);
-        face_elem.push_back(elem);
         face_table.push_back(table);
         face_qoff.push_back(face_qoff.back() + m_tab_nfq[table]);
         face_vdof_off.push_back(static_cast<int>(vdofs.size()));
@@ -140,7 +150,6 @@ BoundarySurface::BoundarySurface(std::shared_ptr<mfem::ParMesh> mesh,
         std::copy(src.begin(), src.end(), dst.HostWrite());
     };
     to_array(face_surface, m_face_surface);
-    to_array(face_elem, m_face_elem);
     to_array(face_table, m_face_table);
     to_array(face_qoff, m_face_qoff);
     to_array(face_vdof_off, m_face_vdof_off);
@@ -156,22 +165,14 @@ int BoundarySurface::GetTable(mfem::Geometry::Type elem_geom,
         return found->second;
     }
 
-    const int rule_order = 2 * m_order + 1;
-    const mfem::IntegrationRule& face_ir = mfem::IntRules.Get(face_geom, rule_order);
-    const mfem::IntegrationRule& vol_ir = mfem::IntRules.Get(elem_geom, rule_order);
+    const mfem::IntegrationRule& face_ir = mfem::IntRules.Get(face_geom, 2 * m_order + 1);
     const int nfq = face_ir.GetNPoints();
-    const int nvq = vol_ir.GetNPoints();
 
     const mfem::FiniteElement* h1_fe = m_fes->FEColl()->FiniteElementForGeometry(elem_geom);
-    const mfem::FiniteElement* l2_fe = m_l2_fec->FiniteElementForGeometry(elem_geom);
-    MFEM_VERIFY(h1_fe && l2_fe,
+    MFEM_VERIFY(h1_fe,
                 "Surface quantities do not support element geometry "
                     << mfem::Geometry::Name[elem_geom]);
     const int ndof = h1_fe->GetDof();
-    const int nbasis = l2_fe->GetDof();
-    MFEM_VERIFY(nvq >= nbasis,
-                "Too few quadrature points to extrapolate stresses for element geometry "
-                    << mfem::Geometry::Name[elem_geom]);
 
     // Map from the face reference element to this element's reference element. The local
     // face's own orientation is used (orientation 0), since faces are integrated in the
@@ -201,14 +202,6 @@ int BoundarySurface::GetTable(mfem::Geometry::Type elem_geom,
         n *= sign / ref_jac;
     }
 
-    // Least-squares extrapolation E = Phi_f (Phi_v^T Phi_v)^{-1} Phi_v^T
-    mfem::DenseMatrix phi_v(nvq, nbasis), phi_f(nfq, nbasis);
-    mfem::Vector shape_l2(nbasis);
-    for (int v = 0; v < nvq; v++) {
-        l2_fe->CalcShape(vol_ir.IntPoint(v), shape_l2);
-        phi_v.SetRow(v, shape_l2);
-    }
-
     mfem::DenseMatrix shape_n(nfq, ndof);
     std::vector<double> dn(static_cast<size_t>(nfq * ndof * 3));
     std::vector<double> weights(static_cast<size_t>(nfq));
@@ -219,9 +212,6 @@ int BoundarySurface::GetTable(mfem::Geometry::Type elem_geom,
         loc.Transform(ip_f, xi);
         mfem::IntegrationPoint ip_e;
         ip_e.Set3(xi(0), xi(1), xi(2));
-
-        l2_fe->CalcShape(ip_e, shape_l2);
-        phi_f.SetRow(q, shape_l2);
 
         h1_fe->CalcShape(ip_e, shape_h1);
         h1_fe->CalcDShape(ip_e, dshape_h1);
@@ -234,28 +224,14 @@ int BoundarySurface::GetTable(mfem::Geometry::Type elem_geom,
         weights[static_cast<size_t>(q)] = ip_f.weight * ref_jac;
     }
 
-    mfem::DenseMatrix normal_eq(nbasis, nbasis);
-    mfem::MultAtB(phi_v, phi_v, normal_eq);
-    mfem::DenseMatrixInverse normal_inv(normal_eq);
-    mfem::DenseMatrix normal_eq_inv(nbasis, nbasis);
-    normal_inv.GetInverseMatrix(normal_eq_inv);
-    mfem::DenseMatrix pinv(nbasis, nvq), extrap(nfq, nvq);
-    mfem::MultABt(normal_eq_inv, phi_v, pinv);
-    mfem::Mult(phi_f, pinv, extrap);
-
     // Append to the flat tables
     const int table = m_tab_nfq.Size();
     m_tab_nfq.Append(nfq);
-    m_tab_nvq.Append(nvq);
     m_tab_ndof.Append(ndof);
-    m_tab_off_e.Append(m_tab_e.Size());
     m_tab_off_n.Append(m_tab_n.Size());
     m_tab_off_w.Append(m_tab_w.Size());
 
     for (int q = 0; q < nfq; q++) {
-        for (int v = 0; v < nvq; v++) {
-            m_tab_e.Append(extrap(q, v));
-        }
         for (int a = 0; a < ndof; a++) {
             m_tab_n.Append(shape_n(q, a));
         }
@@ -382,58 +358,6 @@ void BoundarySurface::InterpolateH1(const mfem::Vector& field, mfem::Vector& val
     });
 }
 
-void BoundarySurface::ExtrapolateQF(const mfem::expt::PartialQuadratureFunction& qf,
-                                    mfem::Vector& values) const {
-    const int nfaces = GetNumFaces();
-    const int vdim = qf.GetVDim();
-    values.SetSize(vdim * m_num_face_points);
-    if (nfaces == 0) {
-        return;
-    }
-
-    auto pqs = qf.GetPartialSpaceShared();
-    MFEM_VERIFY(pqs->GetOrder() == 2 * m_order + 1,
-                "Surface extrapolation expects quadrature data on the order " << 2 * m_order + 1
-                                                                              << " rule");
-    const bool full_space = pqs->IsFullSpace();
-    const auto* offsets = pqs->Offsets(mfem::QSpaceOffsetStorage::FULL).Read();
-    // global2local has a single placeholder entry for a full space; it is not read then
-    const auto* g2l = pqs->GetGlobal2Local().Read();
-
-    const auto* face_elem = m_face_elem.Read();
-    const auto* face_table = m_face_table.Read();
-    const auto* face_qoff = m_face_qoff.Read();
-    const auto* tab_nfq = m_tab_nfq.Read();
-    const auto* tab_nvq = m_tab_nvq.Read();
-    const auto* tab_off_e = m_tab_off_e.Read();
-    const double* tab_e = m_tab_e.Read();
-    const double* data = qf.Read();
-    double* vals = values.Write();
-
-    mfem::forall(nfaces, [=] MFEM_HOST_DEVICE(int i) {
-        const int t = face_table[i];
-        const int nfq = tab_nfq[t];
-        const int nvq = tab_nvq[t];
-        const int local_elem = full_space ? face_elem[i] : g2l[face_elem[i]];
-        for (int q = 0; q < nfq; q++) {
-            const int iq = face_qoff[i] + q;
-            for (int k = 0; k < vdim; k++) {
-                vals[vdim * iq + k] = 0.0;
-            }
-            if (local_elem < 0) {
-                continue;
-            }
-            const double* erow = &tab_e[tab_off_e[t] + q * nvq];
-            const int qstart = offsets[local_elem];
-            for (int v = 0; v < nvq; v++) {
-                for (int k = 0; k < vdim; k++) {
-                    vals[vdim * iq + k] += erow[v] * data[vdim * (qstart + v) + k];
-                }
-            }
-        }
-    });
-}
-
 SurfaceQuantities::SurfaceQuantities(std::shared_ptr<SimulationState> sim_state,
                                      const ExaOptions& options)
     : m_sim_state(std::move(sim_state)),
@@ -441,6 +365,10 @@ SurfaceQuantities::SurfaceQuantities(std::shared_ptr<SimulationState> sim_state,
       m_moments(options.post_processing.surface_quantities.moments),
       m_output_frequency(options.post_processing.surface_quantities.output_frequency) {
     auto mesh = m_sim_state->GetMesh();
+    auto fes = m_sim_state->GetMeshParFiniteElementSpace();
+    MFEM_VERIFY(fes->GetOrdering() == mfem::Ordering::byNODES,
+                "Surface quantities expect the mesh space ordered byNODES");
+    m_ntdofs_per_comp = fes->GetTrueVSize() / fes->GetVDim();
 
     const auto attrs = GlobalBoundaryAttributes(*mesh);
     for (const int id : m_boundary_ids) {
@@ -455,12 +383,22 @@ SurfaceQuantities::SurfaceQuantities(std::shared_ptr<SimulationState> sim_state,
         }
     }
 
-    m_surface = std::make_unique<BoundarySurface>(
-        mesh, m_sim_state->GetMeshParFiniteElementSpace(), m_boundary_ids, options.mesh.order);
+    m_surface = std::make_unique<BoundarySurface>(mesh, fes, m_boundary_ids, options.mesh.order);
 
-    for (auto* v : {&m_dA0, &m_x, &m_nda, &m_da, &m_disp, &m_stress, &m_face_sums}) {
+    for (auto* v : {&m_dA0,
+                    &m_x,
+                    &m_nda,
+                    &m_da,
+                    &m_disp,
+                    &m_face_sums,
+                    &m_coords_t,
+                    &m_node_sums,
+                    &m_node_weights}) {
         v->UseDevice(true);
     }
+
+    m_all_attrs.assign(attrs.begin(), attrs.end());
+    BuildSurfaceNodes();
 
     // Reference surface: face-point weights dA0, area and vector area
     m_surface->ComputeGeometry(*m_sim_state->GetRefCoords(), m_x, m_nda, m_dA0);
@@ -509,11 +447,16 @@ SurfaceQuantities::SurfaceQuantities(std::shared_ptr<SimulationState> sim_state,
         pre << "# Surface quantities for mesh boundary attribute " << m_boundary_ids[s] << "\n";
         pre << "# Area: current surface area\n";
         pre << "# Disp: displacement averaged over the reference surface\n";
-        pre << "# Force: integral of the Cauchy traction sigma.n over the current surface\n";
+        pre << "# Force: sum of the internal nodal forces (integral of sigma . grad N) over the "
+               "surface's nodes;\n";
+        pre << "#   at equilibrium this is the reaction force. At nodes shared with other "
+               "boundary attributes each\n";
+        pre << "#   component goes to the attributes constraining it (split equally), or is "
+               "split among all of them\n";
         pre << "# Normal: normalized vector area (integral of n da) of the current surface, "
                "outward\n";
         if (m_moments) {
-            pre << "# Moment: moment of the traction about the current surface centroid\n";
+            pre << "# Moment: moment of the nodal forces about the current surface centroid\n";
         }
         pre << "# Units follow the mesh length and material stress units "
                "(force = stress x length^2)\n";
@@ -536,7 +479,23 @@ void SurfaceQuantities::Update(double time, PostProcessingFileManager& file_mana
 
     m_surface->ComputeGeometry(*m_sim_state->GetCurrentCoords(), m_x, m_nda, m_da);
     m_surface->InterpolateH1(*m_sim_state->GetDisplacement(), m_disp);
-    m_surface->ExtrapolateQF(*m_sim_state->GetQuadratureFunction("cauchy_stress_end"), m_stress);
+
+    // Internal nodal forces of the converged stresses, saved by SystemDriver, and the
+    // matching nodal coordinates
+    UpdateNodeWeights();
+    const auto internal_force = m_sim_state->GetInternalForce();
+    m_coords_t.SetSize(internal_force->Size());
+    m_sim_state->GetCurrentCoords()->ParallelAverage(m_coords_t);
+    const int nnodes = m_node_surface.Size();
+    m_node_sums.SetSize(NUM_NODE_SUMS * nnodes);
+    if (nnodes > 0) {
+        NodeSumsKernel(nnodes,
+                       m_node_tdofs.Read(),
+                       m_node_weights.Read(),
+                       internal_force->Read(),
+                       m_coords_t.Read(),
+                       m_node_sums.Write());
+    }
 
     m_face_sums.SetSize(NUM_FACE_SUMS * nfaces);
     if (nfaces > 0) {
@@ -547,28 +506,36 @@ void SurfaceQuantities::Update(double time, PostProcessingFileManager& file_mana
                        m_da.Read(),
                        m_disp.Read(),
                        m_dA0.Read(),
-                       m_stress.Read(),
                        m_face_sums.Write());
     }
 
-    std::vector<double> sums(static_cast<size_t>(NUM_FACE_SUMS * nsurf), 0.0);
+    // Per surface: the face sums followed by the node sums
+    constexpr int NUM_SUMS = NUM_FACE_SUMS + NUM_NODE_SUMS;
+    std::vector<double> sums(static_cast<size_t>(NUM_SUMS * nsurf), 0.0);
     {
         const double* face_sums = m_face_sums.HostRead();
         const int* face_surface = m_surface->GetFaceSurface().HostRead();
         for (int i = 0; i < nfaces; i++) {
-            double* s = &sums[static_cast<size_t>(NUM_FACE_SUMS * face_surface[i])];
+            double* s = &sums[static_cast<size_t>(NUM_SUMS * face_surface[i])];
             for (int k = 0; k < NUM_FACE_SUMS; k++) {
                 s[k] += face_sums[NUM_FACE_SUMS * i + k];
             }
         }
+        const double* node_sums = m_node_sums.HostRead();
+        const int* node_surface = m_node_surface.HostRead();
+        for (int j = 0; j < nnodes; j++) {
+            double* s = &sums[static_cast<size_t>(NUM_SUMS * node_surface[j] + NUM_FACE_SUMS)];
+            for (int k = 0; k < NUM_NODE_SUMS; k++) {
+                s[k] += node_sums[NUM_NODE_SUMS * j + k];
+            }
+        }
     }
-    MPI_Allreduce(
-        MPI_IN_PLACE, sums.data(), NUM_FACE_SUMS * nsurf, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, sums.data(), NUM_SUMS * nsurf, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     for (size_t s = 0; s < static_cast<size_t>(nsurf); s++) {
-        const double* sm = &sums[NUM_FACE_SUMS * s];
+        const double* sm = &sums[NUM_SUMS * s];
         const double area = sm[SUM_DA];
-        const double* force = &sm[SUM_FORCE];
+        const double* force = &sm[NUM_FACE_SUMS];
         const double vec_area_norm = Norm3(&sm[SUM_NDA]);
 
         std::vector<double> values;
@@ -589,7 +556,7 @@ void SurfaceQuantities::Update(double time, PostProcessingFileManager& file_mana
             for (int c = 0; c < 3; c++) {
                 xc[c] = (area > 0.0) ? sm[SUM_XDA + c] / area : 0.0;
             }
-            const double* m0 = &sm[SUM_MOMENT];
+            const double* m0 = &sm[NUM_FACE_SUMS + 3];
             values.push_back(m0[0] - (xc[1] * force[2] - xc[2] * force[1]));
             values.push_back(m0[1] - (xc[2] * force[0] - xc[0] * force[2]));
             values.push_back(m0[2] - (xc[0] * force[1] - xc[1] * force[0]));
@@ -597,5 +564,105 @@ void SurfaceQuantities::Update(double time, PostProcessingFileManager& file_mana
 
         file_manager.WriteSurfaceQuantity(
             m_boundary_ids[s], m_preambles[s], m_moments, time, area, values);
+    }
+}
+
+void SurfaceQuantities::BuildSurfaceNodes() {
+    auto mesh = m_sim_state->GetMesh();
+    auto fes = m_sim_state->GetMeshParFiniteElementSpace();
+    mfem::Array<int> marker(mesh->bdr_attributes.Max());
+    mfem::Array<int> tdofs;
+
+    // Owned nodes of every boundary attribute, by their x-component true DOF
+    m_attr_nodes.assign(m_all_attrs.size(), {});
+    std::unordered_map<int, std::vector<int>> node_to_attrs;
+    for (size_t k = 0; k < m_all_attrs.size(); k++) {
+        marker = 0;
+        marker[m_all_attrs[k] - 1] = 1;
+        fes->GetEssentialTrueDofs(marker, tdofs, 0);
+        m_attr_nodes[k].assign(tdofs.begin(), tdofs.end());
+        for (const int t : m_attr_nodes[k]) {
+            node_to_attrs[t].push_back(static_cast<int>(k));
+        }
+    }
+
+    std::vector<int> node_tdofs, node_surface;
+    m_node_own_attr.clear();
+    m_node_attr_offsets.assign(1, 0);
+    m_node_attrs.clear();
+    for (size_t s = 0; s < m_boundary_ids.size(); s++) {
+        const auto own = std::lower_bound(
+            m_all_attrs.begin(), m_all_attrs.end(), m_boundary_ids[s]);
+        const int own_attr = static_cast<int>(own - m_all_attrs.begin());
+        for (const int t : m_attr_nodes[static_cast<size_t>(own_attr)]) {
+            for (int c = 0; c < 3; c++) {
+                node_tdofs.push_back(ComponentTrueDof(t, c));
+            }
+            node_surface.push_back(static_cast<int>(s));
+            m_node_own_attr.push_back(own_attr);
+            const auto& node_attrs = node_to_attrs.at(t);
+            m_node_attrs.insert(m_node_attrs.end(), node_attrs.begin(), node_attrs.end());
+            m_node_attr_offsets.push_back(static_cast<int>(m_node_attrs.size()));
+        }
+    }
+    m_node_tdofs.SetSize(static_cast<int>(node_tdofs.size()));
+    std::copy(node_tdofs.begin(), node_tdofs.end(), m_node_tdofs.HostWrite());
+    m_node_surface.SetSize(static_cast<int>(node_surface.size()));
+    std::copy(node_surface.begin(), node_surface.end(), m_node_surface.HostWrite());
+}
+
+void SurfaceQuantities::UpdateNodeWeights() {
+    // Which components each attribute constrains under the current boundary conditions: all
+    // of its nodes have that component as an essential true DOF, on every rank. Recomputed at
+    // every output, so it follows boundary condition changes.
+    const auto& ess_tdofs = m_sim_state->GetEssentialTrueDofs();
+    const int ntdofs = m_sim_state->GetMeshParFiniteElementSpace()->GetTrueVSize();
+    std::vector<char> is_ess(static_cast<size_t>(ntdofs), 0);
+    const int* ess = ess_tdofs.HostRead();
+    for (int i = 0; i < ess_tdofs.Size(); i++) {
+        MFEM_VERIFY(ess[i] >= 0 && ess[i] < ntdofs, "Essential true DOF out of range");
+        is_ess[static_cast<size_t>(ess[i])] = 1;
+    }
+    const size_t nattr = m_all_attrs.size();
+    std::vector<int> constrains(3 * nattr, 1);
+    for (size_t k = 0; k < nattr; k++) {
+        for (int c = 0; c < 3; c++) {
+            for (const int t : m_attr_nodes[k]) {
+                if (!is_ess[static_cast<size_t>(ComponentTrueDof(t, c))]) {
+                    constrains[3 * k + static_cast<size_t>(c)] = 0;
+                    break;
+                }
+            }
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE,
+                  constrains.data(),
+                  static_cast<int>(constrains.size()),
+                  MPI_INT,
+                  MPI_MIN,
+                  MPI_COMM_WORLD);
+
+    // A node's component goes to the attributes constraining it, split equally; if none does,
+    // the force is only solver residual and is split among all of the node's attributes. Either
+    // way the shares of all attributes at a node sum to one.
+    const int nnodes = m_node_surface.Size();
+    m_node_weights.SetSize(3 * nnodes);
+    double* weights = m_node_weights.HostWrite();
+    for (int j = 0; j < nnodes; j++) {
+        const size_t own = static_cast<size_t>(m_node_own_attr[static_cast<size_t>(j)]);
+        const auto begin = m_node_attrs.begin() + m_node_attr_offsets[static_cast<size_t>(j)];
+        const auto end = m_node_attrs.begin() + m_node_attr_offsets[static_cast<size_t>(j) + 1];
+        const double nattrs_node = static_cast<double>(end - begin);
+        for (size_t c = 0; c < 3; c++) {
+            int owners = 0;
+            for (auto it = begin; it != end; ++it) {
+                owners += constrains[3 * static_cast<size_t>(*it) + c];
+            }
+            double w = 1.0 / nattrs_node;
+            if (owners > 0) {
+                w = constrains[3 * own + c] ? 1.0 / owners : 0.0;
+            }
+            weights[3 * j + static_cast<int>(c)] = w;
+        }
     }
 }

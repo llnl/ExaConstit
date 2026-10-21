@@ -48,12 +48,15 @@ NonlinearMechOperator::NonlinearMechOperator(mfem::Array<int>& ess_bdr,
     assembly = options.solvers.assembly;
 
     model = std::make_shared<MultiExaModel>(m_sim_state, options);
-    // Add the user defined integrator
+    // Add the user defined integrator. This class owns it (h_form only holds it), so that
+    // ComputeInternalForce() can apply it on its own.
     if (options.solvers.integ_model == IntegrationModel::DEFAULT) {
-        h_form->AddDomainIntegrator(new ExaNLFIntegrator(m_sim_state));
+        stress_integrator = std::make_shared<ExaNLFIntegrator>(m_sim_state);
     } else if (options.solvers.integ_model == IntegrationModel::BBAR) {
-        h_form->AddDomainIntegrator(new ICExaNLFIntegrator(m_sim_state));
+        stress_integrator = std::make_shared<ICExaNLFIntegrator>(m_sim_state);
     }
+    h_form->UseExternalIntegrators();
+    h_form->AddDomainIntegrator(stress_integrator.get());
 
     if (assembly == AssemblyType::PA) {
         h_form->SetAssemblyLevel(mfem::AssemblyLevel::PARTIAL, mfem::ElementDofOrdering::NATIVE);
@@ -347,4 +350,25 @@ mfem::Operator& NonlinearMechOperator::GetUpdateBCsAction(const mfem::Vector& k,
 
     y += resid;
     return *jacobian;
+}
+
+void NonlinearMechOperator::ComputeInternalForce(mfem::Vector& y) const {
+    CALI_CXX_MARK_SCOPE("mechop_ComputeInternalForce");
+    // The mesh has moved since the integrator's geometric data were last built. h_form
+    // rebuilds them in its own Setup(), so this does not affect the solver.
+    m_sim_state->GetMesh()->DeleteGeometricFactors();
+    stress_integrator->AssemblePA(*m_sim_state->GetMeshParFiniteElementSpace());
+
+    el_y.SetSize(elem_restrict_lex->Height(), mfem::Device::GetMemoryType());
+    el_y.UseDevice(true);
+    el_y = 0.0;
+    // The integrator only reads the stored stresses, so el_x's contents do not matter
+    stress_integrator->AddMultPA(el_x, el_y);
+
+    py.SetSize(P->Height(), mfem::Device::GetMemoryType());
+    py.UseDevice(true);
+    elem_restrict_lex->MultTranspose(el_y, py);
+    y.SetSize(P->Width(), mfem::Device::GetMemoryType());
+    y.UseDevice(true);
+    P->MultTranspose(py, y);
 }

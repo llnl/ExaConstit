@@ -569,6 +569,9 @@ SimulationState::SimulationState(ExaOptions& options)
         m_primal_field->UseDevice(true);
         m_primal_field_prev = std::make_shared<mfem::Vector>(m_mesh_fes->TrueVSize());
         m_primal_field_prev->UseDevice(true);
+        m_internal_force = std::make_shared<mfem::Vector>(m_mesh_fes->TrueVSize());
+        m_internal_force->UseDevice(true);
+        (*m_internal_force) = 0.0;
         (*m_primal_field) = 0.0;
         (*m_primal_field_prev) = 0.0;
 

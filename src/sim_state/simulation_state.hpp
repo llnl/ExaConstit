@@ -489,6 +489,10 @@ private:
     std::shared_ptr<mfem::Vector> m_primal_field;
     /** @brief Previous time step primal field for rollback capability */
     std::shared_ptr<mfem::Vector> m_primal_field_prev;
+    /** @brief Internal nodal forces (true DOFs) of the last converged step */
+    std::shared_ptr<mfem::Vector> m_internal_force;
+    /** @brief Essential true DOFs of the last converged step */
+    mfem::Array<int> m_ess_tdofs;
     /** @brief Grain ID array for crystal plasticity models */
     std::shared_ptr<mfem::ParGridFunction> m_grains;
 
@@ -1138,6 +1142,36 @@ public:
      */
     std::shared_ptr<mfem::Vector> GetPrimalFieldPrev() {
         return m_primal_field_prev;
+    }
+
+    /**
+     * @brief Get the internal nodal forces of the last converged step
+     *
+     * @return Shared pointer to the true-DOF vector y_a = integral of sigma . grad N_a dv
+     *
+     * @details Filled by SystemDriver::UpdateModel() after each converged step when an output
+     * needs it (surface quantities); at equilibrium the entries of constrained DOFs are the
+     * reaction forces.
+     */
+    std::shared_ptr<mfem::Vector> GetInternalForce() {
+        return m_internal_force;
+    }
+
+    /**
+     * @brief Get the essential true DOFs of the last converged step
+     *
+     * @details Saved together with the internal forces, so post-processing knows which force
+     * components were constrained.
+     */
+    const mfem::Array<int>& GetEssentialTrueDofs() const {
+        return m_ess_tdofs;
+    }
+
+    /**
+     * @brief Save the essential true DOFs of the converged step
+     */
+    void SetEssentialTrueDofs(const mfem::Array<int>& ess_tdofs) {
+        m_ess_tdofs = ess_tdofs;
     }
 
     // =========================================================================

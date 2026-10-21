@@ -44,6 +44,16 @@
  */
 class NonlinearMechOperator : public mfem::NonlinearForm {
 protected:
+    /**
+     * @brief Stress-divergence (internal force) integrator, shared with h_form
+     *
+     * h_form holds it as an external integrator, so this class owns it; it is declared
+     * before h_form so that it outlives it. Keeping it separate lets ComputeInternalForce()
+     * evaluate only the internal forces even when h_form carries other integrators (e.g.
+     * traction boundary conditions).
+     */
+    std::shared_ptr<ExaNLFIntegrator> stress_integrator;
+
     /** @brief MFEM parallel nonlinear form for distributed memory computations */
     std::unique_ptr<mfem::ParNonlinearForm> h_form;
 
@@ -58,6 +68,12 @@ protected:
 
     /** @brief Prolongation operation intermediate vector for assembly operations */
     mutable mfem::Vector px;
+
+    /** @brief Element-wise internal force work vector for ComputeInternalForce() */
+    mutable mfem::Vector el_y;
+
+    /** @brief Local (L-vector) internal force work vector for ComputeInternalForce() */
+    mutable mfem::Vector py;
 
     /** @brief Element Jacobian matrices for geometric transformation computations */
     mutable mfem::Vector el_jac;
@@ -172,6 +188,18 @@ public:
      */
     virtual mfem::Operator&
     GetUpdateBCsAction(const mfem::Vector& k, const mfem::Vector& x, mfem::Vector& y) const;
+
+    /**
+     * @brief Evaluate the internal force vector of the current stresses.
+     *
+     * @param y Output true-DOF vector, y_a = integral of sigma . grad N_a dv
+     *
+     * Applies only the stress-divergence integrator (through its partial assembly kernels,
+     * on the current mesh and the stored "cauchy_stress_end"), not h_form, so no other
+     * integrators or essential boundary conditions enter. The material model is not
+     * evaluated. Used by post-processing to sum the nodal forces on a surface.
+     */
+    void ComputeInternalForce(mfem::Vector& y) const;
 
     /**
      * @brief Evaluate nonlinear residual vector for current solution state.

@@ -743,10 +743,14 @@ grain_file = "grains.txt"
         # Definitions:
         # - area: current (deformed) surface area
         # - disp: displacement averaged over the reference surface
-        # - force: Cauchy traction σ·n integrated over the current surface. The stress at the
-        #   surface is extrapolated from the quadrature points of the element next to it, so
-        #   on coarse meshes with large stress jumps between grains the forces on opposite
-        #   faces can differ by several percent; refining the mesh reduces this.
+        # - force: sum over the surface's nodes of the internal nodal forces ∫ σ·∇N dv from the
+        #   stress-divergence integrator. At equilibrium this is the reaction force on the
+        #   surface (what a load cell would measure), and it matches the volume-average stress
+        #   to the solver tolerance. At nodes shared with other boundary attributes (edges and
+        #   corners), each force component goes to the attributes that constrain it, split
+        #   equally, or is split among all of them if none does. So no force is counted twice,
+        #   and e.g. a free side face does not pick up the reactions of the loaded faces.
+        # - moment: moment of those nodal forces about the current surface centroid
         # - normal: average outward normal of the current surface (normalized ∫ n da). It only
         #   depends on the surface's edges, so roughening inside a free surface doesn't change
         #   it. A closed surface (e.g. a full cylinder) has no average normal; it is written
