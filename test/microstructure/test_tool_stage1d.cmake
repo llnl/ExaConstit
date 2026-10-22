@@ -176,6 +176,9 @@ if(TARGET mechanics AND TARGET microstructure_generator
     #   GRAINS   final grain count the run must report (the mechanics decks hard-code it);
     #   REGEX    summary text of the feature, which the summary prints after the grain count;
     #   NEEDS    extra fixtures the generator runs require (the written inputs).
+    # REGEX must not contain ";": the pattern travels as -DPASS=... through add_test, which
+    # would split it into a CMake list at the ";" and silently keep only the first part (use
+    # [^0-9] or "." instead).
     function(ms_stage1d_case)
         cmake_parse_arguments(_s1d "AUTO;REGIONS" "NAME;INPUT;BASE;GRAINS;REGEX" "NEEDS" ${ARGN})
         # One expression for both checks (a list would pass when either matches); CMake's "."
@@ -230,7 +233,7 @@ if(TARGET mechanics AND TARGET microstructure_generator
                         INPUT  ${_s1d_ms}/e2e/voxel_dream3d.toml
                         BASE   e2e_voxel_dream3d
                         GRAINS 6
-                        REGEX  "voxel map: .*; 0 element\\(s\\) filled from.*regions: 2"
+                        REGEX  "voxel map: .*[^0-9]0 element\\(s\\) filled from.*regions: 2"
                         NEEDS  ms_s1d_inputs)
     endif()
     # The build plate: 8 grains in the part + the plate (grain 9, region 2, 128 elements)
@@ -246,7 +249,7 @@ if(TARGET mechanics AND TARGET microstructure_generator
                         INPUT  ${_s1d_ms}/e2e/converter_spparks.toml
                         BASE   e2e_spparks
                         GRAINS 4
-                        REGEX  "; 1 element\\(s\\) filled from their neighbors.*, 1 merged"
+                        REGEX  "[^0-9]1 element\\(s\\) filled from their neighbors.*, 1 merged"
                         NEEDS  ms_s1d_inputs ms_s1d_spparks_h5)
     endif()
 
