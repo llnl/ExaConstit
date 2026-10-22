@@ -1,0 +1,94 @@
+# ExaConstit deck for the Stage 1f end-to-end test "hook_curved" (1 MPI rank).
+#
+# Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck and the
+# material files into a scratch directory and runs mechanics on it.
+#
+# What it exercises: the hook on a genuinely curved file mesh,
+# test/data/microstructure/bulged_cube_order2.mesh (4x4x4 order-2 hexes with the top face bulged
+# up to z = 1.2), kept at order 2 (p_refinement = 2) so the curved geometry is used as it is. The
+# chain also runs the tool on the same mesh and options (hook_voronoi_micro.toml,
+# -m bulged_cube_order2.mesh -o curved_tool); both must use the same seeds and give the same
+# element labels on at least 99% of the elements (ExaConstit re-projects the Nodes onto its own
+# order-2 space, so the geometry may differ in the last bits).
+Version = "0.10.0"
+basename = "hook_curved_np1"
+
+[[Materials]]
+    # The generated grains, region 1
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        # No orientation_file and no num_grains: [Mesh.Microstructure] generates the grains and
+        # fills in the grain count; ori_type is "quat" (the default, and what the hook sets)
+        ori_state_var_loc = 9
+        ori_stride = 4
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Auto-mesh boundary ids: 1 bottom (z = 0), 2 left (x = 0),
+# 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.2
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "file"
+    floc = "bulged_cube_order2.mesh"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 2
+    # Form 1: the same generator options file as hook_voronoi_np1.toml
+    [Mesh.Microstructure]
+        file = "hook_voronoi_micro.toml"

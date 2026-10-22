@@ -16,11 +16,13 @@ set(EXACONSTIT_HEADERS
     models/mechanics_multi_model.hpp
     models/mechanics_umat.hpp
     options/option_parser_v2.hpp
+    options/option_microstructure_hook.hpp
     postprocessing/projection_class.hpp
     postprocessing/postprocessing_driver.hpp
     postprocessing/mechanics_lightup.hpp
     postprocessing/surface_quantities.hpp
     sim_state/simulation_state.hpp
+    sim_state/microstructure_hook.hpp
     sim_state/exa_sidre_parmesh.hpp
     sim_state/restart_checkpoint.hpp
     solvers/mechanics_solver.hpp
@@ -65,6 +67,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/mechanics_lightup.cpp
     postprocessing/surface_quantities.cpp
     sim_state/simulation_state.cpp
+    sim_state/microstructure_hook.cpp
     sim_state/exa_sidre_parmesh.cpp
     sim_state/restart_checkpoint.cpp
     solvers/mechanics_solver.cpp
@@ -126,6 +129,14 @@ if(ENABLE_AXOM)
     list(APPEND EXACONSTIT_DEPENDS axom)
 endif()
 
+# [Mesh.Microstructure] hook (sim_state/microstructure_hook.*): mechanics runs the microstructure
+# generator in memory. The generator libraries exist only when ENABLE_MICROSTRUCTURE is ON (the
+# top-level CMakeLists.txt adds src/microstructure before this directory, and turns the option
+# off without Axom). Without them the hook source still compiles and rejects the table.
+if(ENABLE_MICROSTRUCTURE)
+    list(APPEND EXACONSTIT_DEPENDS exaconstit_microstructure)
+endif()
+
 if(UNIX AND NOT APPLE AND TARGET Threads::Threads)
     # Check if we determined explicit linking is needed
     if(EXACONSTIT_THREADS_EXPLICIT_LINK)
@@ -146,6 +157,11 @@ if(ENABLE_CALIPER)
 endif()
 if(ENABLE_AXOM)
     list(APPEND EXACONSTIT_DEFINES EXACONSTIT_USE_AXOM)
+endif()
+# Also defined by the generator's ms_core target (INTERFACE); set here as well so the switch is
+# visible in this file next to the dependency it guards
+if(ENABLE_MICROSTRUCTURE)
+    list(APPEND EXACONSTIT_DEFINES EXACONSTIT_USE_MICROSTRUCTURE)
 endif()
 #------------------------------------------------------------------------------
 # Includes

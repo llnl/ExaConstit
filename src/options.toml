@@ -944,6 +944,80 @@ grain_file = "grains.txt"
         # Total elements = product of these numbers
         nxyz = [10, 10, 10]
 
+    # ===== Generated Grains (optional) =====
+    # Let mechanics generate the grains itself, in memory, on this mesh (after
+    # refinement), with the same generator as the standalone microstructure_generator
+    # tool. Requires ExaConstit built with ENABLE_MICROSTRUCTURE=ON (which needs
+    # Axom); other builds stop with "built without the microstructure generator".
+    # Uncomment ONE of the two forms below to use it.
+    #
+    # With this table:
+    # - every element's attribute becomes its grain ID (1..N);
+    # - every [Materials.Grain] table gets num_grains = N and ori_type = "quat",
+    #   so leave num_grains out (or 0) and do not set another ori_type;
+    # - the orientations (unit quaternions) and the grain-to-region map are kept in
+    #   memory, so orientation_file, grain_file and region_mapping_file are not
+    #   allowed (at the top level or in a Grain table; remove them from a copy of
+    #   this template);
+    # - the generator must produce one region per [[Materials]] block (region r
+    #   uses block r); e.g. Regions.mode = "phase_fractions" with 2 phases needs
+    #   2 [[Materials]] blocks.
+    # For the record, rank 0 writes the orientation file, the region map (more than
+    # one region) and the grain table to <Output.directory>/<Output.basename>.*
+    # (default: this run's output directory, results/<basename>/, with basename
+    # "microstructure"); nothing reads them back.
+    # A restart takes the grains from the checkpoint: the table is checked, but the
+    # generator does not run.
+    #
+    # Mesh resolution and element order: on straight-sided meshes (every auto mesh)
+    # the seeds, and so the tessellation and the orientations, do not depend on
+    # ref_ser, ref_par or p_refinement. The element labels follow the mesh: a finer
+    # mesh shows sharper grain boundaries and can reveal small grains a coarse mesh
+    # missed. Exception: element-weighted seeding (Seeds.placement =
+    # "element_weighted", or the automatic fallback for very sparse domains) keys
+    # its random numbers on the elements, so its seeds change with refinement.
+    # The generator works in place on this mesh (no mesh copy). With p_refinement
+    # > 0 ExaConstit's mesh carries high-order Nodes; on straight-sided meshes the
+    # seeds are still exactly those of the same mesh without Nodes, while element
+    # centroids may differ in the last bits, so a grain boundary passing exactly
+    # through an element centroid can fall on either side (labels agree up to
+    # such ties). Curved meshes (high-order Nodes from a file) keep their curved
+    # geometry.
+    #
+    # Form 1: a generator options file (same format as the tool's input,
+    # src/microstructure/microstructure_options.hpp), relative to the working
+    # directory
+    # [Mesh.Microstructure]
+    #     file = "micro.toml"
+    #
+    # Form 2: the generator's tables inline (instead of `file`), for example:
+    # [Mesh.Microstructure.Seeds]
+    #     num_seeds = 200
+    #     rng_seed = 0
+    # [Mesh.Microstructure.Tessellation]
+    #     metric = "voronoi"
+    # [Mesh.Microstructure.Regions]
+    #     mode = "phase_fractions"
+    #     phases = [{id = 1, fraction = 0.6}, {id = 2, fraction = 0.4}]
+    # [Mesh.Microstructure.Output]
+    #     basename = "grains"
+    #     # Optional: also write the grain mesh as a parallel decomposition (one
+    #     # file per rank, readable by [Mesh] type = "parallel" on the same rank
+    #     # count). That mesh is already refined: read it back with
+    #     # ref_ser = ref_par = 0. "serial"/"both", num_parts and grain_file are
+    #     # not allowed.
+    #     mesh_format = "parallel"
+    # [Mesh.Microstructure.Mesh]
+    #     # Optional: which parts of the mesh get grains, by the mesh's own element
+    #     # attributes before generation (useful with file or parallel meshes; an
+    #     # auto mesh has attribute 1 everywhere)
+    #     passthrough_attributes = { "2" = 2 }
+    #
+    # In either form the mesh comes from this [Mesh] table: the generator's mesh
+    # source keys (type, floc, [Mesh.Auto]) are not allowed, and its [Mesh] table
+    # may only hold active_attributes and passthrough_attributes. `exec` is not
+    # allowed either: the generator runs on the [Solvers] rtmodel backend.
+
 # =====================================
 # CHECKPOINT / RESTART
 # =====================================

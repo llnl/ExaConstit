@@ -297,16 +297,19 @@ std::vector<MaterialOptions> MaterialOptions::from_toml_array(const toml::value&
     return materials;
 }
 
-bool GrainInfo::validate(bool check_input_files) const {
+bool GrainInfo::validate(bool check_input_files, bool grains_from_hook) const {
     // On a restart the orientations come from the checkpointed state variables, so the
-    // orientation file is neither required nor read.
-    if (check_input_files && !orientation_file) {
+    // orientation file is neither required nor read. With [Mesh.Microstructure] the hook
+    // generates the orientations in memory, so there is no orientation file either
+    // (ExaOptions::validate refuses one in that case).
+    const bool check_orientation_file = check_input_files && !grains_from_hook;
+    if (check_orientation_file && !orientation_file) {
         WARNING_0_OPT("Error: Grain table was provided without providing an orientation file this "
                       "is required");
         return false;
     }
 
-    if (check_input_files && orientation_file) {
+    if (check_orientation_file && orientation_file) {
         if (!std::filesystem::exists(*orientation_file)) {
             std::ostringstream err;
             err << "Error: Orientation file does not exist provided value: " << *orientation_file;
@@ -339,7 +342,9 @@ bool GrainInfo::validate(bool check_input_files) const {
         return false;
     }
 
-    if (num_grains < 1) {
+    // With [Mesh.Microstructure] the grain count is only known once the grains are generated;
+    // the hook then sets num_grains (ExaOptions::validate requires it to be absent or 0)
+    if (!grains_from_hook && num_grains < 1) {
         WARNING_0_OPT("Error: num_grains was provided a value less than 1");
         return false;
     }
@@ -425,7 +430,7 @@ bool MaterialModelOptions::validate() const {
     return true;
 }
 
-bool MaterialOptions::validate(bool check_input_files) const {
+bool MaterialOptions::validate(bool check_input_files, bool grains_from_hook) const {
     std::string mat_name = material_name + "_" + std::to_string(region_id);
 
     if (mech_type == MechType::NOTYPE) {
@@ -467,7 +472,7 @@ bool MaterialOptions::validate(bool check_input_files) const {
     }
 
     if (grain_info) {
-        if (!grain_info->validate(check_input_files)) {
+        if (!grain_info->validate(check_input_files, grains_from_hook)) {
             std::ostringstream err;
             err << "Error: Material table for material_name_region# " << mat_name
                 << " the Grain table had errors";

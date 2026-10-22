@@ -156,6 +156,374 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
 endif()
 
 ####################################
+# [Mesh.Microstructure]: mechanics generates its grains in memory (Stage 1f)
+####################################
+# Extensive suite only (EXACONSTIT_ENABLE_EXTENSIVE_TESTS, default OFF), and only when the
+# generator is built (ENABLE_MICROSTRUCTURE). Run them with
+#     ctest -R microstructure_hook --output-on-failure
+if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
+    # Unit test: both table forms, every refusal, and a SimulationState whose grains and
+    # orientations equal a direct GenerateMicrostructure call (test_microstructure_hook.cpp)
+    blt_add_executable(NAME       test_microstructure_hook
+                       SOURCES    test_microstructure_hook.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+    target_compile_definitions(test_microstructure_hook PRIVATE
+                               EXACONSTIT_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/test/data")
+    foreach(_np 1 2)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            blt_add_test(NAME          test_microstructure_hook_np${_np}
+                         COMMAND       test_microstructure_hook
+                         NUM_MPI_TASKS ${_np})
+        endif()
+    endforeach()
+
+    # End-to-end chain through the real mechanics driver. The decks are hand-written in
+    # test/data/microstructure/mechanics/ (hook_*.toml; each explains its role). The steps form a
+    # chain through CTest fixtures (FIXTURES_SETUP / FIXTURES_REQUIRED: CTest runs them in order
+    # and skips a step whose prerequisite failed), like the generator chains in
+    # test/microstructure/test_tool_stage1d.cmake and test_tool_stage1e.cmake:
+    #   1. setup: empties <build>/test/microstructure_hook_e2e and copies the decks, the generator
+    #      options file and the material files into it.
+    #   2. hook_vs_tool: the standalone tool on voronoi_auto.toml and mechanics on its files
+    #      (ms_auto_np1.toml); mechanics with the hook at 1 rank (form 1, an options file) and at 2
+    #      ranks (form 2, inline tables). Hook vs tool: same seeds, >= 99% equal labels, and equal
+    #      mechanics results when the labels are identical. Hook np1 vs np2: byte-identical record
+    #      files and equal mechanics results (test_parallel_mesh_input --compare-mechanics, the
+    #      test_mechanics.py tolerances).
+    #   3. hook_two_phase: phase fractions with 2 regions and 2 [[Materials]] blocks (1 rank),
+    #      compared with the tool path (seeds, labels, results when the labels are identical).
+    #   4. hook_restart: an uninterrupted 5-step hook run, and a 3-step hook run that writes a
+    #      checkpoint followed by a restart that must skip the hook; the two must agree.
+    #   5. element order 2 and one serial refinement of the auto box: same seeds (and so
+    #      orientations) as the order-1 run and the tool; at order 2 also the same labels.
+    #   6. a file mesh with a passthrough part, grain mesh written as parallel parts and read back
+    #      by a run without the hook (same results).
+    #   7. a genuinely curved order-2 file mesh: hook and tool use the same seeds and give the
+    #      same labels (>= 99%).
+    # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
+    # command, prints its output, and fails unless the exit status is 0 AND the output matches the
+    # expected text (PASS_REGULAR_EXPRESSION alone would ignore the exit status). mechanics writes
+    # per-rank log files into its working directory, so RESOURCE_LOCK keeps CTest from running
+    # two steps of this chain at the same time under ctest -j.
+    if(TARGET microstructure_generator AND TARGET test_parallel_mesh_input
+       AND NOT 2 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+        set(_hk_dir  ${CMAKE_CURRENT_BINARY_DIR}/microstructure_hook_e2e)
+        set(_hk_data ${CMAKE_SOURCE_DIR}/test/data)
+        set(_hk_ms   ${_hk_data}/microstructure)
+
+        # Step 1: setup script, written at configure time with the paths filled in
+        set(_hk_setup_script ${CMAKE_CURRENT_BINARY_DIR}/microstructure_hook_e2e_setup.cmake)
+        file(WRITE ${_hk_setup_script}
+             "file(REMOVE_RECURSE \"${_hk_dir}\")\n"
+             "file(MAKE_DIRECTORY \"${_hk_dir}\")\n"
+             "file(GLOB _decks \"${_hk_ms}/mechanics/hook_*.toml\")\n"
+             "file(COPY \${_decks} \"${_hk_ms}/mechanics/ms_auto_np1.toml\" "
+             "\"${_hk_ms}/mechanics/ms_two_phase_tool_np2.toml\" "
+             "\"${_hk_ms}/mechanics/ms_hook_pass_read_np2.toml\" "
+             "\"${_hk_ms}/bulged_cube_order2.mesh\" "
+             "\"${_hk_data}/props_cp_voce.txt\" \"${_hk_data}/state_cp_voce.txt\" "
+             "DESTINATION \"${_hk_dir}\")\n")
+        add_test(NAME    test_microstructure_hook_e2e_setup
+                 COMMAND ${CMAKE_COMMAND} -P ${_hk_setup_script})
+        set_tests_properties(test_microstructure_hook_e2e_setup PROPERTIES
+                             FIXTURES_SETUP ms_hook_case
+                             LABELS         "microstructure")
+        # ctest needs the working directory to exist when a test starts (also for `ctest -N`)
+        file(MAKE_DIRECTORY ${_hk_dir})
+
+        # Run helper: CMD is the command with its arguments separated by "|" (so the list
+        # survives the command line as one argument); PASS is a CMake regular expression the
+        # merged stdout/stderr must match ("." also matches newlines in CMake)
+        set(_hk_run_script ${CMAKE_CURRENT_BINARY_DIR}/microstructure_hook_e2e_run.cmake)
+        file(WRITE ${_hk_run_script}
+             "string(REPLACE \"|\" \";\" _cmd \"\${CMD}\")\n"
+             "execute_process(COMMAND \${_cmd} RESULT_VARIABLE _rc "
+             "OUTPUT_VARIABLE _out ERROR_VARIABLE _out)\n"
+             "message(\"\${_out}\")\n"
+             "if(NOT _rc EQUAL 0)\n"
+             "  message(FATAL_ERROR \"command failed with exit status \${_rc}\")\n"
+             "endif()\n"
+             "if(NOT _out MATCHES \"\${PASS}\")\n"
+             "  message(FATAL_ERROR \"output does not match the expected text: \${PASS}\")\n"
+             "endif()\n")
+
+        # File comparison helper: PAIRS is a comma-separated list of "a=b" file pairs (paths
+        # relative to the working directory); every pair must be byte-identical
+        set(_hk_files_script ${CMAKE_CURRENT_BINARY_DIR}/microstructure_hook_e2e_files.cmake)
+        file(WRITE ${_hk_files_script}
+             "set(_failed 0)\n"
+             "string(REPLACE \",\" \";\" _pairs \"\${PAIRS}\")\n"
+             "foreach(_pair \${_pairs})\n"
+             "  string(REPLACE \"=\" \";\" _ab \"\${_pair}\")\n"
+             "  list(GET _ab 0 _a)\n"
+             "  list(GET _ab 1 _b)\n"
+             "  execute_process(COMMAND \${CMAKE_COMMAND} -E compare_files \"\${_a}\" \"\${_b}\" "
+             "RESULT_VARIABLE _rc)\n"
+             "  if(_rc EQUAL 0)\n"
+             "    message(STATUS \"identical: \${_a} and \${_b}\")\n"
+             "  else()\n"
+             "    message(STATUS \"DIFFERENT or missing: \${_a} and \${_b}\")\n"
+             "    set(_failed 1)\n"
+             "  endif()\n"
+             "endforeach()\n"
+             "if(_failed)\n"
+             "  message(FATAL_ERROR \"record files differ: see the lines above\")\n"
+             "endif()\n")
+
+        # The MPI launch line, built as blt_add_test builds it (BLTMacros.cmake, NUM_MPI_TASKS)
+        if(MPIEXEC_EXECUTABLE)
+            set(_hk_mpiexec ${MPIEXEC_EXECUTABLE})
+        else()
+            set(_hk_mpiexec ${MPIEXEC})
+        endif()
+
+        # One checked run: NAME test name; NP ranks; PASS expected output; SETUP fixture this
+        # run provides; NEEDS fixtures it requires (besides the setup); the rest is the program
+        # and its arguments
+        function(ms_hook_run)
+            cmake_parse_arguments(_r "" "NAME;NP;PASS;SETUP" "NEEDS;PROGRAM" ${ARGN})
+            set(_cmd ${_hk_mpiexec} ${MPIEXEC_NUMPROC_FLAG} ${_r_NP} ${BLT_MPI_COMMAND_APPEND}
+                     ${_r_PROGRAM})
+            string(REPLACE ";" "|" _cmd_arg "${_cmd}")
+            add_test(NAME              ${_r_NAME}
+                     COMMAND           ${CMAKE_COMMAND} "-DCMD=${_cmd_arg}" "-DPASS=${_r_PASS}"
+                                       -P ${_hk_run_script}
+                     WORKING_DIRECTORY ${_hk_dir})
+            set_tests_properties(${_r_NAME} PROPERTIES
+                                 FIXTURES_REQUIRED "ms_hook_case;${_r_NEEDS}"
+                                 FIXTURES_SETUP    ${_r_SETUP}
+                                 RESOURCE_LOCK     ms_hook_mechanics
+                                 PROCESSORS        ${_r_NP}
+                                 LABELS            "microstructure")
+        endfunction()
+
+        # One --compare-mechanics step between two result directories (relative to _hk_dir)
+        function(ms_hook_compare)
+            cmake_parse_arguments(_c "" "NAME;DIR_A;DIR_B" "NEEDS" ${ARGN})
+            blt_add_test(NAME          ${_c_NAME}
+                         COMMAND       $<TARGET_FILE:test_parallel_mesh_input> --compare-mechanics
+                                       ${_hk_dir}/${_c_DIR_A} ${_hk_dir}/${_c_DIR_B}
+                         NUM_MPI_TASKS 1)
+            set_tests_properties(${_c_NAME} PROPERTIES
+                                 FIXTURES_REQUIRED "ms_hook_case;${_c_NEEDS}"
+                                 LABELS            "microstructure")
+        endfunction()
+
+        # The summary line the hook prints for the hook_voronoi grains (8 seeds, 8 final grains)
+        set(_hk_generated "generated the grains in memory.*8 requested, 8 final grains")
+
+        # Comparisons that are not byte for byte (microstructure_hook_compare.py, see its
+        # docstring): NAME test; ARGS script arguments; NEEDS fixtures. Used wherever the hook and
+        # another path label different (if equivalent) meshes: the hook works in place on
+        # ExaConstit's mesh with Nodes, so element centroids, volumes and face areas may differ in
+        # the last bits. The seeds must be identical (same orientation for every shared seed),
+        # the labels must agree on at least 99% of the elements (the measured fraction is
+        # printed), and the mechanics results are compared only when the labels are identical.
+        set(_hk_compare_py ${CMAKE_SOURCE_DIR}/test/microstructure_hook_compare.py)
+        function(ms_hook_py)
+            cmake_parse_arguments(_p "" "NAME" "ARGS;NEEDS" ${ARGN})
+            add_test(NAME              ${_p_NAME}
+                     COMMAND           ${PYTHON_EXECUTABLE} -I ${_hk_compare_py} ${_p_ARGS}
+                     WORKING_DIRECTORY ${_hk_dir})
+            set_tests_properties(${_p_NAME} PROPERTIES
+                                 FIXTURES_REQUIRED "ms_hook_case;${_p_NEEDS}"
+                                 LABELS            "microstructure")
+        endfunction()
+
+        # The --compare-mechanics command line, for the conditional comparisons
+        set(_hk_compare_mechanics $<TARGET_FILE:test_parallel_mesh_input> --compare-mechanics)
+
+        # Step 2: hook_vs_tool. The tool writes voronoi_auto.{grains,ori,_grains.csv} into the
+        # working directory; ms_auto_np1.toml reads the first two.
+        ms_hook_run(NAME    test_microstructure_hook_e2e_tool
+                    NP      1
+                    PASS    "[^0-9]8 final grains"
+                    SETUP   ms_hook_tool_files
+                    PROGRAM $<TARGET_FILE:microstructure_generator> -i ${_hk_ms}/voronoi_auto.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_tool_mechanics
+                    NP      1
+                    PASS    "."
+                    SETUP   ms_hook_run_tool
+                    NEEDS   ms_hook_tool_files
+                    PROGRAM $<TARGET_FILE:mechanics> -opt ms_auto_np1.toml)
+        foreach(_np 1 2)
+            ms_hook_run(NAME    test_microstructure_hook_e2e_hook_np${_np}
+                        NP      ${_np}
+                        PASS    "${_hk_generated}"
+                        SETUP   ms_hook_run_hook_np${_np}
+                        PROGRAM $<TARGET_FILE:mechanics> -opt hook_voronoi_np${_np}.toml)
+        endforeach()
+        # Hook vs tool: same seeds; labels of the 1-rank hook run (its plain-text grain mesh, in
+        # serial element order) against the tool's grain file; mechanics when labels identical
+        ms_hook_py(NAME  test_microstructure_hook_e2e_hook_vs_tool_seeds
+                   ARGS  seeds voronoi_auto_grains.csv
+                         results/hook_voronoi_np1/microstructure_grains.csv
+                   NEEDS ms_hook_tool_files ms_hook_run_hook_np1)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_hook_vs_tool_labels
+                   ARGS  labels voronoi_auto.grains
+                         results/hook_voronoi_np1/microstructure.mesh.000000 0.99
+                         ${_hk_compare_mechanics} ${_hk_dir}/results/ms_auto_np1
+                         ${_hk_dir}/results/hook_voronoi_np1
+                   NEEDS ms_hook_tool_files ms_hook_run_tool ms_hook_run_hook_np1)
+        # Hook at 1 rank vs 2 ranks: the same path on the same mesh (no parallel refinement), so
+        # the record files are byte-identical (the grain table holds fixed-point grain
+        # statistics) and the mechanics results match
+        ms_hook_compare(NAME  test_microstructure_hook_e2e_compare_hook_ranks
+                        DIR_A results/hook_voronoi_np1
+                        DIR_B results/hook_voronoi_np2
+                        NEEDS ms_hook_run_hook_np1 ms_hook_run_hook_np2)
+        set(_hk_a results/hook_voronoi_np1/microstructure)
+        set(_hk_b results/hook_voronoi_np2/microstructure)
+        set(_hk_pairs ${_hk_a}.ori=${_hk_b}.ori ${_hk_a}_grains.csv=${_hk_b}_grains.csv)
+        string(REPLACE ";" "," _hk_pairs_arg "${_hk_pairs}")
+        add_test(NAME              test_microstructure_hook_e2e_record_files_ranks
+                 COMMAND           ${CMAKE_COMMAND} -DPAIRS=${_hk_pairs_arg}
+                                   -P ${_hk_files_script}
+                 WORKING_DIRECTORY ${_hk_dir})
+        set(_hk_needs ms_hook_case ms_hook_run_hook_np1 ms_hook_run_hook_np2)
+        set_tests_properties(test_microstructure_hook_e2e_record_files_ranks PROPERTIES
+                             FIXTURES_REQUIRED "${_hk_needs}"
+                             LABELS            "microstructure")
+
+        # Step 3: hook_two_phase (1 rank). The summary must list both regions with their phases
+        # ("." stands for the "; " separator, which cannot appear in the -DPASS argument). Against
+        # the tool path (the tool's files read through grain_file / orientation_file /
+        # region_mapping_file, ms_two_phase_tool_np2.toml): same seeds, labels, and the mechanics
+        # results when the labels are identical.
+        string(CONCAT _hk_two_phase "regions: 2.*region 1 .*phase 1. crystalline"
+                      ".*region 2 .*phase 2. not crystalline")
+        ms_hook_run(NAME    test_microstructure_hook_e2e_two_phase
+                    NP      1
+                    PASS    "${_hk_two_phase}"
+                    SETUP   ms_hook_run_two_phase
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_two_phase_np1.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_two_phase_tool
+                    NP      1
+                    PASS    "[^0-9]40 final grains"
+                    SETUP   ms_hook_tool_two_phase_files
+                    PROGRAM $<TARGET_FILE:microstructure_generator>
+                            -i ${_hk_ms}/phase_fractions_auto.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_two_phase_tool_mechanics
+                    NP      2
+                    PASS    "."
+                    SETUP   ms_hook_run_two_phase_tool
+                    NEEDS   ms_hook_tool_two_phase_files
+                    PROGRAM $<TARGET_FILE:mechanics> -opt ms_two_phase_tool_np2.toml)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_two_phase_seeds
+                   ARGS  seeds phase_fractions_auto_grains.csv
+                         results/hook_two_phase_np1/two_phase_grains.csv
+                   NEEDS ms_hook_tool_two_phase_files ms_hook_run_two_phase)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_two_phase_labels
+                   ARGS  labels phase_fractions_auto.grains
+                         results/hook_two_phase_np1/two_phase.mesh.000000 0.99
+                         ${_hk_compare_mechanics} ${_hk_dir}/results/tool_two_phase_np2
+                         ${_hk_dir}/results/hook_two_phase_np1
+                   NEEDS ms_hook_tool_two_phase_files ms_hook_run_two_phase_tool
+                         ms_hook_run_two_phase)
+
+        # Step 4: hook_restart. Part B must skip the hook; A + B must equal the reference.
+        ms_hook_run(NAME    test_microstructure_hook_e2e_restart_full
+                    NP      2
+                    PASS    "${_hk_generated}"
+                    SETUP   ms_hook_run_restart_full
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_restart_full.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_restart_a
+                    NP      2
+                    PASS    "${_hk_generated}"
+                    SETUP   ms_hook_run_restart_a
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_restart_a.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_restart_b
+                    NP      2
+                    PASS    "microstructure hook is skipped"
+                    SETUP   ms_hook_run_restart_b
+                    NEEDS   ms_hook_run_restart_a
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_restart_b.toml)
+        ms_hook_compare(NAME  test_microstructure_hook_e2e_compare_restart
+                        DIR_A results/hook_restart_full
+                        DIR_B results/hook_restart
+                        NEEDS ms_hook_run_restart_full ms_hook_run_restart_b)
+
+
+        # Step 5: element order and refinement on the straight auto box. Under refinement the
+        # seeds (and the orientations keyed by them) stay the same, while the labels follow the
+        # mesh. Order 2 (same elements, order-2 Nodes): same seeds as the tool, and at least 99%
+        # of the elements with the same grain as the order-1 run (in practice all: the generator
+        # treats straight-sided Nodes exactly like no Nodes; the margin only allows for a
+        # centroid tie broken differently by round-off). One serial refinement: same seeds for
+        # every grain both runs have; labels not compared (different elements).
+        ms_hook_run(NAME    test_microstructure_hook_e2e_order2
+                    NP      1
+                    PASS    "generated the grains in memory"
+                    SETUP   ms_hook_run_order2
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_voronoi_p2_np1.toml)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_order2_seeds
+                   ARGS  seeds voronoi_auto_grains.csv
+                         results/hook_voronoi_p2_np1/microstructure_grains.csv
+                   NEEDS ms_hook_tool_files ms_hook_run_order2)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_order2_labels
+                   ARGS  labels results/hook_voronoi_np1/microstructure.mesh.000000
+                         results/hook_voronoi_p2_np1/microstructure.mesh.000000 0.99
+                   NEEDS ms_hook_run_hook_np1 ms_hook_run_order2)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_refined
+                    NP      1
+                    PASS    "generated the grains in memory"
+                    SETUP   ms_hook_run_refined
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_voronoi_h1_np1.toml)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_refined_seeds
+                   ARGS  seeds results/hook_voronoi_np1/microstructure_grains.csv
+                         results/hook_voronoi_h1_np1/microstructure_grains.csv
+                   NEEDS ms_hook_run_hook_np1 ms_hook_run_refined)
+
+        # Step 6: file mesh with a passthrough part (attribute 8 of the tool's grain mesh), grain
+        # mesh written as parallel parts, then a run without the hook on those parts with the
+        # record orientation file and region map: same results.
+        ms_hook_run(NAME    test_microstructure_hook_e2e_passthrough
+                    NP      2
+                    PASS    "generated the grains in memory.*passthrough attribute 8"
+                    SETUP   ms_hook_run_passthrough
+                    NEEDS   ms_hook_tool_files
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_pass_np2.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_passthrough_read
+                    NP      2
+                    PASS    "."
+                    SETUP   ms_hook_run_passthrough_read
+                    NEEDS   ms_hook_run_passthrough
+                    PROGRAM $<TARGET_FILE:mechanics> -opt ms_hook_pass_read_np2.toml)
+        ms_hook_compare(NAME  test_microstructure_hook_e2e_compare_passthrough
+                        DIR_A results/hook_pass_np2
+                        DIR_B results/hook_pass_read_np2
+                        NEEDS ms_hook_run_passthrough ms_hook_run_passthrough_read)
+
+        # Step 7: a genuinely curved file mesh (order-2 hexes, bulged top). The tool and the hook
+        # (at element order 2, so the curved Nodes are used; ExaConstit re-projects them onto its
+        # own order-2 space, so the geometry may differ in the last bits) must use the same seeds
+        # and give the same labels (both 1-rank grain meshes, serial element order), and
+        # mechanics must run on the curved mesh.
+        ms_hook_run(NAME    test_microstructure_hook_e2e_curved_tool
+                    NP      1
+                    PASS    "final grains"
+                    SETUP   ms_hook_tool_curved_files
+                    PROGRAM $<TARGET_FILE:microstructure_generator>
+                            -i ${_hk_ms}/mechanics/hook_voronoi_micro.toml
+                            -m bulged_cube_order2.mesh -o curved_tool)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_curved
+                    NP      1
+                    PASS    "generated the grains in memory"
+                    SETUP   ms_hook_run_curved
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_curved_np1.toml)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_curved_seeds
+                   ARGS  seeds curved_tool_grains.csv
+                         results/hook_curved_np1/microstructure_grains.csv
+                   NEEDS ms_hook_tool_curved_files ms_hook_run_curved)
+        ms_hook_py(NAME  test_microstructure_hook_e2e_curved_labels
+                   ARGS  labels curved_tool.mesh.000000
+                         results/hook_curved_np1/microstructure.mesh.000000 0.99
+                   NEEDS ms_hook_tool_curved_files ms_hook_run_curved)
+    endif()
+endif()
+
+####################################
 # Checkpoint/restart tests (Axom Sidre)
 ####################################
 if(ENABLE_AXOM)

@@ -59,6 +59,14 @@ MeshOptions MeshOptions::from_toml(const toml::value& toml_input) {
         }
     }
 
+    // [Mesh.Microstructure]: generate the grains inside mechanics. Only stored here; it is
+    // parsed and checked by the hook code from ExaOptions::validate (see
+    // MeshOptions::microstructure), so the options code includes no generator header and an
+    // ExaConstit built without the generator can still name the table in its error message.
+    if (toml_input.contains("Microstructure")) {
+        options.microstructure = toml::find(toml_input, "Microstructure");
+    }
+
     return options;
 }
 

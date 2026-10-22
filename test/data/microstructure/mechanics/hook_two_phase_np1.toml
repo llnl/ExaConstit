@@ -1,0 +1,129 @@
+# ExaConstit deck for the Stage 1f end-to-end test "hook_two_phase" (1 MPI rank).
+#
+# Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck,
+# props_cp_voce.txt and state_cp_voce.txt into a scratch directory and runs mechanics on it with
+# 1 MPI rank; the run must report 2 regions and finish normally. The chain then compares it with
+# the tool path (ms_two_phase_tool_np2.toml): same seeds, element labels (the grain mesh is
+# written as one plain-text part, in serial element order, to compare with the tool's grain
+# file), and, when the labels are identical, the mechanics results.
+#
+# What it exercises: [Mesh.Microstructure] with Regions.mode = "phase_fractions" (the options of
+# test/data/microstructure/phase_fractions_auto.toml: 40 Voronoi grains on a 10x10x10 auto box,
+# phases 1 and 2 with volume fractions 0.6 / 0.4, phase 2 non-crystalline). Each phase becomes a
+# region, and region r uses [[Materials]] block r, so the deck has two blocks; the grain-to-region
+# map comes from the generator instead of a region_mapping_file. The phase-2 grains get the
+# identity orientation. Both blocks use the same crystal-plasticity model here; only the region
+# bookkeeping differs.
+Version = "0.10.0"
+basename = "hook_two_phase_np1"
+
+[[Materials]]
+    # Region 1: the grains of phase 1 (crystalline)
+    name = "phase_1"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        # No orientation_file and no num_grains: [Mesh.Microstructure] generates the grains and
+        # fills in the grain count; ori_type is "quat" (the default, and what the hook sets)
+        ori_state_var_loc = 9
+        ori_stride = 4
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    # Region 2: the grains of phase 2 (non-crystalline: identity orientations)
+    name = "phase_2"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        # No orientation_file and no num_grains: [Mesh.Microstructure] generates the grains and
+        # fills in the grain count; ori_type is "quat" (the default, and what the hook sets)
+        ori_state_var_loc = 9
+        ori_stride = 4
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Auto-mesh boundary ids: 1 bottom (z = 0), 2 left (x = 0),
+# 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "auto"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [10, 10, 10]
+    [Mesh.Microstructure.Seeds]
+        num_seeds = 40
+        rng_seed = 8
+    [Mesh.Microstructure.Regions]
+        mode = "phase_fractions"
+        phases = [{id = 1, fraction = 0.6}, {id = 2, fraction = 0.4}]
+        non_crystalline_phases = [2]
+    [Mesh.Microstructure.Output]
+        basename = "two_phase"
+        mesh_format = "parallel"
+        compression = 0

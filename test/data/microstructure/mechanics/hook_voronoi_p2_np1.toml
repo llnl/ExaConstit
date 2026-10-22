@@ -1,0 +1,105 @@
+# ExaConstit deck for the Stage 1f end-to-end test "hook_order2" (1 MPI rank).
+#
+# Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck and the
+# material files into a scratch directory and runs mechanics on it.
+#
+# What it exercises: the hook_voronoi grains on the same 8x8x8 auto box at element order 2
+# (p_refinement = 2; ExaConstit gives the mesh order-2 Nodes, which describe the same straight
+# elements). The generator recognizes straight-sided Nodes, so the seeds (orientations keyed by
+# seed) must equal those of the order-1 run and of the tool (microstructure_hook_compare.py
+# seeds), and the element labels must agree with the order-1 run (labels, >= 99%; in practice
+# all of them, since the geometry is the same).
+Version = "0.10.0"
+basename = "hook_voronoi_p2_np1"
+
+[[Materials]]
+    # The generated grains, region 1
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        # No orientation_file and no num_grains: [Mesh.Microstructure] generates the grains and
+        # fills in the grain count; ori_type is "quat" (the default, and what the hook sets)
+        ori_state_var_loc = 9
+        ori_stride = 4
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Auto-mesh boundary ids: 1 bottom (z = 0), 2 left (x = 0),
+# 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "auto"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 2
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]
+    # Form 2: the generator's tables inline, the same as hook_voronoi_micro.toml
+    [Mesh.Microstructure.Seeds]
+        num_seeds = 8
+        rng_seed = 0
+        placement = "rejection"
+    [Mesh.Microstructure.Tessellation]
+        metric = "voronoi"
+        sampling = "centroid"
+    [Mesh.Microstructure.Orientations]
+        source = "random"
+    [Mesh.Microstructure.Output]
+        mesh_format = "parallel"
+        compression = 0

@@ -1,6 +1,7 @@
 #include "options/option_parser_v2.hpp"
 
 #include "options/option_util.hpp"
+#include "options/option_microstructure_hook.hpp"
 
 #include "mfem.hpp"
 
@@ -496,7 +497,14 @@ bool ExaOptions::validate() {
         return false;
     }
 
-    if (materials.size() > 1 && !inputs_from_checkpoint) {
+    // [Mesh.Microstructure]: mechanics generates the grains itself (sim_state/
+    // microstructure_hook.hpp). Checked on fresh runs and restarts alike, before any mesh work.
+    const bool grains_from_hook = mesh.microstructure.has_value();
+    if (grains_from_hook && !validate_microstructure_hook()) {
+        return false;
+    }
+
+    if (materials.size() > 1 && !inputs_from_checkpoint && !grains_from_hook) {
         if (!region_mapping_file) {
             WARNING_0_OPT("Error: region_mapping_file was not provided even though multiple "
                           "materials were asked for.");
@@ -510,7 +518,7 @@ bool ExaOptions::validate() {
 
     size_t index = 1;
     for (auto& mat : materials) {
-        if (!mat.validate(!inputs_from_checkpoint))
+        if (!mat.validate(!inputs_from_checkpoint, grains_from_hook))
             return false;
         // Update the region_id value after validating
         // everything so to make it easier for users to
@@ -631,7 +639,9 @@ bool ExaOptions::validate() {
     if (!post_processing.validate())
         return false;
 
-    if (!inputs_from_checkpoint) {
+    // The hook replaces the grain, orientation and region-mapping files (validated above), so
+    // their existence checks only apply to runs that read them
+    if (!inputs_from_checkpoint && !grains_from_hook) {
         if (region_mapping_file) {
             if (!std::filesystem::exists(*region_mapping_file)) {
                 std::ostringstream err;
@@ -673,6 +683,74 @@ bool ExaOptions::validate() {
     }
 
     return true;
+}
+
+/*
+ * validate_microstructure_hook: the ExaConstit side of the [Mesh.Microstructure] checks; the
+ * generator side (the table's two forms, refused generator keys, the generator's own validation)
+ * is ValidateMicrostructureHook (declared in options/option_microstructure_hook.hpp, implemented
+ * in sim_state/microstructure_hook.cpp), called first so that a
+ * build without the generator reports that before anything else.
+ *
+ * The hook supplies the grain IDs, the orientations and the grain-to-region map, so the files
+ * that would otherwise provide them are refused (they would be silently ignored): grain_file,
+ * orientation_file and region_mapping_file, at the top level or in a [Grain] table
+ * (finalize_material_options has already copied the [Grain] file names to the top level; the
+ * [Grain] tables are checked first so the message can name the material). The hook also sets
+ * every [Grain] table's num_grains and ori_type, so num_grains must be absent or 0 and ori_type
+ * absent or "quat" (GrainInfo's default; the two cannot be told apart, and do not need to be).
+ * Every problem is printed before returning, so the user sees all of them at once.
+ */
+bool ExaOptions::validate_microstructure_hook() const {
+    if (!exaconstit::ValidateMicrostructureHook(*this)) {
+        return false;
+    }
+
+    bool ok = true;
+    for (const auto& mat : materials) {
+        if (!mat.grain_info) {
+            continue;
+        }
+        const auto& grain = *mat.grain_info;
+        const std::string where = "Error: [Mesh.Microstructure] generates the grains, but the "
+                                  "Grain table of material '" +
+                                  mat.material_name + "' ";
+        if (grain.orientation_file) {
+            WARNING_0_OPT(where + "sets orientation_file; remove it (the orientations are "
+                                  "generated)");
+            ok = false;
+        }
+        if (grain.grain_file) {
+            WARNING_0_OPT(where + "sets grain_file; remove it (the grain IDs are generated)");
+            ok = false;
+        }
+        if (grain.num_grains != 0) {
+            WARNING_0_OPT(where + "sets num_grains = " + std::to_string(grain.num_grains) +
+                          "; remove it or set 0 (the generated grain count is filled in)");
+            ok = false;
+        }
+        if (grain.ori_type != OriType::QUAT) {
+            WARNING_0_OPT(where + "sets an ori_type other than \"quat\"; the generated "
+                                  "orientations are unit quaternions");
+            ok = false;
+        }
+    }
+    if (ok && orientation_file) {
+        WARNING_0_OPT("Error: [Mesh.Microstructure] generates the orientations; remove the "
+                      "top-level orientation_file");
+        ok = false;
+    }
+    if (ok && grain_file) {
+        WARNING_0_OPT("Error: [Mesh.Microstructure] generates the grain IDs; remove the "
+                      "top-level grain_file");
+        ok = false;
+    }
+    if (region_mapping_file) {
+        WARNING_0_OPT("Error: [Mesh.Microstructure] generates the grain-to-region map; remove "
+                      "region_mapping_file");
+        ok = false;
+    }
+    return ok;
 }
 
 // Implementation of validation methods for component structs
@@ -770,6 +848,13 @@ void ExaOptions::print_mesh_options() const {
     std::cout << "  Serial refinement levels: " << mesh.ref_ser << "\n";
     std::cout << "  Parallel refinement levels: " << mesh.ref_par << "\n";
     std::cout << "  Periodicity: " << (mesh.periodicity ? "Enabled" : "Disabled") << "\n";
+    if (mesh.microstructure) {
+        std::cout << "  Grains: generated in memory by [Mesh.Microstructure]";
+        if (restart.read) {
+            std::cout << " (skipped on this restart run: the grains come from the checkpoint)";
+        }
+        std::cout << "\n";
+    }
 }
 
 void ExaOptions::print_time_options() const {
@@ -1009,7 +1094,11 @@ void ExaOptions::print_material_options() const {
             if (grain.grain_file.has_value()) {
                 std::cout << "      Grain file: " << grain.grain_file.value() << "\n";
             }
-            std::cout << "      Number of grains: " << grain.num_grains << "\n";
+            if (mesh.microstructure) {
+                std::cout << "      Number of grains: (set by [Mesh.Microstructure])\n";
+            } else {
+                std::cout << "      Number of grains: " << grain.num_grains << "\n";
+            }
             std::cout << "      Orientation type: ";
             switch (grain.ori_type) {
             case OriType::EULER:

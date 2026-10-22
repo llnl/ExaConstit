@@ -191,6 +191,23 @@ struct MeshOptions {
      */
     bool periodicity = false;
 
+    /**
+     * @brief The [Mesh.Microstructure] table as written in the input deck, or empty when the
+     * run reads its grains from files as usual
+     *
+     * @details When present, mechanics generates the grains itself (the microstructure
+     * generator, src/microstructure/) on its own final, refined mesh right after the mesh is
+     * built, instead of reading grain IDs, orientations and the grain-to-region map from files
+     * (src/sim_state/microstructure_hook.hpp). The table holds either `file = "micro.toml"`
+     * (a generator options file) or the generator's tables inline ([Mesh.Microstructure.Seeds],
+     * ...). It is stored unparsed here and parsed by the hook code, so the options code needs
+     * no microstructure generator header: ExaOptions::validate() checks the table before any
+     * mesh work through ValidateMicrostructureHook, declared in the generator-free
+     * options/option_microstructure_hook.hpp and implemented in sim_state/microstructure_hook.cpp.
+     * Runs without the table behave exactly as before.
+     */
+    std::optional<toml::value> microstructure;
+
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist)
     bool validate(bool check_input_files = true) const;
@@ -234,8 +251,10 @@ struct GrainInfo {
     int num_grains = 0;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
-    // not read, since they may no longer exist)
-    bool validate(bool check_input_files = true) const;
+    // not read, since they may no longer exist). grains_from_hook = true is used when
+    // [Mesh.Microstructure] generates the grains: the orientation file is then not required and
+    // num_grains may be 0, because the hook fills in the grain count after the mesh is built.
+    bool validate(bool check_input_files = true, bool grains_from_hook = false) const;
 
     // Conversion from toml
     static GrainInfo from_toml(const toml::value& toml_input);
@@ -455,8 +474,9 @@ struct MaterialOptions {
     double temperature = 298.0;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
-    // not read, since they may no longer exist)
-    bool validate(bool check_input_files = true) const;
+    // not read, since they may no longer exist; grains_from_hook is passed on to
+    // GrainInfo::validate, see there)
+    bool validate(bool check_input_files = true, bool grains_from_hook = false) const;
 
     // Conversion from toml
     static MaterialOptions from_toml(const toml::value& toml_input);
@@ -1574,6 +1594,18 @@ public:
     void print_options() const;
 
 private:
+    /**
+     * @brief Check a [Mesh.Microstructure] table and the inputs it replaces
+     * @return true if the hook can run (or, on a restart, be skipped) with these options
+     *
+     * @details Called from validate() when mesh.microstructure is set. Runs the generator-side
+     * checks (ValidateMicrostructureHook, options/option_microstructure_hook.hpp), then refuses the
+     * grain, orientation and region-mapping files and any [Grain] num_grains other than 0 or
+     * ori_type other than "quat", since the hook supplies all of them. Not collective; every
+     * problem is printed on rank 0.
+     */
+    bool validate_microstructure_hook() const;
+
     /**
      * @brief Parse mesh-specific options from TOML input
      * @param toml_input TOML value containing mesh configuration

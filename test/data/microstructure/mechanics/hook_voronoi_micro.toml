@@ -1,0 +1,25 @@
+# Generator options for the Stage 1f end-to-end tests (form 1 of [Mesh.Microstructure],
+# `file = "hook_voronoi_micro.toml"` in hook_voronoi_np1.toml and hook_curved_np1.toml; also the
+# tool's input for the curved case, with -m bulged_cube_order2.mesh -o curved_tool).
+#
+# The same microstructure as test/data/microstructure/voronoi_auto.toml (8 random Voronoi seeds,
+# rng_seed 0, random orientations) without its [Mesh] table: with the hook the mesh is
+# ExaConstit's own [Mesh] (here the same 8x8x8 auto box), so the generator's mesh-source keys
+# (type, floc, [Mesh.Auto]) are not allowed. The record files go to ExaConstit's output
+# directory (results/<basename>/) with the default basename "microstructure"; the grain mesh is
+# also written, as plain-text parallel parts, so element labels can be compared.
+[Seeds]
+    num_seeds = 8
+    rng_seed = 0
+    placement = "rejection"
+
+[Tessellation]
+    metric = "voronoi"
+    sampling = "centroid"
+
+[Orientations]
+    source = "random"
+
+[Output]
+    mesh_format = "parallel"
+    compression = 0
