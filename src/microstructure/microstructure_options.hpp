@@ -366,8 +366,56 @@ struct TessellationOptions {
      * run stops with an error.
      */
     double periodic_tolerance = 1.0e-6;
-    /** @brief Distance mode (TOML `distance`: "euclidean", "connected", "geodesic"). */
+    /**
+     * @brief How "closest seed" is measured on parts with holes, notches or lattice struts (TOML
+     * `distance`):
+     * - "euclidean" (default): the metric value in straight lines, even across a void;
+     * - "connected": the straight-line (metric) labels, but every grain keeps only the elements
+     *   connected through material to the element holding its seed; cut-off elements take the
+     *   next best seed (labeling/connected_labeler.hpp). Every grain boundary is still the
+     *   boundary between two seeds of the metric. Works with every metric;
+     * - "geodesic": the distance is the length of the shortest path inside the material, so
+     *   grains grow around corners and voids (labeling/geodesic_fim.hpp or geodesic_graph.hpp;
+     *   solver choice in `geodesic`). Voronoi (path length d) or Additive (d - a_i, e.g.
+     *   Johnson-Mehl) metric only, without anisotropy: Laguerre and Quadric values are not path
+     *   lengths. Two properties to know:
+     *   - paths connect elements through shared vertices, edges and faces (the solvers work on
+     *     the mesh vertices), while the connected mode and the fragment cleanup connect elements
+     *     through shared faces only. Elements that share nodes are connected in the conforming FE
+     *     mesh, so a grain may grow through an edge or vertex contact; the cleanup then treats a
+     *     piece attached only that way as a separate fragment ([Cleanup] fragments policy);
+     *   - with Johnson-Mehl placement the nucleation step still decides which nuclei survive with
+     *     straight-line growth spheres: a candidate is discarded when an earlier grain's sphere
+     *     covers it, even across a void. Only the final labels use path lengths (the driver
+     *     records a warning).
+     * Scope limits of "connected" and "geodesic" (checked in validate() and by the driver): no
+     * periodic axes, no fit_volumes, no Lloyd relaxation / centroidal power, no voxel maps. Both
+     * run on the active part of the mesh (Mesh.active_attributes / passthrough_attributes), so
+     * paths never pass through a passthrough part.
+     */
     DistanceMode distance = DistanceMode::EUCLIDEAN;
+    /**
+     * @brief distance = "connected" only: largest number of relabeling rounds (TOML
+     * `connected_max_rounds`, default 16; in 0..CONNECTED_MAX_ROUNDS_LIMIT = 1000 of
+     * labeling/connected_limits.hpp, an error in any mode outside that range; 16-64 is plenty
+     * for lattices). Each round moves the elements still cut off from their seed to the next best
+     * seed; elements left after the last round
+     * keep their label and are merged by the fragment cleanup. Memory: one int per cut-off element
+     * per round performed.
+     */
+    int connected_max_rounds = 16;
+    /**
+     * @brief distance = "geodesic" only: the path-length solver (TOML
+     * `geodesic = { solver = "..." }`):
+     * - "fim" (default): Fast Iterative Method eikonal solver (labeling/geodesic_fim.hpp): solves
+     *   |grad T| = 1 inside the material with linear interpolation over element faces, so the
+     *   distances are not tied to edge directions (accurate; the recommended solver);
+     * - "graph": shortest paths along the element edges and diagonals (labeling/geodesic_graph.hpp;
+     *   fast but approximate: distances are over-estimated by up to ~12% on hex meshes and ~30% on
+     *   tet meshes, grain boundaries move much less).
+     * An unknown name is an error even when distance is not "geodesic" (validate()).
+     */
+    std::string geodesic_solver = "fim";
     /**
      * @brief Quadrature-vote sampling only: subdivision levels 0..3 of the voting points, 8^levels
      * points per element (labeling/quadrature_vote.hpp; default 2 = 64 points). Level 1 is not
@@ -495,7 +543,9 @@ struct CleanupOptions {
     /**
      * @brief Which piece of a disconnected grain keeps the grain's identity (and orientation):
      * "largest" (most elements) or "seed" (the piece containing the grain's seed, falling back to
-     * the largest when the seed lies in no element of the grain).
+     * the largest when the seed lies in no element of the grain). With Tessellation.distance =
+     * "connected" or "geodesic" the piece grown from the seed (its anchor / source element) is
+     * always kept, whatever this says.
      */
     std::string keep_component = "largest";
     /**
@@ -675,12 +725,19 @@ struct MicrostructureOptions {
      * DREAM.3D quaternion declarations when orientations are read, positive scale and spacing,
      * vote_levels 0-3, tile_size >= 1); voxel maps refuse every option that would shape a
      * tessellation (seed table, Johnson-Mehl, sizes, ROI, metric, anisotropy, periodic,
-     * fit_volumes, Lloyd, keep_component = "seed") and only warn about harmless seed-placement
-     * leftovers; from_source orientations and from_phase regions need a seed table or a voxel
-     * map; phase fractions need distinct phase ids >= 0 with positive fractions summing to 1;
-     * from_phase with filler needs Regions.filler_phase. Whether a table or voxel map actually
-     * holds the needed columns or datasets is only known when it is read, so the driver checks
-     * that (on every rank together).
+     * fit_volumes, Lloyd, keep_component = "seed", a distance other than "euclidean") and only
+     * warn about harmless seed-placement leftovers; from_source orientations and from_phase
+     * regions need a seed table or a voxel map; phase fractions need distinct phase ids >= 0
+     * with positive fractions summing to 1; from_phase with filler needs Regions.filler_phase.
+     * Whether a table or voxel map actually holds the needed columns or datasets is only known
+     * when it is read, so the driver checks that (on every rank together).
+     *
+     * Stage 1e checks: distance = "connected" or "geodesic" refuses periodic axes, fit_volumes,
+     * Lloyd relaxation / centroidal power and voxel maps; "geodesic" also needs metric "voronoi"
+     * or "additive" without anisotropy (anisotropy kind "none"). In any mode the solver name
+     * must be "fim" or "graph" and connected_max_rounds must be in 0..1000
+     * (CONNECTED_MAX_ROUNDS_LIMIT, labeling/connected_limits.hpp); valid values of a mode that is
+     * not selected only warn that they are ignored.
      *
      * Every problem is printed (rank 0) before returning, so the user sees all of them at once.
      * Not collective. Every rank holds the same options, but the file-existence checks assume

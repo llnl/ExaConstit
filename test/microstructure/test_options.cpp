@@ -1139,7 +1139,8 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.mesh.passthrough_attributes = {{2, 2}};
         o.seeds.boundary_clearance = 0.1;
     }));
-    // Size-related and distance keys are ignored with a warning
+    // Size-related keys are ignored with a warning (connected / geodesic distance is refused:
+    // see Stage1eValidationFailures)
     EXPECT_TRUE(check(voxel_options(), [](O& o) { o.seeds.size.mean_diameter = 0.2; }));
     EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.source.type = "voxels"; }));
 
@@ -1274,6 +1275,200 @@ TEST(MicrostructureOptions, ParseStage1dExamples) {
     EXPECT_EQ(plate.mesh.passthrough_attributes, (std::map<int, int>{{2, 2}}));
     plate.mesh.floc = data_dir / "cube_tet.mesh";
     EXPECT_TRUE(plate.validate());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 1e: distance modes
+// ---------------------------------------------------------------------------------------------
+
+// Defaults of the distance-mode keys: Euclidean distance, 16 connected rounds, and the geodesic
+// solver "fim" (Fast Iterative Method).
+// The keys parse from [Tessellation]: `distance`, `connected_max_rounds` and the inline table
+// `geodesic = {solver = ...}`; an unknown solver name is stored as written (validate() rejects
+// it, so the user sees it with every other problem).
+TEST(MicrostructureOptions, Stage1eKeysParse) {
+    const auto defaults = FromString("");
+    EXPECT_EQ(defaults.tessellation.distance, ms::DistanceMode::EUCLIDEAN);
+    EXPECT_EQ(defaults.tessellation.connected_max_rounds, 16);
+    EXPECT_EQ(defaults.tessellation.geodesic_solver, "fim");
+
+    const auto connected =
+        FromString("[Tessellation]\ndistance = \"connected\"\nconnected_max_rounds = 3\n");
+    EXPECT_EQ(connected.tessellation.distance, ms::DistanceMode::CONNECTED);
+    EXPECT_EQ(connected.tessellation.connected_max_rounds, 3);
+
+    const auto geodesic =
+        FromString("[Tessellation]\ndistance = \"geodesic\"\ngeodesic = {solver = \"graph\"}\n");
+    EXPECT_EQ(geodesic.tessellation.distance, ms::DistanceMode::GEODESIC);
+    EXPECT_EQ(geodesic.tessellation.geodesic_solver, "graph");
+    const auto typo = FromString("[Tessellation]\ngeodesic = {solver = \"dijkstra\"}\n");
+    EXPECT_EQ(typo.tessellation.geodesic_solver, "dijkstra");
+
+    // Wrong TOML types are rejected by the reader
+    EXPECT_ANY_THROW(FromString("[Tessellation]\nconnected_max_rounds = 1.5\n"));
+    EXPECT_ANY_THROW(FromString("[Tessellation]\ngeodesic = {solver = 3}\n"));
+    EXPECT_THROW(FromString("[Tessellation]\ndistance = \"shortest\"\n"), std::invalid_argument);
+}
+
+// validate() enforces the Stage 1e scope. Each case changes a valid baseline in one respect:
+// - both modes refuse periodic axes, fit_volumes, Lloyd / centroidal power and voxel maps (they
+//   work on a plain, non-periodic labeling of the active material with fixed seeds);
+// - geodesic needs a metric whose value is a length: Voronoi (d) or Additive (d - a_i, also with
+//   Johnson-Mehl); Laguerre and Quadric are refused, and so is any anisotropy kind;
+// - connected works with every metric (here Laguerre and a per-seed Quadric seed table);
+// - connected_max_rounds in 0..1000 (the labeler's CONNECTED_MAX_ROUNDS_LIMIT) and a solver
+//   "graph" or "fim", in any mode; valid settings of an unselected mode only warn;
+// - passthrough parts and seed tables are fine (the modes run on the active part).
+TEST(MicrostructureOptions, Stage1eValidationFailures) {
+    using O = ms::MicrostructureOptions;
+    auto check = [](O o, auto&& mutate) {
+        mutate(o);
+        return o.validate();
+    };
+    auto connected = [](O& o) { o.tessellation.distance = ms::DistanceMode::CONNECTED; };
+    auto geodesic = [](O& o) { o.tessellation.distance = ms::DistanceMode::GEODESIC; };
+    EXPECT_TRUE(check(ValidAutoOptions(), connected));
+    EXPECT_TRUE(check(ValidAutoOptions(), geodesic));
+
+    for (const auto mode : {ms::DistanceMode::CONNECTED, ms::DistanceMode::GEODESIC}) {
+        SCOPED_TRACE(mode == ms::DistanceMode::CONNECTED ? "connected" : "geodesic");
+        auto with_mode = [mode](O& o) { o.tessellation.distance = mode; };
+        EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+            with_mode(o);
+            o.tessellation.periodic = {false, true, false};
+        }));
+        EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+            with_mode(o);
+            o.tessellation.metric = ms::MetricType::ADDITIVE;
+            o.tessellation.fit_volumes.enabled = true;
+        }));
+        EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+            with_mode(o);
+            o.tessellation.lloyd_iterations = 2;
+        }));
+        EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+            with_mode(o);
+            o.seeds.num_seeds = 0;
+            o.source.type = "voxel_map";
+            o.voxel_map.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+        }));
+        // Passthrough parts: the mode runs on the active part
+        EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+            with_mode(o);
+            o.mesh.passthrough_attributes = {{2, 2}};
+        }));
+    }
+
+    // Geodesic: metric and anisotropy
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::ADDITIVE;
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) { // Johnson-Mehl: additive weights
+        geodesic(o);
+        o.seeds.num_seeds = 0;
+        o.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
+        o.seeds.johnson_mehl.rate = 10.0;
+        o.tessellation.metric = ms::MetricType::ADDITIVE;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.anisotropy_kind = "tensor"; // ignored by Voronoi, but refused here
+    }));
+
+    // Connected: any metric, including a per-seed Quadric seed table
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.seeds.num_seeds = 0;
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+        o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "per_seed";
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.tessellation.connected_max_rounds = 0; // count only
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.tessellation.connected_max_rounds = -1;
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.tessellation.connected_max_rounds = 1000; // the labeler's limit
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        connected(o);
+        o.tessellation.connected_max_rounds = 1001;
+    }));
+
+    // Solver names
+    for (const char* solver : {"fim", "graph"}) {
+        EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+            geodesic(o);
+            o.tessellation.geodesic_solver = solver;
+        }));
+    }
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.geodesic_solver = "dijkstra";
+    }));
+
+    // One policy for the settings of a mode that is not selected: a value invalid in itself is
+    // an error in any mode (exactly one problem: no extra "ignored" message for the same key),
+    // a valid value is accepted (it only warns that it is ignored)
+    std::vector<std::string> problems;
+    O typo = ValidAutoOptions();
+    typo.tessellation.geodesic_solver = "x";
+    EXPECT_FALSE(typo.validate(&problems));
+    EXPECT_EQ(problems.size(), 1u);
+    problems.clear();
+    O rounds = ValidAutoOptions();
+    rounds.tessellation.connected_max_rounds = 1001;
+    EXPECT_FALSE(rounds.validate(&problems));
+    EXPECT_EQ(problems.size(), 1u);
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.tessellation.geodesic_solver = "graph"; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.tessellation.connected_max_rounds = 3; }));
+}
+
+// The Stage 1e example files parse to the values they spell out and validate once the mesh path
+// (relative to the directory the tool runs in) is made absolute.
+TEST(MicrostructureOptions, ParseStage1eExamples) {
+    const fs::path dir = data_dir / "microstructure";
+    auto connected = ms::MicrostructureOptions::parse_options_file(dir / "connected_ushape.toml");
+    EXPECT_EQ(connected.tessellation.distance, ms::DistanceMode::CONNECTED);
+    EXPECT_EQ(connected.tessellation.connected_max_rounds, 16);
+    connected.mesh.floc = dir / connected.mesh.floc;
+    EXPECT_TRUE(connected.validate());
+
+    auto geodesic = ms::MicrostructureOptions::parse_options_file(dir / "geodesic_ushape.toml");
+    EXPECT_EQ(geodesic.tessellation.distance, ms::DistanceMode::GEODESIC);
+    EXPECT_EQ(geodesic.tessellation.geodesic_solver, "fim");
+    EXPECT_EQ(geodesic.tessellation.sampling, ms::SamplingMode::QUADRATURE_VOTE);
+    geodesic.mesh.floc = dir / geodesic.mesh.floc;
+    EXPECT_TRUE(geodesic.validate());
+
+    auto jm =
+        ms::MicrostructureOptions::parse_options_file(dir / "geodesic_johnson_mehl_ushape.toml");
+    EXPECT_EQ(jm.tessellation.distance, ms::DistanceMode::GEODESIC);
+    EXPECT_EQ(jm.tessellation.metric, ms::MetricType::ADDITIVE);
+    EXPECT_EQ(jm.seeds.placement, ms::SeedPlacement::JOHNSON_MEHL);
+    EXPECT_EQ(jm.tessellation.geodesic_solver, "graph");
+    jm.mesh.floc = dir / jm.mesh.floc;
+    EXPECT_TRUE(jm.validate());
 }
 
 // MPI must be initialized because the options code prints warnings through WARNING_0_OPT, which

@@ -1,0 +1,44 @@
+# Generator input of the Stage 1e end-to-end test "Johnson-Mehl growth along paths, graph solver".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/geodesic_graph_jm.toml
+#                              -m test/data/microstructure/u_shape_hex.mesh
+# (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI
+# ranks and checks that both runs write byte-identical files. No mechanics run.
+#
+# What it exercises: Johnson-Mehl nucleation (random nucleation places and times, constant growth
+# speed) on the U-shaped part, with the arrival time measured along paths inside the material:
+# t = (path length from the nucleus) / growth_speed + birth time, i.e. the additive metric
+# d_path - a_i. The path lengths come from the graph solver (shortest paths along element edges
+# and diagonals). Its exchange round counts depend on how the mesh is split between ranks, so the
+# tool prints them in the log only; the mesh header records just the distance mode and solver,
+# which keeps the 1-rank and 2-rank files identical. Measured: 18 nuclei, 2 of which win no
+# element, 16 final grains. (Which nuclei survive is still decided with straight-line growth
+# spheres by the nucleation step.)
+
+[Mesh]
+    type = "file"
+    # Overridden by -m in the test (relative paths are relative to the working directory)
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    placement = "johnson_mehl"
+    rng_seed = 3
+    [Seeds.JohnsonMehl]
+        # Nuclei per unit volume per unit time
+        rate = 5.0
+        growth_speed = 1.0
+
+[Tessellation]
+    # Required by Johnson-Mehl; geodesic distance supports voronoi and additive
+    metric = "additive"
+    distance = "geodesic"
+    geodesic = { solver = "graph" }
+
+[Output]
+    basename = "e2e_geodesic_graph_jm"
+    mesh_format = "serial"
+    # Plain text, so the 1-rank and 2-rank mesh files can be compared byte for byte
+    compression = 0
+    grain_adjacency = true
+    paraview = false

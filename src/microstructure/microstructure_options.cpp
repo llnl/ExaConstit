@@ -37,6 +37,9 @@
 #include "microstructure/microstructure_options.hpp"
 
 #include "microstructure/exec_dispatch.hpp"
+// The compile-time constant CONNECTED_MAX_ROUNDS_LIMIT only (header-only; ms_options does not
+// link ms_labeling)
+#include "microstructure/labeling/connected_limits.hpp"
 #include "options/option_util.hpp"
 
 #include "mfem.hpp"
@@ -671,7 +674,12 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
  *     vote over its quadrature points).
  *   - `periodic = [px, py, pz]`: whether the microstructure wraps around in x, y, z (grains cut
  *     by one face continue on the opposite face).
- *   - `distance`: "euclidean", "connected" or "geodesic" (see DistanceMode).
+ *   - `distance`: "euclidean", "connected" or "geodesic" (see DistanceMode and
+ *     TessellationOptions::distance).
+ *   - `connected_max_rounds`: relabeling rounds of the connected mode (>= 0, checked in
+ *     validate()).
+ *   - `geodesic = {solver}`: "fim" or "graph", the path-length solver of the geodesic mode
+ *     (spelling and availability checked in validate()).
  *   - `periodic_tolerance`: matching tolerance of the periodic face pairing (fraction of the
  *     smallest face edge on the periodic planes).
  *   - `vote_levels`: 0-3, resolution of quadrature voting (8^levels points per element).
@@ -695,6 +703,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
                        "periodic",
                        "periodic_tolerance",
                        "distance",
+                       "connected_max_rounds",
+                       "geodesic",
                        "fit_volumes",
                        "lloyd_iterations",
                        "centroidal_power"});
@@ -800,6 +810,21 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
         tess.distance = string_to_ms_enum(toml::find<std::string>(toml_input, "distance"),
                                           distance_map,
                                           "Tessellation.distance");
+    }
+
+    // Distance-mode settings: the rounds cap of "connected" and the solver of "geodesic" (an
+    // inline table, so later solver settings can join it). Ranges and spelling are checked in
+    // validate(), so a typo is reported together with every other problem.
+    if (toml_input.contains("connected_max_rounds")) {
+        tess.connected_max_rounds =
+            get_int(toml_input, "connected_max_rounds", "Tessellation.connected_max_rounds");
+    }
+    if (toml_input.contains("geodesic")) {
+        const auto& geodesic = toml::find(toml_input, "geodesic");
+        warn_unknown_keys(geodesic, "Tessellation.geodesic", {"solver"});
+        if (geodesic.contains("solver")) {
+            tess.geodesic_solver = toml::find<std::string>(geodesic, "solver");
+        }
     }
 
     // Periodic face matching tolerance (range checked in validate()).
@@ -1492,6 +1517,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
         refuse(tessellation.lloyd_iterations > 0 || tessellation.centroidal_power,
                "Tessellation.lloyd_iterations / centroidal_power");
         refuse(cleanup.keep_component == "seed", "Cleanup.keep_component = \"seed\"");
+        refuse(tessellation.distance != DistanceMode::EUCLIDEAN,
+               "Tessellation.distance = \"connected\" / \"geodesic\"");
         // Harmless leftovers (e.g. from a template file, or -n on the command line) only warn
         if (seeds.num_seeds > 0 || seeds.placement != SeedPlacement::REJECTION ||
             seeds.min_distance > 0.0 || seeds.min_distance_factor > 0.0 ||
@@ -1503,9 +1530,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
                           "ignored with Source.type = \"voxel_map\"");
         }
         if (seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0 ||
-            seeds.size.sigma > 0.0 || tessellation.distance != DistanceMode::EUCLIDEAN) {
-            WARNING_0_OPT("Warning: Seeds.Size.mean_diameter, mean_volume, sigma and "
-                          "Tessellation.distance are ignored with Source.type = \"voxel_map\"");
+            seeds.size.sigma > 0.0) {
+            WARNING_0_OPT("Warning: Seeds.Size.mean_diameter, mean_volume and sigma are ignored "
+                          "with Source.type = \"voxel_map\"");
         }
         if (tessellation.sampling != SamplingMode::CENTROID || tessellation.vote_levels != 2 ||
             tessellation.num_bins != 8) {
@@ -1882,6 +1909,65 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
     if (any_periodic && (fit.enabled || tessellation.lloyd_iterations > 0)) {
         report_error(valid,
                      "fit_volumes and lloyd_iterations are not supported with periodic axes");
+    }
+    // Stage 1e distance modes. Both run on top of a plain (non-periodic) labeling of the active
+    // material: periodic images would need paths and components that wrap around the box, and
+    // Lloyd relaxation and the volume fit move seeds / weights using straight-line cells, which
+    // the constrained labels would no longer match. The geodesic distance is a path length, so
+    // only metrics whose value is a length qualify: Voronoi (d) and Additive (d - a_i, e.g.
+    // Johnson-Mehl); Laguerre (d^2 - w) and Quadric ((x - s)^T A (x - s)) values are not lengths.
+    const bool connected = (tessellation.distance == DistanceMode::CONNECTED);
+    const bool geodesic = (tessellation.distance == DistanceMode::GEODESIC);
+    if (connected || geodesic) {
+        const std::string mode = connected ? "\"connected\"" : "\"geodesic\"";
+        if (any_periodic) {
+            report_error(valid, "Tessellation.distance = " + mode +
+                                    " cannot be combined with periodic axes");
+        }
+        if (fit.enabled) {
+            report_error(valid, "Tessellation.distance = " + mode +
+                                    " cannot be combined with Tessellation.fit_volumes");
+        }
+        if (tessellation.lloyd_iterations > 0 || tessellation.centroidal_power) {
+            report_error(valid, "Tessellation.distance = " + mode +
+                                    " cannot be combined with Tessellation.lloyd_iterations / "
+                                    "centroidal_power");
+        }
+    }
+    if (geodesic) {
+        if (tessellation.metric != MetricType::VORONOI &&
+            tessellation.metric != MetricType::ADDITIVE) {
+            report_error(valid, "Tessellation.distance = \"geodesic\" needs metric = \"voronoi\" "
+                                "or \"additive\" (Laguerre and Quadric values are not path "
+                                "lengths)");
+        }
+        if (tessellation.anisotropy_kind != "none") {
+            report_error(valid, "Tessellation.distance = \"geodesic\" cannot be combined with "
+                                "Tessellation.anisotropy (kind must be \"none\")");
+        }
+    }
+    // Distance-mode settings, one policy for both keys: a value that is invalid in itself (an
+    // unknown solver name, a rounds cap outside the labeler's range) is an error whatever the
+    // distance mode, since it is a typo or a mistake either way; a valid setting of a mode that is
+    // not selected only gets an "ignored" warning (compared with the default, since the options
+    // do not record which keys were written). A key never gets both.
+    const TessellationOptions defaults;
+    bool solver_ok = true;
+    check_choice(solver_ok, "Tessellation.geodesic.solver", tessellation.geodesic_solver,
+                 {"fim", "graph"});
+    if (!solver_ok) {
+        valid = false;
+    } else if (!geodesic && tessellation.geodesic_solver != defaults.geodesic_solver) {
+        WARNING_0_OPT("Warning: Tessellation.geodesic is ignored unless distance = \"geodesic\"");
+    }
+    // The connected labeler's own bound (labeling/connected_limits.hpp; 16-64 is plenty)
+    if (tessellation.connected_max_rounds < 0 ||
+        tessellation.connected_max_rounds > CONNECTED_MAX_ROUNDS_LIMIT) {
+        report_error(valid, "Tessellation.connected_max_rounds must be in 0.." +
+                                std::to_string(CONNECTED_MAX_ROUNDS_LIMIT));
+    } else if (!connected && tessellation.connected_max_rounds != defaults.connected_max_rounds) {
+        WARNING_0_OPT("Warning: Tessellation.connected_max_rounds is ignored unless distance = "
+                      "\"connected\"");
     }
     if (size.distribution != "none" && !size.polydisperse_placement && !fit.enabled &&
         tessellation.metric != MetricType::LAGUERRE) {

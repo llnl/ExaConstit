@@ -1,0 +1,35 @@
+# Microstructure generator example: Johnson-Mehl nucleation and growth measured along paths inside
+# a U-shaped part ("geodesic" distance with the additive metric).
+#
+# Run with (from this directory):
+#     microstructure_generator -i geodesic_johnson_mehl_ushape.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+#
+# Nuclei appear at random places and times and grow at a constant speed; a point belongs to the
+# grain that reaches it first. With "geodesic" distance a grain grows only through material, so it
+# reaches the other arm of the U around the end of the notch, not across it: arrival time
+# = (path length from the nucleus) / growth_speed + birth time, i.e. the additive metric
+# d_path - a_i with a_i = -growth_speed x birth time. (Which nuclei survive is still decided with
+# straight-line growth spheres by the nucleation step.)
+
+[Mesh]
+    type = "file"
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    placement = "johnson_mehl"
+    rng_seed = 3
+    [Seeds.JohnsonMehl]
+        # Nuclei per unit volume per unit time; about 15 grains in this 5-unit-volume part.
+        rate = 5.0
+        growth_speed = 1.0
+
+[Tessellation]
+    # Required by Johnson-Mehl; geodesic distance supports voronoi and additive
+    metric = "additive"
+    distance = "geodesic"
+    # The fast, approximate solver (the default is "fim")
+    geodesic = { solver = "graph" }
+
+[Output]
+    basename = "geodesic_johnson_mehl_ushape"

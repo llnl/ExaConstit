@@ -53,10 +53,17 @@
 namespace exaconstit::microstructure {
 
 /**
- * @brief Refuses tessellation options this labeler does not implement: distance other than
- * EUCLIDEAN (connected and geodesic distance are a later stage), vote_levels outside 0..3 and an
- * unknown anisotropy kind. Centroid and quadrature-vote sampling and periodic axes are supported
- * (by LabelTessellation).
+ * @brief Refuses tessellation options the generator's labelers do not support: vote_levels
+ * outside 0..3, an unknown anisotropy kind, distance = CONNECTED or GEODESIC with a periodic
+ * axis, and GEODESIC with a metric other than Voronoi / Additive or with an anisotropy kind other
+ * than "none" (the Stage 1e scope). Centroid and quadrature-vote sampling and periodic axes are
+ * supported (by LabelTessellation).
+ *
+ * All three distance modes pass this check, but the functions of this file compute the
+ * straight-line (EUCLIDEAN) labels only and refuse the other modes; the driver builds connected
+ * labels on top of them (ConstrainToConnectedCells, labeling/connected_labeler.hpp) and geodesic
+ * labels with LabelGeodesicFim or LabelGeodesicGraph (labeling/geodesic_fim.hpp,
+ * geodesic_graph.hpp).
  *
  * Host only, not collective; every rank holds the same options, so every rank throws together.
  * The driver calls it before seeding, so unsupported options are refused before any collective
@@ -179,7 +186,8 @@ struct TessellationLabels {
  *                     the metric).
  * @param tessellation metric, num_bins and the anisotropy (EffectiveGlobalTensor) are used (the
  *                     tensor is ignored when seeds.shape is non-empty: per-seed tensors win).
- *                     A distance other than Euclidean is rejected.
+ *                     distance must be EUCLIDEAN (other modes are rejected: see
+ *                     CheckSupportedTessellation).
  * @param element_seed resized to the local element count; element_seed[e] = 0-based seed index,
  *                     or -1 when the element centroid is not finite (FindBest's answer for a
  *                     non-finite query, e.g. 0/0 for a zero-volume element; LabelTessellation
@@ -249,7 +257,9 @@ void CompactSeedLabels(MPI_Comm comm,
  * @param seeds        replicated seed set (N >= 1, N < 2^31; with periodic images the image
  *                     count must fit too).
  * @param tessellation tessellation options (metric, anisotropy, num_bins, sampling, vote_levels,
- *                     periodic, distance).
+ *                     periodic); distance must be EUCLIDEAN (pass a copy with
+ *                     distance = EUCLIDEAN for the straight-line labels of a connected or
+ *                     geodesic run).
  * @return the labels of the local elements (seed indices into `seeds`) and the replicated
  *         seed/grain tables, plus the periodic and vote statistics.
  * @throws std::invalid_argument for unsupported options, an empty seed set or invalid seed data;

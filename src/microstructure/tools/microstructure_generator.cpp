@@ -34,12 +34,15 @@
  *  8. Rank-0 summary: provenance (including the grain source: generated seeds, a seed table or
  *     a voxel map, with its file and format), how the grains were made (seed generator,
  *     Johnson-Mehl nucleation, seed table with its region of interest and filler seeds, or voxel
- *     map grid, fill and read counts), what each optional stage did (size targets, Lloyd
+ *     map grid, fill and read counts), the distance mode of the labeling (connected: relabeling
+ *     rounds and counts; geodesic: solver, rounds, unreached elements), what each optional stage
+ *     did (size targets, Lloyd
  *     relaxation, volume fit with the element-level volume errors against the targets, periodic
  *     images, quadrature vote, fragment cleanup), grain statistics, phase fractions and regions,
  *     passthrough parts, and how to point an ExaConstit input at the outputs: the [[Materials]]
  *     blocks in region order with the phases, crystallinity and passthrough parts of each. No
- *     ExaConstit input file is generated.
+ *     ExaConstit input file is generated. The mesh header records the distance mode and the
+ *     geodesic solver, but no counts (the graph solver's round counts depend on the rank count).
  *
  * Errors inside the pipeline are normally thrown on all ranks together by the library (its
  * checks are either made on identical data or globally reduced). The tool catches them, prints
@@ -221,6 +224,83 @@ std::string MetricName(ms::MetricType metric) {
         return "additive";
     }
     return "unknown";
+}
+
+/** Lower-case option spelling of a distance mode ([Tessellation] distance), for logs. */
+std::string DistanceName(ms::DistanceMode distance) {
+    switch (distance) {
+    case ms::DistanceMode::EUCLIDEAN:
+        return "euclidean";
+    case ms::DistanceMode::CONNECTED:
+        return "connected";
+    case ms::DistanceMode::GEODESIC:
+        return "geodesic";
+    }
+    return "unknown";
+}
+
+/*
+ * DistanceHeaderLine: the distance mode for the mesh header provenance, one line, e.g.
+ * "distance: geodesic (solver fim)". Only settings go here, no counts: the header must be
+ * byte-identical for every rank count, and the graph solver's round counts depend on how the
+ * mesh is split between ranks (GeodesicReport, labeling/geodesic_common.hpp). The other counts
+ * are partition independent but are kept in the log with the rounds, so the header stays a
+ * record of what was asked for. Empty for voxel maps (no distance is computed there).
+ */
+std::string DistanceHeaderLine(const ms::GenerationReport& report) {
+    if (report.used_voxel_map) {
+        return "";
+    }
+    std::string line = "distance: " + DistanceName(report.distance);
+    if (report.used_geodesic) {
+        line += " (solver " + report.geodesic_solver + ")";
+    }
+    return line + "\n";
+}
+
+/*
+ * DistanceText: the distance-mode section of the rank-0 log (Stage 1e). Prints nothing for the
+ * default straight-line ("euclidean") mode and for voxel maps, so the logs of earlier stages do
+ * not change.
+ *  - connected: grains are the straight-line cells cut down to the elements joined to the seed
+ *    through material. Reports the relabeling rounds, the elements moved to another seed, the
+ *    orphans left after connected_max_rounds (merged later by the fragment cleanup), the elements
+ *    of bodies holding no seed anchor (left to the cleanup), and the seeds without a cell (seeds
+ *    that label no element at all: a coincident or dominated seed).
+ *  - geodesic: distance along paths inside the material. Reports the solver, the distance and
+ *    label rounds (for "graph" these depend on the rank count, which the line says), the seeds
+ *    outside the material (moved to their nearest element), the elements no seed reaches (they
+ *    take their straight-line label and are split off by the cleanup), the elements that are
+ *    reached but left without a label (they also take their straight-line label), and the
+ *    vertices left without a label (both zero unless the mesh is degenerate). Log only: none of
+ *    these counts goes into the mesh header.
+ */
+std::string DistanceText(const ms::GenerationReport& report) {
+    std::ostringstream os;
+    if (report.used_connected) {
+        const ms::ConnectedLabelReport& c = report.connected;
+        os << "distance: connected (straight-line cells kept only where joined to the seed "
+              "through material): "
+           << c.rounds << " relabeling round(s), " << c.relabeled_elements
+           << " element(s) relabeled, " << c.unresolved_elements
+           << " unresolved (left to the cleanup), " << c.unanchored_component_elements
+           << " in bodies without a seed anchor, " << c.seeds_without_cell
+           << " seed(s) without a cell\n";
+    } else if (report.used_geodesic) {
+        const ms::GeodesicReport& g = report.geodesic;
+        os << "distance: geodesic (path length inside the material), solver "
+           << report.geodesic_solver << ": " << g.distance_rounds << " distance round(s), "
+           << g.label_rounds << " label round(s)"
+           << (report.geodesic_solver == "graph" ? " (round counts depend on the rank count)"
+                                                 : "")
+           << "; " << g.seeds_outside_material << " seed(s) outside the material, "
+           << report.num_unreached_elements
+           << " unreached element(s) (straight-line label, split off by the cleanup), "
+           << report.num_unlabeled_elements
+           << " unlabeled element(s) (reached, but no label; straight-line label), "
+           << g.unlabeled_vertices << " unlabeled vertices\n";
+    }
+    return os.str();
 }
 
 /** Human-readable description of the input mesh, for provenance. */
@@ -925,6 +1005,7 @@ void PrintSummary(const ms::MicrostructureOptions& options,
         os << " (" << report.num_empty_seeds << " seeds won no element)";
     }
     os << "\n" << SourceText(options, report, true);
+    os << DistanceText(report);
     os << DescribeStages(options, report, stats);
     os << DescribePhasesAndRegions(options, report, result, stats);
     os << DescribePassthrough(report, result);
@@ -1143,6 +1224,9 @@ int main(int argc, char** argv) {
         if (!report.used_voxel_map) {
             comments << "metric: " << MetricName(options.tessellation.metric) << "\n";
         }
+        // Distance mode and solver only, never counts (DistanceHeaderLine): the header must be
+        // byte-identical for every rank count
+        comments << DistanceHeaderLine(report);
         comments << "grains: " << RequestedGrains(report) << "\n"
                  << "final grains: " << report.num_grains << "\n"
                  << "regions: " << result.num_regions << "\n"

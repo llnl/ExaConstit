@@ -37,18 +37,36 @@ namespace exaconstit::microstructure {
 /*
  * CheckSupportedTessellation
  *
- * The options structure already has room for later distance modes (connected / geodesic
- * distance). This labeler implements the plain (Euclidean) metric distance with centroid or
- * quadrature-vote sampling, with or without periodic images, so anything else is refused with a
- * clear message instead of being silently ignored. The vote level range (0..3) and the
- * anisotropy kind are checked here too, so a direct caller gets the same messages as the driver.
- * Every rank holds the same options, so every rank throws together. Public so the driver can call
- * it before the collective seeding; the labeler calls it again for direct callers.
+ * The three distance modes are supported by the generator, but only "euclidean" is computed by
+ * this file: "connected" starts from these labels and constrains them
+ * (labeling/connected_labeler.hpp), "geodesic" replaces them by path-length labels
+ * (labeling/geodesic_fim.hpp or geodesic_graph.hpp); the driver composes the steps. What is
+ * checked here is the scope those modes are built for (the Stage 1e limits): no periodic axes
+ * for either mode (a
+ * path or a connected piece would have to wrap around the box), and for "geodesic" a metric whose
+ * value is a length, i.e. Voronoi (d) or Additive (d - a_i), without anisotropy. The vote level
+ * range (0..3) and the anisotropy kind are checked too, so a direct caller gets the same messages
+ * as the driver. Every rank holds the same options, so every rank throws together. Public so the
+ * driver can call it before the collective seeding.
  */
 void CheckSupportedTessellation(const TessellationOptions& tessellation) {
-    if (tessellation.distance != DistanceMode::EUCLIDEAN) {
-        throw std::invalid_argument(
-            "Tessellation labeler: only distance = \"euclidean\" is implemented so far");
+    const bool periodic =
+        tessellation.periodic[0] || tessellation.periodic[1] || tessellation.periodic[2];
+    if (tessellation.distance != DistanceMode::EUCLIDEAN && periodic) {
+        throw std::invalid_argument("Tessellation labeler: distance = \"connected\" / "
+                                    "\"geodesic\" cannot be combined with periodic axes");
+    }
+    if (tessellation.distance == DistanceMode::GEODESIC) {
+        if (tessellation.metric != MetricType::VORONOI &&
+            tessellation.metric != MetricType::ADDITIVE) {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" needs "
+                                        "metric voronoi or additive (Laguerre and Quadric values "
+                                        "are not path lengths)");
+        }
+        if (tessellation.anisotropy_kind != "none") {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" cannot "
+                                        "be combined with an anisotropy (kind must be \"none\")");
+        }
     }
     if (tessellation.vote_levels < 0 || tessellation.vote_levels > 3) {
         throw std::invalid_argument("Tessellation labeler: vote_levels must be in 0..3");
@@ -56,6 +74,29 @@ void CheckSupportedTessellation(const TessellationOptions& tessellation) {
     // Resolving the tensor validates the anisotropy kind and its direction
     EffectiveGlobalTensor(tessellation);
 }
+
+namespace {
+
+/*
+ * RequireEuclidean: the labeling functions of this file compute straight-line (metric) labels
+ * only. Silently returning those for distance = "connected" or "geodesic" would give a caller
+ * the wrong grains, so they refuse it; the caller (the driver) passes a copy of the options with
+ * distance = EUCLIDEAN when it wants the straight-line labels as the starting point of the
+ * connected mode or as the fallback of the geodesic mode. Host only, not collective (identical
+ * options on every rank, so every rank throws together).
+ */
+void RequireEuclidean(const TessellationOptions& tessellation, const char* caller) {
+    if (tessellation.distance != DistanceMode::EUCLIDEAN) {
+        throw std::invalid_argument(
+            std::string(caller) +
+            ": computes straight-line (distance = \"euclidean\") labels only; connected labels "
+            "come from ConstrainToConnectedCells (labeling/connected_labeler.hpp) and geodesic "
+            "labels from LabelGeodesicFim / LabelGeodesicGraph (labeling/geodesic_fim.hpp, "
+            "geodesic_graph.hpp)");
+    }
+}
+
+} // namespace
 
 /*
  * EffectiveGlobalTensor: "none"/"tensor" return the stored tensor unchanged (so options that
@@ -145,6 +186,7 @@ void LabelElementsWithSeeds(mfem::Mesh& local_mesh,
                             mfem::Array<int>& element_seed,
                             int* num_coincident_seeds) {
     CheckSupportedTessellation(tessellation);
+    RequireEuclidean(tessellation, "LabelElementsWithSeeds");
     const std::size_t num_seeds = seeds.Size();
     if (num_seeds == 0) {
         throw std::invalid_argument("Tessellation labeler: the seed set is empty");
@@ -291,8 +333,9 @@ void CompactSeedLabels(MPI_Comm comm,
  * LabelTessellation
  *
  * Steps (see the header):
- *  1. Checks (identical on every rank). The seed count must fit in an int (the search and the
- *     grain tables use int indices; SeedIndex::Build enforces the same limit).
+ *  1. Checks (identical on every rank; distance must be EUCLIDEAN). The seed count must fit in
+ *     an int (the search and the grain tables use int indices; SeedIndex::Build enforces the
+ *     same limit).
  *  2. Periodic images when any axis is periodic: box from the mesh (collective), provably
  *     sufficient layers for the metric, image set with the image -> original map.
  *  3. Nearest seed per local element (no communication): centroid search with the (image) seeds
@@ -307,6 +350,7 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
                                      const TessellationOptions& tessellation) {
     // Step 1: checks
     CheckSupportedTessellation(tessellation);
+    RequireEuclidean(tessellation, "LabelTessellation");
     if (seeds.Size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::invalid_argument("Tessellation labeler: more than 2^31 - 1 seeds");
     }

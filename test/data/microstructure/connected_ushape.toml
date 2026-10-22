@@ -1,0 +1,34 @@
+# Microstructure generator example: "connected" distance on a U-shaped part.
+#
+# Run with (from this directory):
+#     microstructure_generator -i connected_ushape.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+#
+# The part is [0,3] x [0,2] x [0,1] without the notch [1,2] x [1,2] x [0,1]: two arms joined at
+# y < 1 (u_shape_hex.mesh, 320 hexahedra). With straight-line ("euclidean") distance a seed near
+# the notch can own elements in both arms, which touch only across the empty notch. With
+# "connected" distance the grains are still the straight-line (Voronoi here) cells, but every grain
+# keeps only the elements connected through material to the element holding its seed; elements cut
+# off that way go to the next best seed. Every grain boundary is still the bisector between two
+# seeds.
+#
+# Not allowed with "connected" (or "geodesic") distance: periodic axes, fit_volumes,
+# lloyd_iterations / centroidal_power, and voxel maps.
+
+[Mesh]
+    type = "file"
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    num_seeds = 12
+    rng_seed = 7
+
+[Tessellation]
+    metric = "voronoi"
+    distance = "connected"
+    # Relabeling rounds (each moves the elements still cut off from their seed to the next best
+    # seed); elements left after the last round are merged by the fragment cleanup.
+    connected_max_rounds = 16
+
+[Output]
+    basename = "connected_ushape"

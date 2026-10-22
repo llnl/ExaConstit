@@ -1,8 +1,8 @@
 /*
- * Implementation of GenerateMicrostructure (microstructure_driver.hpp): the Stage 1a-1d pipeline
+ * Implementation of GenerateMicrostructure (microstructure_driver.hpp): the Stage 1a-1e pipeline
  * support checks -> active part (attribute domain) -> preflight -> grain labels (seeds + size
- * targets -> Lloyd / volume fit -> tessellation labels -> compact ids, or a voxel map) -> fragment
- * cleanup -> orientations -> phases -> regions -> passthrough grains.
+ * targets -> Lloyd / volume fit -> tessellation labels in the chosen distance mode -> compact ids,
+ * or a voxel map) -> fragment cleanup -> orientations -> phases -> regions -> passthrough grains.
  *
  * Every step is either computed from data that is identical on all ranks (the options, the
  * replicated seed set, the seed table and per-grain tables) or combined with MPI reductions inside
@@ -27,6 +27,13 @@
  * - Active mesh: the elements that receive grains. With passthrough attributes it is a sub-mesh
  *   (mfem::ParSubMesh) of the whole mesh, owned by an AttributeDomain that lives only inside
  *   GenerateMicrostructure.
+ * - Distance mode (Tessellation.distance): "euclidean" (nearest seed in straight lines),
+ *   "connected" (straight-line labels, but a grain keeps only the elements connected through
+ *   material to its seed's anchor element) or "geodesic" (nearest seed along paths inside the
+ *   material).
+ * - Anchor element: the element that contains a seed (for a seed outside the material, the
+ *   element nearest to it), named by its element key (mesh/element_key.hpp: a hash of the exact
+ *   vertex coordinates, the same for every partition).
  */
 #include "microstructure/microstructure_driver.hpp"
 
@@ -34,6 +41,8 @@
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_graph.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/labeling/voxel_labeler.hpp"
 #include "microstructure/mesh/attribute_domain.hpp"
@@ -48,6 +57,7 @@
 #include "mfem.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -100,7 +110,7 @@ void Warn(MPI_Comm comm, GenerationReport& report, const std::string& message) {
  * CheckSupportedOptions
  *
  * The options structure describes the whole planned generator, but this pipeline implements the
- * Stage 1a-1d subset. Options that ask for something not implemented yet are refused here,
+ * Stage 1a-1e subset. Options that ask for something not implemented yet are refused here,
  * before any work, with a message naming the option, rather than being silently ignored. The
  * tessellation checks (distance, vote levels, anisotropy kind) are owned by the labeler
  * (CheckSupportedTessellation) and called from here, so they also run before seeding. The
@@ -213,10 +223,12 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
             seeds.size.distribution != "none" || seeds.size.polydisperse_placement ||
             tess.metric != MetricType::VORONOI || tess.anisotropy_kind != "none" ||
             AnyPeriodic(tess) || tess.fit_volumes.enabled || tess.lloyd_iterations > 0 ||
-            tess.centroidal_power || options.cleanup.keep_component == "seed") {
+            tess.centroidal_power || options.cleanup.keep_component == "seed" ||
+            tess.distance != DistanceMode::EUCLIDEAN) {
             refuse("Source.type = \"voxel_map\" cannot be combined with seed-table, Johnson-Mehl, "
-                   "size, metric, anisotropy, periodic, fit_volumes, Lloyd or keep_component = "
-                   "\"seed\" options (no seeds and no tessellation)");
+                   "size, metric, anisotropy, periodic, fit_volumes, Lloyd, keep_component = "
+                   "\"seed\" or connected / geodesic distance options (no seeds and no "
+                   "tessellation)");
         }
         const VoxelMapOptions& map = options.voxel_map;
         if (map.format != "exaconstit" && map.format != "dream3d") {
@@ -240,6 +252,24 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
     }
     if (seeds.placement == SeedPlacement::JOHNSON_MEHL && tess.metric != MetricType::ADDITIVE) {
         refuse("placement = \"johnson_mehl\" needs Tessellation.metric = \"additive\"");
+    }
+
+    // Stage 1e distance modes. The labeler check below covers periodic axes and, for geodesic,
+    // the metric and anisotropy; the steps that move seeds or weights with straight-line cells
+    // (Lloyd, the volume fit) are refused here, as is a solver this build does not have.
+    if (tess.distance != DistanceMode::EUCLIDEAN) {
+        if (tess.fit_volumes.enabled || tess.lloyd_iterations > 0 || tess.centroidal_power) {
+            refuse("Tessellation.distance = \"connected\" / \"geodesic\" cannot be combined "
+                   "with fit_volumes, lloyd_iterations or centroidal_power");
+        }
+    }
+    // Values invalid in themselves are refused in any mode, as in validate()
+    if (tess.connected_max_rounds < 0 || tess.connected_max_rounds > CONNECTED_MAX_ROUNDS_LIMIT) {
+        refuse("Tessellation.connected_max_rounds must be in 0.." +
+               std::to_string(CONNECTED_MAX_ROUNDS_LIMIT));
+    }
+    if (tess.geodesic_solver != "graph" && tess.geodesic_solver != "fim") {
+        refuse("unknown Tessellation.geodesic.solver \"" + tess.geodesic_solver + "\"");
     }
     CheckSupportedTessellation(tess);
 }
@@ -749,6 +779,206 @@ std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh, MPI_Comm comm,
 }
 
 /*
+ * CountCoincidentSeeds: number of seeds whose exact position (x, y, z) equals that of a
+ * lower-index seed, the quantity the seed search reports for the straight-line labels
+ * (TessellationLabels::num_coincident_seeds). Used for geodesic runs, which do not build a seed
+ * search. Host only; replicated seeds give the same count on every rank.
+ */
+int CountCoincidentSeeds(const SeedSet& seeds) {
+    std::set<std::array<double, 3>> seen;
+    int count = 0;
+    for (std::size_t i = 0; i < seeds.Size(); ++i) {
+        // insert(...).second is false when the same position was inserted before
+        if (!seen.insert({seeds.x[i], seeds.y[i], seeds.z[i]}).second) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/*
+ * StraightLineLabels (collective): LabelTessellation with distance = EUCLIDEAN, i.e. the plain
+ * metric labels (nearest seed in straight lines, centroid or quadrature vote). The labeler refuses
+ * the other distance modes, so a copy of the options with the mode reset is passed. Used as the
+ * starting labels of the connected mode and as the fallback for unreached geodesic elements.
+ */
+TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
+                                      const TessellationOptions& tess) {
+    TessellationOptions euclidean = tess;
+    euclidean.distance = DistanceMode::EUCLIDEAN;
+    return LabelTessellation(pmesh, comm, seeds, euclidean);
+}
+
+/*
+ * LabelGeodesic (collective): the geodesic solver selected by Tessellation.geodesic_solver:
+ * "fim" -> LabelGeodesicFim (labeling/geodesic_fim.hpp, Fast Iterative Method eikonal solver, the
+ * default), "graph" -> LabelGeodesicGraph (labeling/geodesic_graph.hpp, shortest paths along the
+ * element edges and diagonals). Both take the same arguments and return the same GeodesicLabels
+ * (labeling/geodesic_common.hpp). Additive offsets a_i (the seed weights, e.g. -v t_i for
+ * Johnson-Mehl nuclei) are used when the metric is "additive"; with "voronoi" every a_i = 0.
+ * Sampling (centroid or vote) follows Tessellation.sampling / vote_levels, as for the
+ * straight-line labels.
+ */
+GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pmesh, MPI_Comm comm,
+                             const SeedSet& seeds) {
+    GeodesicParameters params;
+    params.sampling = tess.sampling;
+    params.vote_levels = tess.vote_levels;
+    const bool additive = (tess.metric == MetricType::ADDITIVE);
+    if (tess.geodesic_solver == "graph") {
+        return LabelGeodesicGraph(pmesh, comm, seeds, additive, params);
+    }
+    if (tess.geodesic_solver == "fim") {
+        return LabelGeodesicFim(pmesh, comm, seeds, additive, params);
+    }
+    throw std::invalid_argument("GenerateMicrostructure: Tessellation.geodesic.solver = \"" +
+                                tess.geodesic_solver + "\" is not available in this build");
+}
+
+/*
+ * DistanceModeLabels: the result of steps 6-8 for any distance mode.
+ */
+struct DistanceModeLabels {
+    /** Compact labels over the original seeds (TessellationLabels as from LabelTessellation). */
+    TessellationLabels labels;
+    /**
+     * Connected / geodesic modes: per seed, the element key of the element the mode grew the
+     * seed's grain from (connected: the anchor element; geodesic: the source element). Empty for
+     * the Euclidean mode (which uses SeedAnchorKeys for keep_component = "seed").
+     */
+    std::vector<std::uint64_t> seed_anchor_key;
+    /** Elements cut by a grain boundary in the vote, counted on this rank (summed later). */
+    long long local_split_elements = 0;
+};
+
+/*
+ * LabelByDistanceMode (collective): steps 6-8 by Tessellation.distance.
+ *
+ *  - "euclidean": LabelTessellation as before (periodic images, centroid or vote, compaction).
+ *  - "connected":
+ *     1. the straight-line labels (StraightLineLabels; validated: no periodic axes, so no images);
+ *     2. ConstrainToConnectedCells with connected_max_rounds and the same sampling: orphans
+ *        (elements cut off from their seed's anchor element through material) move to the next
+ *        best seed, round by round (labeling/connected_labeler.hpp);
+ *     3. CompactSeedLabels: seeds that lost every element disappear from the grain list.
+ *     Orphans left after the last round and bodies without any anchor keep their labels; the
+ *     fragment cleanup (step 9) merges or splits them. The vote-split count is that of the
+ *     straight-line vote (step 1).
+ *  - "geodesic":
+ *     1. LabelGeodesic (path lengths inside the active material);
+ *     2. elements left with element_seed = -1 take their straight-line nearest-seed label. Two
+ *        kinds, counted separately: unreached elements (no seed reaches them: a body without a
+ *        seed; the cleanup then splits each such body off as a grain of its own, since an
+ *        isolated body has no face neighbor to merge into) and unlabeled elements (reached, but
+ *        their winning vertex has no label: only on a degenerate mesh). The decision to compute
+ *        the straight-line labels uses the global sum of both counts, identical on every rank,
+ *        so either every rank or none calls the collective LabelTessellation;
+ *     3. CompactSeedLabels.
+ *     The vote-split count of the solver is already a global sum, so it is stored on rank 0
+ *     only and the caller's global sum restores it exactly.
+ *
+ * Every step is partition independent (see the called functions), so the labels are the same for
+ * every rank count.
+ */
+DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
+                                       MPI_Comm comm, const SeedSet& seeds,
+                                       const MeshAdjacency& adjacency, GenerationReport& report) {
+    const TessellationOptions& tess = options.tessellation;
+    const int num_seeds = static_cast<int>(seeds.Size());
+    report.distance = tess.distance;
+    DistanceModeLabels out;
+
+    // Plain straight-line labels: unchanged Stage 1a-1d path
+    if (tess.distance == DistanceMode::EUCLIDEAN) {
+        out.labels = LabelTessellation(pmesh, comm, seeds, tess);
+        out.local_split_elements = out.labels.num_split_elements;
+        return out;
+    }
+
+    if (tess.distance == DistanceMode::CONNECTED) {
+        // Step 1: straight-line labels as the starting point (0-based seed index per element)
+        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess);
+        mfem::Array<int> element_seed;
+        element_seed = straight.element_seed; // deep copy (mfem::Array::operator=, array.hpp:121)
+
+        // Step 2: keep only what is connected to each seed's anchor element through material
+        ConnectedLabelParameters params;
+        params.max_rounds = tess.connected_max_rounds;
+        params.sampling = tess.sampling;
+        params.vote_levels = tess.vote_levels;
+        report.connected =
+            ConstrainToConnectedCells(pmesh, comm, adjacency, seeds, tess, element_seed, params);
+        report.used_connected = true;
+
+        // Step 3: compact grain ids over the seeds that still own elements
+        CompactSeedLabels(comm, element_seed, num_seeds, out.labels);
+        out.labels.num_coincident_seeds = straight.num_coincident_seeds;
+        out.labels.num_split_elements = straight.num_split_elements;
+        out.local_split_elements = straight.num_split_elements;
+
+        // Anchors for the cleanup's keep rule: the anchor elements the rounds used
+        // (ConnectedAnchorKeys of the straight-line input labels: the element containing the seed
+        // if it carries the seed's label, else the nearest element centroid with that label;
+        // UINT64_MAX for a seed that labeled no element), returned in the report
+        out.seed_anchor_key = report.connected.anchor_key;
+        return out;
+    }
+
+    // Geodesic. Johnson-Mehl: the nucleation step (seeding/johnson_mehl.cpp) decided which
+    // nuclei survive with straight-line growth spheres, so a nucleus may have been discarded
+    // because an earlier grain's sphere covered it across a void, although that grain would reach
+    // it later (or never) along material paths. Only the labels below use path lengths; say so.
+    if (options.seeds.placement == SeedPlacement::JOHNSON_MEHL) {
+        Warn(comm, report, "Johnson-Mehl with Tessellation.distance = \"geodesic\": nucleation "
+                           "still discards a candidate covered by an earlier grain's "
+                           "straight-line growth sphere, even across a void; only the final "
+                           "labels use path lengths inside the material");
+    }
+
+    // Step 1: path-length labels (the VertexField inside `geodesic` refers to pmesh and dies at
+    // the end of this function). Paths connect elements through shared vertices, edges and faces;
+    // the face-based cleanup (step 9) handles pieces attached only through an edge or vertex.
+    GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds);
+    report.used_geodesic = true;
+    report.geodesic_solver = tess.geodesic_solver;
+    report.geodesic = geodesic.report;
+    report.num_unreached_elements = geodesic.report.unreached_elements;
+    report.num_unlabeled_elements = geodesic.report.unlabeled_elements;
+    mfem::Array<int> element_seed;
+    element_seed = geodesic.element_seed;
+
+    // Step 2: unreached and unlabeled elements (element_seed = -1) take their straight-line
+    // label (global counts: every rank takes the same branch, so the collective labeling below is
+    // called by all or none)
+    int num_coincident = 0;
+    if (geodesic.report.unreached_elements + geodesic.report.unlabeled_elements > 0) {
+        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess);
+        num_coincident = straight.num_coincident_seeds;
+        const int ne = element_seed.Size();
+        const int* fallback = straight.element_seed.HostRead();
+        int* label = element_seed.HostReadWrite();
+        for (int e = 0; e < ne; ++e) {
+            if (label[e] < 0) {
+                label[e] = fallback[e];
+            }
+        }
+    } else {
+        num_coincident = CountCoincidentSeeds(seeds);
+    }
+
+    // Step 3: compact grain ids
+    CompactSeedLabels(comm, element_seed, num_seeds, out.labels);
+    out.labels.num_coincident_seeds = num_coincident;
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    out.local_split_elements =
+        (rank == 0) ? static_cast<long long>(geodesic.report.split_elements) : 0;
+    out.labels.num_split_elements = static_cast<int>(out.local_split_elements);
+    out.seed_anchor_key = geodesic.sources.source_element_key;
+    return out;
+}
+
+/*
  * CleanupParameters: [Cleanup] as FragmentCleanupParameters. "auto" splits large fragments and
  * merges tiny ones (SPLIT_LARGE_MERGE_TINY) for grains grown from generated seeds (random,
  * lattice and Johnson-Mehl), and merges every fragment of data-driven grains (seed tables and
@@ -805,8 +1035,10 @@ struct ActiveGrains {
  *     and are kept; a warning says the starting weights are not used); the filler seeds then get
  *     their own r_j^2 plus the mean over the table rows of (table weight - r_i^2).
  *  5. Lloyd relaxation and/or the volume fit.
- *  6-8. LabelTessellation: periodic images, centroid or vote labels, compaction.
- *  9. Fragment cleanup on the (periodic-aware) face adjacency.
+ *  6-8. LabelByDistanceMode: Euclidean labels (LabelTessellation: periodic images, centroid or
+ *     vote labels, compaction), or the connected / geodesic labels built from them.
+ *  9. Fragment cleanup on the (periodic-aware) face adjacency, which is built before step 6
+ *     because the connected mode needs it too.
  * Finally the per-grain tables: parent seed, source id, measured orientation and phase of the
  * parent seed (seed tables), and the filler flag (parent seed index >= number of table rows).
  */
@@ -883,22 +1115,11 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     // Step 5: Lloyd relaxation and/or the volume fit (validated: not with periodic axes)
     RelaxAndFit(options, pmesh, comm, target_volume, seeds, report);
 
-    // Steps 6-8: labels and compact grain ids (collective). With periodic axes the labeler builds
-    // the periodic images itself and maps their labels back to the original seeds.
-    const TessellationLabels labels = LabelTessellation(pmesh, comm, seeds, tess);
-    report.periodic_layers = labels.periodic_layers;
-    report.num_periodic_images = labels.num_periodic_images;
-    report.num_labeled_grains = labels.num_grains;
-    report.num_coincident_seeds = labels.num_coincident_seeds;
-    report.num_seeds = static_cast<std::int64_t>(seeds.Size());
-    report.num_empty_seeds = report.num_seeds - labels.num_grains;
-    report.seed_target_volume = target_volume;
-    report.seeds = seeds;
+    // Face adjacency of the active mesh, used by the connected mode (step 7) and the fragment
+    // cleanup (step 9); with periodic axes it pairs matching faces on opposite planes of the
+    // mesh box, so wrapped grains stay one grain (periodic axes are refused with the connected
+    // and geodesic modes)
     ActiveGrains out;
-    out.local_split_elements = labels.num_split_elements;
-
-    // Step 9: fragment cleanup over the face adjacency; with periodic axes the adjacency pairs
-    // matching faces on opposite planes of the mesh box, so wrapped grains stay one grain
     if (AnyPeriodic(tess)) {
         const PeriodicBox box = PeriodicBoxFromMesh(pmesh, comm, tess.periodic);
         PeriodicFaceParameters pairing;
@@ -911,9 +1132,54 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     } else {
         out.adjacency = std::make_shared<MeshAdjacency>(pmesh);
     }
+
+    // Steps 6-8: labels and compact grain ids (collective), by distance mode. With periodic axes
+    // the labeler builds the periodic images itself and maps their labels back to the original
+    // seeds.
+    const DistanceModeLabels mode =
+        LabelByDistanceMode(options, pmesh, comm, seeds, *out.adjacency, report);
+    const TessellationLabels& labels = mode.labels;
+    report.periodic_layers = labels.periodic_layers;
+    report.num_periodic_images = labels.num_periodic_images;
+    report.num_labeled_grains = labels.num_grains;
+    report.num_coincident_seeds = labels.num_coincident_seeds;
+    report.num_seeds = static_cast<std::int64_t>(seeds.Size());
+    report.num_empty_seeds = report.num_seeds - labels.num_grains;
+    report.seed_target_volume = target_volume;
+    report.seeds = seeds;
+    out.local_split_elements = mode.local_split_elements;
+
+    // Step 9: fragment cleanup over the face adjacency.
+    // Keep rule. The connected and geodesic modes always keep, for each grain, the piece that
+    // holds the element the mode grew the seed's grain from (connected: the anchor element;
+    // geodesic: the source element), whatever Cleanup.keep_component says: in these modes that
+    // piece *is* the seed's grain, and the other pieces are leftovers (unresolved orphans, or a
+    // body without a seed that took a straight-line label). With "largest", a larger leftover
+    // body would take over the seed's identity and its real piece would be merged away or
+    // renamed. The Euclidean mode keeps Cleanup.keep_component; for "seed" it uses
+    // SeedAnchorKeys (the element of the grain that contains the seed), unchanged from Stage 1b
+    // so earlier results stay bitwise the same. (The two anchors differ only for a seed exactly
+    // on a face between grains and for seeds outside the material.) SeedAnchorKeys is kept for the
+    // Euclidean mode rather than replaced by ConnectedAnchorKeys: for a seed whose containing
+    // element went to a neighbor, SeedAnchorKeys has no anchor (largest piece kept) while
+    // ConnectedAnchorKeys would pick the nearest same-label element, which can change which piece
+    // keeps a grain's identity in existing Stage 1b-1d runs. A grain whose anchor element carries
+    // another label at the end (a seed without a cell) falls back to the largest piece inside
+    // CleanupFragments.
     FragmentCleanupParameters cleanup_params = CleanupParameters(options);
+    if (!mode.seed_anchor_key.empty()) {
+        cleanup_params.keep = KeepRule::SEED_ELEMENT;
+    }
     if (cleanup_params.keep == KeepRule::SEED_ELEMENT) {
-        cleanup_params.grain_anchor_key = SeedAnchorKeys(pmesh, comm, seeds, labels);
+        if (!mode.seed_anchor_key.empty()) {
+            cleanup_params.grain_anchor_key.resize(labels.grain_seed.size());
+            for (std::size_t g = 0; g < labels.grain_seed.size(); ++g) {
+                const auto s = static_cast<std::size_t>(labels.grain_seed[g]);
+                cleanup_params.grain_anchor_key[g] = mode.seed_anchor_key[s];
+            }
+        } else {
+            cleanup_params.grain_anchor_key = SeedAnchorKeys(pmesh, comm, seeds, labels);
+        }
     }
     std::vector<std::int64_t> labeled_source_id(labels.grain_seed.size());
     for (std::size_t g = 0; g < labels.grain_seed.size(); ++g) {
@@ -1260,8 +1526,8 @@ void CheckUnitQuaternions(const MicrostructureResult& result) {
  *     all ranks or none.
  *  2b. Active part: an AttributeDomain when [Mesh] lists active or passthrough attributes
  *     (collective; its sub-mesh lives only inside this function).
- *  3-9. Grains of the active mesh: LabelFromSeeds (seeds, size targets, Lloyd / fit, labels,
- *     cleanup) or LabelFromVoxels (voxel labels, compaction, cleanup).
+ *  3-9. Grains of the active mesh: LabelFromSeeds (seeds, size targets, Lloyd / fit, labels in
+ *     the chosen distance mode, cleanup) or LabelFromVoxels (voxel labels, compaction, cleanup).
  * 10. Orientations: measured ones normalized to unit length (from_source), random ones keyed by
  *     source id otherwise (AssignMixedGrainOrientations).
  * 11-12. Phases and regions (AssignRegions); identity quaternions for non-crystalline regions.

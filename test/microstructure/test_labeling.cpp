@@ -557,9 +557,11 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
 //   tables and voxel maps; see test_driver_stage1d);
 // - Seeds.source = "file" without Seeds.file: seed tables are implemented since Stage 1d, but
 //   the driver refuses a table source that names no table;
-// - connected / geodesic distance (not implemented; the labeler's CheckSupportedTessellation,
-//   which the driver calls before seeding), "list" orientations (not implemented) and a vote
-//   level outside 0..3.
+// - connected / geodesic distance outside the Stage 1e scope (connected with a periodic axis,
+//   geodesic with the Laguerre metric, whose values are not path lengths; the labeler's
+//   CheckSupportedTessellation, which the driver calls before seeding; the modes themselves are
+//   tested in test_driver_stage1e), "list" orientations (not implemented) and a vote level
+//   outside 0..3.
 // (Fragment splitting, quadrature voting and periodic grains are implemented since Stage 1b; see
 // test_driver_stage1bc.)
 TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
@@ -582,8 +584,14 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
         o.seeds.source = "file";
         o.seeds.placement = ms::SeedPlacement::FILE;
     }));
-    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.distance = ms::DistanceMode::CONNECTED; }));
-    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.distance = ms::DistanceMode::GEODESIC; }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.tessellation.distance = ms::DistanceMode::CONNECTED;
+        o.tessellation.periodic = {true, false, false};
+    }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.tessellation.distance = ms::DistanceMode::GEODESIC;
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
     EXPECT_TRUE(throws_with([](O& o) { o.orientations.source = "list"; }));
     EXPECT_TRUE(throws_with([](O& o) { o.tessellation.vote_levels = 4; }));
 }

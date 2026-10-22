@@ -1,7 +1,9 @@
 #pragma once
 
 #include "microstructure/io/voxel_map_io.hpp"
+#include "microstructure/labeling/connected_labeler.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/labeling/geodesic_common.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/microstructure_types.hpp"
@@ -200,6 +202,47 @@ struct GenerationReport {
     /** @brief Passthrough grains appended after the active grains (one per attribute). */
     int num_passthrough_grains = 0;
 
+    // ---- Stage 1e: distance modes for parts with holes and lattices -------------------------
+
+    /** @brief The distance mode of the labeling (Tessellation.distance; EUCLIDEAN for voxel
+     * maps). */
+    DistanceMode distance = DistanceMode::EUCLIDEAN;
+    /** @brief True when the connected mode ran (distance = "connected"). */
+    bool used_connected = false;
+    /**
+     * @brief The connected-mode report (labeling/connected_labeler.hpp): relabeling rounds,
+     * elements relabeled, orphans left unresolved after connected_max_rounds (merged by the
+     * cleanup), elements of bodies without any seed anchor (left to the cleanup), seeds whose
+     * cell does not reach their own anchor element (seeds without a cell). Global counts.
+     */
+    ConnectedLabelReport connected;
+    /** @brief True when the geodesic mode ran (distance = "geodesic"). */
+    bool used_geodesic = false;
+    /** @brief The geodesic solver used: "graph" or "fim" (empty when the mode did not run). */
+    std::string geodesic_solver;
+    /**
+     * @brief The geodesic solver's report (labeling/geodesic_common.hpp, GeodesicReport): rounds
+     * of the distance and label phases (partition dependent for "graph", independent for "fim"),
+     * seeds outside the material, unreached vertices and elements, vote-split elements,
+     * unlabeled vertices. Global counts.
+     */
+    GeodesicReport geodesic;
+    /**
+     * @brief Geodesic mode: active elements that no seed reaches through material (bodies of the
+     * part without a seed; GeodesicReport::unreached_elements: none of their vertices has a
+     * finite distance). They take their straight-line (Euclidean) nearest-seed label, and the
+     * fragment cleanup then splits each such body off into a grain of its own (a body with no
+     * face neighbor is always split, even by "merge"). 0 for the other modes.
+     */
+    std::int64_t num_unreached_elements = 0;
+    /**
+     * @brief Geodesic mode: active elements that are reached but were left without a label by
+     * the solver (GeodesicReport::unlabeled_elements: their winning vertex had no label; zero
+     * unless the mesh is degenerate, e.g. element edges shorter than the rounding error of the
+     * distance). They also take their straight-line nearest-seed label. 0 for the other modes.
+     */
+    std::int64_t num_unlabeled_elements = 0;
+
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;
 };
@@ -207,7 +250,7 @@ struct GenerationReport {
 /**
  * @brief Labels the elements of `pmesh` with grains and assigns orientations and regions.
  *
- * Pipeline (Stages 1a-1d):
+ * Pipeline (Stages 1a-1e):
  *  1. Support checks: options this pipeline does not implement are refused before any work.
  *  2. Preflight of the whole mesh (passthrough parts included): the mesh must be 3D, have one
  *     element geometry, be conforming, have no inverted elements and no periodic
@@ -238,16 +281,43 @@ struct GenerationReport {
  *  4. (Periodic images are built inside the labeling, step 6.)
  *  5. Lloyd relaxation (morphology/lloyd.hpp, optionally centroidal power) and/or the volume fit
  *     (morphology/weight_fit.hpp), when requested.
- *  6-8. Labels and compact grain ids (LabelTessellation, labeling/tessellation_labeler.hpp):
- *     centroid or quadrature-vote sampling, periodic seed images mapped back to their originals,
- *     grains numbered 1..N in seed order. The Quadric tensor follows [Tessellation] anisotropy
- *     (columnar / lamellar / tensor) unless the seeds carry per-seed tensors.
+ *  6-8. Labels and compact grain ids, by Tessellation.distance:
+ *     - "euclidean": LabelTessellation (labeling/tessellation_labeler.hpp): centroid or
+ *       quadrature-vote sampling, periodic seed images mapped back to their originals, grains
+ *       numbered 1..N in seed order. The Quadric tensor follows [Tessellation] anisotropy
+ *       (columnar / lamellar / tensor) unless the seeds carry per-seed tensors.
+ *     - "connected": the straight-line labels above, then ConstrainToConnectedCells
+ *       (labeling/connected_labeler.hpp; connected_max_rounds, the same sampling), so every grain
+ *       keeps only the elements connected through material to its seed's anchor element, then
+ *       CompactSeedLabels. Orphans left after the last round and bodies without any anchor keep
+ *       their labels and are handled by the cleanup of step 9.
+ *     - "geodesic": path-length labels from the solver Tessellation.geodesic_solver ("fim", the
+ *       default: LabelGeodesicFim, labeling/geodesic_fim.hpp; "graph": LabelGeodesicGraph,
+ *       labeling/geodesic_graph.hpp), with the Additive
+ *       offsets a_i = seed weights for metric = "additive" (Johnson-Mehl included), then
+ *       CompactSeedLabels. Elements no seed reaches (a body of the part without a seed) take
+ *       their straight-line nearest-seed label and are split off by the cleanup
+ *       (GenerationReport::num_unreached_elements). Paths connect elements through shared
+ *       vertices, edges and faces, while the cleanup is face based: a piece attached to its grain
+ *       only through an edge or vertex is a separate fragment there and is split or merged by the
+ *       [Cleanup] fragments policy (orchestrator decision: node-sharing elements are connected in
+ *       the conforming FE mesh, so the geodesic labels are kept as they are). With Johnson-Mehl
+ *       placement the nucleation step still discards a candidate covered by an earlier grain's
+ *       straight-line growth sphere, even across a void; only the labels use path lengths, and a
+ *       warning is recorded in GenerationReport::warnings.
+ *     Both non-Euclidean modes run on the active mesh, so paths and connections never pass
+ *     through passthrough parts; they refuse periodic axes, fit_volumes, Lloyd and voxel maps.
  *  9. Fragment cleanup (labeling/fragment_cleanup.hpp) over the face adjacency of the mesh; with
  *     periodic axes the adjacency pairs matching faces on opposite periodic planes, so a grain
  *     that wraps around the box is one grain. Policy from [Cleanup] (auto = split large pieces
  *     and merge tiny ones for generated seeds, merge every extra piece for data-driven sources:
  *     seed tables and voxel maps), keep rule (largest piece or the piece containing the seed),
- *     min_grain_elements.
+ *     min_grain_elements. The connected and geodesic modes always keep the piece holding the
+ *     element the mode grew the grain from (connected: the seed's anchor element,
+ *     ConnectedAnchorKeys; geodesic: the seed's source element,
+ *     SourceReport::source_element_key), i.e. keep_component is effectively "seed" for them: a
+ *     leftover piece (an unresolved orphan, a body without a seed) never takes over the seed's
+ *     identity, even when it is larger.
  * 10. Orientations: one quaternion per final grain. Random orientations are keyed by the grain's
  *     source id: the seed's id (the feature id for voxel grains), or for a grain split off by the
  *     cleanup a derived id (DeriveFragmentSourceId), so every piece gets its own reproducible
@@ -287,8 +357,10 @@ struct GenerationReport {
  *         MicrostructureResult).
  * @throws std::runtime_error if the mesh fails preflight, seeding fails (infeasible minimum
  *         distance, stall, empty mesh, no nucleus), or a seed table / voxel map cannot be read;
- *         std::invalid_argument for options this pipeline does not implement yet
- *         (connected/geodesic distance, "list" orientations), invalid combinations reaching the
+ *         std::invalid_argument for options this pipeline does not implement yet ("list"
+ *         orientations), an unknown geodesic solver or a connected rounds cap outside 0..1000,
+ *         combinations outside the Stage 1e scope (see TessellationOptions::distance), invalid
+ *         combinations reaching the
  *         driver, data that the options need but the source lacks (e.g. from_source
  *         orientations without quaternions), and region ids that are not exactly 1..R. Every
  *         check is either made on identical data on all ranks or globally reduced, so all ranks

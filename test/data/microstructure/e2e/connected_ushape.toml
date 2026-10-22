@@ -1,0 +1,42 @@
+# Generator input of the Stage 1e end-to-end test "connected distance on the U-shaped part".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/connected_ushape.toml
+#                              -m test/data/microstructure/u_shape_hex.mesh
+# (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI
+# ranks, checks that both runs write byte-identical files, and then runs mechanics on the 2-rank
+# result (deck test/data/microstructure/mechanics/ms_connected_ushape_np2.toml).
+#
+# What it exercises: the part is [0,3] x [0,2] x [0,1] without the notch [1,2] x [1,2] x [0,1].
+# These are the 8 seeds of the Stage 1b/1c fragment test (e2e/u_shape_fragments.toml): seeds drawn
+# anywhere in the bounding box (sampling_domain = "bbox"), so several straight-line (Voronoi) cells
+# reach across the empty notch and own elements in both arms. With straight-line distance the
+# fragment cleanup then finds 4 extra pieces (10 final grains). With distance = "connected" every
+# grain keeps only the elements joined to its seed through material, and the cut-off elements go
+# to the next best seed before the cleanup runs (measured: 3 relabeling rounds, 32 elements
+# relabeled, no extra fragments, 8 final grains). The tool summary must report a nonzero relabeled
+# count; the test checks it.
+
+[Mesh]
+    type = "file"
+    # Overridden by -m in the test (relative paths are relative to the working directory)
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    num_seeds = 8
+    rng_seed = 75
+    placement = "rejection"
+    sampling_domain = "bbox"
+
+[Tessellation]
+    metric = "voronoi"
+    distance = "connected"
+    connected_max_rounds = 16
+
+[Output]
+    basename = "e2e_connected_ushape"
+    mesh_format = "serial"
+    # Plain text, so the 1-rank and 2-rank mesh files can be compared byte for byte
+    compression = 0
+    grain_adjacency = true
+    paraview = false
