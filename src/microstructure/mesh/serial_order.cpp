@@ -1,52 +1,15 @@
 #include "microstructure/mesh/serial_order.hpp"
 
+#include "microstructure/util/collective_errors.hpp"
+
 #include <stdexcept>
 #include <string>
 
 namespace exaconstit::microstructure {
 
-namespace {
-
-/**
- * @brief Returns true on every rank if `local_failed` is true on at least one rank.
- *
- * A *collective* is an MPI call that every rank of the communicator must make before any rank
- * can return from it. If one rank throws an exception while the others go on to the next
- * collective, those others wait forever (deadlock). To avoid this, each rank first computes
- * its own pass/fail flag, the flags are combined with `MPI_Allreduce` (MAX of 0/1 ints, i.e. a
- * logical OR), and then all ranks throw or none does.
- *
- * Collective over `comm`. Host only.
- */
-bool AnyRankFailed(bool local_failed, MPI_Comm comm) {
-    int local_flag = local_failed ? 1 : 0;
-    int global_flag = 0;
-    MPI_Allreduce(&local_flag, &global_flag, 1, MPI_INT, MPI_MAX, comm);
-    return global_flag != 0;
-}
-
-/**
- * @brief Throws on every rank if any rank failed a check.
- *
- * The rank(s) that failed report their own detailed `local_message`; the other ranks report
- * that the check failed elsewhere, so the error is visible in every rank's output.
- *
- * Collective over `comm`. Host only.
- */
-void ThrowIfAnyRankFailed(bool local_failed,
-                          const std::string& local_message,
-                          const std::string& caller,
-                          MPI_Comm comm) {
-    if (!AnyRankFailed(local_failed, comm)) {
-        return;
-    }
-    if (local_failed) {
-        throw std::runtime_error(caller + ": " + local_message);
-    }
-    throw std::runtime_error(caller + ": a consistency check failed on another rank");
-}
-
-} // namespace
+// Collective error agreement (every rank throws or none does) comes from
+// util/collective_errors.hpp: ThrowWithLocalMessageIfAnyRankFailed lets a failing rank report its
+// own details while the other ranks report that the check failed elsewhere.
 
 /*
  * BuildSerialOrder
@@ -131,7 +94,7 @@ MakeParMesh(MPI_Comm comm, mfem::Mesh& serial, const SerialOrder& order) {
                       " entries but the serial mesh has " + std::to_string(serial.GetNE()) +
                       " elements";
     }
-    ThrowIfAnyRankFailed(!input_error.empty(), input_error, "MakeParMesh", comm);
+    ThrowWithLocalMessageIfAnyRankFailed(!input_error.empty(), input_error, "MakeParMesh", comm);
 
     // Step 2: distribute the mesh. Each rank keeps the serial elements whose partitioning entry
     // equals its rank, in increasing serial order.
@@ -145,7 +108,7 @@ MakeParMesh(MPI_Comm comm, mfem::Mesh& serial, const SerialOrder& order) {
                       " local elements but the serial order expects " +
                       std::to_string(order.local_to_serial.Size());
     }
-    ThrowIfAnyRankFailed(count_mismatch, count_error, "MakeParMesh", comm);
+    ThrowWithLocalMessageIfAnyRankFailed(count_mismatch, count_error, "MakeParMesh", comm);
     return pmesh;
 }
 
@@ -179,7 +142,7 @@ std::vector<int> GatherToSerial(MPI_Comm comm,
         size_error = "got " + std::to_string(local_values.Size()) + " local values for " +
                      std::to_string(order.local_to_serial.Size()) + " local elements";
     }
-    ThrowIfAnyRankFailed(size_mismatch, size_error, "GatherToSerial", comm);
+    ThrowWithLocalMessageIfAnyRankFailed(size_mismatch, size_error, "GatherToSerial", comm);
 
     int rank = 0;
     int nranks = 1;
