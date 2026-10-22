@@ -28,9 +28,9 @@
  * 2. **Exact: point-in-element.** A box test only says "maybe": the box of a tet is up to 6 times
  *    its volume. For each candidate element the exact test maps the point back to the reference
  *    element and checks that the reference coordinates lie inside it:
- *    - linear tets (mesh without high-order Nodes): closed form, the 4 barycentric coordinates
- *      lambda_i (the volume fractions of the 4 sub-tets formed by the point and each face) must
- *      all be >= -tol;
+ *    - linear tets (straight-sided mesh, mesh/straight_sided.hpp): closed form, the 4
+ *      barycentric coordinates lambda_i (the volume fractions of the 4 sub-tets formed by the
+ *      point and each face) must all be >= -tol;
  *    - hexes and any curved element: mfem::InverseElementTransformation solves x(xi) = p for the
  *      reference point xi by Newton's method, then mfem::Geometry::CheckPoint tests xi.
  *
@@ -49,7 +49,8 @@ namespace exaconstit::microstructure {
 /**
  * @brief Point-in-material test over the local elements of one mesh partition.
  *
- * Construction is local to the rank (not collective). The mesh must stay alive and unchanged
+ * Construction is local to the rank (not collective); the straight-sided flag it takes comes
+ * from the collective IsStraightSided. The mesh must stay alive and unchanged
  * while the locator is used (it keeps a reference). Host only.
  */
 class MaterialPointLocator {
@@ -63,19 +64,26 @@ public:
      * @brief Computes one bounding box per local element and builds the BVH over them.
      *
      * Element boxes:
-     * - mesh without Nodes (straight-sided elements): the box of the element vertices, which
-     *   contains the element exactly (a linear tet or trilinear hex lies in the convex hull of
-     *   its vertices);
-     * - mesh with Nodes (possibly curved): the box of the element's nodal coordinates and of the
-     *   element mapped at a refined grid of reference points, enlarged by 10% of its diagonal on
-     *   every side to cover any bulge between those points (a safety margin, not a proven
-     *   bound; for Bernstein bases the nodal box alone is already a rigorous bound).
+     * - straight-sided mesh (no Nodes, or Nodes that describe straight elements, see
+     *   mesh/straight_sided.hpp): the box of the element's corner points, which contains the
+     *   element exactly (a linear tet or trilinear hex lies in the convex hull of its corners).
+     *   The corners come from the Nodes when present, else from the mesh vertices; without Nodes
+     *   this is the vertex box used before straight-sided Nodes were recognized, bit for bit;
+     * - curved mesh: the box of the element's nodal coordinates and of the element mapped at a
+     *   refined grid of reference points, enlarged by 10% of its diagonal on every side to cover
+     *   any bulge between those points (a safety margin, not a proven bound; for Bernstein bases
+     *   the nodal box alone is already a rigorous bound).
+     * A straight-sided mesh with Nodes therefore gives the same boxes and inside tests as the
+     * same mesh without Nodes, so seeding draws the same seeds on both.
      *
      * @param mesh this rank's 3D mesh partition (serial mfem::Mesh or the local part of a
      *        ParMesh). May have 0 elements, in which case every point is outside.
+     * @param straight_sided the result of IsStraightSided(mesh, comm) (collective, so every rank
+     *        uses the same box method and the global sampling box does not depend on the
+     *        partition). Ignored (treated as true) for a mesh without Nodes.
      * @throws std::runtime_error if the mesh is not 3D.
      */
-    explicit MaterialPointLocator(const mfem::Mesh& mesh);
+    MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided);
 
     /** @brief Number of local elements. */
     int NumElements() const {
@@ -105,7 +113,7 @@ public:
         return m_element_boxes[e];
     }
 
-    /** @brief True if the element boxes are exact vertex boxes (mesh has no Nodes). */
+    /** @brief True if the elements are treated as straight-sided (exact corner boxes). */
     bool StraightSided() const {
         return m_straight_sided;
     }
@@ -139,7 +147,7 @@ private:
 
     const mfem::Mesh& m_mesh;                 ///< the local mesh (not owned)
     int m_num_elements = 0;                   ///< local element count
-    bool m_straight_sided = true;             ///< no Nodes: element = convex hull of vertices
+    bool m_straight_sided = true;             ///< element = convex hull of its corners
     std::vector<BoxType> m_element_boxes;     ///< one box per local element
     BoxType m_local_bounds;                   ///< union of the element boxes
     BoxType m_local_point_bounds;             ///< box of the evaluated points (no padding)

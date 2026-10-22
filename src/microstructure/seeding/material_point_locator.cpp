@@ -1,5 +1,7 @@
 #include "microstructure/seeding/material_point_locator.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -42,8 +44,10 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  * MaterialPointLocator constructor
  *
  * Steps:
- *  1. Decide the element-box method: vertex boxes when the mesh has no Nodes (every element is
- *     straight-sided), nodal + sampled + padded boxes otherwise.
+ *  1. Element-box method from the caller's straight-sided flag (IsStraightSided,
+ *     mesh/straight_sided.hpp, decided over all ranks): corner boxes for straight-sided meshes
+ *     (corners from the Nodes when present, else the mesh vertices, ElementCornerPoints),
+ *     nodal + sampled + padded boxes otherwise.
  *  2. Compute one box per local element and their unions: LocalBounds (the boxes as used by the
  *     BVH, padded for curved elements; GenerateSeeds samples candidates from their global union,
  *     so every part of an element inside its padded box can be reached) and LocalPointBounds
@@ -63,14 +67,16 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  *    a tet), mapped to physical space by IsoparametricTransformation::Transform;
  * and is then padded by CURVED_BOX_PADDING. Only the mapped points enter LocalPointBounds.
  */
-MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh) : m_mesh(mesh) {
+MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided)
+    : m_mesh(mesh) {
     m_num_elements = mesh.GetNE();
     if (m_num_elements > 0 && (mesh.Dimension() != 3 || mesh.SpaceDimension() != 3)) {
         throw std::runtime_error("MaterialPointLocator: the mesh must be 3D");
     }
 
-    // Step 1: straight-sided if there are no high-order Nodes
-    m_straight_sided = (mesh.GetNodes() == nullptr);
+    // Step 1: the caller's collective decision. A mesh without Nodes is always straight-sided,
+    // whatever the caller passed (nothing else could be meant).
+    m_straight_sided = straight_sided || mesh.GetNodes() == nullptr;
     int node_order = 1;
     if (!m_straight_sided) {
         node_order = std::max(1, mesh.GetNodes()->FESpace()->GetMaxElementOrder());
@@ -78,7 +84,7 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh) : m_mesh(mesh
 
     // Step 2: per-element boxes and their union
     m_element_boxes.resize(m_num_elements);
-    mfem::Array<int> vertices;
+    mfem::DenseMatrix corners;
     mfem::Array<int> vdofs;
     mfem::Vector nodal_values;
     mfem::IsoparametricTransformation trans;
@@ -86,11 +92,11 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh) : m_mesh(mesh
     for (int e = 0; e < m_num_elements; e++) {
         BoxType box;
         if (m_straight_sided) {
-            // Vertex box: exact for straight-sided elements
-            mesh.GetElementVertices(e, vertices);
-            for (int v : vertices) {
-                const double* coords = mesh.GetVertex(v);
-                box.addPoint(PointType {coords[0], coords[1], coords[2]});
+            // Corner box: exact for straight-sided elements (a linear tet or trilinear hex lies
+            // in the convex hull of its corners). Without Nodes the corners are the vertices.
+            ElementCornerPoints(mesh, e, corners);
+            for (int k = 0; k < corners.Width(); k++) {
+                box.addPoint(PointType {corners(0, k), corners(1, k), corners(2, k)});
             }
             m_local_point_bounds.addBox(box);
         } else {
@@ -205,11 +211,13 @@ bool MaterialPointLocator::PointInElement(int e, const std::array<double, 3>& p)
  * are >= 0. Dividing by det(a, b, c) makes the test independent of the vertex orientation.
  */
 bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& p) const {
-    const int* v = m_mesh.GetElement(e)->GetVertices();
-    const double* v0 = m_mesh.GetVertex(v[0]);
-    const double* v1 = m_mesh.GetVertex(v[1]);
-    const double* v2 = m_mesh.GetVertex(v[2]);
-    const double* v3 = m_mesh.GetVertex(v[3]);
+    // Corner points (vertices without Nodes, the Nodes vertex dofs otherwise)
+    mfem::DenseMatrix corners;
+    ElementCornerPoints(m_mesh, e, corners);
+    const double* v0 = corners.GetColumn(0);
+    const double* v1 = corners.GetColumn(1);
+    const double* v2 = corners.GetColumn(2);
+    const double* v3 = corners.GetColumn(3);
 
     // Edge vectors from v0 and the offset of the point from v0
     double a[3], b[3], c[3], r[3];
@@ -257,8 +265,14 @@ bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& 
  * eltrans.cpp:178).
  */
 bool MaterialPointLocator::PointInGeneralElement(int e, const std::array<double, 3>& p) const {
+    // Straight-sided: the multilinear corner map, bitwise the transformation of the same mesh
+    // without Nodes; otherwise the mesh's own (Nodes) transformation
     mfem::IsoparametricTransformation trans;
-    m_mesh.GetElementTransformation(e, &trans);
+    if (m_straight_sided) {
+        StraightElementTransformation(m_mesh, e, trans);
+    } else {
+        m_mesh.GetElementTransformation(e, &trans);
+    }
 
     mfem::Vector point(3);
     point(0) = p[0];

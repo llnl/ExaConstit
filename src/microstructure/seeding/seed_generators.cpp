@@ -2,6 +2,7 @@
 
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/seeding/boundary_clearance.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/min_distance_grid.hpp"
@@ -713,11 +714,13 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
             s = 1.0 - t - tmp;
         }
         const double w0 = 1.0 - s - t - u;
-        const int* v = mesh.GetElement(e)->GetVertices();
-        const double* v0 = mesh.GetVertex(v[0]);
-        const double* v1 = mesh.GetVertex(v[1]);
-        const double* v2 = mesh.GetVertex(v[2]);
-        const double* v3 = mesh.GetVertex(v[3]);
+        // Corner points: the vertices without Nodes, the Nodes vertex dofs otherwise
+        mfem::DenseMatrix corners;
+        ElementCornerPoints(mesh, e, corners);
+        const double* v0 = corners.GetColumn(0);
+        const double* v1 = corners.GetColumn(1);
+        const double* v2 = corners.GetColumn(2);
+        const double* v3 = corners.GetColumn(3);
         for (int d = 0; d < 3; d++) {
             out[d] = w0 * v0[d] + s * v1[d] + t * v2[d] + u * v3[d];
         }
@@ -1132,12 +1135,14 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     SeedingReport report;
     report.requested = params.num_seeds;
 
-    // Step 2: local setup, failures combined over ranks
+    // Step 2: local setup, failures combined over ranks. Whether the elements are straight-sided
+    // is decided over all ranks first (collective), so every rank builds the same kind of boxes.
+    const bool straight_sided = IsStraightSided(local_mesh, comm);
     std::unique_ptr<MaterialPointLocator> locator_ptr;
     ElementSamples samples;
     std::string setup_error;
     try {
-        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh);
+        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided);
         ComputeElementSamples(local_mesh, -1, samples);
     } catch (const std::exception& error) {
         setup_error = std::string("GenerateSeeds: mesh setup failed: ") + error.what();
@@ -1250,8 +1255,8 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     if (params.boundary_clearance > 0.0) {
         std::string clearance_error;
         try {
-            clearance =
-                std::make_unique<BoundaryClearance>(local_mesh, params.boundary_clearance);
+            clearance = std::make_unique<BoundaryClearance>(local_mesh, params.boundary_clearance,
+                                                            straight_sided);
         } catch (const std::exception& error) {
             clearance_error =
                 std::string("GenerateSeeds: surface clearance setup failed: ") + error.what();

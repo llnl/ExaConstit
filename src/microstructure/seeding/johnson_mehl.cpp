@@ -17,6 +17,7 @@
  */
 #include "microstructure/seeding/johnson_mehl.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
 #include "microstructure/util/collective_errors.hpp"
@@ -425,10 +426,13 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
         (params.max_candidates > 0) ? params.max_candidates : DEFAULT_MAX_CANDIDATES;
 
     // ---- Step 2: local setup (may fail on some ranks only) ----
+    // Straight-sided or curved is decided over all ranks (collective), so every rank builds the
+    // same kind of element boxes and the mesh box below does not depend on the partition
+    const bool straight_sided = IsStraightSided(local_mesh, comm);
     std::unique_ptr<MaterialPointLocator> locator_ptr;
     std::string setup_error;
     try {
-        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh);
+        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided);
     } catch (const std::exception& error) {
         setup_error = std::string("GenerateJohnsonMehlSeeds: mesh setup failed: ") + error.what();
     }

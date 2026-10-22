@@ -65,8 +65,12 @@ public:
      *                  other ranks (ParMesh::GetSharedFace) are excluded; for a plain mfem::Mesh
      *                  every face with one element is a boundary face.
      * @param clearance c > 0, mesh length units.
+     * @param straight_sided IsStraightSided(mesh, comm) (mesh/straight_sided.hpp): straight-sided
+     *        faces are triangulated from their corner vertices (from the Nodes when present),
+     *        exactly as for a mesh without Nodes; curved faces are subdivided 2 * order times.
+     *        Ignored (treated as true) for a mesh without Nodes.
      */
-    BoundaryClearance(const mfem::Mesh& mesh, double clearance);
+    BoundaryClearance(const mfem::Mesh& mesh, double clearance, bool straight_sided);
 
     /** @brief Number of local surface triangles. */
     std::size_t NumTriangles() const {

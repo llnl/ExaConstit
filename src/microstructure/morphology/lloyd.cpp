@@ -12,6 +12,7 @@
  *   order.
  */
 #include "microstructure/morphology/lloyd.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
 
 #include "microstructure/morphology/sample_labels.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
@@ -259,7 +260,9 @@ SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamp
     }
     std::unique_ptr<MaterialPointLocator> locator;
     if (params.clamp_to_material) {
-        locator = std::make_unique<MaterialPointLocator>(local_mesh);
+        // params are identical on every rank, so every rank enters the collective decision
+        locator = std::make_unique<MaterialPointLocator>(local_mesh,
+                                                         IsStraightSided(local_mesh, comm));
     }
     const CellMeasureAccumulator accumulator(comm, samples, static_cast<int>(num_seeds));
     LloydReport local_report;

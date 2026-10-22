@@ -1,5 +1,7 @@
 #include "microstructure/seeding/boundary_clearance.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+
 #include "axom/primal/operators/closest_point.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
 
@@ -20,10 +22,13 @@ namespace exaconstit::microstructure {
  *  3. Triangulate each surface face: map the points of an n-times subdivided reference face
  *     (mfem::GlobGeometryRefiner.Refine(face_geom, n)) through the face transformation and emit
  *     one triangle per sub-triangle, or two per sub-quadrilateral (corners 0-1-2 and 0-2-3).
- *     n = 1 for straight-sided meshes (the face itself), 2 * order for curved ones.
+ *     n = 1 for straight-sided meshes (the face itself, mapped by the corner transformation
+ *     StraightFaceTransformation so a mesh with straight-sided Nodes gives the triangles of the
+ *     same mesh without Nodes), 2 * order through the Nodes face transformation for curved ones.
  *  4. Build the BVH over the triangle boxes (axom::spin::BVH::initialize, BVH.hpp:427).
  */
-BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance)
+BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
+                                     bool straight_sided)
     : m_clearance(clearance) {
     if (!(clearance > 0.0)) {
         throw std::invalid_argument("BoundaryClearance: the clearance must be positive");
@@ -38,8 +43,9 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance)
     }
 
     // Subdivisions per face edge: 1 (the face itself) when straight-sided
+    const bool straight = straight_sided || mesh.GetNodes() == nullptr;
     int subdivisions = 1;
-    if (mesh.GetNodes() != nullptr) {
+    if (!straight) {
         subdivisions = 2 * std::max(1, mesh.GetNodes()->FESpace()->GetMaxElementOrder());
     }
 
@@ -56,7 +62,11 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance)
         }
 
         // Step 3a: physical positions of the refined reference points of the face
-        mesh.GetFaceTransformation(f, &face_trans);
+        if (straight) {
+            StraightFaceTransformation(mesh, f, face_trans);
+        } else {
+            mesh.GetFaceTransformation(f, &face_trans);
+        }
         const mfem::Geometry::Type geom = mesh.GetFaceGeometry(f);
         mfem::RefinedGeometry* refined = mfem::GlobGeometryRefiner.Refine(geom, subdivisions);
         face_points.resize(static_cast<std::size_t>(refined->RefPts.GetNPoints()));

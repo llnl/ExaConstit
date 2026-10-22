@@ -438,10 +438,11 @@ TEST(Seeding, StallCapReportsAchievedCount) {
     ExpectSameOnAllRanks(seeds);
 }
 
-// Meshes with high-order Nodes take the general path: element boxes from sampled points (padded)
-// and the Newton inverse map for tets as well as hexes. The unit cube with order-2 Nodes has the
-// same (straight) geometry, so every seed must lie in [0,1]^3, and the distributed result must
-// still match the single-rank one bitwise.
+// The unit cube with order-2 Nodes: the Nodes describe the same straight elements, so the
+// generator recognizes the mesh as straight-sided (mesh/straight_sided.hpp; test_straight_sided
+// checks that it gives the seeds of the cube without Nodes). Every seed must lie inside the
+// clearance band of [0,1]^3, and the distributed result must match the single-rank one bitwise.
+// Genuinely curved meshes take the general path, see CurvedBulgedMesh.
 TEST(Seeding, CurvedNodesPath) {
     for (const auto type : {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON}) {
         mfem::Mesh serial = UnitCube(3, type);

@@ -14,6 +14,7 @@
 #include "microstructure/seeding/seed_element_locator.hpp"
 
 #include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
@@ -196,13 +197,15 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
         return result;
     }
 
+    // Straight-sided or curved, decided on every rank together before the empty-rank branch
+    const bool straight_sided = IsStraightSided(pmesh, comm);
     if (ne > 0) {
         const std::vector<std::uint64_t> computed =
             (element_key == nullptr) ? ComputeElementKeys(pmesh) : std::vector<std::uint64_t>{};
         const std::vector<std::uint64_t>& keys = (element_key == nullptr) ? computed : *element_key;
 
         // Candidate elements per seed from the element boxes
-        const MaterialPointLocator locator(pmesh);
+        const MaterialPointLocator locator(pmesh, straight_sided);
         std::vector<Box> boxes(static_cast<std::size_t>(ne));
         for (int e = 0; e < ne; ++e) {
             boxes[static_cast<std::size_t>(e)] = locator.ElementBox(e);

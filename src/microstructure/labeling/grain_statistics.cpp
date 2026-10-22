@@ -15,6 +15,7 @@
 #include "microstructure/labeling/grain_statistics.hpp"
 
 #include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/util/fixed_point.hpp"
 
 #include "mfem.hpp"
@@ -60,30 +61,17 @@ double CrossNorm(const Point3& a, const Point3& b) {
 }
 
 /*
- * MeshNodeOrder: polynomial order of the mesh geometry. 1 for a mesh without Nodes (vertices
- * only) and for a mesh whose Nodes are order 1 (e.g. read from a file with a nodes section);
- * the Nodes' order otherwise (FiniteElementCollection::GetOrder of the nodal space).
- */
-int MeshNodeOrder(const mfem::Mesh& mesh) {
-    const mfem::GridFunction* nodes = mesh.GetNodes();
-    if (nodes == nullptr) {
-        return 1;
-    }
-    return nodes->FESpace()->FEColl()->GetOrder();
-}
-
-/*
- * CanonicalFaceArea: area of local face f of a mesh with straight-sided (order <= 1) geometry,
+ * CanonicalFaceArea: area of local face f of a mesh with straight-sided geometry
+ * (mesh/straight_sided.hpp: no Nodes, order-1 Nodes, or higher-order Nodes on straight elements),
  * computed from its corner points in a canonical order so the result is bitwise the same
  * whichever rank (and whichever stored orientation of the face) computes it.
  *
  * Steps:
- *  1. The face's corner points: the point matrix of Mesh::GetFaceTransformation (mesh.cpp:539-
- *     581). Without Nodes these are the face vertices in MFEM's cyclic order around the face;
- *     with order-1 Nodes they are the face's nodal points, which for an order-1 H1 space are
- *     the same corners in the same cyclic vertex order (vertex dofs first, in the reference
- *     element's vertex order). Using the point matrix rather than Mesh::GetVertex also follows
- *     Nodes that were moved after the mesh was read.
+ *  1. The face's corner points: the point matrix of StraightFaceTransformation
+ *     (mesh/straight_sided.hpp), i.e. the face vertices in MFEM's cyclic order around the face,
+ *     read from the Nodes vertex dofs when the mesh has Nodes (so Nodes moved after the mesh was
+ *     read are followed) and from the vertex array otherwise; for a mesh without Nodes this is
+ *     exactly the point matrix of Mesh::GetFaceTransformation (mesh.cpp:539-561).
  *  2. Canonical order: start at the lexicographically smallest corner (compare x, then y, then
  *     z) and walk around the face toward the smaller of its two neighbors. Any rotation or
  *     reversal of the cyclic list gives the same canonical list, and a triangle or a bilinear
@@ -97,7 +85,7 @@ int MeshNodeOrder(const mfem::Mesh& mesh) {
 double CanonicalFaceArea(const mfem::Mesh& mesh, int f) {
     // Step 1: corner points in cyclic order (column k of the point matrix is corner k)
     mfem::IsoparametricTransformation transformation;
-    mesh.GetFaceTransformation(f, &transformation);
+    StraightFaceTransformation(mesh, f, transformation);
     const mfem::DenseMatrix& corners = transformation.GetPointMat();
     const int n = corners.Width();
     if ((n != 3 && n != 4) || corners.Height() != 3) {
@@ -222,9 +210,10 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
 
     // Step 3: faces between different grains, each counted once globally, from the side of the
     // smaller grain id. Row e of the adjacency lists every face neighbor n of local element e
-    // (n < NE local, n >= NE ghost n - NE). Linear geometry (no Nodes or order-1 Nodes) uses the
-    // canonical corner formula; higher-order Nodes use the adjacency's curved-face quadrature.
-    const bool curved = (MeshNodeOrder(pmesh) > 1);
+    // (n < NE local, n >= NE ghost n - NE). Straight-sided geometry (decided over all ranks,
+    // collective) uses the canonical corner formula; curved meshes use the adjacency's
+    // curved-face quadrature.
+    const bool curved = !IsStraightSided(pmesh, comm);
     const int* grain = element_grain.HostRead();
     const int* offsets = adjacency.Offsets().HostRead();
     const int* neighbors = adjacency.Neighbors().HostRead();

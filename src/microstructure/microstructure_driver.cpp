@@ -48,6 +48,7 @@
 #include "microstructure/mesh/attribute_domain.hpp"
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/morphology/size_targets.hpp"
 #include "microstructure/orientation/orientation_assigner.hpp"
 #include "microstructure/regions/region_assigner.hpp"
@@ -753,8 +754,10 @@ std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh, MPI_Comm comm,
     const std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
     std::vector<std::uint64_t> anchor(static_cast<std::size_t>(labels.num_grains), none);
     const int ne = pmesh.GetNE();
+    // Straight-sided or curved, decided on every rank together before the empty-rank branch
+    const bool straight_sided = IsStraightSided(pmesh, comm);
     if (ne > 0) {
-        const MaterialPointLocator locator(pmesh);
+        const MaterialPointLocator locator(pmesh, straight_sided);
         const int* grain = labels.element_grain.HostRead();
         for (int e = 0; e < ne; ++e) {
             const auto g = static_cast<std::size_t>(grain[e] - 1);
@@ -1553,6 +1556,10 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     // mesh/attribute_domain.hpp), so a second preflight of the active mesh would add nothing.
     const PreflightReport preflight = CheckMesh(pmesh, comm);
     ThrowOnPreflightFailure(preflight);
+
+    // The pipeline works directly on the caller's mesh, Nodes or not (no copy: production
+    // meshes are large). Straight-sided Nodes are recognized where it matters for the seeds
+    // (MaterialPointLocator: exact corner boxes, no sampling-box padding; mesh/straight_sided.hpp).
 
     // Step 2b: the active part of the mesh. Declared before everything that refers to the active
     // mesh, so those objects (adjacency, labels) are destroyed first.

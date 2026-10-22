@@ -255,6 +255,13 @@ struct GenerationReport {
  *  2. Preflight of the whole mesh (passthrough parts included): the mesh must be 3D, have one
  *     element geometry, be conforming, have no inverted elements and no periodic
  *     (discontinuous) Nodes (CheckMesh, mesh/preflight.hpp).
+ *  2a. Straight-sided geometry (mesh/straight_sided.hpp): the pipeline works in place on
+ *     `pmesh` (no copy). A mesh whose Nodes describe straight-sided elements (any order, e.g.
+ *     ExaConstit's mesh after Mesh::SetCurvature) is recognized collectively, so seeding uses
+ *     exact corner boxes and no padding of the sampling box: it draws the same seeds as the same
+ *     mesh without Nodes. Element volumes, centroids and face areas are still evaluated through
+ *     the Nodes and may differ from the no-Nodes mesh in the last bits, so labels agree up to
+ *     round-off (ties). Genuinely curved meshes keep the curved treatment.
  *  2b. Active part ([Mesh] active_attributes / passthrough_attributes): an AttributeDomain
  *     (mesh/attribute_domain.hpp); seeding, labeling and cleanup run on its ActiveMesh() (a
  *     sub-mesh of the active elements when there are passthrough attributes).
