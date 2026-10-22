@@ -59,7 +59,9 @@
  *
  * **Minimum spacing (RSA).** With a minimum distance d > 0, a candidate inside the material is
  * also rejected if it is closer than d to an already accepted seed (random sequential adsorption,
- * tested with a hash grid, see min_distance_grid.hpp). Guards:
+ * tested with a hash grid, see min_distance_grid.hpp). *Polydisperse* RSA gives every seed slot
+ * its own exclusion radius (SeedingParameters::rsa_radius) and requires non-overlapping exclusion
+ * spheres instead (the guard below then uses the sum of the sphere volumes). Guards:
  * - feasibility: N (pi/6) d^3 <= 0.3 V is required, i.e. N non-overlapping spheres of diameter d
  *   may fill at most 30% of the volume V. Random sequential packing jams near 38%, and the last
  *   few percent before that take extremely many candidates, so larger requests are refused up
@@ -110,6 +112,17 @@ struct SeedingParameters {
     double min_distance = 0.0;
     /** @brief d = min_distance_factor * (V / N)^(1/3) when min_distance is 0 (0 disables RSA). */
     double min_distance_factor = 0.0;
+    /**
+     * @brief Polydisperse RSA: exclusion radius rho_j of the j-th accepted seed (acceptance order
+     * = increasing candidate index), size num_seeds, every entry > 0 and finite. A candidate for
+     * slot j is rejected when it is closer than rho_j + rho_i to an accepted seed i, i.e. when
+     * the exclusion spheres would overlap. Sorting the radii from largest to smallest places the
+     * largest grains first (the usual polydisperse RSA). Empty (default) = monodisperse RSA with
+     * min_distance / min_distance_factor, which must both be 0 when this is used. Not for
+     * lattices. Feasibility guard: sum_j (4/3) pi rho_j^3 <= 0.3 V. No TOML key: the driver fills
+     * it from [Seeds.Size] (kappa x equivalent-sphere radius of the target volumes).
+     */
+    std::vector<double> rsa_radius;
     /** @brief Minimum distance of a seed from the material surface (0 disables the check). */
     double boundary_clearance = 0.0;
     /**

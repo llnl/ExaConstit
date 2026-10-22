@@ -87,7 +87,7 @@ double MinDistanceGrid::Distance(const std::array<double, 3>& p,
 }
 
 /*
- * HasNeighborCloserThan
+ * AnyNeighborPoint
  *
  * Steps:
  *  1. Find the query's cell (ci, cj, ck).
@@ -95,10 +95,11 @@ double MinDistanceGrid::Distance(const std::array<double, 3>& p,
  *     dropped when outside [0, n) on non-periodic axes. With fewer than 3 cells on a periodic
  *     axis, c-1 and c+1 can wrap onto the same cell; duplicates are removed so no cell is
  *     searched twice (that would only cost time, but it is easy to avoid).
- *  3. For each of the (up to) 27 cells, compare the squared minimum-image distance with d^2.
- *     Squared distances avoid a sqrt per pair; "< d^2" means a pair at exactly d is allowed.
+ *  3. Visit the points filed in each of the (up to) 27 cells, stopping at the first one for
+ *     which visit returns true.
  */
-bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) const {
+template <typename Visit>
+bool MinDistanceGrid::AnyNeighborPoint(const std::array<double, 3>& p, Visit&& visit) const {
     if (m_points.empty()) {
         return false;
     }
@@ -125,7 +126,7 @@ bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) cons
         }
     }
 
-    // Step 3: exact squared-distance test against the points filed in each neighbor cell
+    // Step 3: the points filed in each neighbor cell
     for (int a = 0; a < num_neighbors[0]; a++) {
         for (int b = 0; b < num_neighbors[1]; b++) {
             for (int c = 0; c < num_neighbors[2]; c++) {
@@ -135,15 +136,7 @@ bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) cons
                     continue;
                 }
                 for (const std::size_t idx : it->second) {
-                    double sum = 0.0;
-                    for (int d = 0; d < 3; d++) {
-                        double dx = p[d] - m_points[idx][d];
-                        if (m_periodic[d]) {
-                            dx -= m_length[d] * std::round(dx / m_length[d]);
-                        }
-                        sum += dx * dx;
-                    }
-                    if (sum < m_min_distance_sq) {
+                    if (visit(idx)) {
                         return true;
                     }
                 }
@@ -153,10 +146,53 @@ bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) cons
     return false;
 }
 
-/* Insert: append the point and file its index under its cell. */
+/*
+ * SquaredDistanceTo: squared minimum-image distance (squared, so no sqrt per pair is needed for
+ * the comparisons below).
+ */
+double MinDistanceGrid::SquaredDistanceTo(const std::array<double, 3>& p, std::size_t idx) const {
+    double sum = 0.0;
+    for (int d = 0; d < 3; d++) {
+        double dx = p[d] - m_points[idx][d];
+        if (m_periodic[d]) {
+            dx -= m_length[d] * std::round(dx / m_length[d]);
+        }
+        sum += dx * dx;
+    }
+    return sum;
+}
+
+/*
+ * HasNeighborCloserThan: any point of the 27 neighbor cells with squared minimum-image distance
+ * < d^2 ("< d^2" means a pair at exactly d is allowed).
+ */
+bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) const {
+    return AnyNeighborPoint(
+        p, [&](std::size_t idx) { return SquaredDistanceTo(p, idx) < m_min_distance_sq; });
+}
+
+/*
+ * OverlapsAny: like HasNeighborCloserThan, with the pair distance radius + r_q of the two
+ * exclusion spheres instead of d. Correct because radius + r_q <= d = the cell size, so an
+ * overlapping point lies in a neighbor cell.
+ */
+bool MinDistanceGrid::OverlapsAny(const std::array<double, 3>& p, double radius) const {
+    return AnyNeighborPoint(p, [&](std::size_t idx) {
+        const double reach = radius + m_radii[idx];
+        return SquaredDistanceTo(p, idx) < reach * reach;
+    });
+}
+
+/* Insert: append the point (exclusion radius d / 2) and file its index under its cell. */
 void MinDistanceGrid::Insert(const std::array<double, 3>& p) {
+    Insert(p, 0.5 * m_min_distance);
+}
+
+/* Insert with radius: append the point and its radius and file its index under its cell. */
+void MinDistanceGrid::Insert(const std::array<double, 3>& p, double radius) {
     const std::size_t idx = m_points.size();
     m_points.push_back(p);
+    m_radii.push_back(radius);
     const std::uint64_t key =
         CellKey(CellCoordinate(p[0], 0), CellCoordinate(p[1], 1), CellCoordinate(p[2], 2));
     m_cells[key].push_back(idx);

@@ -1,8 +1,9 @@
 #------------------------------------------------------------------------------
 # Microstructure generator (namespace exaconstit::microstructure)
 #
-# Builds one static library per module (options, mesh, io, geometry, seeding, labeling), plus
-# the driver library exaconstit_microstructure and the standalone tool microstructure_generator.
+# Builds one static library per module (options, mesh, io, geometry, seeding, labeling,
+# morphology), plus the driver library exaconstit_microstructure and the standalone tool
+# microstructure_generator.
 # Splitting by module means a change in one module never recompiles another.
 #
 # Each module "globs" its own subdirectory: CMake collects every <dir>/*.cpp and *.hpp itself
@@ -156,10 +157,16 @@ ms_add_module(NAME ms_seeding  GLOBS seeding/*
 # ms_labeling
 ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/*
               DEPENDS_ON ms_mesh ms_geometry)
+# morphology/ (size control): target grain volumes, Laguerre weight fitting and Lloyd relaxation.
+# Uses the seed search (geometry), the cell measures (labeling) and the point-in-material test
+# (seeding).
+ms_add_module(NAME ms_morphology GLOBS morphology/*
+              DEPENDS_ON ms_seeding ms_labeling ms_geometry ms_mesh)
 
 # Driver library: everything a consumer (tool, tests, mechanics hook) links against
 ms_add_module(NAME exaconstit_microstructure GLOBS microstructure_driver
-              DEPENDS_ON ms_options ms_io ms_seeding ms_labeling ms_geometry ms_mesh)
+              DEPENDS_ON ms_options ms_io ms_morphology ms_seeding ms_labeling ms_geometry
+                         ms_mesh)
 
 #------------------------------------------------------------------------------
 # Standalone tool: bin/microstructure_generator (options file and/or -m -n -s -o --parts)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,11 @@
  * to the nearest periodic copy ("minimum image" convention): dx is replaced by
  * dx - L * round(dx / L), so two seeds near opposite faces of the box count as close. The cells
  * then wrap around: cell n-1 is a neighbor of cell 0.
+ *
+ * **Polydisperse RSA.** With seeds of different sizes each seed i has its own exclusion radius
+ * r_i, and two seeds may not be closer than r_i + r_j (their exclusion spheres must not overlap).
+ * OverlapsAny / Insert(p, radius) implement that test; the cell size is then twice the largest
+ * radius, so overlapping seeds still sit in neighboring cells.
  *
  * Host only (std:: containers); RSA is sequential by nature and seed counts are small compared
  * with element counts.
@@ -75,6 +81,20 @@ public:
     /** @brief Files p under its cell. Does not check the distance (call the query first). */
     void Insert(const std::array<double, 3>& p);
 
+    /**
+     * @brief Polydisperse test: true if some inserted point q, inserted with radius r_q, is at
+     * distance < radius + r_q from p (minimum image along periodic axes), i.e. the spheres of
+     * radius `radius` around p and r_q around q overlap. Host only.
+     *
+     * Precondition: radius and every inserted radius are <= d / 2, with d the constructor's
+     * min_distance (the cell size), so an overlapping point can only be in the 27 neighbor
+     * cells. Points inserted with Insert(p) (no radius) count with radius d / 2.
+     */
+    bool OverlapsAny(const std::array<double, 3>& p, double radius) const;
+
+    /** @brief Files p with its exclusion radius (<= d / 2) for OverlapsAny. */
+    void Insert(const std::array<double, 3>& p, double radius);
+
     /** @brief Number of inserted points. */
     std::size_t Size() const {
         return m_points.size();
@@ -105,8 +125,21 @@ private:
     std::array<bool, 3> m_periodic;       ///< periodic flag per axis
     double m_min_distance;                ///< d
     double m_min_distance_sq;             ///< d^2
+    /**
+     * @brief Calls visit(index) for every inserted point filed in p's cell or one of its
+     * neighbor cells (wrapped on periodic axes, each cell once); stops and returns true as soon
+     * as visit returns true.
+     */
+    template <typename Visit>
+    bool AnyNeighborPoint(const std::array<double, 3>& p, Visit&& visit) const;
+
+    /** @brief Squared minimum-image distance between p and inserted point idx. */
+    double SquaredDistanceTo(const std::array<double, 3>& p, std::size_t idx) const;
+
     /** @brief Inserted points, in insertion order. */
     std::vector<std::array<double, 3>> m_points;
+    /** @brief Exclusion radius of each inserted point (d / 2 for Insert(p) without a radius). */
+    std::vector<double> m_radii;
     /** @brief Occupied cell -> indices into m_points. */
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_cells;
 };

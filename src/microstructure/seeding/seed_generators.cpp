@@ -1,16 +1,17 @@
 #include "microstructure/seeding/seed_generators.hpp"
 
+#include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/seeding/boundary_clearance.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/min_distance_grid.hpp"
+#include "microstructure/util/collective_errors.hpp"
 #include "microstructure/util/counter_rng.hpp"
 #include "microstructure/util/fixed_point.hpp"
 #include "microstructure/util/random_distributions.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -77,40 +78,10 @@ const char* PlacementName(SeedPlacement placement) {
     return "unknown";
 }
 
-/*
- * ThrowIfAnyRankFailed (collective)
- *
- * Local setup (element boxes, element sampler, surface triangles) can fail on some ranks only,
- * e.g. when only one partition holds an element of an unsupported geometry. If such a rank simply
- * threw, the other ranks would wait forever in the next collective call. Instead each rank passes
- * its own error message (empty = no error) and:
- *  1. MPI_Allreduce(MPI_MIN) of "my rank if I failed, else a huge value" finds the lowest failing
- *     rank (or none);
- *  2. that rank broadcasts the length and text of its message;
- *  3. every rank throws std::runtime_error with that message.
- */
-void ThrowIfAnyRankFailed(MPI_Comm comm, const std::string& local_error) {
-    int rank = 0;
-    MPI_Comm_rank(comm, &rank);
-    const int no_failure = std::numeric_limits<int>::max();
-
-    // Step 1: lowest failing rank
-    int candidate = local_error.empty() ? no_failure : rank;
-    int failing_rank = no_failure;
-    MPI_Allreduce(&candidate, &failing_rank, 1, MPI_INT, MPI_MIN, comm);
-    if (failing_rank == no_failure) {
-        return;
-    }
-
-    // Step 2: broadcast its message
-    int length = (rank == failing_rank) ? static_cast<int>(local_error.size()) : 0;
-    MPI_Bcast(&length, 1, MPI_INT, failing_rank, comm);
-    std::string message = (rank == failing_rank) ? local_error : std::string(length, ' ');
-    MPI_Bcast(message.data(), length, MPI_CHAR, failing_rank, comm);
-
-    // Step 3: the same exception everywhere
-    throw std::runtime_error(message + " (reported by rank " + std::to_string(failing_rank) + ")");
-}
+// ThrowIfAnyRankFailed (collective; util/collective_errors.hpp): local setup steps that can fail
+// on some ranks only (element boxes, element sampler, surface triangles) pass their error message
+// (empty = no error); the lowest failing rank broadcasts it and every rank throws it, instead of
+// the healthy ranks waiting forever in the next collective call.
 
 /**
  * Candidates of one batch: positions plus their global candidate index (the future source_id).
@@ -275,9 +246,16 @@ public:
      * @param periodic periodic axes.
      */
     SeedAcceptor(std::int64_t target, double min_distance, const std::array<double, 3>& grid_lo,
-                 const std::array<double, 3>& grid_hi, const std::array<bool, 3>& periodic)
-        : m_target(target) {
-        if (min_distance > 0.0) {
+                 const std::array<double, 3>& grid_hi, const std::array<bool, 3>& periodic,
+                 const std::vector<double>& rsa_radius = {})
+        : m_target(target), m_radius(rsa_radius) {
+        if (!m_radius.empty()) {
+            // Polydisperse: cells of twice the largest radius keep overlapping pairs in
+            // neighboring cells (MinDistanceGrid::OverlapsAny)
+            const double max_radius = *std::max_element(m_radius.begin(), m_radius.end());
+            m_grid = std::make_unique<MinDistanceGrid>(grid_lo, grid_hi, 2.0 * max_radius,
+                                                       periodic);
+        } else if (min_distance > 0.0) {
             m_grid = std::make_unique<MinDistanceGrid>(grid_lo, grid_hi, min_distance, periodic);
         }
     }
@@ -314,7 +292,15 @@ public:
                 continue;
             }
             const std::array<double, 3> p = {batch.x[i], batch.y[i], batch.z[i]};
-            if (m_grid) {
+            if (m_grid && !m_radius.empty()) {
+                // Polydisperse: the next slot's exclusion sphere must not overlap any other
+                const double radius = m_radius[m_seeds.Size()];
+                if (m_grid->OverlapsAny(p, radius)) {
+                    report.rejected_by_distance++;
+                    continue;
+                }
+                m_grid->Insert(p, radius);
+            } else if (m_grid) {
                 if (m_grid->HasNeighborCloserThan(p)) {
                     report.rejected_by_distance++;
                     continue;
@@ -334,6 +320,7 @@ public:
 
 private:
     std::int64_t m_target;
+    std::vector<double> m_radius; ///< polydisperse exclusion radius per slot (empty: none)
     std::unique_ptr<MinDistanceGrid> m_grid;
     SeedSet m_seeds;
 };
@@ -606,13 +593,6 @@ void RunLattice(const SeedingContext& ctx, SeedAcceptor& acceptor, SeedingReport
     }
 }
 
-/** splitmix64 finalizer: a fixed bijective mixing of 64-bit integers into well-spread hashes. */
-std::uint64_t Mix64(std::uint64_t z) {
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
 /** One point drawn by an element in element-weighted sampling. Plain data (sent as bytes). */
 struct Arrival {
     double t;          ///< arrival time (the sort key)
@@ -713,40 +693,6 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
 }
 
 /*
- * ElementKey: a 64-bit identity of element e that does not depend on the partition or on the
- * execution space.
- *
- * The key hashes exact input bits, not computed values: the vertex coordinates of the element
- * (copied bit for bit from the serial mesh into every partition), sorted lexicographically so the
- * local vertex order does not matter, and folded with the splitmix64 mixer over their raw IEEE bit
- * patterns. In a conforming mesh no two elements have the same vertex set, so distinct elements get
- * distinct keys up to a 64-bit hash collision (probability ~ n_elements^2 / 2^65). Using all
- * vertices (not only the smallest one) matters: the 6 tets of a split hex share their smallest
- * vertex. A computed centroid would not do: CPU and GPU round-off can differ in the last bit and
- * change a quantized value.
- */
-std::uint64_t ElementKey(const mfem::Mesh& mesh, int e) {
-    mfem::Array<int> vertices;
-    mesh.GetElementVertices(e, vertices);
-    std::vector<std::array<double, 3>> coords(static_cast<std::size_t>(vertices.Size()));
-    for (int v = 0; v < vertices.Size(); v++) {
-        const double* x = mesh.GetVertex(vertices[v]);
-        coords[static_cast<std::size_t>(v)] = {x[0], x[1], x[2]};
-    }
-    std::sort(coords.begin(), coords.end()); // lexicographic (x, then y, then z)
-
-    std::uint64_t h = 0x9E3779B97F4A7C15ULL; // arbitrary nonzero start value
-    for (const auto& c : coords) {
-        for (int d = 0; d < 3; d++) {
-            std::uint64_t bits = 0;
-            std::memcpy(&bits, &c[d], sizeof(bits)); // exact bit pattern of the coordinate
-            h = Mix64(h ^ bits);
-        }
-    }
-    return h;
-}
-
-/*
  * RunElementWeighted
  *
  * The idea in plain words: imagine every element firing points at random times, independently,
@@ -756,8 +702,10 @@ std::uint64_t ElementKey(const mfem::Mesh& mesh, int e) {
  * like accepted rejection-sampling candidates, but with no wasted candidates.
  *
  * Steps:
- *  1. Element key (ElementKey): a hash of the element's exact vertex coordinates, the same for
- *     any rank count and execution space. The element's RNG stream is
+ *  1. Element key (ElementKey, mesh/element_key.hpp): a hash of the element's exact vertex
+ *     coordinates, the same for any rank count and execution space (bit-identical to the
+ *     private key this file used before the shared version existed, so seeds did not change).
+ *     The element's RNG stream is
  *     (rng_seed, ELEMENT_WEIGHTED_POSITION, key). That purpose is reserved for these streams, so
  *     they never coincide with a rejection candidate's (SEED_POSITION, k) stream.
  *  2. Arrival times of element e: t_{j+1} = t_j + E_j / V_e with E_j = -ln(1 - U_j) an
@@ -980,6 +928,23 @@ void ValidateSeedingParameters(const SeedingParameters& params) {
     if (!(params.boundary_clearance >= 0.0)) {
         fail("boundary_clearance must be >= 0");
     }
+    if (!params.rsa_radius.empty()) {
+        if (static_cast<std::int64_t>(params.rsa_radius.size()) != params.num_seeds) {
+            fail("rsa_radius must have num_seeds entries (polydisperse RSA)");
+        }
+        for (const double r : params.rsa_radius) {
+            if (!(r > 0.0) || !std::isfinite(r)) {
+                fail("every rsa_radius entry must be positive and finite");
+            }
+        }
+        if (params.min_distance > 0.0 || params.min_distance_factor > 0.0) {
+            fail("rsa_radius (polydisperse RSA) replaces min_distance and min_distance_factor; "
+                 "set them to 0");
+        }
+        if (params.placement == SeedPlacement::LATTICE) {
+            fail("rsa_radius (polydisperse RSA) does not apply to lattices");
+        }
+    }
     if (params.placement == SeedPlacement::LATTICE) {
         if (params.lattice_type != "cubic" && params.lattice_type != "bcc" &&
             params.lattice_type != "fcc" && params.lattice_type != "hcp") {
@@ -1077,7 +1042,8 @@ std::string SeedingReport::Summary() const {
  *     padded "reach" box rounded outward (rejection in material mode; for curved elements the
  *     padding makes bulges between sampled points reachable, for straight-sided meshes the two
  *     boxes coincide).
- *  5. RSA distance d and the feasibility guard N (pi/6) d^3 <= 0.3 V.
+ *  5. RSA distance d and the feasibility guard N (pi/6) d^3 <= 0.3 V (polydisperse: the sum of
+ *     the exclusion-sphere volumes <= 0.3 V).
  *  6. Choose the generator: element-weighted if requested, or if rejection would accept fewer
  *     than fallback_acceptance of its candidates (estimated as V / V_box, an upper bound when a
  *     user box cuts the mesh).
@@ -1180,6 +1146,30 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         }
     }
 
+    if (!params.rsa_radius.empty()) {
+        // Polydisperse guard: the exclusion spheres may fill at most 30% of the volume
+        double sphere_volume = 0.0;
+        double largest = 0.0;
+        for (const double r : params.rsa_radius) {
+            sphere_volume += 4.0 / 3.0 * PI * r * r * r;
+            largest = std::max(largest, r);
+        }
+        const double fraction = sphere_volume / ctx.volume_ref;
+        if (fraction > FEASIBLE_PACKING_FRACTION) {
+            std::ostringstream os;
+            os << "GenerateSeeds: polydisperse exclusion spheres are infeasible: they would fill "
+               << fraction << " of the volume " << ctx.volume_ref << " (at most "
+               << FEASIBLE_PACKING_FRACTION << "). Use smaller exclusion radii.";
+            throw std::runtime_error(os.str());
+        }
+        report.min_distance = 2.0 * largest;
+        std::ostringstream os;
+        os << "polydisperse RSA with " << params.rsa_radius.size()
+           << " exclusion radii (largest " << largest << "), spheres fill " << fraction
+           << " of the volume";
+        report.notes.push_back(os.str());
+    }
+
     // Surface clearance (local surface triangles; built only when requested). Construction is
     // local and can fail on one rank only (unsupported face geometry), hence the combined check.
     std::unique_ptr<BoundaryClearance> clearance;
@@ -1231,7 +1221,7 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
 
     // Step 7: run
     auto acceptor = std::make_unique<SeedAcceptor>(params.num_seeds, ctx.min_distance, grid_lo,
-                                                   grid_hi, params.periodic);
+                                                   grid_hi, params.periodic, params.rsa_radius);
     RunStatus status = RunStatus::DONE;
     if (placement == SeedPlacement::LATTICE) {
         ctx.candidate_cap = MAX_CANDIDATES;
@@ -1255,7 +1245,8 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
                 report.rejected_by_clearance = 0;
                 report.rejected_by_distance = 0;
                 acceptor = std::make_unique<SeedAcceptor>(params.num_seeds, ctx.min_distance,
-                                                          grid_lo, grid_hi, params.periodic);
+                                                          grid_lo, grid_hi, params.periodic,
+                                                          params.rsa_radius);
                 placement = SeedPlacement::ELEMENT_WEIGHTED;
             }
         }
