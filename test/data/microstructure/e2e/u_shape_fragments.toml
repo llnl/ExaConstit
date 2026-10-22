@@ -1,0 +1,40 @@
+# Generator input of the end-to-end test "U-shaped part with fragment cleanup".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/u_shape_fragments.toml
+#                              -m test/data/microstructure/u_shape_hex.mesh
+# (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI
+# ranks, checks that both runs write byte-identical files, and then runs mechanics on the result
+# (decks test/data/microstructure/mechanics/ms_u_shape_np{1,2}.toml).
+#
+# What it exercises: a non-convex part. Seeds are drawn anywhere in the bounding box
+# (sampling_domain = "bbox"), so some Voronoi cells near the empty notch reach across it and
+# their elements form two pieces that touch only through the void. The default cleanup
+# (fragments = "auto") splits such large pieces into grains of their own and merges tiny ones
+# into a neighbor; the tool's summary reports the pieces found, split and merged. With these 8
+# seeds (measured): 4 extra pieces, 2 split off as new grains, 2 merged -> 10 grains.
+
+[Mesh]
+    type = "file"
+    # Overridden by -m in the test (relative paths are relative to the working directory)
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    num_seeds = 8
+    rng_seed = 75
+    placement = "rejection"
+    sampling_domain = "bbox"
+
+[Tessellation]
+    metric = "voronoi"
+
+[Cleanup]
+    fragments = "auto"
+
+[Output]
+    basename = "e2e_u_shape"
+    mesh_format = "serial"
+    # Plain text, so the 1-rank and 2-rank mesh files can be compared byte for byte
+    compression = 0
+    grain_adjacency = true
+    paraview = false

@@ -1,0 +1,27 @@
+# Microstructure generator example: 20 equiaxed grains of similar size from Lloyd relaxation
+# (a centroidal Voronoi tessellation) on a 10x10x10 auto hex box.
+#
+# Run with:
+#     microstructure_generator -i lloyd_cvt_auto.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [10, 10, 10]
+
+[Seeds]
+    num_seeds = 20
+    rng_seed = 9
+
+[Tessellation]
+    metric = "voronoi"
+    # Each Lloyd step moves every seed to the centroid of its grain (measured on the element
+    # quadrature points), which makes the grains rounder and more uniform. Seeds whose centroid
+    # falls outside the material (non-convex parts) are kept inside.
+    lloyd_iterations = 5
+    fit_volumes = {samples = "quadrature"}
+
+[Output]
+    basename = "lloyd_cvt_auto"

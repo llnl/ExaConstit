@@ -1,0 +1,35 @@
+# Generator input of the end-to-end test "Johnson-Mehl nucleation and growth".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/johnson_mehl.toml
+# at 1 and at 2 MPI ranks, checks that both runs write byte-identical files, and then runs
+# mechanics on the result (deck test/data/microstructure/mechanics/ms_johnson_mehl_np2.toml).
+#
+# What it exercises: Johnson-Mehl nuclei (random places and birth times, constant rate per unit
+# volume and time, constant growth speed) until the 8x8x8 auto box is fully transformed; grains
+# are the cells of the additive metric |x - s_i| + v t_i, so early nuclei grow into larger grains
+# with curved boundaries. The tool prints the nucleation report.
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]
+
+[Seeds]
+    placement = "johnson_mehl"
+    rng_seed = 5
+    [Seeds.JohnsonMehl]
+        rate = 30.0
+        growth_speed = 1.0
+        end_time = 0.0
+        num_nuclei = 0
+
+[Tessellation]
+    metric = "additive"
+
+[Output]
+    basename = "e2e_johnson_mehl"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

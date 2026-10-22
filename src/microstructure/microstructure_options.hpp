@@ -76,6 +76,78 @@ struct MeshInput {
 };
 
 /**
+ * @brief Target grain sizes ([Seeds.Size]).
+ *
+ * Grain sizes are described by the equivalent diameter d (the diameter of the sphere with the
+ * grain's volume, V = pi d^3 / 6). With a size distribution every seed gets a target volume
+ * (morphology/size_targets.hpp), the targets are scaled to fill the material, and they are used
+ * for (a) polydisperse seed placement (larger grains get a larger exclusion radius), (b) the
+ * Laguerre starting weights w_i = r_i^2 (r_i = equivalent-sphere radius), and (c) the volume fit
+ * ([Tessellation] fit_volumes).
+ */
+struct SeedSizeOptions {
+    /**
+     * @brief "none" (no size targets; a volume fit then aims at equal volumes), "lognormal"
+     * (ln d normally distributed with standard deviation sigma) or "from_source" (volumes from the
+     * seed table; needs Seeds.source = "file").
+     */
+    std::string distribution = "none";
+    /**
+     * @brief Mean equivalent diameter E[d] (mesh length units). When > 0 and Seeds.num_seeds is
+     * 0, the number of grains is chosen so the expected grain volumes fill the material. 0 = not
+     * given. At most one of mean_diameter and mean_volume may be given.
+     */
+    double mean_diameter = 0.0;
+    /**
+     * @brief Mean grain volume E[V] (mesh length units cubed), the alternative to mean_diameter:
+     * for the log-normal, E[d] = (6 E[V] / pi)^(1/3) exp(-sigma^2). 0 = not given.
+     */
+    double mean_volume = 0.0;
+    /**
+     * @brief Standard deviation of ln d (dimensionless, >= 0; "lognormal" only, ignored with a
+     * warning otherwise); 0.2-0.5 is typical.
+     */
+    double sigma = 0.0;
+    /**
+     * @brief Polydisperse random sequential adsorption: seeds are placed largest grain first,
+     * and two seeds i, j must be at least exclusion_factor (r_i + r_j) apart (r = equivalent-
+     * sphere radius of the target volume). Replaces Seeds.min_distance / min_distance_factor.
+     * Needs placement "rejection" or "element_weighted" and no Seeds.sampling_box (the targets
+     * fill the whole material). With distribution = "none" all radii are equal (monodisperse
+     * RSA with distance 2 kappa r), and the targets reported for the grains are equal volumes.
+     * With Seeds.allow_fewer_seeds, a stalled placement keeps the seeds placed so far, i.e. the
+     * largest slots, and their targets are rescaled to fill the material.
+     */
+    bool polydisperse_placement = false;
+    /**
+     * @brief Exclusion radius of a seed as a fraction kappa of its equivalent-sphere radius
+     * (0 < kappa; the spheres of radius kappa r_i then fill kappa^3 of the material, which must be
+     * <= 0.3, i.e. kappa <= 0.669). Polydisperse placement only.
+     */
+    double exclusion_factor = 0.5;
+};
+
+/**
+ * @brief Johnson-Mehl nucleation and growth ([Seeds.JohnsonMehl]), used with placement =
+ * "johnson_mehl" (seeding/johnson_mehl.hpp). Nuclei appear at random places and times at a
+ * constant rate per unit volume and time and grow as spheres at a constant speed; a nucleus born
+ * inside an already grown grain is discarded. The grains are the cells of the Additive metric
+ * with weights a_i = -growth_speed t_i (t_i = birth time), so [Tessellation] metric must be
+ * "additive". Time units are arbitrary but must be consistent (only rate x time and speed x time
+ * matter).
+ */
+struct JohnsonMehlOptions {
+    /** @brief Nucleation rate I (> 0): nuclei per unit volume per unit time. */
+    double rate = 0.0;
+    /** @brief Growth speed v (> 0): length per unit time. */
+    double growth_speed = 1.0;
+    /** @brief Stop nucleating at this time (> 0), or 0 = until the material is transformed. */
+    double end_time = 0.0;
+    /** @brief Stop after this many nuclei (> 0), or 0 = no count limit. */
+    std::int64_t num_nuclei = 0;
+};
+
+/**
  * @brief Seed generation ([Seeds]). Every grain grows from one seed point.
  */
 struct SeedOptions {
@@ -83,7 +155,9 @@ struct SeedOptions {
     std::string source = "random";
     /**
      * @brief Number of seeds (= grains before cleanup) for random sources; must be > 0 for
-     * random seeds. Ignored for "file", where the table length sets the count.
+     * random seeds unless [Seeds.Size] gives a mean grain size (the count then follows from the
+     * material volume) or placement = "johnson_mehl" (the nucleation process sets the count).
+     * Ignored for "file", where the table length sets the count.
      */
     std::int64_t num_seeds = 0;
     /**
@@ -149,6 +223,31 @@ struct SeedOptions {
     double units_scale = 1.0;
     /** @brief Translation (mesh length units) applied to the table positions after scaling. */
     std::array<double, 3> translate = {0.0, 0.0, 0.0};
+    /** @brief Target grain sizes ([Seeds.Size]). */
+    SeedSizeOptions size;
+    /** @brief Johnson-Mehl parameters ([Seeds.JohnsonMehl]); placement = "johnson_mehl" only. */
+    JohnsonMehlOptions johnson_mehl;
+};
+
+/**
+ * @brief Volume fitting ([Tessellation] `fit_volumes = {enabled, tolerance, max_iterations,
+ * samples}`): adjust the seed weights so every grain gets its target volume ([Seeds.Size], or
+ * equal volumes without a size distribution) with morphology/weight_fit.hpp. Needs a weighted
+ * metric (laguerre, quadric or additive).
+ */
+struct FitVolumesOptions {
+    /** @brief Run the fit. */
+    bool enabled = false;
+    /** @brief Stop when every relative volume error is <= tolerance (> 0). */
+    double tolerance = 0.02;
+    /** @brief Largest number of solver steps (>= 0). */
+    int max_iterations = 200;
+    /**
+     * @brief Points the volumes are measured with: "quadrature" (every quadrature point; smooth
+     * response, recommended) or "element" (element centroids: the volumes ExaConstit will see,
+     * but they change in whole-element jumps).
+     */
+    std::string samples = "quadrature";
 };
 
 /**
@@ -171,7 +270,8 @@ struct TessellationOptions {
      * differently along different directions: a small eigenvalue along a direction makes that
      * direction look short, so grains grow elongated along it. Must be positive definite
      * (checked in validate()). The identity reproduces Voronoi. TOML:
-     * `anisotropy = {global_tensor = [...]}` or the shorthand `global_tensor = [...]`.
+     * `anisotropy = {global_tensor = [...]}` or the shorthand `global_tensor = [...]` (either
+     * sets anisotropy_kind = "tensor"). Ignored for the columnar and lamellar kinds.
      */
     std::array<double, 6> global_tensor = {1.0, 1.0, 1.0, 0.0, 0.0, 0.0};
     /**
@@ -189,8 +289,52 @@ struct TessellationOptions {
      * the opposite face (implemented with periodic images of the seeds).
      */
     std::array<bool, 3> periodic = {false, false, false};
+    /**
+     * @brief Periodic axes only: matching tolerance of the periodic face pairing used by the
+     * fragment cleanup, as a fraction of the smallest edge of the faces on the periodic planes
+     * (PeriodicFaceParameters::relative_tolerance, mesh/mesh_adjacency.hpp). In (0, 0.5);
+     * default 1e-6. The mesh must have matching faces on opposite periodic planes, otherwise the
+     * run stops with an error.
+     */
+    double periodic_tolerance = 1.0e-6;
     /** @brief Distance mode (TOML `distance`: "euclidean", "connected", "geodesic"). */
     DistanceMode distance = DistanceMode::EUCLIDEAN;
+    /**
+     * @brief Quadrature-vote sampling only: subdivision levels 0..3 of the voting points, 8^levels
+     * points per element (labeling/quadrature_vote.hpp; default 2 = 64 points). Level 1 is not
+     * recommended (its 8 points measured worse than centroid labeling).
+     */
+    int vote_levels = 2;
+    /**
+     * @brief Kind of anisotropy of the Quadric metric (TOML `anisotropy = {kind = ...}`):
+     * - "none": global_tensor as stored (the identity unless set, i.e. Voronoi distances);
+     * - "tensor": the user tensor anisotropy.global_tensor (set automatically when a
+     *   global_tensor is written);
+     * - "columnar": grains unbounded along anisotropy_axis (A = I - a a^T, positive
+     *   semidefinite), e.g. columnar grains of additively manufactured or directionally solidified
+     *   material;
+     * - "lamellar": flat layers perpendicular to anisotropy_normal (A = n n^T).
+     * Columnar and lamellar need metric = "quadric".
+     */
+    std::string anisotropy_kind = "none";
+    /** @brief Column axis for anisotropy_kind = "columnar" (normalized; TOML `axis`). */
+    std::array<double, 3> anisotropy_axis = {0.0, 0.0, 1.0};
+    /** @brief Layer normal for anisotropy_kind = "lamellar" (TOML `normal`). */
+    std::array<double, 3> anisotropy_normal = {0.0, 0.0, 1.0};
+    /** @brief Volume fitting (TOML `fit_volumes = {...}`). */
+    FitVolumesOptions fit_volumes;
+    /**
+     * @brief Number of Lloyd relaxation steps (>= 0): each moves every seed to the centroid of its
+     * grain, giving rounder, more uniform grains (morphology/lloyd.hpp). Needs metric voronoi or
+     * laguerre. Uses the fit_volumes.samples points.
+     */
+    int lloyd_iterations = 0;
+    /**
+     * @brief Centroidal power mode: every Lloyd step is followed by a volume refit, so grains are
+     * both centered on their seeds and of their target volumes. Needs lloyd_iterations > 0 and
+     * metric = "laguerre"; uses the fit_volumes tolerance and max_iterations.
+     */
+    bool centroidal_power = false;
 };
 
 /**
@@ -198,14 +342,38 @@ struct TessellationOptions {
  */
 struct CleanupOptions {
     /**
-     * @brief What to do with a grain whose elements form several disconnected pieces: "auto"
-     * (split for random sources, merge for data sources), "split" (each piece becomes its own
-     * grain), "merge" (pieces join a neighboring grain) or "none".
+     * @brief What to do with a grain whose elements form several disconnected pieces (connected
+     * through element faces; with periodic axes also through matching periodic faces):
+     * - "auto": for generated seeds (random, lattice, Johnson-Mehl) split large pieces into new
+     *   grains (a grain really cut in two, e.g. by a void of a lattice) and merge tiny pieces
+     *   (min_fragment_elements / min_fragment_fraction; typically single elements that touch
+     *   their grain only along an edge) into the neighbor they share the most faces with; for
+     *   data sources such as seed tables merge every extra piece;
+     * - "split": every extra piece becomes its own grain;
+     * - "merge": every extra piece joins the neighboring grain it shares the most faces with;
+     * - "none": count only.
      */
     std::string fragments = "auto";
     /**
-     * @brief Grains with fewer elements than this are merged into a neighbor. 0 and 1 both mean
-     * no merging (every grain has at least one element); negative values are rejected.
+     * @brief "auto" only: an extra piece with fewer elements than this is tiny and merged
+     * (>= 0; default 8).
+     */
+    int min_fragment_elements = 8;
+    /**
+     * @brief "auto" only: an extra piece with less than this fraction of its grain's elements is
+     * tiny and merged too (in [0, 1]; default 0.1).
+     */
+    double min_fragment_fraction = 0.1;
+    /**
+     * @brief Which piece of a disconnected grain keeps the grain's identity (and orientation):
+     * "largest" (most elements) or "seed" (the piece containing the grain's seed, falling back to
+     * the largest when the seed lies in no element of the grain).
+     */
+    std::string keep_component = "largest";
+    /**
+     * @brief Grains with fewer elements than this are merged into the neighbor they share the
+     * most faces with. 0 and 1 both mean no merging (every grain has at least one element);
+     * negative values are rejected.
      */
     int min_grain_elements = 1;
 };
@@ -217,7 +385,8 @@ struct CleanupOptions {
 struct OrientationOptions {
     /**
      * @brief "random" (uniformly distributed rotations from the counter RNG), "from_source"
-     * (taken from the seed table) or "list" (from a separate list).
+     * (taken from the seed table; needs Seeds.source = "file") or "list" (from a separate list).
+     * Only "random" is implemented so far; the driver refuses the others before any work.
      */
     std::string source = "random";
 };
@@ -256,6 +425,13 @@ struct OutputOptions {
     std::string grain_file = "auto";
     /** @brief Write a ParaView collection with the grain ids for visualization. */
     bool paraview = true;
+    /**
+     * @brief Also write the grain adjacency table `<basename>_adjacency.csv`: one row per pair of
+     * grains that share at least one element face, with the total shared face area (mesh length
+     * units squared) and the number of shared faces. With periodic axes, faces matched across
+     * opposite box planes count too. TOML `grain_adjacency` (boolean, default false).
+     */
+    bool grain_adjacency = false;
     // No ExaConstit input (TOML) files are generated: users write their own ExaConstit options.
     // Provenance (tool version, rng_seed, requested and final grain counts) goes in the mesh file
     // header comments and in the rank-0 log at the end of a run.
@@ -322,7 +498,10 @@ struct MicrostructureOptions {
     /**
      * @brief Checks the final options (after CLI overrides): accepted string values, positive
      * counts, consistent source/placement, existing input files, a positive definite anisotropy
-     * tensor, and output ranges.
+     * tensor (or a valid columnar/lamellar direction with the quadric metric), output ranges,
+     * and the combinations of the size, Johnson-Mehl, volume-fit, Lloyd and periodic options
+     * (e.g. Johnson-Mehl needs the additive metric; fitting needs a weighted metric; neither
+     * Lloyd nor fitting works with periodic axes).
      *
      * Every problem is printed (rank 0) before returning, so the user sees all of them at once.
      * Not collective. Every rank holds the same options, but the file-existence checks assume

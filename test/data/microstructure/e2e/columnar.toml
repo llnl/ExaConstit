@@ -1,0 +1,30 @@
+# Generator input of the end-to-end test "columnar grains".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/columnar.toml
+# at 1 and at 2 MPI ranks, checks that both runs write byte-identical files, and then runs
+# mechanics on the result (deck test/data/microstructure/mechanics/ms_columnar_np1.toml).
+#
+# What it exercises: the quadric metric with the semidefinite tensor A = I - a a^T for the axis
+# a = z, so every grain is a column through the whole 8x8x8 auto box along z (its cross-section
+# is the Voronoi cell of the seeds projected onto the x-y plane).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]
+
+[Seeds]
+    num_seeds = 10
+    rng_seed = 11
+
+[Tessellation]
+    metric = "quadric"
+    anisotropy = {kind = "columnar", axis = [0.0, 0.0, 1.0]}
+
+[Output]
+    basename = "e2e_columnar"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

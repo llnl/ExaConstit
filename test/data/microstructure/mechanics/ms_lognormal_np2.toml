@@ -1,0 +1,99 @@
+# ExaConstit deck for the microstructure generator end-to-end test "lognormal" (2 MPI ranks).
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake
+# copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
+# build directory, runs there
+#     microstructure_generator -i test/data/microstructure/e2e/lognormal_fit.toml
+# (paths shown relative to the repository root; CTest passes absolute paths) at 2 MPI ranks
+# (basename "e2e_lognormal"), and then runs mechanics on this deck with 2 MPI ranks. The test
+# passes when mechanics completes.
+#
+# What it exercises: log-normal grain sizes with polydisperse placement and a Laguerre weight fit,
+# read through the grain file of ExaConstit's type = "auto" mesh path (10x10x10 box).
+# Five fixed steps of 0.1 s keep it short.
+Version = "0.8.0"
+basename = "ms_lognormal_np2"
+# Grain id of every element of the auto box (only read for type = "auto")
+grain_file = "e2e_lognormal.grains"
+
+[[Materials]]
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured):
+        # 23 seeds from the mean grain size; the cleanup merges 1
+        # tiny piece -> 23 grains
+        num_grains = 23
+        orientation_file = "e2e_lognormal.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Auto-mesh boundary ids: 1 bottom (z = 0), 2 left (x = 0),
+# 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "auto"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [10, 10, 10]

@@ -1,0 +1,38 @@
+# Generator input of the end-to-end test "log-normal grain sizes with a volume fit".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/lognormal_fit.toml
+# at 1 and at 2 MPI ranks, checks that both runs write byte-identical files, and then runs
+# mechanics on the result (deck test/data/microstructure/mechanics/ms_lognormal_np2.toml).
+#
+# What it exercises: the grain count from a mean grain size, log-normal target volumes,
+# polydisperse placement (largest grains first), and the Laguerre weight fit on quadrature
+# samples. The tool reports the fit history and the element-level volume errors of the final
+# grains against the targets, and writes each grain's target volume in the grain table.
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [10, 10, 10]
+
+[Seeds]
+    num_seeds = 0
+    rng_seed = 3
+    placement = "rejection"
+    [Seeds.Size]
+        distribution = "lognormal"
+        mean_diameter = 0.4
+        sigma = 0.3
+        polydisperse_placement = true
+        exclusion_factor = 0.5
+
+[Tessellation]
+    metric = "laguerre"
+    fit_volumes = {enabled = true, tolerance = 0.05, max_iterations = 100, samples = "quadrature"}
+
+[Output]
+    basename = "e2e_lognormal"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

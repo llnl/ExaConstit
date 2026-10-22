@@ -40,9 +40,21 @@ exec = "cpu"
 
 # [Cleanup]: grains that come out split into disconnected pieces.
 [Cleanup]
-    # "auto" (split pieces into separate grains for random seeds, merge them for data sources),
-    # "split", "merge" or "none".
+    # "auto", "split", "merge" or "none". Pieces are connected through shared element faces (and
+    # through matching periodic faces when Tessellation.periodic is set). "auto" (for random
+    # seeds) splits large pieces into grains of their own and merges tiny ones into the neighbor
+    # they share the most faces with; for data sources it merges every piece. Here 6 single
+    # elements touch the rest of their grain only along an edge; they are merged (20 grains).
     fragments = "auto"
+    # What "auto" calls tiny: fewer elements than this, or less than this fraction of the grain.
+    min_fragment_elements = 8
+    min_fragment_fraction = 0.1
+    # Which piece keeps the grain's identity and orientation: "largest" or "seed" (the piece that
+    # contains the seed point). Default "largest".
+    keep_component = "largest"
+    # Grains with fewer elements than this merge into the neighbor they share the most faces
+    # with; 1 (default) merges nothing.
+    min_grain_elements = 1
 
 # [Regions]: how grains are grouped into ExaConstit material regions.
 [Regions]
@@ -61,3 +73,9 @@ exec = "cpu"
     num_parts = 4
     # gzip level 0-9 of the mesh files; 0 writes plain text.
     compression = 6
+    # The grain table <basename>_grains.csv is always written: per grain the orientation, region,
+    # source id, element count, volume, volume centroid and number of neighboring grains (plus
+    # the target volume when size control is used). grain_adjacency = true also writes
+    # <basename>_adjacency.csv: one row per pair of grains that share element faces, with the
+    # shared face area and the number of shared faces. Default false.
+    grain_adjacency = false

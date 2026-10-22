@@ -1,0 +1,100 @@
+# ExaConstit deck for the microstructure generator end-to-end test "periodic" (1 MPI rank).
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake
+# copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
+# build directory, runs there
+#     microstructure_generator -i test/data/microstructure/e2e/periodic_box.toml
+# (paths shown relative to the repository root; CTest passes absolute paths) at 2 MPI ranks
+# (basename "e2e_periodic"), and then runs mechanics on this deck with 1 MPI rank. The test
+# passes when mechanics completes.
+#
+# What it exercises: a periodic microstructure (grains wrap around the box faces) labeled by the
+# quadrature vote, read through the grain file of ExaConstit's type = "auto" mesh path. The
+# boundary conditions are not periodic; the test only checks that the grain data load and run.
+# Five fixed steps of 0.1 s keep it short.
+Version = "0.8.0"
+basename = "ms_periodic_np1"
+# Grain id of every element of the auto box (only read for type = "auto")
+grain_file = "e2e_periodic.grains"
+
+[[Materials]]
+    name = "polycrystal"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured):
+        # 12 seeds, periodic, quadrature vote; no extra pieces
+        # (wrapped grains are connected through the periodic face pairing) -> 12 grains
+        num_grains = 12
+        orientation_file = "e2e_periodic.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Auto-mesh boundary ids: 1 bottom (z = 0), 2 left (x = 0),
+# 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "auto"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]

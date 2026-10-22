@@ -44,9 +44,17 @@ deterministic = true
     # "voronoi" (plain distance, flat grain boundaries), "laguerre", "quadric" (anisotropic,
     # elongated grains) or "additive".
     metric = "voronoi"
-    # Where each element is tested: "centroid" (its centroid) or "quadrature_vote" (majority vote
-    # over its quadrature points).
+    # Where each element is tested: "centroid" (its centroid) or "quadrature_vote" (volume-weighted
+    # majority vote over 8^vote_levels points inside the element; vote_levels 0-3, default 2).
     sampling = "centroid"
+
+# [Cleanup]: grains whose elements form several pieces connected only through edges, corners or
+# empty space. Not written here, so the defaults apply: fragments = "auto" (pieces with fewer than
+# min_fragment_elements = 8 elements or less than min_fragment_fraction = 0.1 of their grain merge
+# into the neighbor they share the most faces with; larger pieces become grains of their own),
+# keep_component = "largest", min_grain_elements = 1. On this mesh the Voronoi grain of one seed
+# leaves a single element touching the rest of its grain only along an edge; it is merged, so the
+# run ends with the 8 seed grains.
 
 # [Orientations]: crystal orientation of each grain.
 [Orientations]

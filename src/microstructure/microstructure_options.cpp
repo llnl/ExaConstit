@@ -65,7 +65,7 @@ namespace {
  * @brief Warns (on rank 0) about every key of `table` that is not in `known`.
  *
  * An unknown key is not an error. It is usually either a typo (`num_sedes`) or a table/key that
- * belongs to a later stage of the generator (e.g. [Conformal], [VoxelMap], lloyd_iterations)
+ * belongs to a later stage of the generator (e.g. [Conformal], [VoxelMap])
  * and is not read by this version. Neither should stop a run, but the user must be told that the
  * value had no effect, otherwise a typo silently falls back to the default.
  *
@@ -362,6 +362,11 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
  *     fraction of the lattice spacing), for placement = "lattice".
  *   - `file`, `units_scale`, `translate`: seed table path and the scale-then-translate applied
  *     to its positions to bring them into mesh coordinates.
+ *   - [Seeds.Size] sub-table: `distribution` ("none", "lognormal", "from_source"),
+ *     `mean_diameter` or `mean_volume`, `sigma`, `polydisperse_placement`, `exclusion_factor`
+ *     (see SeedSizeOptions).
+ *   - [Seeds.JohnsonMehl] sub-table: `rate`, `growth_speed`, `end_time`, `num_nuclei` (see
+ *     JohnsonMehlOptions), for placement = "johnson_mehl".
  *
  * @throws std::invalid_argument for a negative rng_seed, an unknown placement, a translate
  *         that does not have 3 entries, or a sampling_box that does not have 6 entries.
@@ -383,7 +388,9 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
                        "lattice_jitter",
                        "file",
                        "units_scale",
-                       "translate"});
+                       "translate",
+                       "Size",
+                       "JohnsonMehl"});
 
     // Accepted spellings of `placement` and the SeedPlacement value each one selects.
     static const std::map<std::string, SeedPlacement> placement_map = {
@@ -472,6 +479,56 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
     if (toml_input.contains("translate")) {
         seeds.translate = get_number_array<3>(toml_input, "translate");
     }
+
+    // [Seeds.Size]: target grain size distribution (values checked in validate())
+    if (toml_input.contains("Size")) {
+        const auto& size = toml::find(toml_input, "Size");
+        warn_unknown_keys(size,
+                          "Seeds.Size",
+                          {"distribution",
+                           "mean_diameter",
+                           "mean_volume",
+                           "sigma",
+                           "polydisperse_placement",
+                           "exclusion_factor"});
+        if (size.contains("distribution")) {
+            seeds.size.distribution = toml::find<std::string>(size, "distribution");
+        }
+        if (size.contains("mean_diameter")) {
+            seeds.size.mean_diameter = get_number(toml::find(size, "mean_diameter"));
+        }
+        if (size.contains("mean_volume")) {
+            seeds.size.mean_volume = get_number(toml::find(size, "mean_volume"));
+        }
+        if (size.contains("sigma")) {
+            seeds.size.sigma = get_number(toml::find(size, "sigma"));
+        }
+        if (size.contains("polydisperse_placement")) {
+            seeds.size.polydisperse_placement = toml::find<bool>(size, "polydisperse_placement");
+        }
+        if (size.contains("exclusion_factor")) {
+            seeds.size.exclusion_factor = get_number(toml::find(size, "exclusion_factor"));
+        }
+    }
+
+    // [Seeds.JohnsonMehl]: nucleation and growth parameters (values checked in validate())
+    if (toml_input.contains("JohnsonMehl")) {
+        const auto& jm = toml::find(toml_input, "JohnsonMehl");
+        warn_unknown_keys(
+            jm, "Seeds.JohnsonMehl", {"rate", "growth_speed", "end_time", "num_nuclei"});
+        if (jm.contains("rate")) {
+            seeds.johnson_mehl.rate = get_number(toml::find(jm, "rate"));
+        }
+        if (jm.contains("growth_speed")) {
+            seeds.johnson_mehl.growth_speed = get_number(toml::find(jm, "growth_speed"));
+        }
+        if (jm.contains("end_time")) {
+            seeds.johnson_mehl.end_time = get_number(toml::find(jm, "end_time"));
+        }
+        if (jm.contains("num_nuclei")) {
+            seeds.johnson_mehl.num_nuclei = toml::find<std::int64_t>(jm, "num_nuclei");
+        }
+    }
     return seeds;
 }
 
@@ -494,6 +551,13 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
  *   - `periodic = [px, py, pz]`: whether the microstructure wraps around in x, y, z (grains cut
  *     by one face continue on the opposite face).
  *   - `distance`: "euclidean", "connected" or "geodesic" (see DistanceMode).
+ *   - `periodic_tolerance`: matching tolerance of the periodic face pairing (fraction of the
+ *     smallest face edge on the periodic planes).
+ *   - `vote_levels`: 0-3, resolution of quadrature voting (8^levels points per element).
+ *   - `anisotropy = {kind, global_tensor, axis, normal}`: kind "none", "tensor" (implied by a
+ *     written global_tensor), "columnar" (with `axis`) or "lamellar" (with `normal`).
+ *   - `fit_volumes = {enabled, tolerance, max_iterations, samples}`: volume fitting.
+ *   - `lloyd_iterations`, `centroidal_power`: Lloyd relaxation (optionally with volume refits).
  *
  * @throws std::invalid_argument for an unknown metric/sampling/distance name, a tensor without 6
  *         entries, or `periodic` without 3 entries.
@@ -506,8 +570,13 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
                        "global_tensor",
                        "num_bins",
                        "sampling",
+                       "vote_levels",
                        "periodic",
-                       "distance"});
+                       "periodic_tolerance",
+                       "distance",
+                       "fit_volumes",
+                       "lloyd_iterations",
+                       "centroidal_power"});
 
     // Accepted spellings of the enum-valued keys.
     static const std::map<std::string, MetricType> metric_map = {
@@ -534,9 +603,31 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
     // Whether the tensor is a valid metric (positive definite) is checked in validate().
     if (toml_input.contains("anisotropy")) {
         const auto& anisotropy = toml::find(toml_input, "anisotropy");
-        warn_unknown_keys(anisotropy, "Tessellation.anisotropy", {"global_tensor"});
+        warn_unknown_keys(
+            anisotropy, "Tessellation.anisotropy", {"kind", "global_tensor", "axis", "normal"});
         if (anisotropy.contains("global_tensor")) {
             tess.global_tensor = get_number_array<6>(anisotropy, "global_tensor");
+            tess.anisotropy_kind = "tensor";
+        }
+        if (anisotropy.contains("axis")) {
+            tess.anisotropy_axis = get_number_array<3>(anisotropy, "axis");
+        }
+        if (anisotropy.contains("normal")) {
+            tess.anisotropy_normal = get_number_array<3>(anisotropy, "normal");
+        }
+        // An explicit kind wins over the "tensor" implied by a written global_tensor; its
+        // spelling and consistency are checked in validate()
+        if (anisotropy.contains("kind")) {
+            tess.anisotropy_kind = toml::find<std::string>(anisotropy, "kind");
+        }
+        // A direction without its kind has no effect; say so instead of ignoring it silently
+        if (anisotropy.contains("axis") && tess.anisotropy_kind != "columnar") {
+            WARNING_0_OPT("Microstructure options: 'Tessellation.anisotropy.axis' is ignored "
+                          "unless kind = \"columnar\"");
+        }
+        if (anisotropy.contains("normal") && tess.anisotropy_kind != "lamellar") {
+            WARNING_0_OPT("Microstructure options: 'Tessellation.anisotropy.normal' is ignored "
+                          "unless kind = \"lamellar\"");
         }
     }
     if (toml_input.contains("global_tensor")) {
@@ -550,6 +641,13 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
                           "'Tessellation.global_tensor'");
         }
         tess.global_tensor = get_number_array<6>(toml_input, "global_tensor");
+        bool explicit_kind = false;
+        if (toml_input.contains("anisotropy")) {
+            explicit_kind = toml::find(toml_input, "anisotropy").contains("kind");
+        }
+        if (!explicit_kind) {
+            tess.anisotropy_kind = "tensor";
+        }
     }
 
     // Seed search structure (performance setting; checked >= 1 in validate()).
@@ -582,6 +680,46 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
                                           distance_map,
                                           "Tessellation.distance");
     }
+
+    // Periodic face matching tolerance (range checked in validate()).
+    if (toml_input.contains("periodic_tolerance")) {
+        tess.periodic_tolerance = get_number(toml::find(toml_input, "periodic_tolerance"));
+    }
+
+    // Quadrature-vote resolution (range checked in validate()).
+    if (toml_input.contains("vote_levels")) {
+        tess.vote_levels = get_int(toml_input, "vote_levels", "Tessellation.vote_levels");
+    }
+
+    // Volume fitting, as an inline table.
+    if (toml_input.contains("fit_volumes")) {
+        const auto& fit = toml::find(toml_input, "fit_volumes");
+        warn_unknown_keys(fit,
+                          "Tessellation.fit_volumes",
+                          {"enabled", "tolerance", "max_iterations", "samples"});
+        if (fit.contains("enabled")) {
+            tess.fit_volumes.enabled = toml::find<bool>(fit, "enabled");
+        }
+        if (fit.contains("tolerance")) {
+            tess.fit_volumes.tolerance = get_number(toml::find(fit, "tolerance"));
+        }
+        if (fit.contains("max_iterations")) {
+            tess.fit_volumes.max_iterations =
+                get_int(fit, "max_iterations", "Tessellation.fit_volumes.max_iterations");
+        }
+        if (fit.contains("samples")) {
+            tess.fit_volumes.samples = toml::find<std::string>(fit, "samples");
+        }
+    }
+
+    // Lloyd relaxation.
+    if (toml_input.contains("lloyd_iterations")) {
+        tess.lloyd_iterations =
+            get_int(toml_input, "lloyd_iterations", "Tessellation.lloyd_iterations");
+    }
+    if (toml_input.contains("centroidal_power")) {
+        tess.centroidal_power = toml::find<bool>(toml_input, "centroidal_power");
+    }
     return tess;
 }
 
@@ -598,9 +736,12 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
  *     auto meshes, which ExaConstit rebuilds itself and so cannot carry the ids inside the mesh
  *     file), "true" or "false". Both `grain_file = true` and `grain_file = "true"` are accepted.
  *   - `paraview`: boolean that switches the ParaView visualization of the grain ids on or off.
+ *   - `grain_adjacency`: boolean; also write <basename>_adjacency.csv (pairs of grains sharing
+ *     element faces, with the shared face area and face count). Default false.
  * The tool does not write ExaConstit input decks; users write their own options.toml.
  *
- * @throws std::invalid_argument for an unknown mesh_format.
+ * @throws std::invalid_argument for an unknown mesh_format; toml11's type error (a
+ *         std::exception) when `paraview` or `grain_adjacency` is not a boolean.
  */
 OutputOptions output_from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
@@ -611,7 +752,8 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
                        "num_parts",
                        "compression",
                        "grain_file",
-                       "paraview"});
+                       "paraview",
+                       "grain_adjacency"});
 
     // Accepted spellings of `mesh_format`.
     static const std::map<std::string, MeshFormat> format_map = {
@@ -659,6 +801,11 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
     // Optional visualization output.
     if (toml_input.contains("paraview")) {
         output.paraview = toml::find<bool>(toml_input, "paraview");
+    }
+
+    // Optional grain adjacency table (pairs of face-sharing grains and their shared area).
+    if (toml_input.contains("grain_adjacency")) {
+        output.grain_adjacency = toml::find<bool>(toml_input, "grain_adjacency");
     }
     return output;
 }
@@ -727,9 +874,10 @@ void check_choice(bool& valid,
  *   - `deterministic`: require results independent of rank count and execution space.
  *   - [Mesh], [Seeds], [Tessellation], [Output]: see the readers above.
  *   - [Source] `type`: what defines the grains. Only "tessellation" exists so far.
- *   - [Cleanup] `fragments` ("auto", "split", "merge", "none") and `min_grain_elements`: what to
- *     do with grains that end up split into disconnected pieces, or that are smaller than the
- *     given number of elements.
+ *   - [Cleanup] `fragments` ("auto", "split", "merge", "none"), `keep_component` ("largest",
+ *     "seed"), `min_fragment_elements` and `min_fragment_fraction` (what "auto" calls a tiny
+ *     piece) and `min_grain_elements`: what to do with grains that end up split into
+ *     disconnected pieces, which piece keeps the grain, and the smallest allowed grain.
  *   - [Orientations] `source`: "random", "from_source" or "list".
  *   - [Regions] `mode`: "single", "from_phase" or "phase_fractions" (how grains are grouped into
  *     ExaConstit material regions).
@@ -796,9 +944,26 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
     // [Cleanup]: small tables, read inline.
     if (toml_input.contains("Cleanup")) {
         const auto& cleanup = toml::find(toml_input, "Cleanup");
-        warn_unknown_keys(cleanup, "Cleanup", {"fragments", "min_grain_elements"});
+        warn_unknown_keys(cleanup,
+                          "Cleanup",
+                          {"fragments",
+                           "keep_component",
+                           "min_grain_elements",
+                           "min_fragment_elements",
+                           "min_fragment_fraction"});
+        if (cleanup.contains("min_fragment_elements")) {
+            options.cleanup.min_fragment_elements =
+                get_int(cleanup, "min_fragment_elements", "Cleanup.min_fragment_elements");
+        }
+        if (cleanup.contains("min_fragment_fraction")) {
+            options.cleanup.min_fragment_fraction =
+                get_number(toml::find(cleanup, "min_fragment_fraction"));
+        }
         if (cleanup.contains("fragments")) {
             options.cleanup.fragments = toml::find<std::string>(cleanup, "fragments");
+        }
+        if (cleanup.contains("keep_component")) {
+            options.cleanup.keep_component = toml::find<std::string>(cleanup, "keep_component");
         }
         if (cleanup.contains("min_grain_elements")) {
             options.cleanup.min_grain_elements =
@@ -940,10 +1105,16 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
 
     // --- [Seeds] ----------------------------------------------------------------------------
     check_choice(valid, "Seeds.source", seeds.source, {"random", "file"});
+    // A mean grain size (with num_seeds = 0) or Johnson-Mehl nucleation sets the seed count.
+    const bool count_from_size =
+        seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0;
+    const bool johnson_mehl = (seeds.placement == SeedPlacement::JOHNSON_MEHL);
     if (seeds.source == "random") {
         // Zero seeds would leave every element without a grain.
-        if (seeds.num_seeds <= 0) {
-            report_error(valid, "random seeds need 'Seeds.num_seeds' > 0");
+        if (seeds.num_seeds < 0 || (seeds.num_seeds == 0 && !count_from_size && !johnson_mehl)) {
+            report_error(valid,
+                         "random seeds need 'Seeds.num_seeds' > 0 (or a mean grain size in "
+                         "[Seeds.Size], or placement = \"johnson_mehl\")");
         }
         // File placement reads positions from a table; with random seeds there is no table.
         if (seeds.placement == SeedPlacement::FILE) {
@@ -1015,12 +1186,158 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
         }
     }
 
+    // [Seeds.Size]: a size distribution needs sensible parameters; the mean size is a length or
+    // a volume, never both (they would contradict each other).
+    const SeedSizeOptions& size = seeds.size;
+    check_choice(valid,
+                 "Seeds.Size.distribution",
+                 size.distribution,
+                 {"none", "lognormal", "from_source"});
+    if (size.distribution == "from_source" && seeds.source != "file") {
+        report_error(valid,
+                     "Seeds.Size.distribution = \"from_source\" needs Seeds.source = \"file\"");
+    }
+    if (!is_nonnegative_finite(size.mean_diameter) || !is_nonnegative_finite(size.mean_volume)) {
+        report_error(valid, "Seeds.Size.mean_diameter and mean_volume must be finite and >= 0");
+    }
+    if (size.mean_diameter > 0.0 && size.mean_volume > 0.0) {
+        report_error(valid, "give only one of Seeds.Size.mean_diameter and mean_volume");
+    }
+    if (!is_nonnegative_finite(size.sigma)) {
+        report_error(valid, "Seeds.Size.sigma must be finite and >= 0");
+    }
+    if (count_from_size && seeds.num_seeds > 0) {
+        WARNING_0_OPT("Warning: Seeds.num_seeds and a mean grain size in [Seeds.Size] are both "
+                      "set; num_seeds sets the grain count and the mean size is not used");
+    }
+    if (size.polydisperse_placement) {
+        // Exclusion spheres of radius kappa r_i fill kappa^3 of the material (the target volumes
+        // fill it exactly); the seed generator refuses packings above 30%.
+        if (!is_positive_finite(size.exclusion_factor) ||
+            size.exclusion_factor * size.exclusion_factor * size.exclusion_factor > 0.3) {
+            report_error(valid,
+                         "Seeds.Size.exclusion_factor must be in (0, 0.669] (kappa^3 <= 0.3)");
+        }
+        if (seeds.placement != SeedPlacement::REJECTION &&
+            seeds.placement != SeedPlacement::ELEMENT_WEIGHTED) {
+            report_error(valid,
+                         "Seeds.Size.polydisperse_placement needs placement \"rejection\" or "
+                         "\"element_weighted\"");
+        }
+        if (seeds.min_distance > 0.0 || seeds.min_distance_factor > 0.0) {
+            report_error(valid,
+                         "Seeds.Size.polydisperse_placement replaces Seeds.min_distance and "
+                         "min_distance_factor; set those to 0");
+        }
+        // The target volumes (and so the exclusion radii) fill the whole material, while the
+        // seeds would only be placed inside the box: the exclusion spheres could not fit (the
+        // packing guard would refuse them) and the grains would be sized for the whole part.
+        if (seeds.use_sampling_box) {
+            report_error(valid,
+                         "Seeds.Size.polydisperse_placement cannot be combined with "
+                         "Seeds.sampling_box (the targets fill the whole material)");
+        }
+    }
+    // A spread without a distribution has no effect.
+    if (size.distribution == "none" && size.sigma > 0.0) {
+        WARNING_0_OPT("Warning: Seeds.Size.sigma is ignored with distribution = \"none\"");
+    }
+
+    // [Seeds.JohnsonMehl]: nucleation needs a positive rate and speed, and its grains are the
+    // cells of the Additive metric (weights a_i = -v t_i), so other metrics would ignore the
+    // nucleation times. Size targets, fitting and relaxation would overwrite the physical
+    // weights or positions, so they are refused too.
+    if (johnson_mehl) {
+        const JohnsonMehlOptions& jm = seeds.johnson_mehl;
+        if (!is_positive_finite(jm.rate)) {
+            report_error(valid, "Seeds.JohnsonMehl.rate must be finite and > 0");
+        }
+        if (!is_positive_finite(jm.growth_speed)) {
+            report_error(valid, "Seeds.JohnsonMehl.growth_speed must be finite and > 0");
+        }
+        if (!is_nonnegative_finite(jm.end_time)) {
+            report_error(valid, "Seeds.JohnsonMehl.end_time must be finite and >= 0");
+        }
+        if (jm.num_nuclei < 0) {
+            report_error(valid, "Seeds.JohnsonMehl.num_nuclei must be >= 0");
+        }
+        if (tessellation.metric != MetricType::ADDITIVE) {
+            report_error(valid,
+                         "placement = \"johnson_mehl\" needs Tessellation.metric = \"additive\"");
+        }
+        if (size.distribution != "none" || size.polydisperse_placement ||
+            tessellation.fit_volumes.enabled || tessellation.lloyd_iterations > 0) {
+            report_error(valid,
+                         "placement = \"johnson_mehl\" cannot be combined with [Seeds.Size], "
+                         "fit_volumes or lloyd_iterations (they would replace the nucleation "
+                         "weights or positions)");
+        }
+        // Nucleation coverage and the candidate domain are not periodic: nuclei near one face
+        // would not block or be blocked by nuclei near the opposite face.
+        if (tessellation.periodic[0] || tessellation.periodic[1] || tessellation.periodic[2]) {
+            report_error(valid,
+                         "placement = \"johnson_mehl\" is not supported with periodic axes");
+        }
+        if (seeds.min_distance > 0.0 || seeds.min_distance_factor > 0.0 ||
+            seeds.boundary_clearance > 0.0 || seeds.sampling_domain != "material" ||
+            seeds.lattice_type != "cubic" || seeds.lattice_jitter > 0.0) {
+            WARNING_0_OPT("Warning: Seeds.min_distance, min_distance_factor, boundary_clearance, "
+                          "sampling_domain = \"bbox\" and the lattice keys are ignored for "
+                          "placement = \"johnson_mehl\" (nuclei always lie in the material)");
+        }
+        if (seeds.num_seeds > 0) {
+            WARNING_0_OPT("Warning: Seeds.num_seeds is ignored for placement = \"johnson_mehl\" "
+                          "(use Seeds.JohnsonMehl.num_nuclei to limit the count)");
+        }
+    }
+
     // --- [Tessellation] ---------------------------------------------------------------------
     // At least one group of seeds is needed to build the seed search structure.
     if (tessellation.num_bins < 1) {
         report_error(valid, "Tessellation.num_bins must be >= 1");
     }
-    {
+    // Periodic face pairing: a relative tolerance well below half an edge.
+    if (!(std::isfinite(tessellation.periodic_tolerance) && tessellation.periodic_tolerance > 0.0 &&
+          tessellation.periodic_tolerance < 0.5)) {
+        report_error(valid, "Tessellation.periodic_tolerance must be in (0, 0.5)");
+    }
+    // MFEM's point interpolation limits the vote to 8^3 points per element.
+    if (tessellation.vote_levels < 0 || tessellation.vote_levels > 3) {
+        report_error(valid, "Tessellation.vote_levels must be in 0-3");
+    }
+    check_choice(valid,
+                 "Tessellation.anisotropy.kind",
+                 tessellation.anisotropy_kind,
+                 {"none", "tensor", "columnar", "lamellar"});
+    if (tessellation.anisotropy_kind == "tensor" && tessellation.metric != MetricType::QUADRIC) {
+        WARNING_0_OPT("Warning: Tessellation global_tensor is ignored: only metric = "
+                      "\"quadric\" uses it");
+    }
+    const bool semidefinite_kind = tessellation.anisotropy_kind == "columnar" ||
+                                   tessellation.anisotropy_kind == "lamellar";
+    if (semidefinite_kind) {
+        // Columnar / lamellar tensors only mean something for the Quadric metric, and need a
+        // real direction (it is normalized later, so any nonzero length is fine).
+        if (tessellation.metric != MetricType::QUADRIC) {
+            report_error(valid,
+                         "Tessellation.anisotropy.kind = \"" + tessellation.anisotropy_kind +
+                             "\" needs metric = \"quadric\"");
+        }
+        const std::array<double, 3>& direction = (tessellation.anisotropy_kind == "columnar")
+                                                     ? tessellation.anisotropy_axis
+                                                     : tessellation.anisotropy_normal;
+        bool finite = true;
+        double length_sq = 0.0;
+        for (const double c : direction) {
+            finite = finite && std::isfinite(c);
+            length_sq += c * c;
+        }
+        if (!finite || !(length_sq > 0.0)) {
+            report_error(valid,
+                         "Tessellation.anisotropy axis/normal must be finite and nonzero");
+        }
+    }
+    if (!semidefinite_kind) {
         // The anisotropy tensor A defines distance^2 = (x - s)^T A (x - s). It is a valid
         // distance only if A is positive definite (every direction has a positive length). For
         // the symmetric matrix
@@ -1054,14 +1371,72 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
         }
     }
 
+    // Volume fitting and Lloyd relaxation.
+    const FitVolumesOptions& fit = tessellation.fit_volumes;
+    check_choice(valid, "Tessellation.fit_volumes.samples", fit.samples, {"quadrature", "element"});
+    if (!is_positive_finite(fit.tolerance)) {
+        report_error(valid, "Tessellation.fit_volumes.tolerance must be finite and > 0");
+    }
+    if (fit.max_iterations < 0) {
+        report_error(valid, "Tessellation.fit_volumes.max_iterations must be >= 0");
+    }
+    // Weights are what the fit adjusts; Voronoi has none.
+    if (fit.enabled && tessellation.metric == MetricType::VORONOI) {
+        report_error(valid,
+                     "Tessellation.fit_volumes needs a weighted metric (laguerre, quadric or "
+                     "additive), not voronoi");
+    }
+    if (tessellation.lloyd_iterations < 0) {
+        report_error(valid, "Tessellation.lloyd_iterations must be >= 0");
+    }
+    if (tessellation.lloyd_iterations > 0 && tessellation.metric != MetricType::VORONOI &&
+        tessellation.metric != MetricType::LAGUERRE) {
+        report_error(valid, "Tessellation.lloyd_iterations needs metric voronoi or laguerre");
+    }
+    if (tessellation.centroidal_power &&
+        (tessellation.lloyd_iterations <= 0 || tessellation.metric != MetricType::LAGUERRE)) {
+        report_error(valid,
+                     "Tessellation.centroidal_power needs lloyd_iterations > 0 and metric = "
+                     "\"laguerre\"");
+    }
+    // Periodic images are copies of the seeds; moving seeds (Lloyd) or fitting weights would
+    // have to move/fit every copy consistently, which these solvers do not do.
+    bool any_periodic = false;
+    for (const bool p : tessellation.periodic) {
+        any_periodic = any_periodic || p;
+    }
+    if (any_periodic && (fit.enabled || tessellation.lloyd_iterations > 0)) {
+        report_error(valid,
+                     "fit_volumes and lloyd_iterations are not supported with periodic axes");
+    }
+    if (size.distribution != "none" && !size.polydisperse_placement && !fit.enabled &&
+        tessellation.metric != MetricType::LAGUERRE) {
+        WARNING_0_OPT("Warning: [Seeds.Size] has no effect here: use metric = \"laguerre\" "
+                      "(initial weights), fit_volumes or polydisperse_placement");
+    }
+
     // --- [Cleanup], [Orientations], [Regions] -----------------------------------------------
     check_choice(valid, "Cleanup.fragments", cleanup.fragments, {"auto", "split", "merge", "none"});
+    check_choice(valid, "Cleanup.keep_component", cleanup.keep_component, {"largest", "seed"});
+    // Thresholds of "auto" that separate tiny pieces (merged) from large ones (split).
+    if (cleanup.min_fragment_elements < 0) {
+        report_error(valid, "Cleanup.min_fragment_elements must be >= 0");
+    }
+    if (!(std::isfinite(cleanup.min_fragment_fraction) && cleanup.min_fragment_fraction >= 0.0 &&
+          cleanup.min_fragment_fraction <= 1.0)) {
+        report_error(valid, "Cleanup.min_fragment_fraction must be in [0, 1]");
+    }
     // An element count below zero is meaningless (0 or 1 means no grain is too small).
     if (cleanup.min_grain_elements < 0) {
         report_error(valid, "Cleanup.min_grain_elements must be >= 0");
     }
     check_choice(
         valid, "Orientations.source", orientations.source, {"random", "from_source", "list"});
+    // Orientations from the source exist only in a seed table; generated seeds have none, and
+    // the run would otherwise fail only at the very end (after seeding, labeling and cleanup).
+    if (orientations.source == "from_source" && seeds.source != "file") {
+        report_error(valid, "Orientations.source = \"from_source\" needs Seeds.source = \"file\"");
+    }
     check_choice(
         valid, "Regions.mode", regions.mode, {"single", "from_phase", "phase_fractions"});
 
@@ -1079,6 +1454,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
         report_error(valid, "Output.compression must be in 0-9");
     }
     check_choice(valid, "Output.grain_file", output.grain_file, {"auto", "true", "false"});
+    // Output.paraview and Output.grain_adjacency are plain booleans: every value is valid, and a
+    // value of another TOML type is already rejected by the reader (output_from_toml).
 
     return valid;
 }

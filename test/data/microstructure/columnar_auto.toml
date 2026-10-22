@@ -1,0 +1,27 @@
+# Microstructure generator example: columnar grains along z (e.g. a directionally solidified or
+# additively manufactured part), 12 grains on an 8x8x16 auto hex box of size 1 x 1 x 2.
+#
+# Run with:
+#     microstructure_generator -i columnar_auto.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 2.0]
+        ncuts = [8, 8, 16]
+
+[Seeds]
+    num_seeds = 12
+    rng_seed = 11
+
+[Tessellation]
+    # Quadric metric with the semidefinite tensor A = I - a a^T: distances along the axis a do not
+    # count, so every grain is a column along a (its cross-section is the Voronoi cell of the
+    # seeds projected onto the plane perpendicular to a). "lamellar" with normal = [...] gives
+    # flat layers instead; "tensor" with global_tensor = [...] a general anisotropic metric.
+    metric = "quadric"
+    anisotropy = {kind = "columnar", axis = [0.0, 0.0, 1.0]}
+
+[Output]
+    basename = "columnar_auto"

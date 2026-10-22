@@ -1,0 +1,35 @@
+# Generator input of the end-to-end test "periodic box".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_outputs.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/periodic_box.toml
+# at 1 and at 2 MPI ranks, checks that both runs write byte-identical files, and then runs
+# mechanics on the result (decks test/data/microstructure/mechanics/ms_periodic_np{1,2}.toml).
+#
+# What it exercises: a periodic microstructure on the 8x8x8 auto box. Grains wrap around all
+# three box faces (periodic seed images), elements are labeled by a volume-weighted vote inside
+# each element, and the fragment cleanup and the grain statistics treat matching faces on
+# opposite box planes as connected (a wrapped grain is one grain, and grains touching across a
+# periodic face are neighbors in the grain table and the adjacency table).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]
+
+[Seeds]
+    num_seeds = 12
+    rng_seed = 7
+    min_distance_factor = 0.5
+
+[Tessellation]
+    metric = "voronoi"
+    periodic = [true, true, true]
+    sampling = "quadrature_vote"
+    vote_levels = 2
+
+[Output]
+    basename = "e2e_periodic"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

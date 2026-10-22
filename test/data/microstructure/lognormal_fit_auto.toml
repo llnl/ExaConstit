@@ -1,0 +1,48 @@
+# Microstructure generator example: grain sizes from a log-normal distribution, enforced with a
+# Laguerre (power) tessellation whose seed weights are fitted to the target volumes.
+#
+# Run with:
+#     microstructure_generator -i lognormal_fit_auto.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [12, 12, 12]
+
+[Seeds]
+    # 0: the number of grains follows from the mean grain size below and the material volume.
+    num_seeds = 0
+    rng_seed = 3
+    placement = "rejection"
+    [Seeds.Size]
+        # ln(equivalent diameter) is normally distributed with standard deviation sigma; the mean
+        # equivalent diameter is mean_diameter (mesh length units). The target volumes are scaled
+        # so they fill the material exactly.
+        distribution = "lognormal"
+        mean_diameter = 0.3
+        sigma = 0.3
+        # Place the largest grains first, each seed at least exclusion_factor (r_i + r_j) away from
+        # the others (r = equivalent-sphere radius of the target volume).
+        polydisperse_placement = true
+        exclusion_factor = 0.5
+
+[Tessellation]
+    # Laguerre: flat grain boundaries, and a weight per seed that moves its boundaries. The seeds
+    # start with w_i = r_i^2.
+    metric = "laguerre"
+    # Fit the weights until every grain volume is within 5% of its target (measured on the
+    # quadrature points of the elements), or 100 solver steps.
+    fit_volumes = {enabled = true, tolerance = 0.05, max_iterations = 100, samples = "quadrature"}
+    # The final grains are whole elements, labeled after the fit, so their volumes are coarser
+    # than the fitted quadrature-point volumes. The tool's summary prints both: the fit history
+    # and the element-level volume errors of the final grains against their targets; the grain
+    # table gets a target_volume column.
+
+[Cleanup]
+    # Grains smaller than 2 elements merge into a neighbor.
+    min_grain_elements = 2
+
+[Output]
+    basename = "lognormal_fit_auto"

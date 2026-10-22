@@ -533,6 +533,375 @@ basename = "from_file"
     EXPECT_EQ(lattice.seeds.placement, ms::SeedPlacement::LATTICE);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Stage 1b/1c options (fragment cleanup, quadrature voting, periodicity, anisotropy kinds, volume
+// fitting, Lloyd relaxation, size distributions, Johnson-Mehl nucleation)
+// ---------------------------------------------------------------------------------------------
+
+// The new keys must default to the documented "off" values, so an options file written before
+// they existed means exactly what it meant then (apart from fragments = "auto", whose split
+// behavior is now active).
+TEST(MicrostructureOptions, Stage1bcDefaults) {
+    const auto options = FromString("[Seeds]\nnum_seeds = 5\n");
+    EXPECT_EQ(options.cleanup.keep_component, "largest");
+    EXPECT_EQ(options.cleanup.min_fragment_elements, 8);
+    EXPECT_EQ(options.cleanup.min_fragment_fraction, 0.1);
+    EXPECT_EQ(options.tessellation.vote_levels, 2);
+    EXPECT_EQ(options.tessellation.anisotropy_kind, "none");
+    EXPECT_EQ(options.tessellation.anisotropy_axis, (std::array<double, 3>{0.0, 0.0, 1.0}));
+    EXPECT_EQ(options.tessellation.anisotropy_normal, (std::array<double, 3>{0.0, 0.0, 1.0}));
+    EXPECT_FALSE(options.tessellation.fit_volumes.enabled);
+    EXPECT_EQ(options.tessellation.fit_volumes.tolerance, 0.02);
+    EXPECT_EQ(options.tessellation.fit_volumes.max_iterations, 200);
+    EXPECT_EQ(options.tessellation.fit_volumes.samples, "quadrature");
+    EXPECT_EQ(options.tessellation.lloyd_iterations, 0);
+    EXPECT_FALSE(options.tessellation.centroidal_power);
+    EXPECT_EQ(options.seeds.size.distribution, "none");
+    EXPECT_EQ(options.seeds.size.mean_diameter, 0.0);
+    EXPECT_EQ(options.seeds.size.mean_volume, 0.0);
+    EXPECT_EQ(options.seeds.size.sigma, 0.0);
+    EXPECT_FALSE(options.seeds.size.polydisperse_placement);
+    EXPECT_EQ(options.seeds.size.exclusion_factor, 0.5);
+    EXPECT_EQ(options.seeds.johnson_mehl.rate, 0.0);
+    EXPECT_EQ(options.seeds.johnson_mehl.growth_speed, 1.0);
+    EXPECT_EQ(options.seeds.johnson_mehl.end_time, 0.0);
+    EXPECT_EQ(options.seeds.johnson_mehl.num_nuclei, 0);
+}
+
+// Every new key is read into its field, including integers for real values (rate = 60) and the
+// inline-table forms of anisotropy and fit_volumes.
+TEST(MicrostructureOptions, Stage1bcKeysParse) {
+    const auto options = FromString(R"(
+[Seeds]
+placement = "johnson_mehl"
+[Seeds.Size]
+distribution = "lognormal"
+mean_volume = 0.002
+sigma = 0.25
+polydisperse_placement = true
+exclusion_factor = 0.4
+[Seeds.JohnsonMehl]
+rate = 60
+growth_speed = 2.5
+end_time = 0.75
+num_nuclei = 40
+[Tessellation]
+metric = "quadric"
+sampling = "quadrature_vote"
+vote_levels = 3
+anisotropy = {kind = "lamellar", normal = [1, 1, 0], axis = [0, 1, 0]}
+fit_volumes = {enabled = true, tolerance = 0.01, max_iterations = 50, samples = "element"}
+lloyd_iterations = 4
+centroidal_power = true
+[Cleanup]
+fragments = "merge"
+keep_component = "seed"
+min_grain_elements = 3
+min_fragment_elements = 5
+min_fragment_fraction = 0
+)");
+    EXPECT_EQ(options.seeds.placement, ms::SeedPlacement::JOHNSON_MEHL);
+    EXPECT_EQ(options.seeds.size.distribution, "lognormal");
+    EXPECT_EQ(options.seeds.size.mean_volume, 0.002);
+    EXPECT_EQ(options.seeds.size.sigma, 0.25);
+    EXPECT_TRUE(options.seeds.size.polydisperse_placement);
+    EXPECT_EQ(options.seeds.size.exclusion_factor, 0.4);
+    EXPECT_EQ(options.seeds.johnson_mehl.rate, 60.0);
+    EXPECT_EQ(options.seeds.johnson_mehl.growth_speed, 2.5);
+    EXPECT_EQ(options.seeds.johnson_mehl.end_time, 0.75);
+    EXPECT_EQ(options.seeds.johnson_mehl.num_nuclei, 40);
+    EXPECT_EQ(options.tessellation.sampling, ms::SamplingMode::QUADRATURE_VOTE);
+    EXPECT_EQ(options.tessellation.vote_levels, 3);
+    EXPECT_EQ(options.tessellation.anisotropy_kind, "lamellar");
+    EXPECT_EQ(options.tessellation.anisotropy_normal, (std::array<double, 3>{1.0, 1.0, 0.0}));
+    EXPECT_EQ(options.tessellation.anisotropy_axis, (std::array<double, 3>{0.0, 1.0, 0.0}));
+    EXPECT_TRUE(options.tessellation.fit_volumes.enabled);
+    EXPECT_EQ(options.tessellation.fit_volumes.tolerance, 0.01);
+    EXPECT_EQ(options.tessellation.fit_volumes.max_iterations, 50);
+    EXPECT_EQ(options.tessellation.fit_volumes.samples, "element");
+    EXPECT_EQ(options.tessellation.lloyd_iterations, 4);
+    EXPECT_TRUE(options.tessellation.centroidal_power);
+    EXPECT_EQ(options.cleanup.fragments, "merge");
+    EXPECT_EQ(options.cleanup.keep_component, "seed");
+    EXPECT_EQ(options.cleanup.min_grain_elements, 3);
+    EXPECT_EQ(options.cleanup.min_fragment_elements, 5);
+    EXPECT_EQ(options.cleanup.min_fragment_fraction, 0.0);
+}
+
+// A written global_tensor (inline or bare) means anisotropy kind "tensor" unless a kind is given
+// explicitly, in which case the explicit kind wins (the tensor is then ignored by the labeler).
+// Malformed new arrays (a 2-entry axis) and out-of-range integers throw while parsing.
+TEST(MicrostructureOptions, AnisotropyKindPrecedence) {
+    EXPECT_EQ(FromString("[Tessellation]\nglobal_tensor = [2, 1, 1, 0, 0, 0]\n")
+                  .tessellation.anisotropy_kind,
+              "tensor");
+    EXPECT_EQ(FromString("[Tessellation]\nanisotropy = {global_tensor = [2, 1, 1, 0, 0, 0]}\n")
+                  .tessellation.anisotropy_kind,
+              "tensor");
+    EXPECT_EQ(FromString("[Tessellation]\nanisotropy = {kind = \"columnar\"}\n"
+                         "global_tensor = [2, 1, 1, 0, 0, 0]\n")
+                  .tessellation.anisotropy_kind,
+              "columnar");
+    EXPECT_THROW(FromString("[Tessellation]\nanisotropy = {axis = [0, 1]}\n"),
+                 std::invalid_argument);
+    EXPECT_THROW(FromString("[Tessellation]\nvote_levels = 4294967298\n"), std::invalid_argument);
+}
+
+// The example files of the new features parse to the values they spell out and validate as
+// written (all use auto meshes, so no input file is needed).
+TEST(MicrostructureOptions, ParseStage1bcExamples) {
+    const auto periodic = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/periodic_vote_auto.toml");
+    EXPECT_EQ(periodic.tessellation.periodic, (std::array<bool, 3>{true, true, true}));
+    EXPECT_EQ(periodic.tessellation.sampling, ms::SamplingMode::QUADRATURE_VOTE);
+    EXPECT_EQ(periodic.tessellation.vote_levels, 2);
+    EXPECT_EQ(periodic.cleanup.fragments, "split");
+    EXPECT_TRUE(periodic.validate());
+
+    const auto lognormal = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/lognormal_fit_auto.toml");
+    EXPECT_EQ(lognormal.seeds.num_seeds, 0);
+    EXPECT_EQ(lognormal.seeds.size.distribution, "lognormal");
+    EXPECT_EQ(lognormal.seeds.size.mean_diameter, 0.3);
+    EXPECT_EQ(lognormal.seeds.size.sigma, 0.3);
+    EXPECT_TRUE(lognormal.seeds.size.polydisperse_placement);
+    EXPECT_EQ(lognormal.tessellation.metric, ms::MetricType::LAGUERRE);
+    EXPECT_TRUE(lognormal.tessellation.fit_volumes.enabled);
+    EXPECT_EQ(lognormal.tessellation.fit_volumes.tolerance, 0.05);
+    EXPECT_EQ(lognormal.cleanup.min_grain_elements, 2);
+    EXPECT_TRUE(lognormal.validate());
+
+    const auto columnar = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/columnar_auto.toml");
+    EXPECT_EQ(columnar.tessellation.metric, ms::MetricType::QUADRIC);
+    EXPECT_EQ(columnar.tessellation.anisotropy_kind, "columnar");
+    EXPECT_EQ(columnar.tessellation.anisotropy_axis, (std::array<double, 3>{0.0, 0.0, 1.0}));
+    EXPECT_TRUE(columnar.validate());
+
+    const auto jm = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/johnson_mehl_auto.toml");
+    EXPECT_EQ(jm.seeds.placement, ms::SeedPlacement::JOHNSON_MEHL);
+    EXPECT_EQ(jm.seeds.johnson_mehl.rate, 60.0);
+    EXPECT_EQ(jm.tessellation.metric, ms::MetricType::ADDITIVE);
+    EXPECT_TRUE(jm.validate());
+
+    const auto lloyd = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/lloyd_cvt_auto.toml");
+    EXPECT_EQ(lloyd.tessellation.lloyd_iterations, 5);
+    EXPECT_FALSE(lloyd.tessellation.fit_volumes.enabled);
+    EXPECT_TRUE(lloyd.validate());
+
+    // The pre-existing examples keep validating with their new comments
+    const auto cube_tet = ms::MicrostructureOptions::parse_options_file(
+        data_dir / "microstructure/voronoi_cube_tet.toml");
+    EXPECT_EQ(cube_tet.cleanup.keep_component, "largest");
+    EXPECT_EQ(cube_tet.cleanup.min_grain_elements, 1);
+    EXPECT_EQ(cube_tet.cleanup.min_fragment_elements, 8);
+    EXPECT_EQ(cube_tet.cleanup.min_fragment_fraction, 0.1);
+}
+
+// validate() must reject each impossible or contradictory combination of the new options. Each
+// case changes the valid baseline (4 random Voronoi seeds on a 2^3 auto box) in one respect, so a
+// false result can only come from that change; the valid variants show the checks are not too
+// strict.
+TEST(MicrostructureOptions, Stage1bcValidationFailures) {
+    auto validate_with = [](auto&& mutate) {
+        auto options = ValidAutoOptions();
+        mutate(options);
+        return options.validate();
+    };
+    using O = ms::MicrostructureOptions;
+
+    // Spellings and ranges
+    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.keep_component = "first"; }));
+    // What "auto" calls a tiny piece: a count >= 0 and a fraction in [0, 1] (NaN rejected)
+    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_elements = -1; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_fraction = 1.5; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_fraction = -0.1; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.min_fragment_fraction = std::numeric_limits<double>::quiet_NaN();
+    }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.cleanup.min_fragment_elements = 0;
+        o.cleanup.min_fragment_fraction = 1.0;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.vote_levels = 4; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.vote_levels = -1; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.anisotropy_kind = "fibrous"; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.samples = "nodes"; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.tolerance = 0.0; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.max_iterations = -1; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.lloyd_iterations = -2; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.distribution = "gamma"; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.sigma = -0.1; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.mean_diameter = -1.0; }));
+
+    // Columnar / lamellar need the Quadric metric and a nonzero direction
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.anisotropy_kind = "columnar"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "lamellar";
+        o.tessellation.anisotropy_normal = {0.0, 0.0, 0.0};
+    }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "columnar";
+        o.tessellation.anisotropy_axis = {1.0, 2.0, 3.0};
+        // a semidefinite stored tensor is fine: it is not used for columnar grains
+        o.tessellation.global_tensor = {1, 1, 0, 0, 0, 0};
+    }));
+
+    // Fitting needs weights; Lloyd needs Voronoi or Laguerre; centroidal power needs Lloyd and
+    // Laguerre; neither works with periodic images
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.enabled = true; }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.fit_volumes.enabled = true;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::ADDITIVE;
+        o.tessellation.lloyd_iterations = 3;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.lloyd_iterations = 3;
+        o.tessellation.centroidal_power = true; // Voronoi baseline
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.centroidal_power = true; // no Lloyd steps
+    }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.lloyd_iterations = 3;
+        o.tessellation.centroidal_power = true;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.periodic = {true, false, false};
+        o.tessellation.lloyd_iterations = 2;
+    }));
+
+    // Seed count: zero seeds are fine with a mean size, not with both means given
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.seeds.num_seeds = 0;
+        o.seeds.size.mean_diameter = 0.5;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.num_seeds = 0;
+        o.seeds.size.mean_diameter = 0.5;
+        o.seeds.size.mean_volume = 0.1;
+    }));
+    // from_source needs a seed table
+    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.distribution = "from_source"; }));
+
+    // Polydisperse placement: feasible exclusion factor (kappa^3 <= 0.3), a random placement,
+    // and no competing fixed minimum distance
+    EXPECT_TRUE(validate_with([](O& o) { o.seeds.size.polydisperse_placement = true; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+        o.seeds.size.exclusion_factor = 0.7; // 0.343 > 0.3
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+        o.seeds.placement = ms::SeedPlacement::LATTICE;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+        o.seeds.min_distance_factor = 0.5;
+    }));
+
+    // Johnson-Mehl: positive rate and speed, the Additive metric, and no size/fit/Lloyd
+    auto jm = [](O& o) {
+        o.seeds.num_seeds = 0;
+        o.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
+        o.seeds.johnson_mehl.rate = 50.0;
+        o.tessellation.metric = ms::MetricType::ADDITIVE;
+    };
+    EXPECT_TRUE(validate_with(jm));
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.seeds.johnson_mehl.rate = 0.0;
+    }));
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.seeds.johnson_mehl.growth_speed = -1.0;
+    }));
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.seeds.johnson_mehl.num_nuclei = -1;
+    }));
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.tessellation.metric = ms::MetricType::VORONOI;
+    }));
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.seeds.size.distribution = "lognormal";
+    }));
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.seeds.johnson_mehl.end_time = nan;
+    }));
+    // Johnson-Mehl coverage does not wrap around periodic faces
+    EXPECT_FALSE(validate_with([&](O& o) {
+        jm(o);
+        o.tessellation.periodic = {false, true, false};
+    }));
+
+    // Orientations from the source need a seed table (generated seeds carry none)
+    EXPECT_FALSE(validate_with([](O& o) { o.orientations.source = "from_source"; }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.orientations.source = "from_source";
+        o.seeds.num_seeds = 0;
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+        o.seeds.file = data_dir / "grains.txt";
+    }));
+
+    // Polydisperse targets fill the whole material, so a sampling box is refused
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+        o.seeds.use_sampling_box = true;
+        o.seeds.sampling_box_lo = {0.0, 0.0, 0.0};
+        o.seeds.sampling_box_hi = {0.5, 0.5, 0.5};
+    }));
+
+    // Periodic face matching tolerance in (0, 0.5)
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 0.0; }));
+    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 0.5; }));
+    EXPECT_TRUE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 1e-3; }));
+    EXPECT_EQ(FromString("[Tessellation]\nperiodic_tolerance = 1e-4\n")
+                  .tessellation.periodic_tolerance,
+              1e-4);
+    EXPECT_EQ(ms::MicrostructureOptions{}.tessellation.periodic_tolerance, 1e-6);
+}
+
+// [Output] grain_adjacency: off by default, so existing runs write no extra file;
+// `grain_adjacency = true` switches the adjacency CSV on; both settings validate (a boolean has
+// no invalid value); a value of another TOML type cannot be stored and throws while parsing, like
+// the other wrongly typed keys in ParseErrors. A file without the key keeps the default.
+TEST(MicrostructureOptions, GrainAdjacencyOutput) {
+    EXPECT_FALSE(ms::MicrostructureOptions{}.output.grain_adjacency);
+    EXPECT_FALSE(FromString("[Output]\nbasename = \"a\"\n").output.grain_adjacency);
+    EXPECT_TRUE(FromString("[Output]\ngrain_adjacency = true\n").output.grain_adjacency);
+    EXPECT_FALSE(FromString("[Output]\ngrain_adjacency = false\n").output.grain_adjacency);
+    EXPECT_THROW(FromString("[Output]\ngrain_adjacency = \"yes\"\n"), std::exception);
+    EXPECT_THROW(FromString("[Output]\ngrain_adjacency = 1\n"), std::exception);
+    // The periodic example switches it on; the tet example writes the default explicitly
+    EXPECT_TRUE(ms::MicrostructureOptions::parse_options_file(
+                    data_dir / "microstructure/periodic_vote_auto.toml")
+                    .output.grain_adjacency);
+    EXPECT_FALSE(ms::MicrostructureOptions::parse_options_file(
+                     data_dir / "microstructure/voronoi_cube_tet.toml")
+                     .output.grain_adjacency);
+
+    ms::MicrostructureOptions options = ValidAutoOptions();
+    options.output.grain_adjacency = true;
+    EXPECT_TRUE(options.validate());
+    options.output.grain_adjacency = false;
+    EXPECT_TRUE(options.validate());
+}
+
 // MPI must be initialized because the options code prints warnings through WARNING_0_OPT, which
 // asks MPI for the rank.
 int main(int argc, char* argv[]) {

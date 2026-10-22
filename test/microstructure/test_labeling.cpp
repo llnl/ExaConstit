@@ -345,9 +345,9 @@ TEST(TessellationLabeler, BadSeedIndexThrowsOnAllRanks) {
                  std::invalid_argument);
 }
 
-// The full pipeline (preflight, seeding, labeling, orientations) must give the same grains for
-// every rank count: the labels gathered into serial element order, the grain count, the
-// orientations (bitwise) and the source ids must equal the single-rank run on the whole mesh.
+// The full pipeline (preflight, seeding, labeling, cleanup, orientations) must give the same
+// grains for every rank count: the labels gathered into serial element order, the grain count,
+// the orientations (bitwise) and the source ids must equal the single-rank run on the whole mesh.
 // Cases: cube_tet.mesh with 20 grains (rng_seed 42) and the 8^3 auto box with 8 grains, the two
 // end-to-end examples. Ids must be compact (1..N, every grain used), orientations unit
 // quaternions with w >= 0 keyed by the grain's source id, and every grain in region 1.
@@ -357,8 +357,10 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
         bool tets;
         int num_grains;
         std::uint64_t rng_seed;
+        std::int64_t tiny_fragments; ///< edge-connected single elements (measured, see below)
     };
-    const Case cases[] = {{"cube_tet 20 grains", true, 20, 42u}, {"hex8 8 grains", false, 8, 0u}};
+    const Case cases[] = {{"cube_tet 20 grains", true, 20, 42u, 6},
+                          {"hex8 8 grains", false, 8, 0u, 1}};
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
@@ -387,10 +389,19 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
         EXPECT_EQ(result.grain_source_id, reference.grain_source_id);
         EXPECT_EQ(report.num_grains, result.num_grains);
         EXPECT_EQ(report.num_elements, static_cast<std::int64_t>(serial.GetNE()));
-        // 8 or 20 seeds on 512 / 750 elements: every seed wins elements in these cases
+        // 8 or 20 seeds on 512 / 750 elements: every seed wins elements in these cases. With
+        // centroid labels some convex Voronoi cells leave a single element that touches the rest
+        // of its grain only along an edge (1 such piece on hex8, 6 on cube_tet); the default
+        // cleanup ("auto": merge tiny pieces, split large ones) merges them, so the final count
+        // is the seed count again and nothing is split.
+        EXPECT_EQ(report.num_labeled_grains, c.num_grains);
         EXPECT_EQ(result.num_grains, c.num_grains);
+        EXPECT_EQ(report.cleanup.fragments_found, c.tiny_fragments);
+        EXPECT_EQ(report.cleanup.fragments_merged, c.tiny_fragments);
+        EXPECT_EQ(report.cleanup.fragments_split, 0);
         EXPECT_EQ(result.num_regions, 1);
-        EXPECT_EQ(result.grain_region, std::vector<int>(static_cast<std::size_t>(c.num_grains), 1));
+        EXPECT_EQ(result.grain_region,
+                  std::vector<int>(static_cast<std::size_t>(result.num_grains), 1));
 
         // Orientations: unit norm, canonical sign, keyed by (rng_seed, ORIENTATION, source id)
         for (int g = 0; g < result.num_grains; ++g) {
@@ -532,9 +543,11 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
 }
 
 // Options this pipeline does not implement yet must be refused, on every rank together and
-// before any collective work, instead of being silently ignored: a multi-region mode, explicit
-// fragment splitting, quadrature-point voting and periodic grains (the last two are the labeler's
-// CheckSupportedTessellation, which the driver calls before seeding).
+// before any collective work, instead of being silently ignored: a multi-region mode, seed
+// tables, connected / geodesic distance (the labeler's CheckSupportedTessellation, which the
+// driver calls before seeding), "list" orientations and a vote level outside 0..3. (Fragment
+// splitting, quadrature voting and periodic grains are implemented since Stage 1b; see
+// test_driver_stage1bc.)
 TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     mfem::Mesh serial = AutoHex(4);
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);
@@ -551,10 +564,14 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     };
     using O = ms::MicrostructureOptions;
     EXPECT_TRUE(throws_with([](O& o) { o.regions.mode = "from_phase"; }));
-    EXPECT_TRUE(throws_with([](O& o) { o.cleanup.fragments = "split"; }));
-    EXPECT_TRUE(throws_with(
-        [](O& o) { o.tessellation.sampling = ms::SamplingMode::QUADRATURE_VOTE; }));
-    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.periodic = {true, false, false}; }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+    }));
+    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.distance = ms::DistanceMode::CONNECTED; }));
+    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.distance = ms::DistanceMode::GEODESIC; }));
+    EXPECT_TRUE(throws_with([](O& o) { o.orientations.source = "list"; }));
+    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.vote_levels = 4; }));
 }
 
 int main(int argc, char** argv) {

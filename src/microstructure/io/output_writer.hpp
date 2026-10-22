@@ -41,6 +41,7 @@
  * | grain file                 | WriteGrainFile         | makeMesh (auto meshes only):            |
  * |                            |                        | `mfem::Vector::Load(std::ifstream, NE)` |
  * | grain table (.csv)         | WriteGrainTable        | nobody; per-grain summary for the user  |
+ * | grain adjacency (.csv)     | WriteGrainAdjacency    | nobody; grain pairs sharing faces       |
  * | ParaView collection        | WriteParaView          | nobody; visualization                   |
  *
  * The tool does not write ExaConstit input decks (options.toml); users write their own and point
@@ -50,7 +51,7 @@
  * Conventions the files follow:
  * - Element attributes are the compact grain ids 1..N (N = number of grains).
  * - The orientation file, region map and grain file have no header line (ExaConstit reads every
- *   number in them). The grain table CSV has a column-name row.
+ *   number in them). The grain table and grain adjacency CSVs have a column-name row.
  * - Numbers are written with 17 significant digits, enough for any double to read back
  *   bit-for-bit.
  * - Only the mesh files may be gzip compressed. The orientation file, region map and grain file
@@ -106,6 +107,34 @@ struct GrainTable {
     std::vector<double> volume;
     /** @brief 3 * num_grains grain centroids (x y z per grain, interleaved), or empty. */
     std::vector<double> centroid;
+    /**
+     * @brief num_grains neighbor counts, or empty: the number of distinct other grains that share
+     * at least one element face with the grain.
+     */
+    std::vector<int> num_neighbors;
+    /**
+     * @brief num_grains target volumes in mesh units cubed, or empty: the size-control target of
+     * the seed the grain grew from. Grains split off one seed by the fragment cleanup share that
+     * seed's target, so compare the target with the sum of their volumes.
+     */
+    std::vector<double> target_volume;
+};
+
+/**
+ * @brief Pairs of face-sharing grains for the grain adjacency CSV. Row k describes the pair
+ * (grain_a[k], grain_b[k]) with 1 <= grain_a < grain_b (1-based grain ids). Four columns of
+ * equal length; rows are written in the given order (ComputeGrainStatistics produces them
+ * sorted by (grain_a, grain_b)).
+ */
+struct GrainAdjacencyTable {
+    /** @brief Smaller grain id of each pair (1-based). */
+    std::vector<int> grain_a;
+    /** @brief Larger grain id of each pair (1-based). */
+    std::vector<int> grain_b;
+    /** @brief Total area of the element faces the two grains share (mesh length units squared). */
+    std::vector<double> shared_area;
+    /** @brief Number of element faces the two grains share. */
+    std::vector<std::int64_t> num_faces;
 };
 
 /**
@@ -262,13 +291,23 @@ void WriteGrainFile(const std::filesystem::path& path, const mfem::Array<int>& s
 
 /**
  * @brief Writes the grain table as CSV with a header row: grain_id, qw, qx, qy, qz, then every
- * non-empty optional column of @p table (region, source_id, num_elements, volume, cx, cy, cz).
- * Not collective; host only.
+ * non-empty optional column of @p table (region, source_id, num_elements, volume, cx, cy, cz,
+ * num_neighbors, target_volume). Numbers use 17 significant digits. Not collective; host only.
  *
  * @throws std::invalid_argument if a column has the wrong length; std::runtime_error on file
  *         errors.
  */
 void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table);
+
+/**
+ * @brief Writes the grain adjacency table as CSV: a header row `grain_a,grain_b,shared_area,
+ * num_faces`, then one row per pair in the order given (17 significant digits). Not collective;
+ * host only.
+ *
+ * @throws std::invalid_argument if the columns differ in length or a row does not have
+ *         1 <= grain_a < grain_b; std::runtime_error on file errors.
+ */
+void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacencyTable& table);
 
 /**
  * @brief Writes a ParaView collection with the grain id (and the region id, when

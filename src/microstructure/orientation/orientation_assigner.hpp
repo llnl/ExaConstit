@@ -60,4 +60,33 @@ void AssignOrientations(const OrientationOptions& orientations,
                         const std::vector<int>& grain_seed,
                         MicrostructureResult& result);
 
+/**
+ * @brief AssignOrientations with an explicit source id per grain, for grains that do not map
+ * one-to-one onto seeds (after fragment cleanup split a grain into several).
+ *
+ * Grain g (row g-1) has the parent seed grain_seed[g-1] and the source id
+ * grain_source_id[g-1]:
+ * - "random": the orientation is RandomQuaternion of the stream (rng_seed, ORIENTATION,
+ *   grain_source_id[g-1]). A grain split off another one carries a derived source id
+ *   (DeriveFragmentSourceId, labeling/fragment_cleanup.hpp), so it gets its own reproducible
+ *   random orientation; a grain that kept its seed's source id gets exactly the orientation
+ *   AssignOrientations would give it.
+ * - "from_source": the 4 values of the parent seed's quaternion are copied verbatim, so every
+ *   piece of a measured grain keeps the measured orientation.
+ *
+ * result.grain_source_id = grain_source_id and result.num_grains = grain_seed.size().
+ * Host only, not collective (replicated inputs give identical tables on every rank).
+ *
+ * @param grain_seed      0-based parent seed index of every grain (size num_grains).
+ * @param grain_source_id source id of every grain (size num_grains).
+ * @throws std::invalid_argument as AssignOrientations, and if the two per-grain arrays differ in
+ *         size.
+ */
+void AssignGrainOrientations(const OrientationOptions& orientations,
+                             std::uint64_t rng_seed,
+                             const SeedSet& seeds,
+                             const std::vector<int>& grain_seed,
+                             const std::vector<std::int64_t>& grain_source_id,
+                             MicrostructureResult& result);
+
 } // namespace exaconstit::microstructure

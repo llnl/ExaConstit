@@ -16,9 +16,13 @@
 #include "microstructure/labeling/tessellation_labeler.hpp"
 
 #include "microstructure/exec_dispatch.hpp"
+#include "microstructure/geometry/anisotropy_tensors.hpp"
 #include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/periodic_images.hpp"
 #include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 #include "mfem.hpp"
 
@@ -33,30 +37,78 @@ namespace exaconstit::microstructure {
 /*
  * CheckSupportedTessellation
  *
- * The options structure already has room for the later sampling and distance modes (quadrature
- * point voting, connected / geodesic distance, periodic seed images). This labeler implements
- * only centroid sampling with the plain (Euclidean) metric distance and no periodic images, so
- * anything else is refused with a clear message instead of being silently ignored. Every rank
- * holds the same options, so every rank throws together. Public so the driver can call it before
- * the collective seeding; the labeler calls it again for direct callers.
+ * The options structure already has room for later distance modes (connected / geodesic
+ * distance). This labeler implements the plain (Euclidean) metric distance with centroid or
+ * quadrature-vote sampling, with or without periodic images, so anything else is refused with a
+ * clear message instead of being silently ignored. The vote level range (0..3) and the
+ * anisotropy kind are checked here too, so a direct caller gets the same messages as the driver.
+ * Every rank holds the same options, so every rank throws together. Public so the driver can call
+ * it before the collective seeding; the labeler calls it again for direct callers.
  */
 void CheckSupportedTessellation(const TessellationOptions& tessellation) {
-    if (tessellation.sampling != SamplingMode::CENTROID) {
-        throw std::invalid_argument(
-            "Tessellation labeler: sampling = \"quadrature_vote\" is not implemented yet; use "
-            "sampling = \"centroid\"");
-    }
     if (tessellation.distance != DistanceMode::EUCLIDEAN) {
         throw std::invalid_argument(
             "Tessellation labeler: only distance = \"euclidean\" is implemented so far");
     }
-    for (int d = 0; d < 3; ++d) {
-        if (tessellation.periodic[d]) {
-            throw std::invalid_argument(
-                "Tessellation labeler: periodic microstructures (Tessellation.periodic) are not "
-                "implemented yet");
+    if (tessellation.vote_levels < 0 || tessellation.vote_levels > 3) {
+        throw std::invalid_argument("Tessellation labeler: vote_levels must be in 0..3");
+    }
+    // Resolving the tensor validates the anisotropy kind and its direction
+    EffectiveGlobalTensor(tessellation);
+}
+
+/*
+ * EffectiveGlobalTensor: "none"/"tensor" return the stored tensor unchanged (so options that
+ * never mention anisotropy behave exactly as before the kinds existed); "columnar"/"lamellar"
+ * build the semidefinite tensors with the helpers of geometry/metric_functors.hpp, which
+ * normalize the direction and throw for a zero or non-finite one.
+ */
+std::array<double, 6> EffectiveGlobalTensor(const TessellationOptions& tessellation) {
+    const std::string& kind = tessellation.anisotropy_kind;
+    if (kind == "none" || kind == "tensor") {
+        return tessellation.global_tensor;
+    }
+    if (kind == "columnar") {
+        return MakeColumnarTensor(tessellation.anisotropy_axis);
+    }
+    if (kind == "lamellar") {
+        return MakeLamellarTensor(tessellation.anisotropy_normal);
+    }
+    throw std::invalid_argument("Tessellation labeler: unknown anisotropy kind \"" + kind +
+                                "\" (expected none, tensor, columnar or lamellar)");
+}
+
+/*
+ * ThrowIfAnyElementUnlabeled
+ *
+ * Every rank looks for its first element with seed < 0; LowestRankWith (MPI_Allreduce MIN over
+ * "my rank if I have one") picks the lowest such rank, which broadcasts its local element id, so
+ * all ranks throw the same message together instead of failing later with a misleading error
+ * (e.g. the compaction's index check) or hanging in a collective call.
+ */
+void ThrowIfAnyElementUnlabeled(MPI_Comm comm,
+                                const mfem::Array<int>& element_seed,
+                                const std::string& what,
+                                const std::string& hint) {
+    // First local element without a seed, if any
+    const int num_elements = element_seed.Size();
+    const int* seed_host = (num_elements > 0) ? element_seed.HostRead() : nullptr;
+    int first_bad = -1;
+    for (int e = 0; e < num_elements; ++e) {
+        if (seed_host[e] < 0) {
+            first_bad = e;
+            break;
         }
     }
+
+    // Lowest rank with such an element shares its element id; everyone throws the same message
+    const int bad_rank = LowestRankWith(first_bad >= 0, comm);
+    if (bad_rank < 0) {
+        return;
+    }
+    MPI_Bcast(&first_bad, 1, MPI_INT, bad_rank, comm);
+    throw std::runtime_error(what + " (local element " + std::to_string(first_bad) + " on rank " +
+                             std::to_string(bad_rank) + ")" + hint);
 }
 
 /*
@@ -98,10 +150,10 @@ void LabelElementsWithSeeds(mfem::Mesh& local_mesh,
     const int num_elements = local_mesh.GetNE();
     element_seed.SetSize(num_elements);
 
-    // Quadric parameters: the global anisotropy tensor, or per-seed tensors when the seed set
-    // carries them (SeedSet::shape, 6 entries per seed)
+    // Quadric parameters: the global anisotropy tensor (columnar/lamellar resolved), or per-seed
+    // tensors when the seed set carries them (SeedSet::shape, 6 entries per seed)
     MetricSetup setup;
-    setup.global_tensor = tessellation.global_tensor;
+    setup.global_tensor = EffectiveGlobalTensor(tessellation);
     setup.per_seed_shape = !seeds.shape.empty();
 
     int coincident = 0;
@@ -230,55 +282,94 @@ void CompactSeedLabels(MPI_Comm comm,
 }
 
 /*
- * LabelTessellation: the two steps in order. The seed count must fit in an int (the search and
- * the grain tables use int indices; SeedIndex::Build enforces the same limit).
+ * LabelTessellation
+ *
+ * Steps (see the header):
+ *  1. Checks (identical on every rank). The seed count must fit in an int (the search and the
+ *     grain tables use int indices; SeedIndex::Build enforces the same limit).
+ *  2. Periodic images when any axis is periodic: box from the mesh (collective), provably
+ *     sufficient layers for the metric, image set with the image -> original map.
+ *  3. Nearest seed per local element (no communication): centroid search with the (image) seeds
+ *     and MapImageLabelsToOriginal, or the quadrature vote with the image -> original map as the
+ *     seed owners (votes of a seed and its images count for the same grain).
+ *  4. Collective check for elements without a seed.
+ *  5. Compaction to grain ids over the original seeds (collective).
  */
 TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
                                      MPI_Comm comm,
                                      const SeedSet& seeds,
                                      const TessellationOptions& tessellation) {
+    // Step 1: checks
+    CheckSupportedTessellation(tessellation);
     if (seeds.Size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::invalid_argument("Tessellation labeler: more than 2^31 - 1 seeds");
     }
+    if (seeds.Size() == 0) {
+        throw std::invalid_argument("Tessellation labeler: the seed set is empty");
+    }
+    const int num_seeds = static_cast<int>(seeds.Size());
 
-    // Step 1: nearest seed per local element (no communication)
+    // Step 2: periodic images (the extended seed list; originals first)
+    bool periodic = false;
+    for (int d = 0; d < 3; ++d) {
+        periodic = periodic || tessellation.periodic[d];
+    }
+    PeriodicImages images;
+    const SeedSet* search_seeds = &seeds;
+    int layers = 0;
+    if (periodic) {
+        const PeriodicBox box = PeriodicBoxFromMesh(local_mesh, comm, tessellation.periodic);
+        PeriodicImageParameters image_params;
+        layers = RequiredImageLayers(box, tessellation.metric, EffectiveGlobalTensor(tessellation),
+                                     seeds);
+        image_params.layers = layers;
+        images = BuildPeriodicImages(seeds, box, image_params);
+        search_seeds = &images.seeds;
+    }
+
+    // Step 3: nearest seed per local element, as an index into the input seeds
     mfem::Array<int> element_seed;
     int num_coincident = 0;
-    LabelElementsWithSeeds(local_mesh, seeds, tessellation, element_seed, &num_coincident);
-
-    // Step 1b: elements without a seed (id1 = -1: non-finite centroid). Every rank looks for its
-    // first such element; MPI_Allreduce(MIN) over "my rank if I have one, else nranks" picks the
-    // lowest such rank, which broadcasts its local element id, so all ranks throw the same
-    // message together (instead of failing later with a misleading compaction error).
-    int rank = 0;
-    int nranks = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nranks);
-    const int num_elements = element_seed.Size();
-    const int* seed_host = (num_elements > 0) ? element_seed.HostRead() : nullptr;
-    int first_bad = -1;
-    for (int e = 0; e < num_elements; ++e) {
-        if (seed_host[e] < 0) {
-            first_bad = e;
-            break;
+    int num_split = 0;
+    if (tessellation.sampling == SamplingMode::QUADRATURE_VOTE) {
+        QuadratureVoteParameters vote;
+        vote.metric = tessellation.metric;
+        vote.global_tensor = EffectiveGlobalTensor(tessellation);
+        vote.num_bins = tessellation.num_bins;
+        vote.levels = tessellation.vote_levels;
+        QuadratureVoteReport vote_report;
+        LabelElementsByQuadratureVote(local_mesh, *search_seeds, vote, element_seed,
+                                      images.original, &vote_report);
+        num_coincident = vote_report.num_coincident_seeds;
+        num_split = vote_report.num_split_elements;
+    } else {
+        LabelElementsWithSeeds(local_mesh, *search_seeds, tessellation, element_seed,
+                               &num_coincident);
+        if (periodic) {
+            MapImageLabelsToOriginal(images, element_seed);
         }
     }
-    int candidate = (first_bad >= 0) ? rank : nranks;
-    int bad_rank = nranks;
-    MPI_Allreduce(&candidate, &bad_rank, 1, MPI_INT, MPI_MIN, comm);
-    if (bad_rank < nranks) {
-        MPI_Bcast(&first_bad, 1, MPI_INT, bad_rank, comm);
-        throw std::runtime_error("Tessellation labeler: non-finite element centroid (local "
-                                 "element " + std::to_string(first_bad) + " on rank " +
-                                 std::to_string(bad_rank) +
-                                 "); the element is degenerate (zero volume) or has non-finite "
-                                 "node coordinates");
+
+    // Step 4: elements without a seed (id1 = -1: non-finite centroid or voting points)
+    if (tessellation.sampling == SamplingMode::QUADRATURE_VOTE) {
+        ThrowIfAnyElementUnlabeled(comm, element_seed,
+                                   "Tessellation labeler: no voting point of an element has a "
+                                   "finite position",
+                                   "; the element has non-finite node coordinates");
+    } else {
+        ThrowIfAnyElementUnlabeled(comm, element_seed,
+                                   "Tessellation labeler: non-finite element centroid",
+                                   "; the element is degenerate (zero volume) or has non-finite "
+                                   "node coordinates");
     }
 
-    // Step 2: compact grain ids (collective)
+    // Step 5: compact grain ids over the original seeds (collective)
     TessellationLabels labels;
-    CompactSeedLabels(comm, element_seed, static_cast<int>(seeds.Size()), labels);
+    CompactSeedLabels(comm, element_seed, num_seeds, labels);
     labels.num_coincident_seeds = num_coincident;
+    labels.periodic_layers = layers;
+    labels.num_periodic_images = images.num_images;
+    labels.num_split_elements = num_split;
     return labels;
 }
 

@@ -23,7 +23,9 @@ basename = "ms_tet_parallel_np2"
         ori_state_var_loc = 9
         ori_stride = 4
         ori_type = "quat"
-        # Final grain count printed by the generator (20 seeds, all win elements)
+        # Final grain count printed by the generator: the 20 seeds all win elements; the default
+        # fragment cleanup (Cleanup.fragments = "auto") merges the 6 single elements that touch
+        # the rest of their Voronoi grain only along an edge into neighbors -> 20 grains
         num_grains = 20
         orientation_file = "voronoi_cube_tet.ori"
     [Materials.Model]

@@ -31,7 +31,9 @@ grain_file = "voronoi_auto.grains"
         ori_state_var_loc = 9
         ori_stride = 4
         ori_type = "quat"
-        # Final grain count printed by the generator (8 seeds in a box all win elements)
+        # Final grain count printed by the generator: the 8 seeds all win elements; the default
+        # fragment cleanup (Cleanup.fragments = "auto") merges the one element that touches the
+        # rest of its Voronoi grain only along an edge back into a neighbor -> 8 grains
         num_grains = 8
         orientation_file = "voronoi_auto.ori"
     [Materials.Model]

@@ -2,7 +2,7 @@
  * microstructure_generator: standalone MPI tool that paints grains onto a finite element mesh and
  * writes the files an ExaConstit run needs (mesh with grain ids as element attributes, or an
  * auto-mesh grain file; orientation file; region map when there is more than one region), plus a
- * grain table and a ParaView view.
+ * grain table, an optional grain adjacency table and a ParaView view.
  *
  * Usage:
  *     microstructure_generator -i options.toml [-m mesh] [-n N] [-s seed] [-o base] [--parts P]
@@ -19,10 +19,20 @@
  *     auto box is labeled unrefined, which is what ExaConstit's grain_file refers to.
  *  5. Partition (BuildSerialOrder + MakeParMesh, which keeps a map from local to serial element
  *     ids) and GenerateMicrostructure.
- *  6. Gather the grain ids to serial element order, set them as element attributes of the serial
- *     mesh, and write the outputs selected by [Output].
- *  7. Rank-0 summary: provenance and how to point an ExaConstit input at the outputs. No
- *     ExaConstit input file is generated.
+ *  6. Grain statistics on the distributed mesh (collective; fixed-point sums, so the numbers do
+ *     not depend on the rank count): element count, volume, centroid and neighbor count of every
+ *     grain, and the shared face area of every pair of touching grains
+ *     (labeling/grain_statistics.hpp over the face adjacency the driver built for the fragment
+ *     cleanup, with periodic face pairing for periodic microstructures). The pair table is
+ *     gathered on rank 0.
+ *  7. Gather the grain ids to serial element order, set them as element attributes of the serial
+ *     mesh, and write the outputs selected by [Output]: mesh file(s) or grain file, orientation
+ *     file, region map, grain table <base>_grains.csv, optional grain adjacency table
+ *     <base>_adjacency.csv ([Output] grain_adjacency), ParaView view.
+ *  8. Rank-0 summary: provenance, what each optional stage did (Johnson-Mehl nucleation, size
+ *     targets, Lloyd relaxation, volume fit with the element-level volume errors against the
+ *     targets, periodic images, quadrature vote, fragment cleanup), grain statistics, and how to
+ *     point an ExaConstit input at the outputs. No ExaConstit input file is generated.
  *
  * Errors inside the pipeline are normally thrown on all ranks together by the library (its
  * checks are either made on identical data or globally reduced). The tool catches them, prints
@@ -31,10 +41,11 @@
  */
 #include "microstructure/exec_dispatch.hpp"
 #include "microstructure/io/output_writer.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_options.hpp"
+#include "microstructure/util/collective_errors.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "ExaConstit_Version.h"
@@ -52,6 +63,7 @@
 #include <mpi.h>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -172,38 +184,10 @@ CommandLine ParseCommandLine(int argc, char** argv) {
     return cl;
 }
 
-/*
- * AgreeOrReport
- *
- * Collective verdict on a step that each rank performed on its own (reading the options file,
- * validating, opening the mesh). MPI_Allreduce(MIN) of the 0/1 flags tells every rank whether all
- * succeeded. On failure, a second MPI_Allreduce(MIN) over "my rank if I failed, else nranks"
- * finds the lowest failing rank, which alone prints its message, so the user sees one message
- * even when every rank failed the same way.
- */
+/** The tool's collective verdict helper: AgreeOrReport (util/collective_errors.hpp) with the
+ * program name as the prefix of the error line. Collective. */
 bool AgreeOrReport(bool local_ok, const std::string& message, MPI_Comm comm) {
-    int rank = 0;
-    int nranks = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nranks);
-
-    int ok = local_ok ? 1 : 0;
-    int all_ok = 0;
-    MPI_Allreduce(&ok, &all_ok, 1, MPI_INT, MPI_MIN, comm);
-    if (all_ok == 1) {
-        return true;
-    }
-    int candidate = local_ok ? nranks : rank;
-    int reporter = nranks;
-    MPI_Allreduce(&candidate, &reporter, 1, MPI_INT, MPI_MIN, comm);
-    if (rank == reporter && !message.empty()) {
-        std::cerr << "microstructure_generator: error";
-        if (nranks > 1) {
-            std::cerr << " (rank " << rank << ")";
-        }
-        std::cerr << ": " << message << std::endl;
-    }
-    return false;
+    return ms::AgreeOrReport(local_ok, message, comm, "microstructure_generator");
 }
 
 /** "major.minor.patch" of ExaConstit (MAJOR/MINOR are integers, PATCH a string literal). */
@@ -272,43 +256,210 @@ mfem::Mesh ReadSerialMesh(const ms::MicrostructureOptions& options) {
 }
 
 /*
- * BuildGrainTable: per-grain element count, volume and volume centroid, computed on the serial
- * mesh (rank 0 only) in serial element order, so the numbers do not depend on the rank count.
- * Element volumes and centroids come from ComputeElementSamples (exact quadrature of detJ and
- * detJ x); the grain centroid is the volume-weighted mean of its element centroids.
+ * ComputeStatistics (collective): ComputeGrainStatistics over the face adjacency the driver's
+ * fragment cleanup already built (GenerationReport::adjacency; with periodic face pairing when
+ * any axis is periodic, so a grain that wraps around the box counts its wrapped faces), so the
+ * face-neighbor exchange and the periodic gather are not repeated. Every number is a fixed-point
+ * sum, so the grain table and adjacency table are byte-identical for every rank count. The pair
+ * table is gathered on rank 0, which writes the files.
  */
-ms::GrainTable BuildGrainTable(mfem::Mesh& serial,
-                               const std::vector<int>& serial_grain,
-                               const ms::MicrostructureResult& result) {
-    ms::GrainTable table = ms::MakeGrainTable(result);
-    const auto num_grains = static_cast<std::size_t>(result.num_grains);
-    table.num_elements.assign(num_grains, 0);
-    table.volume.assign(num_grains, 0.0);
-    table.centroid.assign(3 * num_grains, 0.0);
-
-    ms::ElementSamples samples;
-    ms::ComputeElementSamples(serial, -1, samples);
-    const double* volume = samples.volume.HostRead();
-    const double* cx = samples.cx.HostRead();
-    const double* cy = samples.cy.HostRead();
-    const double* cz = samples.cz.HostRead();
-
-    // Accumulate per grain (grain g at row g-1)
-    for (int e = 0; e < serial.GetNE(); ++e) {
-        const auto row = static_cast<std::size_t>(serial_grain[static_cast<std::size_t>(e)] - 1);
-        table.num_elements[row] += 1;
-        table.volume[row] += volume[e];
-        table.centroid[3 * row + 0] += volume[e] * cx[e];
-        table.centroid[3 * row + 1] += volume[e] * cy[e];
-        table.centroid[3 * row + 2] += volume[e] * cz[e];
+ms::GrainStatistics ComputeStatistics(const ms::GenerationReport& report,
+                                      const ms::MicrostructureResult& result) {
+    if (!report.adjacency) {
+        // The driver always fills it; identical on every rank, so all ranks throw together
+        throw std::logic_error("the driver report carries no mesh adjacency");
     }
-    // Volume-weighted mean (every grain has at least one element, so volume > 0)
-    for (std::size_t g = 0; g < num_grains; ++g) {
-        for (std::size_t d = 0; d < 3; ++d) {
-            table.centroid[3 * g + d] /= table.volume[g];
+    return ms::ComputeGrainStatistics(*report.adjacency, result.element_grain, result.num_grains,
+                                      0);
+}
+
+/*
+ * BuildGrainTable: the grain table columns. Orientation, region and source id come from the
+ * result; element count, volume, centroid and neighbor count from the statistics; the target
+ * volume column (the target of the seed each grain grew from) only when size targets were used.
+ */
+ms::GrainTable BuildGrainTable(const ms::MicrostructureResult& result,
+                               const ms::GenerationReport& report,
+                               const ms::GrainStatistics& stats) {
+    ms::GrainTable table = ms::MakeGrainTable(result);
+    table.num_elements = stats.num_elements;
+    table.volume = stats.volume;
+    table.centroid = stats.centroid;
+    table.num_neighbors = stats.num_neighbors;
+    if (!report.seed_target_volume.empty()) {
+        table.target_volume.resize(report.grain_seed.size());
+        for (std::size_t g = 0; g < report.grain_seed.size(); ++g) {
+            table.target_volume[g] =
+                report.seed_target_volume[static_cast<std::size_t>(report.grain_seed[g])];
         }
     }
     return table;
+}
+
+/** The pair columns of the statistics as the writer's adjacency table. */
+ms::GrainAdjacencyTable BuildAdjacencyTable(const ms::GrainStatistics& stats) {
+    ms::GrainAdjacencyTable table;
+    table.grain_a = stats.pair_a;
+    table.grain_b = stats.pair_b;
+    table.shared_area = stats.pair_area;
+    table.num_faces = stats.pair_faces;
+    return table;
+}
+
+/** "first -> last" of a non-empty history, or "n/a". */
+template <typename T>
+std::string FirstToLast(const std::vector<T>& history) {
+    if (history.empty()) {
+        return "n/a";
+    }
+    std::ostringstream os;
+    os << history.front() << " -> " << history.back();
+    return os.str();
+}
+
+/** One line summarizing a volume-fit history (FitWeights; also each centroidal power refit). */
+std::string DescribeFit(const ms::WeightFitReport& fit) {
+    std::ostringstream os;
+    os << fit.stop_reason << " after " << fit.iterations << " step(s) (" << fit.evaluations
+       << " evaluations); max relative volume error on the fit samples "
+       << FirstToLast(fit.max_relative_error) << "; dual objective Phi " << FirstToLast(fit.phi);
+    if (!fit.num_empty.empty()) {
+        os << "; empty cells at the end " << fit.num_empty.back();
+    }
+    os << "; sample resolution floor " << fit.resolution_floor;
+    return os.str();
+}
+
+/*
+ * RequestedGrains: the requested grain count for the log and the mesh header. With Johnson-Mehl
+ * nucleation the count is not requested but follows from the nucleation (num_nuclei is only an
+ * optional cap; 0 means no cap), so say that instead of printing "0 requested".
+ */
+std::string RequestedGrains(const ms::GenerationReport& report) {
+    if (!report.used_johnson_mehl) {
+        return std::to_string(report.seeding.requested) + " requested";
+    }
+    if (report.seeding.requested > 0) {
+        return "set by Johnson-Mehl nucleation (at most " +
+               std::to_string(report.seeding.requested) + " nuclei)";
+    }
+    return "set by Johnson-Mehl nucleation (no nucleus limit)";
+}
+
+/**
+ * SeedingText: the seeding report for the log and the mesh header: the Johnson-Mehl report for
+ * nucleation runs (the generic seeding summary would show "N of 0 requested"), the seed
+ * generator's summary otherwise.
+ */
+std::string SeedingText(const ms::GenerationReport& report) {
+    if (report.used_johnson_mehl) {
+        return report.johnson_mehl.Summary();
+    }
+    return report.seeding.Summary();
+}
+
+/*
+ * DescribeStages: rank-0 text for every optional stage that ran after seeding (the seeding or
+ * Johnson-Mehl report itself is printed by SeedingText), from the driver's report, plus
+ * the element-level comparison of seed volumes with their targets and the grain statistics.
+ * Stages that did not run print nothing (the fragment cleanup always runs).
+ */
+std::string DescribeStages(const ms::MicrostructureOptions& options,
+                           const ms::GenerationReport& report,
+                           const ms::GrainStatistics& stats) {
+    std::ostringstream os;
+    const ms::TessellationOptions& tess = options.tessellation;
+
+    // Size targets: one target volume per seed
+    if (!report.seed_target_volume.empty()) {
+        os << "size targets: " << report.seed_target_volume.size() << " seed target volumes ("
+           << options.seeds.size.distribution << " distribution), summing to the material volume "
+           << report.material_volume;
+        if (report.used_polydisperse_placement) {
+            os << "; polydisperse placement, largest first";
+        }
+        os << "\n";
+    }
+
+    // Lloyd relaxation (and the refits of centroidal power mode)
+    if (report.ran_lloyd) {
+        const ms::LloydReport& lloyd = report.lloyd;
+        int clamped = 0;
+        for (const int c : lloyd.num_clamped) {
+            clamped += c;
+        }
+        os << "Lloyd relaxation: " << tess.lloyd_iterations << " step(s); CVT energy "
+           << FirstToLast(lloyd.energy);
+        if (!lloyd.max_displacement.empty()) {
+            os << "; largest seed move in the last step " << lloyd.max_displacement.back();
+        }
+        os << "; " << clamped << " seed move(s) clamped back into the material";
+        if (!lloyd.num_empty.empty()) {
+            os << "; empty cells in the last step " << lloyd.num_empty.back();
+        }
+        os << "\n";
+        if (!lloyd.fits.empty()) {
+            os << "  centroidal power: " << lloyd.fits.size() << " refit(s); last refit: "
+               << DescribeFit(lloyd.fits.back()) << "\n";
+        }
+    }
+
+    // Volume fit (sample level)
+    if (report.ran_weight_fit) {
+        os << "volume fit (" << tess.fit_volumes.samples
+           << " samples): " << DescribeFit(report.weight_fit) << "\n";
+    }
+
+    // Element level: the final grains are whole elements, so on coarse meshes their volumes
+    // deviate from the targets by more than the fit tolerance reached on the fit samples
+    if (!report.seed_target_volume.empty()) {
+        const ms::TargetVolumeComparison cmp = ms::CompareWithTargetVolumes(
+            stats.volume, report.grain_seed, report.seed_target_volume);
+        os << "element-level volume error vs targets (final grains, summed per seed): max "
+           << cmp.max_relative_error << " (seed " << cmp.worst_seed << "), mean "
+           << cmp.mean_relative_error << "; " << cmp.num_empty_seeds
+           << " seed(s) without elements\n";
+    }
+
+    // Periodic images and face pairing
+    if (report.periodic_layers > 0) {
+        os << "periodic: axes [" << (tess.periodic[0] ? "x" : "-")
+           << (tess.periodic[1] ? "y" : "-") << (tess.periodic[2] ? "z" : "-") << "], "
+           << report.periodic_layers << " image layer(s), " << report.num_periodic_images
+           << " seed images; face pairing: " << report.periodic_faces.plane_faces
+           << " faces on periodic planes, " << report.periodic_faces.matched_pairs
+           << " matched pairs, " << report.periodic_faces.unmatched_faces << " unmatched\n";
+    }
+
+    // Quadrature vote
+    if (tess.sampling == ms::SamplingMode::QUADRATURE_VOTE) {
+        os << "quadrature vote: " << report.num_split_elements
+           << " element(s) cut by a grain boundary (decided by majority volume)\n";
+    }
+
+    // Fragment cleanup (always runs; with fragments = "none" it only reports what it found)
+    os << report.cleanup.Summary() << "\n";
+
+    // Grain statistics (the same numbers as the grain table)
+    if (stats.num_grains > 0) {
+        std::int64_t min_elements = stats.num_elements[0];
+        std::int64_t max_elements = stats.num_elements[0];
+        int min_neighbors = stats.num_neighbors[0];
+        int max_neighbors = stats.num_neighbors[0];
+        double neighbor_sum = 0.0;
+        for (std::size_t g = 0; g < static_cast<std::size_t>(stats.num_grains); ++g) {
+            min_elements = std::min(min_elements, stats.num_elements[g]);
+            max_elements = std::max(max_elements, stats.num_elements[g]);
+            min_neighbors = std::min(min_neighbors, stats.num_neighbors[g]);
+            max_neighbors = std::max(max_neighbors, stats.num_neighbors[g]);
+            neighbor_sum += stats.num_neighbors[g];
+        }
+        os << "grain statistics: elements per grain " << min_elements << " - " << max_elements
+           << ", neighbors per grain " << min_neighbors << " - " << max_neighbors << " (mean "
+           << neighbor_sum / stats.num_grains << "), " << stats.pair_a.size()
+           << " touching grain pairs, material volume " << stats.total_volume << "\n";
+    }
+    return os.str();
 }
 
 /** Paths of everything written, for the summary. */
@@ -320,17 +471,20 @@ struct WrittenFiles {
     fs::path grain_file;
     fs::path region_map;
     fs::path grain_table;
+    fs::path grain_adjacency;
     fs::path paraview;
 };
 
 /*
- * PrintSummary: rank-0 end-of-run log. Provenance first, then the files, then how to reference
+ * PrintSummary: rank-0 end-of-run log. Provenance first, then the stage reports (DescribeStages),
+ * then the files, then how to reference
  * them from an ExaConstit options file (key names from src/options: [Mesh] type/floc,
  * [Mesh.Auto] length/ncuts, top-level grain_file and region_mapping_file, and
  * [Materials.Grain] ori_type/num_grains/orientation_file/ori_stride). No TOML is written.
  */
 void PrintSummary(const ms::MicrostructureOptions& options,
                   const ms::GenerationReport& report,
+                  const ms::GrainStatistics& stats,
                   const WrittenFiles& files,
                   int num_regions) {
     std::ostringstream os;
@@ -340,12 +494,13 @@ void PrintSummary(const ms::MicrostructureOptions& options,
        << " elements)\n"
        << "rng_seed = " << options.seeds.rng_seed << ", metric = "
        << MetricName(options.tessellation.metric) << "\n"
-       << "grains: " << report.seeding.requested << " requested, " << report.num_seeds
+       << "grains: " << RequestedGrains(report) << ", " << report.num_seeds
        << " seeds placed, " << report.num_grains << " final grains";
     if (report.num_empty_seeds > 0) {
         os << " (" << report.num_empty_seeds << " seeds won no element)";
     }
-    os << "\n" << report.seeding.Summary();
+    os << "\n" << SeedingText(report);
+    os << DescribeStages(options, report, stats);
 
     os << "Files written:\n";
     if (!files.serial_mesh.empty()) {
@@ -363,6 +518,9 @@ void PrintSummary(const ms::MicrostructureOptions& options,
         os << "  region map:        " << files.region_map.string() << "\n";
     }
     os << "  grain table:       " << files.grain_table.string() << "\n";
+    if (!files.grain_adjacency.empty()) {
+        os << "  grain adjacency:   " << files.grain_adjacency.string() << "\n";
+    }
     if (!files.paraview.empty()) {
         os << "  ParaView:          " << files.paraview.string() << "\n";
     }
@@ -511,7 +669,10 @@ int main(int argc, char** argv) {
                       << " resolves grains poorly); use a finer mesh or fewer grains.\n";
         }
 
-        // ---- 6. Gather labels and write outputs ----------------------------------------------
+        // ---- 6. Grain statistics (collective; fixed-point sums, rank-count independent) -------
+        const ms::GrainStatistics stats = ComputeStatistics(report, result);
+
+        // ---- 7. Gather labels and write outputs ----------------------------------------------
         // The grain ids of the local elements, gathered on rank 0 in serial element order
         // (GatherToSerial reads the host copy, so make it current first)
         result.element_grain.HostRead();
@@ -553,9 +714,9 @@ int main(int argc, char** argv) {
                  << "input mesh: " << DescribeMeshInput(options) << "\n"
                  << "rng_seed: " << options.seeds.rng_seed << "\n"
                  << "metric: " << MetricName(options.tessellation.metric) << "\n"
-                 << "requested grains: " << report.seeding.requested << "\n"
+                 << "grains: " << RequestedGrains(report) << "\n"
                  << "final grains: " << report.num_grains << "\n"
-                 << report.seeding.Summary();
+                 << SeedingText(report);
 
         WrittenFiles files;
         if (write_serial && root) {
@@ -581,6 +742,9 @@ int main(int argc, char** argv) {
             files.region_map = base.string() + ".regions";
         }
         files.grain_table = base.string() + "_grains.csv";
+        if (out.grain_adjacency) {
+            files.grain_adjacency = base.string() + "_adjacency.csv";
+        }
         if (root) {
             ms::WriteOrientationFile(files.orientation_file, result.grain_quat);
             if (want_grain_file) {
@@ -589,7 +753,10 @@ int main(int argc, char** argv) {
             if (result.num_regions > 1) {
                 ms::WriteRegionMap(files.region_map, result.grain_region);
             }
-            ms::WriteGrainTable(files.grain_table, BuildGrainTable(*serial, serial_grain, result));
+            ms::WriteGrainTable(files.grain_table, BuildGrainTable(result, report, stats));
+            if (out.grain_adjacency) {
+                ms::WriteGrainAdjacency(files.grain_adjacency, BuildAdjacencyTable(stats));
+            }
         }
 
         // ParaView view of the distributed mesh (collective); the region field only when there
@@ -604,9 +771,9 @@ int main(int argc, char** argv) {
         }
         MPI_Barrier(comm);
 
-        // ---- 7. Summary ----------------------------------------------------------------------
+        // ---- 8. Summary ----------------------------------------------------------------------
         if (root) {
-            PrintSummary(options, report, files, result.num_regions);
+            PrintSummary(options, report, stats, files, result.num_regions);
         }
     } catch (const std::exception& e) {
         // Every rank that caught an error prints it with its rank number, then stops all ranks.

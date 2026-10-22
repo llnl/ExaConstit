@@ -627,6 +627,8 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
     CheckColumn(table.num_elements.size(), n, "num_elements");
     CheckColumn(table.volume.size(), n, "volume");
     CheckColumn(table.centroid.size(), 3 * n, "centroid");
+    CheckColumn(table.num_neighbors.size(), n, "num_neighbors");
+    CheckColumn(table.target_volume.size(), n, "target_volume");
 
     WriteStream(path, 0, [&](std::ostream& os) {
         // Header row
@@ -645,6 +647,12 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
         }
         if (!table.centroid.empty()) {
             os << ",cx,cy,cz";
+        }
+        if (!table.num_neighbors.empty()) {
+            os << ",num_neighbors";
+        }
+        if (!table.target_volume.empty()) {
+            os << ",target_volume";
         }
         os << '\n';
 
@@ -670,7 +678,49 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
                 os << ',' << table.centroid[3 * g] << ',' << table.centroid[3 * g + 1] << ','
                    << table.centroid[3 * g + 2];
             }
+            if (!table.num_neighbors.empty()) {
+                os << ',' << table.num_neighbors[g];
+            }
+            if (!table.target_volume.empty()) {
+                os << ',' << table.target_volume[g];
+            }
             os << '\n';
+        }
+    });
+}
+
+/**
+ * Grain adjacency CSV writer: check the columns and every row first (so a bad table writes
+ * nothing), then the header row and one row per grain pair, in the order given. The stream
+ * precision of WriteStream (17 significant digits) applies to the areas.
+ */
+void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacencyTable& table) {
+    // Every column must have one entry per pair
+    const std::size_t n = table.grain_a.size();
+    if (table.grain_b.size() != n || table.shared_area.size() != n ||
+        table.num_faces.size() != n) {
+        throw std::invalid_argument("WriteGrainAdjacency: the columns grain_a (" +
+                                    std::to_string(n) + "), grain_b (" +
+                                    std::to_string(table.grain_b.size()) + "), shared_area (" +
+                                    std::to_string(table.shared_area.size()) + ") and num_faces (" +
+                                    std::to_string(table.num_faces.size()) +
+                                    ") must have the same length");
+    }
+    // Each pair is listed once, smaller grain id first, with 1-based ids
+    for (std::size_t k = 0; k < n; ++k) {
+        if (table.grain_a[k] < 1 || table.grain_b[k] <= table.grain_a[k]) {
+            throw std::invalid_argument("WriteGrainAdjacency: row " + std::to_string(k) +
+                                        " needs 1 <= grain_a < grain_b, got (" +
+                                        std::to_string(table.grain_a[k]) + ", " +
+                                        std::to_string(table.grain_b[k]) + ")");
+        }
+    }
+
+    WriteStream(path, 0, [&](std::ostream& os) {
+        os << "grain_a,grain_b,shared_area,num_faces\n";
+        for (std::size_t k = 0; k < n; ++k) {
+            os << table.grain_a[k] << ',' << table.grain_b[k] << ',' << table.shared_area[k]
+               << ',' << table.num_faces[k] << '\n';
         }
     });
 }
