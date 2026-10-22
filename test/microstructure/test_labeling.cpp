@@ -414,8 +414,11 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
                 c.rng_seed, ms::RngPurpose::ORIENTATION,
                 static_cast<std::uint64_t>(result.grain_source_id[static_cast<std::size_t>(g)]));
             ms::RandomQuaternion(rng, 0u, expected);
+            // The driver normalizes every row on the host: expected / |expected|
+            const double n = std::sqrt(expected[0] * expected[0] + expected[1] * expected[1] +
+                                       expected[2] * expected[2] + expected[3] * expected[3]);
             for (int k = 0; k < 4; ++k) {
-                EXPECT_EQ(q[k], expected[k]);
+                EXPECT_EQ(q[k], expected[k] / n);
             }
         }
 
@@ -479,11 +482,13 @@ TEST(GenerateMicrostructure, EmptyRankGivesSameGrains) {
 
 // Orientation assignment on its own. Grain g grew from seed grain_seed[g-1]; with source ids
 // {10, 3, 77, 5} and grain_seed {0, 2, 3}, the grains' source ids are {10, 77, 5}.
-//  - "random": each quaternion is RandomQuaternion of stream (rng_seed, ORIENTATION, source id),
-//    bitwise, unit norm, w >= 0. Keying by source id means a grain keeps its orientation when the
-//    grain numbering changes: with grain_seed {2} alone, grain 1 gets the quaternion grain 2 had.
-//  - "from_source": the seeds' quaternions are copied verbatim, even a non-normalized one
-//    (pass-through: no normalization, sign change or convention conversion).
+//  - "random": each quaternion is RandomQuaternion of stream (rng_seed, ORIENTATION, source id)
+//    divided by its norm (bitwise), unit norm, w >= 0. Keying by source id means a grain keeps
+//    its orientation when the grain numbering changes: with grain_seed {2} alone, grain 1 gets
+//    the quaternion grain 2 had.
+//  - "from_source": the seeds' quaternions are normalized to unit length and otherwise passed
+//    through (no sign change, reordering or convention conversion): (0, -1, 0, 0) keeps its
+//    sign, and the norm-2 row (2, 0, 0, 0) becomes (1, 0, 0, 0).
 //  - "list" (not implemented) and "from_source" without quaternions throw.
 TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
     ms::SeedSet seeds;
@@ -508,10 +513,13 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
             0u, expected);
         double norm2 = 0.0;
         for (int k = 0; k < 4; ++k) {
-            EXPECT_EQ(result.grain_quat[4 * g + k], expected[k]);
             norm2 += expected[k] * expected[k];
         }
         EXPECT_NEAR(std::sqrt(norm2), 1.0, 1e-14);
+        // Every row is normalized on the host: expected / |expected|, bitwise
+        for (int k = 0; k < 4; ++k) {
+            EXPECT_EQ(result.grain_quat[4 * g + k], expected[k] / std::sqrt(norm2));
+        }
         EXPECT_GE(result.grain_quat[4 * g], 0.0);
     }
 
@@ -522,7 +530,7 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
         EXPECT_EQ(renumbered.grain_quat[k], result.grain_quat[4 + k]);
     }
 
-    // Pass-through
+    // Pass-through, normalized to unit length
     seeds.quat = {1.0, 0.0, 0.0, 0.0,  0.5, 0.5, 0.5, 0.5,
                   0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0};
     ms::OrientationOptions from_source;
@@ -530,7 +538,7 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
     ms::MicrostructureResult passed;
     ms::AssignOrientations(from_source, rng_seed, seeds, grain_seed, passed);
     EXPECT_EQ(passed.grain_quat,
-              (std::vector<double>{1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0}));
+              (std::vector<double>{1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0}));
 
     // Not implemented / missing data
     ms::OrientationOptions list;
@@ -542,11 +550,17 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
                  std::invalid_argument);
 }
 
-// Options this pipeline does not implement yet must be refused, on every rank together and
-// before any collective work, instead of being silently ignored: a multi-region mode, seed
-// tables, connected / geodesic distance (the labeler's CheckSupportedTessellation, which the
-// driver calls before seeding), "list" orientations and a vote level outside 0..3. (Fragment
-// splitting, quadrature voting and periodic grains are implemented since Stage 1b; see
+// Options the pipeline cannot honor must be refused, on every rank together and before any
+// collective work, instead of being silently ignored:
+// - Regions.mode = "from_phase" with random seeds: random seeds carry no phases, so there is
+//   nothing to build regions from (regions from phases are implemented since Stage 1d, for seed
+//   tables and voxel maps; see test_driver_stage1d);
+// - Seeds.source = "file" without Seeds.file: seed tables are implemented since Stage 1d, but
+//   the driver refuses a table source that names no table;
+// - connected / geodesic distance (not implemented; the labeler's CheckSupportedTessellation,
+//   which the driver calls before seeding), "list" orientations (not implemented) and a vote
+//   level outside 0..3.
+// (Fragment splitting, quadrature voting and periodic grains are implemented since Stage 1b; see
 // test_driver_stage1bc.)
 TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     mfem::Mesh serial = AutoHex(4);

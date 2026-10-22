@@ -118,6 +118,25 @@ struct GrainTable {
      * seed's target, so compare the target with the sum of their volumes.
      */
     std::vector<double> target_volume;
+    /**
+     * @brief num_grains phase ids, or empty: the phase of each grain (from a seed table, a voxel
+     * map or synthetic phase fractions; -1 for a grain without a phase, e.g. a passthrough
+     * grain). MakeGrainTable fills it only when at least one grain has a phase (>= 0).
+     */
+    std::vector<int> phase;
+    /**
+     * @brief num_grains flags (0 or 1), or empty: 1 for a grain grown from a random filler seed
+     * placed outside the measured region of interest of a seed table, or for a piece the
+     * fragment cleanup split off such a grain (it inherits the flag). MakeGrainTable fills it
+     * only when at least one grain is a filler grain.
+     */
+    std::vector<int> filler;
+    /**
+     * @brief num_grains voxel-map feature ids, or empty: the feature id (the grain id stored in
+     * the voxel file) each grain was read from, -1 for a grain not read from the voxel map (a
+     * passthrough grain). Filled by the caller for voxel-map runs only.
+     */
+    std::vector<std::int64_t> feature_id;
 };
 
 /**
@@ -140,9 +159,12 @@ struct GrainAdjacencyTable {
 /**
  * @brief Builds a GrainTable from the per-grain arrays of a MicrostructureResult.
  *
- * Copies the orientation, region and source id columns; the volume, centroid and element-count
- * columns are left empty for the caller to fill in. Host only, not collective, never throws
- * (apart from std::bad_alloc).
+ * Copies the orientation, region and source id columns. The phase column is copied only when
+ * some grain has a phase (MicrostructureResult::grain_phase >= 0), and the filler column only
+ * when some grain is a filler grain (grain_filler != 0), so runs without phases or filler seeds
+ * keep the shorter table (a column is written only when it carries information). The volume,
+ * centroid, element-count, neighbor, target-volume and feature-id columns are left empty for
+ * the caller to fill in. Host only, not collective, never throws (apart from std::bad_alloc).
  */
 GrainTable MakeGrainTable(const MicrostructureResult& result);
 
@@ -291,8 +313,10 @@ void WriteGrainFile(const std::filesystem::path& path, const mfem::Array<int>& s
 
 /**
  * @brief Writes the grain table as CSV with a header row: grain_id, qw, qx, qy, qz, then every
- * non-empty optional column of @p table (region, source_id, num_elements, volume, cx, cy, cz,
- * num_neighbors, target_volume). Numbers use 17 significant digits. Not collective; host only.
+ * non-empty optional column of @p table, in this order: region, source_id, num_elements, volume,
+ * cx, cy, cz, num_neighbors, target_volume, phase, filler, feature_id (the last three were added
+ * in Stage 1d after the existing columns, so scripts that read columns by position keep
+ * working). Numbers use 17 significant digits. Not collective; host only.
  *
  * @throws std::invalid_argument if a column has the wrong length; std::runtime_error on file
  *         errors.

@@ -7,9 +7,11 @@
  *     for bitwise rank-count independence (METIS partition, a scattered partition with an empty
  *     rank, and a single-rank MPI_COMM_SELF reference computed in the same run);
  *   - CompareWithTargetVolumes: element-level seed volumes against size-control targets;
- *   - the new grain-table columns and the grain adjacency CSV writer (io/output_writer.hpp).
+ *   - the new grain-table columns (neighbors and target volumes; Stage 1d phase, filler and voxel
+ *     feature id) and the grain adjacency CSV writer (io/output_writer.hpp).
  *
- * The end-to-end runs of the tool through mechanics are CTest chains in test_tool_outputs.cmake.
+ * The end-to-end runs of the tool through mechanics are CTest chains in test_tool_outputs.cmake
+ * (Stages 1b/1c) and test_tool_stage1d.cmake (Stage 1d).
  * Registered at 1-4 MPI ranks.
  */
 #include "microstructure/io/output_writer.hpp"
@@ -558,6 +560,61 @@ TEST(OutputWriter, NeighborColumnsAndAdjacencyCsv) {
     ms::GrainAdjacencyTable short_column = adjacency;
     short_column.num_faces.pop_back();
     EXPECT_THROW(ms::WriteGrainAdjacency(dir / "bad.csv", short_column), std::invalid_argument);
+    EXPECT_FALSE(fs::exists(dir / "bad.csv"));
+    fs::remove_all(dir);
+}
+
+// The Stage 1d grain-table columns follow the optional-column rule: MakeGrainTable copies the
+// phase column only when some grain has a phase (-1 = none, as for a passthrough grain) and the
+// filler column only when some grain is a filler grain; the caller adds feature ids for voxel
+// maps. The new columns come after the older ones (phase, filler, feature_id), so existing column
+// positions do not move. Grain 3 plays a passthrough grain (phase -1, feature id -1). Rank 0 only.
+TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
+    if (Rank() != 0) {
+        return;
+    }
+    const fs::path dir = fs::current_path() / "test_tool_outputs_stage1d_scratch";
+    fs::create_directories(dir);
+
+    ms::MicrostructureResult result;
+    result.num_grains = 3;
+    result.grain_quat = {1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0};
+    result.grain_region = {1, 2, 3};
+    result.grain_source_id = {5, 7, -2};
+    // No phase anywhere and no filler grain: neither column is copied
+    result.grain_phase = {-1, -1, -1};
+    result.grain_filler = {0, 0, 0};
+    ms::GrainTable plain = ms::MakeGrainTable(result);
+    EXPECT_TRUE(plain.phase.empty());
+    EXPECT_TRUE(plain.filler.empty());
+    ms::WriteGrainTable(dir / "plain.csv", plain);
+    EXPECT_EQ(ReadText(dir / "plain.csv"),
+              "grain_id,qw,qx,qy,qz,region,source_id\n"
+              "1,1,0,0,0,1,5\n"
+              "2,0,1,0,0,2,7\n"
+              "3,1,0,0,0,3,-2\n");
+
+    // Phases on the first two grains and one filler grain: both columns, plus feature ids
+    result.grain_phase = {0, 4, -1};
+    result.grain_filler = {0, 1, 0};
+    ms::GrainTable table = ms::MakeGrainTable(result);
+    EXPECT_EQ(table.phase, (std::vector<int>{0, 4, -1}));
+    EXPECT_EQ(table.filler, (std::vector<int>{0, 1, 0}));
+    table.num_elements = {2, 3, 4};
+    table.feature_id = {21, 3, -1};
+    ms::WriteGrainTable(dir / "stage1d.csv", table);
+    EXPECT_EQ(ReadText(dir / "stage1d.csv"),
+              "grain_id,qw,qx,qy,qz,region,source_id,num_elements,phase,filler,feature_id\n"
+              "1,1,0,0,0,1,5,2,0,0,21\n"
+              "2,0,1,0,0,2,7,3,4,1,3\n"
+              "3,1,0,0,0,3,-2,4,-1,0,-1\n");
+
+    // A wrong length of a new column is rejected before anything is written
+    table.feature_id = {21, 3};
+    EXPECT_THROW(ms::WriteGrainTable(dir / "bad.csv", table), std::invalid_argument);
+    table.feature_id.clear();
+    table.phase = {1};
+    EXPECT_THROW(ms::WriteGrainTable(dir / "bad.csv", table), std::invalid_argument);
     EXPECT_FALSE(fs::exists(dir / "bad.csv"));
     fs::remove_all(dir);
 }

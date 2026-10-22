@@ -28,6 +28,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -233,7 +234,7 @@ enabled = true
 
 // Values that cannot be stored at all must throw while parsing, rather than silently falling back
 // to a default: unknown enum names ("power" metric, "poisson" placement, "vtk" format), a
-// negative RNG key, a 2-component translation, an unsupported [Source] type (voxel maps would be
+// negative RNG key, a 2-component translation, an unknown [Source] type (it would otherwise be
 // tessellated by mistake), a string where an integer is expected, and a missing options file.
 TEST(MicrostructureOptions, ParseErrors) {
     EXPECT_THROW(FromString("[Tessellation]\nmetric = \"power\"\n"), std::invalid_argument);
@@ -241,7 +242,7 @@ TEST(MicrostructureOptions, ParseErrors) {
     EXPECT_THROW(FromString("[Output]\nmesh_format = \"vtk\"\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Seeds]\nrng_seed = -1\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Seeds]\ntranslate = [1.0, 2.0]\n"), std::invalid_argument);
-    EXPECT_THROW(FromString("[Source]\ntype = \"voxel_map\"\n"), std::invalid_argument);
+    EXPECT_THROW(FromString("[Source]\ntype = \"voxels\"\n"), std::invalid_argument);
     // Wrong TOML types surface as toml11 errors (std::exception)
     EXPECT_THROW(FromString("[Seeds]\nnum_seeds = \"many\"\n"), std::exception);
     EXPECT_THROW(ms::MicrostructureOptions::parse_options_file(data_dir / "does_not_exist.toml"),
@@ -900,6 +901,379 @@ TEST(MicrostructureOptions, GrainAdjacencyOutput) {
     EXPECT_TRUE(options.validate());
     options.output.grain_adjacency = false;
     EXPECT_TRUE(options.validate());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 1d: seed tables, ROI and filler, voxel maps, phases and regions, passthrough attributes
+// ---------------------------------------------------------------------------------------------
+
+// The Stage 1d keys are off by default, so existing options files behave exactly as before:
+// tessellation source, no ROI or filler, no attribute domain, single region, and the [VoxelMap]
+// defaults (canonical format, no quaternion declarations, centroid sampling).
+TEST(MicrostructureOptions, Stage1dDefaults) {
+    const ms::MicrostructureOptions options;
+    EXPECT_EQ(options.source.type, "tessellation");
+    EXPECT_FALSE(options.seeds.use_roi);
+    EXPECT_EQ(options.seeds.fill_outside_roi, "none");
+    EXPECT_EQ(options.seeds.filler_num_seeds, 0);
+    EXPECT_EQ(options.seeds.filler_min_distance_factor, 0.0);
+    EXPECT_TRUE(options.mesh.active_attributes.empty());
+    EXPECT_TRUE(options.mesh.passthrough_attributes.empty());
+    EXPECT_EQ(options.voxel_map.format, "exaconstit");
+    EXPECT_EQ(options.voxel_map.quat_layout, "");
+    EXPECT_EQ(options.voxel_map.conjugate, -1);
+    EXPECT_FALSE(options.voxel_map.has_origin);
+    EXPECT_FALSE(options.voxel_map.has_spacing);
+    EXPECT_EQ(options.voxel_map.sampling, ms::SamplingMode::CENTROID);
+    EXPECT_EQ(options.voxel_map.vote_levels, 2);
+    EXPECT_EQ(options.voxel_map.tile_size, 32);
+    EXPECT_EQ(options.regions.mode, "single");
+    EXPECT_TRUE(options.regions.phase_to_region.empty());
+    EXPECT_TRUE(options.regions.phase_ids.empty());
+    EXPECT_FALSE(options.regions.has_filler_phase);
+}
+
+// Every Stage 1d key lands in its field: [Mesh] attribute lists (TOML map keys are strings, read
+// as integers), the ROI inline table and filler keys, [Source] type = "voxel_map" with every
+// [VoxelMap] key (conjugate is a boolean -> 0/1), the [Regions] phase keys (phases as an array of
+// inline tables), and anisotropy kind "per_seed". Values that cannot be stored throw while
+// parsing: a non-integer attribute key, an ROI without its upper corner, a phases entry without
+// a fraction, and a conjugate that is not a boolean.
+TEST(MicrostructureOptions, Stage1dKeysParse) {
+    const auto options = FromString(R"(
+[Mesh]
+active_attributes = [1, 4]
+passthrough_attributes = { "2" = 3, "7" = 1 }
+[Source]
+type = "voxel_map"
+[Seeds]
+roi = {lo = [0, 0.5, 1], hi = [1, 2, 3]}
+fill_outside_roi = "random"
+filler_num_seeds = 12
+filler_min_distance_factor = 0.4
+[Tessellation]
+metric = "quadric"
+anisotropy = {kind = "per_seed"}
+[VoxelMap]
+format = "dream3d"
+file = "map.dream3d"
+feature_ids_path = "/a/FeatureIds"
+quats_path = "/a/AvgQuats"
+phases_path = "/a/Phases"
+quat_layout = "xyzw"
+conjugate = true
+origin = [1, 2, 3]
+spacing = [0.5, 0.5, 0.25]
+units_scale = 0.001
+translate = [0.1, 0.2, 0.3]
+sampling = "quadrature_vote"
+vote_levels = 3
+tile_size = 16
+[Regions]
+mode = "phase_fractions"
+non_crystalline_phases = [2, 5]
+phase_to_region = { "0" = 1, "3" = 1, "7" = 2 }
+phases = [{id = 1, fraction = 0.7}, {id = 2, fraction = 0.3}]
+filler_phase = 4
+)");
+    EXPECT_EQ(options.mesh.active_attributes, (std::vector<int>{1, 4}));
+    EXPECT_EQ(options.mesh.passthrough_attributes, (std::map<int, int>{{2, 3}, {7, 1}}));
+    EXPECT_EQ(options.source.type, "voxel_map");
+    EXPECT_TRUE(options.seeds.use_roi);
+    EXPECT_EQ(options.seeds.roi_lo, (std::array<double, 3>{0.0, 0.5, 1.0}));
+    EXPECT_EQ(options.seeds.roi_hi, (std::array<double, 3>{1.0, 2.0, 3.0}));
+    EXPECT_EQ(options.seeds.fill_outside_roi, "random");
+    EXPECT_EQ(options.seeds.filler_num_seeds, 12);
+    EXPECT_EQ(options.seeds.filler_min_distance_factor, 0.4);
+    EXPECT_EQ(options.tessellation.anisotropy_kind, "per_seed");
+    const ms::VoxelMapOptions& map = options.voxel_map;
+    EXPECT_EQ(map.format, "dream3d");
+    EXPECT_EQ(map.file, fs::path("map.dream3d"));
+    EXPECT_EQ(map.feature_ids_path, "/a/FeatureIds");
+    EXPECT_EQ(map.quats_path, "/a/AvgQuats");
+    EXPECT_EQ(map.phases_path, "/a/Phases");
+    EXPECT_EQ(map.quat_layout, "xyzw");
+    EXPECT_EQ(map.conjugate, 1);
+    EXPECT_TRUE(map.has_origin);
+    EXPECT_EQ(map.origin, (std::array<double, 3>{1.0, 2.0, 3.0}));
+    EXPECT_TRUE(map.has_spacing);
+    EXPECT_EQ(map.spacing, (std::array<double, 3>{0.5, 0.5, 0.25}));
+    EXPECT_EQ(map.units_scale, 0.001);
+    EXPECT_EQ(map.translate, (std::array<double, 3>{0.1, 0.2, 0.3}));
+    EXPECT_EQ(map.sampling, ms::SamplingMode::QUADRATURE_VOTE);
+    EXPECT_EQ(map.vote_levels, 3);
+    EXPECT_EQ(map.tile_size, 16);
+    EXPECT_EQ(options.regions.mode, "phase_fractions");
+    EXPECT_EQ(options.regions.non_crystalline_phases, (std::vector<int>{2, 5}));
+    EXPECT_EQ(options.regions.phase_to_region, (std::map<int, int>{{0, 1}, {3, 1}, {7, 2}}));
+    EXPECT_EQ(options.regions.phase_ids, (std::vector<int>{1, 2}));
+    EXPECT_EQ(options.regions.phase_fractions, (std::vector<double>{0.7, 0.3}));
+    EXPECT_TRUE(options.regions.has_filler_phase);
+    EXPECT_EQ(options.regions.filler_phase, 4);
+    EXPECT_EQ(FromString("[VoxelMap]\nconjugate = false\n").voxel_map.conjugate, 0);
+
+    EXPECT_THROW(FromString("[Mesh]\npassthrough_attributes = { \"a\" = 2 }\n"),
+                 std::invalid_argument);
+    EXPECT_THROW(FromString("[Mesh]\npassthrough_attributes = { \"2.5\" = 2 }\n"),
+                 std::invalid_argument);
+    // Keys are written as plain integers: no leading blank or '+'
+    EXPECT_THROW(FromString("[Mesh]\npassthrough_attributes = { \" 2\" = 2 }\n"),
+                 std::invalid_argument);
+    EXPECT_THROW(FromString("[Mesh]\npassthrough_attributes = { \"+2\" = 2 }\n"),
+                 std::invalid_argument);
+    EXPECT_EQ(FromString("[Regions]\nphase_to_region = { \"-1\" = 1 }\n").regions.phase_to_region,
+              (std::map<int, int>{{-1, 1}})); // parsed; refused by validate (phase < 0)
+    EXPECT_THROW(FromString("[Seeds]\nroi = {lo = [0, 0, 0]}\n"), std::invalid_argument);
+    EXPECT_THROW(FromString("[Regions]\nphases = [{id = 1}]\n"), std::invalid_argument);
+    EXPECT_THROW(FromString("[VoxelMap]\nconjugate = \"yes\"\n"), std::exception);
+    EXPECT_THROW(FromString("[VoxelMap]\nsampling = \"nearest\"\n"), std::invalid_argument);
+}
+
+// validate() refuses each impossible Stage 1d combination; each case changes a valid baseline
+// in one respect (the valid variants show the checks are not too strict). The seed table baseline
+// uses the checked-in minimal_xyz.csv (validate only checks that it exists).
+TEST(MicrostructureOptions, Stage1dValidationFailures) {
+    using O = ms::MicrostructureOptions;
+    const fs::path table = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+    auto table_options = [&]() {
+        O o = ValidAutoOptions();
+        o.seeds.num_seeds = 0;
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+        o.seeds.file = table;
+        return o;
+    };
+    auto voxel_options = [&]() {
+        O o = ValidAutoOptions();
+        o.seeds.num_seeds = 0;
+        o.source.type = "voxel_map";
+        o.voxel_map.file = table; // any existing file: validate does not open it
+        return o;
+    };
+    auto check = [](O o, auto&& mutate) {
+        mutate(o);
+        return o.validate();
+    };
+    EXPECT_TRUE(table_options().validate());
+    EXPECT_TRUE(voxel_options().validate());
+
+    // ROI and filler
+    auto roi = [](O& o) {
+        o.seeds.use_roi = true;
+        o.seeds.roi_lo = {0.0, 0.0, 0.0};
+        o.seeds.roi_hi = {0.5, 0.5, 0.5};
+        o.seeds.fill_outside_roi = "random";
+    };
+    EXPECT_TRUE(check(table_options(), roi));
+    EXPECT_FALSE(check(ValidAutoOptions(), roi)); // ROI needs a seed table
+    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.fill_outside_roi = "random"; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.fill_outside_roi = "everywhere"; }));
+    EXPECT_FALSE(check(table_options(), [&](O& o) {
+        roi(o);
+        o.seeds.roi_hi = {0.5, 0.0, 0.5};
+    }));
+    EXPECT_FALSE(check(table_options(), [&](O& o) {
+        roi(o);
+        o.seeds.filler_num_seeds = -1;
+    }));
+    // A seed table keeps its measured positions
+    EXPECT_FALSE(check(table_options(), [](O& o) { o.tessellation.lloyd_iterations = 2; }));
+    // Per-seed tensors: quadric metric and a seed table
+    EXPECT_TRUE(check(table_options(), [](O& o) {
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "per_seed";
+    }));
+    EXPECT_FALSE(check(table_options(), [](O& o) { o.tessellation.anisotropy_kind = "per_seed"; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "per_seed";
+    }));
+
+    // Voxel maps: declarations for DREAM.3D quaternions, sane parameters, no tessellation keys
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.file = "missing.h5"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.format = "vtk"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.format = "dream3d";
+        o.orientations.source = "from_source";
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.format = "dream3d";
+        o.orientations.source = "from_source";
+        o.voxel_map.quat_layout = "xyzw"; // conjugate still missing
+    }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.voxel_map.format = "dream3d";
+        o.orientations.source = "from_source";
+        o.voxel_map.quat_layout = "xyzw";
+        o.voxel_map.conjugate = 0;
+    }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.orientations.source = "from_source"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.quat_layout = "zyxw"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.units_scale = 0.0; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.has_spacing = true;
+        o.voxel_map.spacing = {1.0, -1.0, 1.0};
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.vote_levels = 4; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.tile_size = 0; }));
+    EXPECT_FALSE(
+        check(voxel_options(), [](O& o) { o.tessellation.metric = ms::MetricType::LAGUERRE; }));
+    EXPECT_FALSE(
+        check(voxel_options(), [](O& o) { o.tessellation.periodic = {true, false, false}; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.cleanup.keep_component = "seed"; }));
+    EXPECT_FALSE(check(voxel_options(), [&](O& o) {
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+        o.seeds.file = table;
+    }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.seeds.num_seeds = 7; })); // warning only
+    // Canonical maps store w x y z: other declarations contradict the format
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.quat_layout = "xyzw"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.conjugate = 1; }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.voxel_map.quat_layout = "wxyz";
+        o.voxel_map.conjugate = 0;
+    }));
+    // No seeds with a voxel map: a boundary clearance next to passthrough parts is only ignored
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 2}};
+        o.seeds.boundary_clearance = 0.1;
+    }));
+    // Size-related and distance keys are ignored with a warning
+    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.seeds.size.mean_diameter = 0.2; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.source.type = "voxels"; }));
+
+    // Regions
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.regions.mode = "from_phase"; }));
+    EXPECT_TRUE(check(table_options(), [](O& o) { o.regions.mode = "from_phase"; }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.regions.mode = "from_phase"; }));
+    auto fractions = [](O& o) {
+        o.regions.mode = "phase_fractions";
+        o.regions.phase_ids = {1, 2};
+        o.regions.phase_fractions = {0.7, 0.3};
+    };
+    EXPECT_TRUE(check(ValidAutoOptions(), fractions));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.regions.mode = "phase_fractions"; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        fractions(o);
+        o.regions.phase_fractions = {0.7, 0.4};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        fractions(o);
+        o.regions.phase_ids = {1, 1};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        fractions(o);
+        o.regions.phase_fractions = {1.0, 0.0};
+    }));
+    // Synthetic phases with an explicit map: the rules of AssignRegionsFromPhases, checked early
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        fractions(o);
+        o.regions.phase_to_region = {{1, 1}, {2, 1}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) { // phase 2 not mapped
+        fractions(o);
+        o.regions.phase_to_region = {{1, 1}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) { // region 2 unused
+        fractions(o);
+        o.regions.phase_to_region = {{1, 1}, {2, 3}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) { // region 1 mixes crystallinity
+        fractions(o);
+        o.regions.phase_to_region = {{1, 1}, {2, 1}};
+        o.regions.non_crystalline_phases = {2};
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        fractions(o);
+        o.regions.phase_to_region = {{1, 1}, {2, 2}};
+        o.regions.non_crystalline_phases = {2};
+    }));
+    // Polydisperse placement has nothing to place with a seed table
+    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.size.polydisperse_placement = true; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+        o.regions.phase_to_region = {{0, 0}};
+    }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+        o.regions.non_crystalline_phases = {-1};
+    }));
+    // from_phase with filler needs the filler phase
+    EXPECT_FALSE(check(table_options(), [&](O& o) {
+        roi(o);
+        o.regions.mode = "from_phase";
+    }));
+    EXPECT_TRUE(check(table_options(), [&](O& o) {
+        roi(o);
+        o.regions.mode = "from_phase";
+        o.regions.has_filler_phase = true;
+        o.regions.filler_phase = 0;
+    }));
+
+    // Passthrough attributes
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 1}}; }));
+    // single mode: grains are region 1, so region 3 without a region 2 leaves a gap
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 3}}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{0, 2}}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 0}}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.active_attributes = {0}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.active_attributes = {1, 2};
+        o.mesh.passthrough_attributes = {{2, 2}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 2}};
+        o.seeds.boundary_clearance = 0.1;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 2}};
+        o.tessellation.periodic = {false, false, true};
+    }));
+}
+
+// The Stage 1d example files parse to the values they spell out and validate once their input
+// files are found (paths are relative to the directory the tool runs in; the placeholder mesh and
+// voxel map names are replaced by existing files here).
+TEST(MicrostructureOptions, ParseStage1dExamples) {
+    const fs::path dir = data_dir / "microstructure";
+    auto table = ms::MicrostructureOptions::parse_options_file(dir / "seed_table_auto.toml");
+    EXPECT_EQ(table.seeds.source, "file");
+    EXPECT_EQ(table.seeds.placement, ms::SeedPlacement::FILE);
+    EXPECT_TRUE(table.seeds.use_roi);
+    EXPECT_EQ(table.seeds.fill_outside_roi, "random");
+    EXPECT_EQ(table.seeds.size.distribution, "from_source");
+    EXPECT_EQ(table.tessellation.anisotropy_kind, "per_seed");
+    EXPECT_EQ(table.orientations.source, "from_source");
+    EXPECT_EQ(table.regions.mode, "from_phase");
+    EXPECT_TRUE(table.regions.has_filler_phase);
+    table.seeds.file = dir / table.seeds.file;
+    EXPECT_TRUE(table.validate());
+
+    const auto fractions =
+        ms::MicrostructureOptions::parse_options_file(dir / "phase_fractions_auto.toml");
+    EXPECT_EQ(fractions.regions.phase_ids, (std::vector<int>{1, 2}));
+    EXPECT_EQ(fractions.regions.phase_fractions, (std::vector<double>{0.6, 0.4}));
+    EXPECT_EQ(fractions.regions.non_crystalline_phases, (std::vector<int>{2}));
+    EXPECT_TRUE(fractions.validate());
+
+    auto voxel = ms::MicrostructureOptions::parse_options_file(dir / "voxel_map_dream3d.toml");
+    EXPECT_EQ(voxel.source.type, "voxel_map");
+    EXPECT_EQ(voxel.voxel_map.format, "dream3d");
+    EXPECT_EQ(voxel.voxel_map.quat_layout, "xyzw");
+    EXPECT_EQ(voxel.voxel_map.conjugate, 0);
+    EXPECT_EQ(voxel.voxel_map.sampling, ms::SamplingMode::QUADRATURE_VOTE);
+    EXPECT_EQ(voxel.regions.phase_to_region, (std::map<int, int>{{1, 1}, {2, 1}, {3, 2}}));
+    voxel.mesh.floc = data_dir / "cube_tet.mesh";
+    voxel.voxel_map.file = data_dir / "cube_tet.mesh"; // any existing file
+    EXPECT_TRUE(voxel.validate());
+
+    auto plate = ms::MicrostructureOptions::parse_options_file(dir / "build_plate.toml");
+    EXPECT_EQ(plate.mesh.active_attributes, (std::vector<int>{1}));
+    EXPECT_EQ(plate.mesh.passthrough_attributes, (std::map<int, int>{{2, 2}}));
+    plate.mesh.floc = data_dir / "cube_tet.mesh";
+    EXPECT_TRUE(plate.validate());
 }
 
 // MPI must be initialized because the options code prints warnings through WARNING_0_OPT, which

@@ -1,0 +1,35 @@
+# Generator input of the Stage 1d end-to-end test "converter".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# writes a tiny SPPARKS site dump <build>/test/microstructure/end_to_end_stage1d/inputs/
+# e2e_spparks.dump at test time (test_tool_stage1d: 8 x 8 x 8 sites, four column grains, one
+# unassigned site and one one-site island of a repeated spin), converts it with
+#     python scripts/microstructure/spparks_to_voxels.py e2e_spparks.dump e2e_spparks.h5
+# (an "ExaConstit voxel map v1" in lattice units: origin 0, spacing 1), then runs
+#     microstructure_generator -i test/data/microstructure/e2e/converter_spparks.toml
+# in end_to_end_stage1d/np1 and np2 and checks the grain count (4) and that both runs write
+# byte-identical files. No mechanics run.
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        # One element per voxel after the 1/8 scale below
+        length = [1.0, 1.0, 1.0]
+        ncuts = [8, 8, 8]
+
+[Source]
+    type = "voxel_map"
+
+[VoxelMap]
+    format = "exaconstit"
+    # Relative to the directory the generator runs in (np1/ or np2/)
+    file = "../inputs/e2e_spparks.h5"
+    # Lattice units (box [0, 8]^3) to the unit cube
+    units_scale = 0.125
+    sampling = "centroid"
+
+[Output]
+    basename = "e2e_spparks"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

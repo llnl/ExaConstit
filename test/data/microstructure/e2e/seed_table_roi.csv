@@ -1,0 +1,16 @@
+# ExaConstit seed table v1: input of the Stage 1d end-to-end test "seed table"
+# (test/microstructure/test_tool_stage1d.cmake, generator input e2e/seed_table_roi.toml).
+#
+# Hand-written. Six "measured" grains inside the region of interest [0, 1]^3 of a 2 x 1 x 1 bar,
+# plus one row at x = 1.5, outside the ROI, which the generator must drop. Unit quaternions
+# (w x y z, crystal-to-sample, passive), normalized to unit length (a no-op here), otherwise
+# passed through to the orientation file. Phases 0 and 1 share material region 1 and phase 2 is
+# region 2 (phase_to_region in the generator input).
+id,x,y,z,qw,qx,qy,qz,phase
+1,0.2,0.2,0.2,1,0,0,0,0
+2,0.75,0.25,0.3,0.70710678118654757,0.70710678118654757,0,0,0
+4,0.3,0.75,0.4,0.5,0.5,0.5,0.5,1
+5,0.8,0.8,0.7,0,0,0,1,1
+7,0.25,0.3,0.8,0.70710678118654757,0,0.70710678118654757,0,2
+9,0.7,0.55,0.2,0.5,-0.5,0.5,-0.5,2
+12,1.5,0.5,0.5,1,0,0,0,1

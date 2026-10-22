@@ -14,7 +14,12 @@
  * Orientations are unit quaternions in ExaConstit's `w x y z` order, crystal-to-sample and
  * passive (the convention of ExaConstit's orientation file). They are never converted: random
  * orientations are uniform, so the convention does not change their distribution, and
- * orientations supplied by the user are copied verbatim.
+ * orientations supplied by the user are normalized to unit length (q / |q|, double precision)
+ * and otherwise passed through unchanged (convention, sign and component order kept). Random
+ * quaternions are normalized the same way (RandomQuaternion's output divided by its norm on the
+ * host in double precision), so the unit norm does not depend on the accuracy of sin, cos and
+ * sqrt where they were drawn; this may change their last bit relative to RandomQuaternion. Every
+ * row written here therefore has norm 1 to machine precision.
  *
  * **Random orientations.** Grain g grew from seed i = grain_seed[g-1]; its orientation is
  * RandomQuaternion (orientation/random_orientation.hpp) of the counter-based random stream keyed
@@ -33,9 +38,9 @@ namespace exaconstit::microstructure {
  *
  * - orientations.source = "random": result.grain_quat[4(g-1) .. 4(g-1)+3] =
  *   RandomQuaternion(CounterRng(rng_seed, ORIENTATION, seeds.source_id[grain_seed[g-1]]),
- *   sample 0), canonical sign w >= 0;
+ *   sample 0) divided by its norm, canonical sign w >= 0;
  * - orientations.source = "from_source": the 4 values seeds.quat[4i .. 4i+3] of the grain's seed
- *   i, copied verbatim (no normalization or sign change).
+ *   i, normalized to unit length (no sign change or reordering).
  *
  * result.grain_source_id[g-1] = seeds.source_id[grain_seed[g-1]] in both cases, and
  * result.num_grains is set to grain_seed.size(). Regions are not touched.
@@ -51,8 +56,8 @@ namespace exaconstit::microstructure {
  * @param result        output: num_grains, grain_quat (size 4 num_grains) and grain_source_id
  *                      (size num_grains) are overwritten.
  * @throws std::invalid_argument for source = "list" (not implemented yet) or any other value,
- *         for "from_source" without per-seed quaternions, a source_id array of the wrong size,
- *         or a seed index out of range.
+ *         for "from_source" without per-seed quaternions or with a zero / non-finite one, a
+ *         source_id array of the wrong size, or a seed index out of range.
  */
 void AssignOrientations(const OrientationOptions& orientations,
                         std::uint64_t rng_seed,
@@ -67,12 +72,12 @@ void AssignOrientations(const OrientationOptions& orientations,
  * Grain g (row g-1) has the parent seed grain_seed[g-1] and the source id
  * grain_source_id[g-1]:
  * - "random": the orientation is RandomQuaternion of the stream (rng_seed, ORIENTATION,
- *   grain_source_id[g-1]). A grain split off another one carries a derived source id
+ *   grain_source_id[g-1]), normalized. A grain split off another one carries a derived source id
  *   (DeriveFragmentSourceId, labeling/fragment_cleanup.hpp), so it gets its own reproducible
  *   random orientation; a grain that kept its seed's source id gets exactly the orientation
  *   AssignOrientations would give it.
- * - "from_source": the 4 values of the parent seed's quaternion are copied verbatim, so every
- *   piece of a measured grain keeps the measured orientation.
+ * - "from_source": the 4 values of the parent seed's quaternion, normalized to unit length, so
+ *   every piece of a measured grain keeps the measured orientation.
  *
  * result.grain_source_id = grain_source_id and result.num_grains = grain_seed.size().
  * Host only, not collective (replicated inputs give identical tables on every rank).
@@ -88,5 +93,33 @@ void AssignGrainOrientations(const OrientationOptions& orientations,
                              const std::vector<int>& grain_seed,
                              const std::vector<std::int64_t>& grain_source_id,
                              MicrostructureResult& result);
+
+/**
+ * @brief Orientations when only some grains have a supplied orientation: a mix of measured and
+ * generated grains (seed-table grains and random filler grains, or voxel-map features).
+ *
+ * Grain g (row g-1):
+ * - has_source_quat[g-1] != 0: the 4 values source_quat[4(g-1) .. 4(g-1)+3] (w x y z) divided by
+ *   their norm (no sign change or reordering), e.g. the measured orientation of its seed or
+ *   voxel feature (a piece split off a measured grain also copies its parent's orientation);
+ * - otherwise: the random quaternion of the stream (rng_seed, ORIENTATION, grain_source_id[g-1]),
+ *   normalized: exactly what AssignGrainOrientations gives a random grain with that source id.
+ *
+ * result.num_grains, grain_quat and grain_source_id are overwritten; nothing else is touched.
+ * Host only, not collective (replicated inputs give identical tables on every rank).
+ *
+ * @param rng_seed        Seeds.rng_seed, the key of the counter-based RNG.
+ * @param grain_source_id source id of every grain (size N = number of grains).
+ * @param source_quat     4 N values; rows of grains without a supplied orientation are ignored.
+ * @param has_source_quat N flags (1 = copy the supplied row, 0 = random).
+ * @param result          output.
+ * @throws std::invalid_argument if the sizes do not match, or a supplied row is zero or not
+ *         finite (it cannot be normalized).
+ */
+void AssignMixedGrainOrientations(std::uint64_t rng_seed,
+                                  const std::vector<std::int64_t>& grain_source_id,
+                                  const std::vector<double>& source_quat,
+                                  const std::vector<char>& has_source_quat,
+                                  MicrostructureResult& result);
 
 } // namespace exaconstit::microstructure

@@ -1,0 +1,52 @@
+# Generator input of the Stage 1d end-to-end test "voxel dream3d".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# writes the DREAM.3D file <build>/test/microstructure/end_to_end_stage1d/inputs/
+# e2e_two_phase.dream3d at test time (test_tool_stage1d, from the shared fixture
+# test/microstructure/common/voxel_fixture.hpp: a 20 x 16 x 12 voxelized Voronoi map of six
+# features on [0, 1.25] x [0, 1] x [0, 0.75], a 2 x 2 x 2 hole of unassigned voxels, two phases,
+# quaternions stored x y z w), then runs
+#     microstructure_generator -i test/data/microstructure/e2e/voxel_dream3d.toml
+# in end_to_end_stage1d/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
+# byte-identical files, and then runs mechanics on the result (deck
+# test/data/microstructure/mechanics/ms_voxel_dream3d_np2.toml, two [[Materials]] blocks).
+#
+# What it exercises: grains read from a DREAM.3D voxel map on a hex mesh twice as coarse as the
+# voxels (each element is labeled by a volume-weighted vote of 64 points), with the declared
+# quaternion layout and one ExaConstit region per phase. The 2 x 2 x 2 hole of unassigned voxels
+# is outvoted: every element still gets votes from assigned voxels, so no element needs the fill
+# from its neighbors (the log reports 0 filled; the fill is exercised by the converter case,
+# e2e/converter_spparks.toml).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        # The voxel box, with elements of two voxels per edge
+        length = [1.25, 1.0, 0.75]
+        ncuts = [10, 8, 6]
+
+[Source]
+    type = "voxel_map"
+
+[VoxelMap]
+    format = "dream3d"
+    # Relative to the directory the generator runs in (np1/ or np2/)
+    file = "../inputs/e2e_two_phase.dream3d"
+    # DREAM.3D stores AvgQuats scalar last; the fixture needs no conjugate
+    quat_layout = "xyzw"
+    conjugate = false
+    sampling = "quadrature_vote"
+    vote_levels = 2
+
+[Orientations]
+    source = "from_source"
+
+[Regions]
+    # Phases 1 and 2 -> regions 1 and 2 (ascending phase order)
+    mode = "from_phase"
+
+[Output]
+    basename = "e2e_voxel_dream3d"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

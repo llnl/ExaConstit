@@ -1,0 +1,55 @@
+# Microstructure generator example: grains read from a DREAM.3D voxel map instead of a
+# tessellation. Each element gets the feature (grain) of the voxels under it; elements over
+# unindexed voxels (id 0) or outside the voxel grid are filled from their neighbors.
+#
+# Run with:
+#     microstructure_generator -i voxel_map_dream3d.toml
+# (the mesh and the .dream3d file named below are placeholders: point them at your own files).
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+
+[Mesh]
+    type = "file"
+    floc = "specimen.mesh"
+
+[Source]
+    # "voxel_map": no seeds and no tessellation; [Seeds] and [Tessellation] are not used
+    type = "voxel_map"
+
+[VoxelMap]
+    # "dream3d" (DREAM.3D 6.x SIMPL or DREAM3D-NX files) or "exaconstit" (canonical layout:
+    # /grain_ids, /origin, /spacing, optional /features/{id,quat,phase})
+    format = "dream3d"
+    file = "microstructure.dream3d"
+    # FeatureIds, AvgQuats and Phases are found by dataset name; give the HDF5 paths explicitly
+    # when the file holds several candidates, e.g.
+    # feature_ids_path = "/DataContainers/ImageDataContainer/CellData/FeatureIds"
+    # How the file stores its quaternions. Required (no defaults) whenever DREAM.3D orientations
+    # are read: DREAM.3D writes x y z w; whether a conjugate is needed to get ExaConstit's
+    # crystal-to-sample passive rotation depends on how the file was produced.
+    quat_layout = "xyzw"
+    conjugate = false
+    # Voxel coordinates to mesh coordinates: x_mesh = units_scale * x_file + translate (no
+    # rotation). `origin` / `spacing` (file units) would replace the file's grid geometry.
+    units_scale = 1.0
+    translate = [0.0, 0.0, 0.0]
+    # "centroid": the voxel under each element centroid; "quadrature_vote": a volume-weighted vote
+    # of 8^vote_levels points per element (better on meshes coarser than the voxels)
+    sampling = "quadrature_vote"
+    vote_levels = 2
+
+[Cleanup]
+    # "auto" merges every disconnected piece of a feature into its best neighbor (the feature
+    # list is measured, so no new grains are made)
+    fragments = "auto"
+
+[Orientations]
+    # The per-feature AvgQuats, reordered to w x y z per the declarations above
+    source = "from_source"
+
+[Regions]
+    # One region per phase; phases 1 and 2 share region 1, phase 3 is region 2
+    mode = "from_phase"
+    phase_to_region = { "1" = 1, "2" = 1, "3" = 2 }
+
+[Output]
+    basename = "voxel_map_dream3d"

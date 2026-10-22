@@ -1,0 +1,130 @@
+# ExaConstit deck for the microstructure generator Stage 1d end-to-end test "seed table"
+# (1 MPI rank).
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
+# build directory, runs there
+#     microstructure_generator -i test/data/microstructure/e2e/seed_table_roi.toml
+# (paths shown relative to the repository root; CTest passes absolute paths) at 2 MPI ranks
+# (basename "e2e_seed_table"), and then runs mechanics on this deck with 1 MPI rank.
+# The test passes when mechanics completes.
+#
+# What it exercises: two ExaConstit material regions from a seed table's phases (phases 0 and 1
+# -> region 1, phase 2 -> region 2; the filler grains have phase 0), read through the generator's
+# region map, grain file (ExaConstit's type = "auto" mesh path; a grain file is required with
+# several materials on an auto mesh) and orientation file (table quaternions normalized to unit
+# length, otherwise passed through; random ones for the filler grains). Both blocks use the
+# same crystal-plasticity model; only the region bookkeeping differs. The np1 and np2 results are compared by the chain.
+# Five fixed steps of 0.1 s keep it short.
+Version = "0.8.0"
+basename = "ms_seed_table_np1"
+# Grain id of every element of the auto box (only read for type = "auto")
+grain_file = "e2e_seed_table.grains"
+# "grain region" per line; [[Materials]] block k is region k
+region_mapping_file = "e2e_seed_table.regions"
+
+[[Materials]]
+    # Region 1: phases 0 and 1, and the filler grains
+    name = "phases_0_and_1"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured): 6 table seeds + 6 filler
+        # seeds; every crystal-plasticity block uses the total grain count
+        num_grains = 12
+        orientation_file = "e2e_seed_table.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    # Region 2: phase 2
+    name = "phase_2"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured): 6 table seeds + 6 filler
+        # seeds; every crystal-plasticity block uses the total grain count
+        num_grains = 12
+        orientation_file = "e2e_seed_table.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Boundary ids (ExaConstit's auto-mesh numbering): 1 bottom (z = 0),
+# 2 left (x = 0), 3 front (y = 0), 4 top (z = 1).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "auto"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    [Mesh.Auto]
+        length = [2.0, 1.0, 1.0]
+        ncuts = [16, 8, 8]

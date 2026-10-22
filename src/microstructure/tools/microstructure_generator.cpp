@@ -27,12 +27,19 @@
  *     gathered on rank 0.
  *  7. Gather the grain ids to serial element order, set them as element attributes of the serial
  *     mesh, and write the outputs selected by [Output]: mesh file(s) or grain file, orientation
- *     file, region map, grain table <base>_grains.csv, optional grain adjacency table
+ *     file, region map (whenever there is more than one region), grain table <base>_grains.csv
+ *     (with phase, filler and voxel feature id columns when they carry information), optional
+ *     grain adjacency table
  *     <base>_adjacency.csv ([Output] grain_adjacency), ParaView view.
- *  8. Rank-0 summary: provenance, what each optional stage did (Johnson-Mehl nucleation, size
- *     targets, Lloyd relaxation, volume fit with the element-level volume errors against the
- *     targets, periodic images, quadrature vote, fragment cleanup), grain statistics, and how to
- *     point an ExaConstit input at the outputs. No ExaConstit input file is generated.
+ *  8. Rank-0 summary: provenance (including the grain source: generated seeds, a seed table or
+ *     a voxel map, with its file and format), how the grains were made (seed generator,
+ *     Johnson-Mehl nucleation, seed table with its region of interest and filler seeds, or voxel
+ *     map grid, fill and read counts), what each optional stage did (size targets, Lloyd
+ *     relaxation, volume fit with the element-level volume errors against the targets, periodic
+ *     images, quadrature vote, fragment cleanup), grain statistics, phase fractions and regions,
+ *     passthrough parts, and how to point an ExaConstit input at the outputs: the [[Materials]]
+ *     blocks in region order with the phases, crystallinity and passthrough parts of each. No
+ *     ExaConstit input file is generated.
  *
  * Errors inside the pipeline are normally thrown on all ranks together by the library (its
  * checks are either made on identical data or globally reduced). The tool catches them, prints
@@ -52,6 +59,7 @@
 #include "mfem.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -59,12 +67,14 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mpi.h>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -275,8 +285,12 @@ ms::GrainStatistics ComputeStatistics(const ms::GenerationReport& report,
 
 /*
  * BuildGrainTable: the grain table columns. Orientation, region and source id come from the
- * result; element count, volume, centroid and neighbor count from the statistics; the target
- * volume column (the target of the seed each grain grew from) only when size targets were used.
+ * result, and so do the phase and filler columns when they carry information (MakeGrainTable:
+ * phases only when some grain has one, the filler flag only when some grain is a filler grain);
+ * element count, volume, centroid and neighbor count come from the statistics; the target volume
+ * column (the target of the seed each grain grew from) only when size targets were used, with 0
+ * for grains that did not grow from a seed (passthrough grains, grain_seed = -1); the feature id
+ * column (the grain id in the voxel file, -1 for passthrough grains) only for voxel maps.
  */
 ms::GrainTable BuildGrainTable(const ms::MicrostructureResult& result,
                                const ms::GenerationReport& report,
@@ -289,9 +303,13 @@ ms::GrainTable BuildGrainTable(const ms::MicrostructureResult& result,
     if (!report.seed_target_volume.empty()) {
         table.target_volume.resize(report.grain_seed.size());
         for (std::size_t g = 0; g < report.grain_seed.size(); ++g) {
+            const int seed = report.grain_seed[g];
             table.target_volume[g] =
-                report.seed_target_volume[static_cast<std::size_t>(report.grain_seed[g])];
+                (seed >= 0) ? report.seed_target_volume[static_cast<std::size_t>(seed)] : 0.0;
         }
+    }
+    if (report.used_voxel_map) {
+        table.feature_id = report.grain_feature;
     }
     return table;
 }
@@ -330,12 +348,67 @@ std::string DescribeFit(const ms::WeightFitReport& fit) {
     return os.str();
 }
 
+/** "(x, y, z)" of a 3-vector, for logs. */
+std::string Triple(const std::array<double, 3>& v) {
+    std::ostringstream os;
+    os << "(" << v[0] << ", " << v[1] << ", " << v[2] << ")";
+    return os.str();
+}
+
+/** Comma-separated list of integers ("none" when empty), for logs. */
+template <typename T>
+std::string JoinList(const std::vector<T>& values) {
+    if (values.empty()) {
+        return "none";
+    }
+    std::ostringstream os;
+    for (std::size_t k = 0; k < values.size(); ++k) {
+        os << (k > 0 ? ", " : "") << values[k];
+    }
+    return os.str();
+}
+
+/**
+ * DescribeGrainSource: one line naming where the grains come from, for the log and the mesh
+ * header provenance: the voxel map file and its format, the seed table file, Johnson-Mehl
+ * nucleation, or generated seeds.
+ */
+std::string DescribeGrainSource(const ms::MicrostructureOptions& options,
+                                const ms::GenerationReport& report) {
+    if (report.used_voxel_map) {
+        return "voxel map " + options.voxel_map.file.string() + " (format \"" +
+               options.voxel_map.format + "\")";
+    }
+    if (report.used_seed_table) {
+        return "seed table " + options.seeds.file.string() +
+               " (format \"ExaConstit seed table v1\")";
+    }
+    if (report.used_johnson_mehl) {
+        return "Johnson-Mehl nucleation";
+    }
+    return "generated seeds";
+}
+
 /*
- * RequestedGrains: the requested grain count for the log and the mesh header. With Johnson-Mehl
- * nucleation the count is not requested but follows from the nucleation (num_nuclei is only an
- * optional cap; 0 means no cap), so say that instead of printing "0 requested".
+ * RequestedGrains: the requested grain count for the log and the mesh header.
+ * - Johnson-Mehl: the count is not requested but follows from the nucleation (num_nuclei is only
+ *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
+ * - Voxel map: the grains are the features of the map that the mesh touches; nothing is
+ *   requested.
+ * - Seed table: the table seeds kept inside the ROI, plus the filler seeds asked for (given, or
+ *   the automatic count).
  */
 std::string RequestedGrains(const ms::GenerationReport& report) {
+    if (report.used_voxel_map) {
+        return "read from the voxel map";
+    }
+    if (report.used_seed_table) {
+        std::string text = std::to_string(report.num_table_seeds) + " from the seed table";
+        if (report.used_filler) {
+            text += " + " + std::to_string(report.num_filler_requested) + " filler requested";
+        }
+        return text;
+    }
     if (!report.used_johnson_mehl) {
         return std::to_string(report.seeding.requested) + " requested";
     }
@@ -346,21 +419,294 @@ std::string RequestedGrains(const ms::GenerationReport& report) {
     return "set by Johnson-Mehl nucleation (no nucleus limit)";
 }
 
-/**
- * SeedingText: the seeding report for the log and the mesh header: the Johnson-Mehl report for
- * nucleation runs (the generic seeding summary would show "N of 0 requested"), the seed
- * generator's summary otherwise.
+/** Prefixes every line of `text` with `indent` (for nesting a sub-report in the log). */
+std::string Indent(const std::string& text, const std::string& indent) {
+    std::ostringstream os;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        os << indent << line << "\n";
+    }
+    return os.str();
+}
+
+/*
+ * SeedTableText: the seed-table section of the log (Seeds.source = "file"): rows read, rows
+ * dropped because they lie outside the region of interest (ROI), the optional columns found and
+ * the ignored ones; then the ROI box and, with random filler seeds, the material volumes inside
+ * and outside the ROI, the filler seeds requested and placed, and the filler seed generator's own
+ * report (indented).
  */
-std::string SeedingText(const ms::GenerationReport& report) {
+std::string SeedTableText(const ms::MicrostructureOptions& options,
+                          const ms::GenerationReport& report) {
+    std::ostringstream os;
+    const ms::SeedOptions& seeds = options.seeds;
+    os << "seed table: " << seeds.file.string() << " (units_scale " << seeds.units_scale
+       << ", translate " << Triple(seeds.translate) << "): " << report.num_table_rows
+       << " rows read, " << report.num_table_dropped << " dropped outside the ROI, "
+       << report.num_table_seeds << " used\n";
+
+    // Optional columns present in the table (x, y, z and id are always there or implied)
+    std::vector<std::string> columns;
+    if (report.table_has_quat) {
+        columns.push_back("orientation (qw, qx, qy, qz)");
+    }
+    if (report.table_has_phase) {
+        columns.push_back("phase");
+    }
+    if (report.table_has_weight) {
+        columns.push_back("weight");
+    }
+    if (report.table_has_volume) {
+        columns.push_back("size");
+    }
+    if (report.table_has_shape) {
+        columns.push_back("shape tensor");
+    }
+    os << "  optional columns: " << JoinList(columns) << "; ignored columns: "
+       << JoinList(report.table_ignored_columns) << "\n";
+
+    // Region of interest and filler seeds
+    if (report.used_roi) {
+        os << "region of interest: " << Triple(report.roi_lo) << " - " << Triple(report.roi_hi)
+           << " (mesh units)\n";
+    }
+    if (report.used_filler) {
+        os << "filler seeds outside the ROI: material volume inside the ROI "
+           << report.roi_material_volume << ", outside " << report.outside_material_volume
+           << "; " << report.num_filler_requested << " requested ("
+           << (seeds.filler_num_seeds > 0 ? "given"
+                                          : "automatic: same mean grain volume as the ROI")
+           << "), " << report.num_filler_seeds << " placed, source ids from "
+           << report.filler_source_id_offset << "; " << report.num_filler_grains
+           << " final filler grains\n";
+        os << Indent(report.filler_seeding.Summary(), "  ");
+    }
+    return os.str();
+}
+
+/*
+ * VoxelMapText: the voxel-map section of the log ([Source] type = "voxel_map"): the file, the
+ * id dataset used, the grid (dimensions, and origin and spacing in mesh units after
+ * units_scale/translate), the sampling, the elements filled from their neighbors (no voxel vote:
+ * holes of unassigned voxels, or parts of the mesh outside the grid), the sample points outside
+ * the grid, and (with_read_counts) the voxel tiles and voxels read by all ranks together. A tile
+ * is a cube of tile_size^3 voxels ([VoxelMap] tile_size) that a rank reads from the file in one
+ * piece; only the tiles its elements touch are read. The
+ * read counts depend on the rank count (every rank reads the tiles its own elements touch, and
+ * neighboring ranks read shared tiles twice), so they go to the log only, never into the mesh
+ * header, which must be identical for every rank count.
+ */
+std::string VoxelMapText(const ms::MicrostructureOptions& options,
+                         const ms::GenerationReport& report,
+                         bool with_read_counts) {
+    std::ostringstream os;
+    const ms::VoxelMapOptions& voxel = options.voxel_map;
+    const ms::VoxelGridInfo& grid = report.voxel_grid;
+    os << "voxel map: " << voxel.file.string() << " (format \"" << voxel.format
+       << "\", ids from " << grid.feature_ids_path << ")\n";
+    os << "  grid " << grid.dims[0] << " x " << grid.dims[1] << " x " << grid.dims[2]
+       << " voxels, origin " << Triple(grid.origin) << ", spacing " << Triple(grid.spacing)
+       << " (mesh units)\n";
+    os << "  sampling: "
+       << (voxel.sampling == ms::SamplingMode::QUADRATURE_VOTE
+               ? "quadrature_vote (vote_levels " + std::to_string(voxel.vote_levels) + ")"
+               : std::string("centroid"))
+       << "; " << report.voxel_num_filled << " element(s) filled from their neighbors ("
+       << report.voxel_fill_rounds << " fill round(s)); " << report.voxel_num_outside_points
+       << " sample point(s) outside the grid\n";
+    if (with_read_counts) {
+        os << "  read by all ranks: " << report.voxel_total_tiles_read << " tile(s), "
+           << report.voxel_total_voxels_read
+           << " voxel(s) (a tile is a cube of tile_size^3 voxels read from the file in one piece; "
+              "these counts depend on the rank count)\n";
+    }
+    return os.str();
+}
+
+/**
+ * SourceText: the report of how the grains were made, for the log and the mesh header: the
+ * voxel-map section for voxel maps (the generic seeding summary would be all zeros), the
+ * seed-table / ROI / filler section for seed tables, the Johnson-Mehl report for nucleation runs
+ * (the generic seeding summary would show "N of 0 requested"), and the seed generator's summary
+ * otherwise. `for_log` false (the mesh header) leaves out the rank-count-dependent voxel read
+ * counts.
+ */
+std::string SourceText(const ms::MicrostructureOptions& options,
+                       const ms::GenerationReport& report,
+                       bool for_log) {
+    if (report.used_voxel_map) {
+        return VoxelMapText(options, report, for_log);
+    }
+    if (report.used_seed_table) {
+        return SeedTableText(options, report);
+    }
     if (report.used_johnson_mehl) {
         return report.johnson_mehl.Summary();
     }
     return report.seeding.Summary();
 }
 
+/**
+ * Grain id of passthrough attribute number k (0-based, ascending attribute order): the
+ * passthrough grains are always the last grains, num_grains - P + 1 .. num_grains.
+ */
+int PassthroughGrainId(const ms::GenerationReport& report,
+                       const ms::MicrostructureResult& result,
+                       std::size_t k) {
+    return result.num_grains - report.num_passthrough_grains + 1 + static_cast<int>(k);
+}
+
+/*
+ * RegionContents: what region r (1-based) holds, in words, for the region section and the
+ * [[Materials]] guidance: its phases (MicrostructureResult::region_phases), whether it is
+ * crystalline (region_crystalline), the passthrough attributes mapped to it (with their grain
+ * ids), and whether filler grains are in it.
+ */
+std::string RegionContents(const ms::GenerationReport& report,
+                           const ms::MicrostructureResult& result,
+                           int r) {
+    const auto ri = static_cast<std::size_t>(r - 1);
+    std::ostringstream os;
+    // Phases
+    if (ri < result.region_phases.size() && !result.region_phases[ri].empty()) {
+        const std::vector<int>& phases = result.region_phases[ri];
+        os << (phases.size() > 1 ? "phases " : "phase ") << JoinList(phases);
+    } else {
+        os << "no phase data";
+    }
+    // Crystallinity
+    const bool crystalline =
+        ri < result.region_crystalline.size() && result.region_crystalline[ri] != 0;
+    os << "; " << (crystalline ? "crystalline" : "not crystalline (identity orientations)");
+    // Passthrough parts of the mesh in this region
+    for (std::size_t k = 0; k < report.passthrough_attributes.size(); ++k) {
+        if (k < report.passthrough_regions.size() && report.passthrough_regions[k] == r) {
+            os << "; passthrough attribute " << report.passthrough_attributes[k] << " (grain "
+               << PassthroughGrainId(report, result, k) << ")";
+        }
+    }
+    // Filler grains in this region
+    int filler = 0;
+    for (std::size_t g = 0; g < result.grain_filler.size(); ++g) {
+        if (result.grain_filler[g] != 0 && result.grain_region[g] == r) {
+            ++filler;
+        }
+    }
+    if (filler > 0) {
+        os << "; " << filler << " filler grain(s)";
+    }
+    return os.str();
+}
+
+/*
+ * DescribePhasesAndRegions: rank-0 text for phases and regions, printed when the grains carry
+ * phases or there is more than one region.
+ *  - Phase volume fractions over the tessellated / voxel-labeled material (passthrough grains
+ *    have no phase and are left out of the denominator), from the grain volumes of the
+ *    statistics (fixed-point sums, so identical for every rank count). For
+ *    Regions.mode = "phase_fractions" the requested fractions and the ones the assignment reached
+ *    (GenerationReport::phase_fraction_achieved) are shown too.
+ *  - Per region: grain count, volume, volume fraction of the whole mesh, and RegionContents.
+ */
+std::string DescribePhasesAndRegions(const ms::MicrostructureOptions& options,
+                                     const ms::GenerationReport& report,
+                                     const ms::MicrostructureResult& result,
+                                     const ms::GrainStatistics& stats) {
+    std::ostringstream os;
+    bool any_phase = false;
+    for (const int p : result.grain_phase) {
+        any_phase = any_phase || (p >= 0);
+    }
+    if (!any_phase && result.num_regions <= 1) {
+        return "";
+    }
+    const auto ng = static_cast<std::size_t>(result.num_grains);
+    const bool have_volumes = stats.volume.size() == ng;
+
+    // Phase volume fractions (active material only)
+    if (any_phase && have_volumes) {
+        std::map<int, std::pair<int, double>> phase_sum; // phase -> (grains, volume)
+        double active_volume = 0.0;
+        for (std::size_t g = 0; g < ng; ++g) {
+            const bool passthrough =
+                static_cast<int>(g) >= result.num_grains - report.num_passthrough_grains;
+            if (passthrough) {
+                continue;
+            }
+            active_volume += stats.volume[g];
+            if (g < result.grain_phase.size() && result.grain_phase[g] >= 0) {
+                phase_sum[result.grain_phase[g]].first += 1;
+                phase_sum[result.grain_phase[g]].second += stats.volume[g];
+            }
+        }
+        os << "phases (Regions.mode = \"" << options.regions.mode << "\"):\n";
+        for (const auto& [phase, sum] : phase_sum) {
+            os << "  phase " << phase << ": " << sum.first << " grain(s), volume fraction "
+               << (active_volume > 0.0 ? sum.second / active_volume : 0.0) << "\n";
+        }
+        if (!report.phase_fraction_ids.empty()) {
+            os << "  phase_fractions targets -> achieved:";
+            for (std::size_t k = 0; k < report.phase_fraction_ids.size(); ++k) {
+                const double target = (k < options.regions.phase_fractions.size())
+                                          ? options.regions.phase_fractions[k]
+                                          : 0.0;
+                const double achieved = (k < report.phase_fraction_achieved.size())
+                                            ? report.phase_fraction_achieved[k]
+                                            : 0.0;
+                os << (k > 0 ? "," : "") << " phase " << report.phase_fraction_ids[k] << " "
+                   << target << " -> " << achieved;
+            }
+            os << "\n";
+        }
+    }
+
+    // Regions
+    os << "regions: " << result.num_regions << "\n";
+    for (int r = 1; r <= result.num_regions; ++r) {
+        int grains = 0;
+        double volume = 0.0;
+        for (std::size_t g = 0; g < ng; ++g) {
+            if (result.grain_region[g] == r) {
+                ++grains;
+                volume += have_volumes ? stats.volume[g] : 0.0;
+            }
+        }
+        os << "  region " << r << ": " << grains << " grain(s), volume " << volume
+           << " (fraction " << (stats.total_volume > 0.0 ? volume / stats.total_volume : 0.0)
+           << "); " << RegionContents(report, result, r) << "\n";
+    }
+    return os.str();
+}
+
+/*
+ * DescribePassthrough: rank-0 text for the passthrough parts of the mesh ([Mesh]
+ * passthrough_attributes): for each attribute its grain id, its region and its element count,
+ * plus the number of active (tessellated or voxel-labeled) elements.
+ */
+std::string DescribePassthrough(const ms::GenerationReport& report,
+                                const ms::MicrostructureResult& result) {
+    if (report.passthrough_attributes.empty()) {
+        return "";
+    }
+    std::ostringstream os;
+    os << "passthrough parts (one grain each, identity orientation; active attributes "
+       << JoinList(report.active_attributes) << " with " << report.num_active_elements
+       << " elements):\n";
+    for (std::size_t k = 0; k < report.passthrough_attributes.size(); ++k) {
+        os << "  attribute " << report.passthrough_attributes[k] << " -> grain "
+           << PassthroughGrainId(report, result, k) << " -> region "
+           << (k < report.passthrough_regions.size() ? report.passthrough_regions[k] : 0) << " ("
+           << (k < report.passthrough_element_counts.size() ? report.passthrough_element_counts[k]
+                                                            : 0)
+           << " elements)\n";
+    }
+    return os.str();
+}
+
 /*
  * DescribeStages: rank-0 text for every optional stage that ran after seeding (the seeding or
- * Johnson-Mehl report itself is printed by SeedingText), from the driver's report, plus
+ * Johnson-Mehl report itself is printed by SourceText), from the driver's report, plus
  * the element-level comparison of seed volumes with their targets and the grain statistics.
  * Stages that did not run print nothing (the fragment cleanup always runs).
  */
@@ -413,8 +759,17 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
     // Element level: the final grains are whole elements, so on coarse meshes their volumes
     // deviate from the targets by more than the fit tolerance reached on the fit samples
     if (!report.seed_target_volume.empty()) {
-        const ms::TargetVolumeComparison cmp = ms::CompareWithTargetVolumes(
-            stats.volume, report.grain_seed, report.seed_target_volume);
+        // Only grains grown from a seed have a target (passthrough grains have grain_seed -1)
+        std::vector<double> seeded_volume;
+        std::vector<int> seeded_seed;
+        for (std::size_t g = 0; g < report.grain_seed.size(); ++g) {
+            if (report.grain_seed[g] >= 0) {
+                seeded_volume.push_back(stats.volume[g]);
+                seeded_seed.push_back(report.grain_seed[g]);
+            }
+        }
+        const ms::TargetVolumeComparison cmp =
+            ms::CompareWithTargetVolumes(seeded_volume, seeded_seed, report.seed_target_volume);
         os << "element-level volume error vs targets (final grains, summed per seed): max "
            << cmp.max_relative_error << " (seed " << cmp.worst_seed << "), mean "
            << cmp.mean_relative_error << "; " << cmp.num_empty_seeds
@@ -431,8 +786,9 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
            << " matched pairs, " << report.periodic_faces.unmatched_faces << " unmatched\n";
     }
 
-    // Quadrature vote
-    if (tess.sampling == ms::SamplingMode::QUADRATURE_VOTE) {
+    // Quadrature vote of the tessellation (voxel maps have their own sampling, reported by
+    // VoxelMapText; the Tessellation options are not used there)
+    if (!report.used_voxel_map && tess.sampling == ms::SamplingMode::QUADRATURE_VOTE) {
         os << "quadrature vote: " << report.num_split_elements
            << " element(s) cut by a grain boundary (decided by majority volume)\n";
     }
@@ -476,31 +832,105 @@ struct WrittenFiles {
 };
 
 /*
- * PrintSummary: rank-0 end-of-run log. Provenance first, then the stage reports (DescribeStages),
- * then the files, then how to reference
- * them from an ExaConstit options file (key names from src/options: [Mesh] type/floc,
- * [Mesh.Auto] length/ncuts, top-level grain_file and region_mapping_file, and
- * [Materials.Grain] ori_type/num_grains/orientation_file/ori_stride). No TOML is written.
+ * MaterialsGuidance: the ExaConstit setup guidance for the materials (no TOML is generated; the
+ * user writes the deck). ExaConstit numbers its [[Materials]] blocks 1, 2, ... in file order,
+ * and block k serves region k of the region map (option_parser_v2.cpp sets region_id from the
+ * block order; simulation_state.cpp create_grains_to_map reads the "grain region" lines). So the
+ * guidance lists the R blocks in region order, each with what it holds (RegionContents).
+ *
+ * Every crystal-plasticity block reads the same orientation file and must use the same
+ * num_grains = N, the total grain count including passthrough grains: the orientation file has
+ * one row per grain, and ExaConstit checks every block's num_grains for equality with the grain
+ * count of the shared orientation data: SimulationState::LoadSharedOrientationData
+ * (simulation_state.cpp:1439, "Grain count mismatch") when the data is already loaded, and
+ * PrepareOrientationForRegion (simulation_state.cpp:1575, per material). The parser's
+ * finalize_material_options (option_parser_v2.cpp:70) only checks that later blocks do not
+ * exceed the first one, which is weaker; the equality checks are the binding ones.
+ * Non-crystalline and passthrough grains carry the identity orientation (1, 0, 0, 0) in that
+ * file, so a crystal-plasticity model may be used for them too, or any other material model that
+ * ignores orientations.
+ */
+std::string MaterialsGuidance(const ms::GenerationReport& report,
+                              const ms::MicrostructureResult& result,
+                              const WrittenFiles& files) {
+    std::ostringstream os;
+    const std::string grain_line = "[Materials.Grain] ori_type = \"quat\", ori_stride = 4, "
+                                   "num_grains = " +
+                                   std::to_string(result.num_grains) + ", orientation_file = \"" +
+                                   files.orientation_file.string() + "\"";
+    if (result.num_regions <= 1) {
+        os << "  one [[Materials]] block (single region; no region mapping file needed) with\n"
+           << "    " << grain_line << "\n";
+    } else {
+        os << "  top-level region_mapping_file = \"" << files.region_map.string() << "\" and "
+           << result.num_regions
+           << " [[Materials]] blocks, in region order (block k is region k):\n";
+        for (int r = 1; r <= result.num_regions; ++r) {
+            os << "    block " << r << " (region " << r << "): "
+               << RegionContents(report, result, r) << "\n";
+        }
+        os << "  every crystal-plasticity block uses\n"
+           << "    " << grain_line << "\n"
+           << "  (num_grains counts all grains";
+        if (report.num_passthrough_grains > 0) {
+            os << ", including the " << report.num_passthrough_grains << " passthrough grain(s)";
+        }
+        os << "; the orientation file is shared by all blocks)\n";
+    }
+    bool identity = report.num_passthrough_grains > 0;
+    for (const char c : result.region_crystalline) {
+        identity = identity || (c == 0);
+    }
+    if (identity) {
+        os << "  non-crystalline and passthrough grains carry the identity orientation "
+              "(1, 0, 0, 0) in the orientation file\n";
+    }
+    return os.str();
+}
+
+/*
+ * PrintSummary: rank-0 end-of-run log. Provenance first (version, mesh, grain source, random
+ * key, metric for tessellations, grain counts), then how the grains were made (SourceText), the
+ * stage reports (DescribeStages), phases and regions (DescribePhasesAndRegions), passthrough
+ * parts (DescribePassthrough), the data warnings the driver raised, the files, and finally how
+ * to reference them from an ExaConstit options file (key names from src/options: [Mesh]
+ * type/floc, [Mesh.Auto] length/ncuts, top-level grain_file and region_mapping_file, and
+ * [Materials.Grain] ori_type/num_grains/orientation_file/ori_stride; MaterialsGuidance). No TOML
+ * is written.
  */
 void PrintSummary(const ms::MicrostructureOptions& options,
                   const ms::GenerationReport& report,
+                  const ms::MicrostructureResult& result,
                   const ms::GrainStatistics& stats,
-                  const WrittenFiles& files,
-                  int num_regions) {
+                  const WrittenFiles& files) {
     std::ostringstream os;
     os << "\n=== microstructure_generator summary ===\n"
        << "ExaConstit version " << VersionString() << "\n"
        << "input mesh: " << DescribeMeshInput(options) << " (" << report.num_elements
        << " elements)\n"
-       << "rng_seed = " << options.seeds.rng_seed << ", metric = "
-       << MetricName(options.tessellation.metric) << "\n"
-       << "grains: " << RequestedGrains(report) << ", " << report.num_seeds
-       << " seeds placed, " << report.num_grains << " final grains";
+       << "grain source: " << DescribeGrainSource(options, report) << "\n"
+       << "rng_seed = " << options.seeds.rng_seed;
+    if (!report.used_voxel_map) {
+        os << ", metric = " << MetricName(options.tessellation.metric);
+    }
+    os << "\ngrains: " << RequestedGrains(report);
+    if (!report.used_voxel_map) {
+        os << ", " << report.num_seeds << " seeds placed";
+    }
+    os << ", " << report.num_grains << " final grains";
+    if (report.num_passthrough_grains > 0) {
+        os << " (including " << report.num_passthrough_grains << " passthrough grain(s))";
+    }
     if (report.num_empty_seeds > 0) {
         os << " (" << report.num_empty_seeds << " seeds won no element)";
     }
-    os << "\n" << SeedingText(report);
+    os << "\n" << SourceText(options, report, true);
     os << DescribeStages(options, report, stats);
+    os << DescribePhasesAndRegions(options, report, result, stats);
+    os << DescribePassthrough(report, result);
+    for (const std::string& warning : report.warnings) {
+        os << "data warning: " << warning << "\n";
+    }
 
     os << "Files written:\n";
     if (!files.serial_mesh.empty()) {
@@ -539,17 +969,13 @@ void PrintSummary(const ms::MicrostructureOptions& options,
            << ", " << options.mesh.mxyz[1] << ", " << options.mesh.mxyz[2] << "], ncuts = ["
            << options.mesh.nxyz[0] << ", " << options.mesh.nxyz[1] << ", "
            << options.mesh.nxyz[2] << "] and top-level grain_file = \""
-           << files.grain_file.string() << "\"\n";
+           << files.grain_file.string() << "\"";
+        if (result.num_regions > 1) {
+            os << " (required with several materials)";
+        }
+        os << "\n";
     }
-    os << "  [Materials.Grain] ori_type = \"quat\", ori_stride = 4, num_grains = "
-       << report.num_grains << ", orientation_file = \"" << files.orientation_file.string()
-       << "\"\n";
-    if (num_regions > 1) {
-        os << "  top-level region_mapping_file = \"" << files.region_map.string() << "\" and "
-           << num_regions << " [[Materials]] blocks, in region order\n";
-    } else {
-        os << "  one [[Materials]] block (single region; no region mapping file needed)\n";
-    }
+    os << MaterialsGuidance(report, result, files);
     os << "  Mesh refinement (ref_ser/ref_par) in ExaConstit keeps the grain ids of each "
           "parent element.\n";
     std::cout << os.str() << std::flush;
@@ -712,11 +1138,15 @@ int main(int argc, char** argv) {
                  << VersionString() << "\n"
                  << "command: " << cl.text << "\n"
                  << "input mesh: " << DescribeMeshInput(options) << "\n"
-                 << "rng_seed: " << options.seeds.rng_seed << "\n"
-                 << "metric: " << MetricName(options.tessellation.metric) << "\n"
-                 << "grains: " << RequestedGrains(report) << "\n"
+                 << "grain source: " << DescribeGrainSource(options, report) << "\n"
+                 << "rng_seed: " << options.seeds.rng_seed << "\n";
+        if (!report.used_voxel_map) {
+            comments << "metric: " << MetricName(options.tessellation.metric) << "\n";
+        }
+        comments << "grains: " << RequestedGrains(report) << "\n"
                  << "final grains: " << report.num_grains << "\n"
-                 << SeedingText(report);
+                 << "regions: " << result.num_regions << "\n"
+                 << SourceText(options, report, false);
 
         WrittenFiles files;
         if (write_serial && root) {
@@ -773,7 +1203,7 @@ int main(int argc, char** argv) {
 
         // ---- 8. Summary ----------------------------------------------------------------------
         if (root) {
-            PrintSummary(options, report, stats, files, result.num_regions);
+            PrintSummary(options, report, result, stats, files);
         }
     } catch (const std::exception& e) {
         // Every rank that caught an error prints it with its rank number, then stops all ranks.

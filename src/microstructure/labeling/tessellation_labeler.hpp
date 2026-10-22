@@ -73,7 +73,10 @@ void CheckSupportedTessellation(const TessellationOptions& tessellation);
  *   default, which reproduces Voronoi distances);
  * - "columnar": MakeColumnarTensor(anisotropy_axis) = I - a a^T (geometry/anisotropy_tensors.hpp):
  *   grains unbounded along the unit axis a;
- * - "lamellar": MakeLamellarTensor(anisotropy_normal) = n n^T: layers perpendicular to n.
+ * - "lamellar": MakeLamellarTensor(anisotropy_normal) = n n^T: layers perpendicular to n;
+ * - "per_seed": tessellation.global_tensor as stored; the seeds carry their own tensors
+ *   (SeedSet::shape, e.g. from the shape columns of a seed table), which the labeler uses
+ *   whenever SeedSet::shape is not empty.
  *
  * Only the Quadric metric reads the tensor. Host only, not collective.
  *

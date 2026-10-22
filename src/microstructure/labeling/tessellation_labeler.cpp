@@ -68,6 +68,12 @@ std::array<double, 6> EffectiveGlobalTensor(const TessellationOptions& tessellat
     if (kind == "none" || kind == "tensor") {
         return tessellation.global_tensor;
     }
+    // "per_seed": every seed carries its own tensor (SeedSet::shape, from the shape columns of a
+    // seed table), so the global tensor is not used by the search; return the stored one so the
+    // periodic-image bound and the metric setup still get a valid (identity by default) tensor
+    if (kind == "per_seed") {
+        return tessellation.global_tensor;
+    }
     if (kind == "columnar") {
         return MakeColumnarTensor(tessellation.anisotropy_axis);
     }
@@ -75,7 +81,7 @@ std::array<double, 6> EffectiveGlobalTensor(const TessellationOptions& tessellat
         return MakeLamellarTensor(tessellation.anisotropy_normal);
     }
     throw std::invalid_argument("Tessellation labeler: unknown anisotropy kind \"" + kind +
-                                "\" (expected none, tensor, columnar or lamellar)");
+                                "\" (expected none, tensor, columnar, lamellar or per_seed)");
 }
 
 /*

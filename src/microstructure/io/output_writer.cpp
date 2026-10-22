@@ -358,13 +358,42 @@ void detail::WriteGzip(std::streambuf& sink,
 #endif
 }
 
-/** Copies the per-grain columns; the remaining columns stay empty for the caller. */
+/**
+ * Copies the per-grain columns; the remaining columns stay empty for the caller.
+ *
+ * The phase and filler columns follow the optional-column rule of the grain table (a column is
+ * written only when it says something): phases only when at least one grain has a phase id
+ * >= 0 (-1 means "no phase"), the filler flag only when at least one grain grew from a filler
+ * seed. The filler flags are stored as char in the result (a plain byte array) and copied to
+ * int here, so the CSV shows 0/1 and not a character.
+ */
 GrainTable MakeGrainTable(const MicrostructureResult& result) {
     GrainTable table;
     table.num_grains = result.num_grains;
     table.quat = result.grain_quat;
     table.region = result.grain_region;
     table.source_id = result.grain_source_id;
+
+    // Phase column: only if some grain carries a phase
+    bool any_phase = false;
+    for (const int p : result.grain_phase) {
+        any_phase = any_phase || (p >= 0);
+    }
+    if (any_phase) {
+        table.phase = result.grain_phase;
+    }
+
+    // Filler column: only if some grain is a filler grain
+    bool any_filler = false;
+    for (const char f : result.grain_filler) {
+        any_filler = any_filler || (f != 0);
+    }
+    if (any_filler) {
+        table.filler.resize(result.grain_filler.size());
+        for (std::size_t g = 0; g < result.grain_filler.size(); ++g) {
+            table.filler[g] = (result.grain_filler[g] != 0) ? 1 : 0;
+        }
+    }
     return table;
 }
 
@@ -629,6 +658,9 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
     CheckColumn(table.centroid.size(), 3 * n, "centroid");
     CheckColumn(table.num_neighbors.size(), n, "num_neighbors");
     CheckColumn(table.target_volume.size(), n, "target_volume");
+    CheckColumn(table.phase.size(), n, "phase");
+    CheckColumn(table.filler.size(), n, "filler");
+    CheckColumn(table.feature_id.size(), n, "feature_id");
 
     WriteStream(path, 0, [&](std::ostream& os) {
         // Header row
@@ -653,6 +685,17 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
         }
         if (!table.target_volume.empty()) {
             os << ",target_volume";
+        }
+        // Stage 1d columns, after the older ones, so the positions of the existing columns stay
+        // the same and scripts that read columns by position keep working
+        if (!table.phase.empty()) {
+            os << ",phase";
+        }
+        if (!table.filler.empty()) {
+            os << ",filler";
+        }
+        if (!table.feature_id.empty()) {
+            os << ",feature_id";
         }
         os << '\n';
 
@@ -683,6 +726,15 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
             }
             if (!table.target_volume.empty()) {
                 os << ',' << table.target_volume[g];
+            }
+            if (!table.phase.empty()) {
+                os << ',' << table.phase[g];
+            }
+            if (!table.filler.empty()) {
+                os << ',' << table.filler[g];
+            }
+            if (!table.feature_id.empty()) {
+                os << ',' << table.feature_id[g];
             }
             os << '\n';
         }

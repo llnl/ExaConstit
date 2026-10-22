@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/microstructure_options.hpp"
@@ -11,9 +12,11 @@
 
 #include "mfem.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+#include <string>
 #include <vector>
 
 /**
@@ -25,8 +28,8 @@ namespace exaconstit::microstructure {
 
 /**
  * @brief What GenerateMicrostructure did, for logs and provenance. Identical on every rank
- * (all counts are global), except `adjacency`, which describes this rank's mesh partition.
- * Host data.
+ * (all counts are global), except `adjacency`, which describes this rank's mesh partition, and
+ * the per-rank voxel read counts `voxel_tiles_read` / `voxel_voxels_read`. Host data.
  *
  * Optional stages fill their sub-report and set the matching `used_*` / `ran_*` flag; the
  * sub-reports of stages that did not run keep their default values.
@@ -43,6 +46,12 @@ struct GenerationReport {
     JohnsonMehlReport johnson_mehl;
     /** @brief Number of seeds that were labeled (= seeding.achieved). */
     std::int64_t num_seeds = 0;
+    /**
+     * @brief The seed set the labeling used (after any Lloyd moves and with the final weights):
+     * positions in mesh units, source ids, weights and per-seed tensors when present. Seed i is
+     * the seed of GenerationReport::grain_seed index i. Empty for voxel maps.
+     */
+    SeedSet seeds;
     /** @brief Material volume (fixed-point sum of the element volumes, length^3); 0 when no stage
      * needed it (size targets, polydisperse placement, a seed count from the mean grain size,
      * Johnson-Mehl). */
@@ -68,12 +77,19 @@ struct GenerationReport {
     /** @brief Periodic face pairing used by the fragment cleanup (zero when not periodic). */
     PeriodicFaceReport periodic_faces;
     /**
-     * @brief The face adjacency of the mesh partition that the fragment cleanup used (with
-     * periodic face pairing when any axis is periodic). Shared so callers (the tool's grain
-     * statistics) can reuse it instead of repeating the face-neighbor exchange and the periodic
-     * gather. It refers to the `pmesh` passed to GenerateMicrostructure and is valid only while
-     * that mesh lives and is not refined or repartitioned. Never null after a successful call.
-     * Per-rank data (the only member that differs between ranks).
+     * @brief The face adjacency of the `pmesh` passed to GenerateMicrostructure (the whole mesh,
+     * with periodic face pairing when any axis is periodic), matching
+     * MicrostructureResult::element_grain. Shared so callers (the tool's grain statistics) can
+     * reuse it instead of repeating the face-neighbor exchange and the periodic gather. It is
+     * valid only while that mesh lives and is not refined or repartitioned. Never null after a
+     * successful call. Per-rank data (with `voxel_tiles_read` and `voxel_voxels_read`, the only
+     * members that differ between ranks).
+     *
+     * Normally this is the adjacency the fragment cleanup used. With passthrough attributes the
+     * cleanup ran on the sub-mesh of the active elements, which is destroyed before
+     * GenerateMicrostructure returns, so the driver builds a separate adjacency of the whole mesh
+     * for this field (one extra face-neighbor exchange); nothing that refers to the sub-mesh
+     * leaves the driver.
      */
     std::shared_ptr<const MeshAdjacency> adjacency;
     /** @brief Quadrature vote: elements cut by a grain boundary (global; 0 for centroids). */
@@ -87,8 +103,10 @@ struct GenerationReport {
     int num_grains = 0;
     /**
      * @brief Size num_grains: 0-based index into the full seed set (seed order, the SeedSet the
-     * labeling used, before any periodic images) of the seed each final grain descends from. A
-     * grain split off by the cleanup has its parent grain's seed.
+     * labeling used, before any periodic images: seed-table rows first, then the filler seeds) of
+     * the seed each final grain descends from. A grain split off by the cleanup has its parent
+     * grain's seed. -1 for grains that did not grow from a seed (voxel-map grains, passthrough
+     * grains).
      */
     std::vector<int> grain_seed;
     /** @brief Seeds that won no element (num_seeds - num_labeled_grains): seeds in parts of the
@@ -103,22 +121,120 @@ struct GenerationReport {
     int num_coincident_seeds = 0;
     /** @brief Global number of elements of the labeled mesh. */
     std::int64_t num_elements = 0;
+
+    // ---- Stage 1d: seed tables, ROI filler, voxel maps, phases and regions, passthrough ------
+
+    /** @brief True when the seeds came from a seed table (Seeds.source = "file"). */
+    bool used_seed_table = false;
+    /** @brief Rows read from the seed table. */
+    std::int64_t num_table_rows = 0;
+    /** @brief Table rows dropped because their position lies outside the ROI box. */
+    std::int64_t num_table_dropped = 0;
+    /** @brief Table seeds used (rows read minus dropped rows), seed indices 0..num - 1. */
+    std::int64_t num_table_seeds = 0;
+    /** @brief Which optional columns the table had (io/seed_table_io.hpp SeedTable::has_*). */
+    bool table_has_quat = false;
+    bool table_has_phase = false;
+    bool table_has_weight = false;
+    bool table_has_volume = false;
+    bool table_has_shape = false;
+    /** @brief Unknown table columns that were ignored (lower case). */
+    std::vector<std::string> table_ignored_columns;
+    /** @brief True when Seeds.roi was given; the box (mesh units) follows. */
+    bool used_roi = false;
+    std::array<double, 3> roi_lo = {0.0, 0.0, 0.0};
+    std::array<double, 3> roi_hi = {0.0, 0.0, 0.0};
+    /** @brief With filler seeds: material volume strictly inside / outside the ROI box (fixed-point
+     * quadrature sums, length^3; seeding/roi_filler.hpp). 0 without filler. */
+    double roi_material_volume = 0.0;
+    double outside_material_volume = 0.0;
+    /** @brief True when random filler seeds were requested (fill_outside_roi = "random"). */
+    bool used_filler = false;
+    /** @brief Filler seeds requested (given, or the automatic count) and placed. */
+    std::int64_t num_filler_requested = 0;
+    std::int64_t num_filler_seeds = 0;
+    /** @brief source_id of the first filler candidate: max table id + 1 (whole table). */
+    std::int64_t filler_source_id_offset = 0;
+    /** @brief The seed generator's report for the filler seeds. */
+    SeedingReport filler_seeding;
+    /** @brief Final grains that grew from filler seeds (MicrostructureResult::grain_filler). */
+    int num_filler_grains = 0;
+
+    /** @brief True when the grains came from a voxel map (Source.type = "voxel_map"). */
+    bool used_voxel_map = false;
+    /** @brief The voxel grid (dimensions, origin and spacing in mesh units, id dataset path). */
+    VoxelGridInfo voxel_grid;
+    /** @brief Elements filled from their neighbors (no voxel vote; global). */
+    std::int64_t voxel_num_filled = 0;
+    /** @brief Fill rounds that assigned at least one element. */
+    int voxel_fill_rounds = 0;
+    /** @brief Sample points outside the voxel grid (global). */
+    std::int64_t voxel_num_outside_points = 0;
+    /** @brief Voxel tiles and voxels read by this rank (local counts: per-rank data). */
+    std::int64_t voxel_tiles_read = 0;
+    std::int64_t voxel_voxels_read = 0;
+    /** @brief Voxel tiles and voxels read by all ranks together (global sums). */
+    std::int64_t voxel_total_tiles_read = 0;
+    std::int64_t voxel_total_voxels_read = 0;
+    /** @brief Size num_grains: voxel feature id each final grain descends from, -1 for grains not
+     * read from a voxel map. */
+    std::vector<std::int64_t> grain_feature;
+
+    /** @brief Regions.mode = "phase_fractions": the phase ids and the volume fractions achieved
+     * (element volumes, regions/region_assigner.hpp). Empty otherwise. */
+    std::vector<int> phase_fraction_ids;
+    std::vector<double> phase_fraction_achieved;
+
+    /** @brief True when [Mesh] listed active or passthrough attributes (an AttributeDomain). */
+    bool used_attribute_domain = false;
+    /** @brief True when the active elements formed a sub-mesh (some passthrough attribute). */
+    bool used_submesh = false;
+    /** @brief Active and passthrough attributes (ascending), the region of each passthrough
+     * attribute and its global element count; same order. */
+    std::vector<int> active_attributes;
+    std::vector<int> passthrough_attributes;
+    std::vector<int> passthrough_regions;
+    std::vector<std::int64_t> passthrough_element_counts;
+    /** @brief Global number of active (tessellated or voxel-labeled) elements. */
+    std::int64_t num_active_elements = 0;
+    /** @brief Passthrough grains appended after the active grains (one per attribute). */
+    int num_passthrough_grains = 0;
+
+    /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
+    std::vector<std::string> warnings;
 };
 
 /**
  * @brief Labels the elements of `pmesh` with grains and assigns orientations and regions.
  *
- * Pipeline (Stages 1a-1c):
+ * Pipeline (Stages 1a-1d):
  *  1. Support checks: options this pipeline does not implement are refused before any work.
- *  2. Preflight: the mesh must be 3D, have one element geometry, be conforming, have no inverted
- *     elements and no periodic (discontinuous) Nodes (CheckMesh, mesh/preflight.hpp).
- *  3. Seeds, replicated identically on every rank: Johnson-Mehl nucleation
+ *  2. Preflight of the whole mesh (passthrough parts included): the mesh must be 3D, have one
+ *     element geometry, be conforming, have no inverted elements and no periodic
+ *     (discontinuous) Nodes (CheckMesh, mesh/preflight.hpp).
+ *  2b. Active part ([Mesh] active_attributes / passthrough_attributes): an AttributeDomain
+ *     (mesh/attribute_domain.hpp); seeding, labeling and cleanup run on its ActiveMesh() (a
+ *     sub-mesh of the active elements when there are passthrough attributes).
+ *  Voxel maps ([Source] type = "voxel_map") replace steps 3-8: ReadVoxelGridInfo,
+ *     LabelElementsFromVoxels (centroid or vote sampling, fill of unassigned elements) and
+ *     CompactFeatureLabels (labeling/voxel_labeler.hpp), then the cleanup of step 9.
+ *  3. Seeds, replicated identically on every rank. A seed table (Seeds.source = "file",
+ *     io/seed_table_io.hpp): rows outside Seeds.roi dropped, plus random filler seeds outside the
+ *     ROI (seeding/roi_filler.hpp) when fill_outside_roi = "random"; table columns supply
+ *     orientations, phases, weights (weighted metrics), volumes ([Seeds.Size] from_source:
+ *     targets summing to the material inside the ROI with filler, else to the whole material;
+ *     filler seeds share the outside volume equally) and shape tensors (anisotropy kind
+ *     per_seed). Otherwise Johnson-Mehl nucleation
  *     (seeding/johnson_mehl.hpp, Additive weights a_i = -v t_i), or GenerateSeeds
  *     (seeding/seed_generators.hpp: rejection, element-weighted or lattice; with
  *     [Seeds.Size] polydisperse_placement, polydisperse RSA with exclusion radii
  *     kappa r_i, largest first). The seed count comes from num_seeds or, when it is 0, from the
  *     [Seeds.Size] mean grain size. Size targets (morphology/size_targets.hpp) give every seed a
- *     target volume; with the Laguerre metric the seeds start with weights w_i = r_i^2.
+ *     target volume; with the Laguerre metric the seeds start with weights w_i = r_i^2 (even
+ *     without fit_volumes), unless a seed table supplies weights, which are then kept. Filler
+ *     seeds next to table weights get the mean table weight, or with size targets (Laguerre)
+ *     their own r_j^2 plus the mean of (table weight - r_i^2) over the table rows, so a common
+ *     offset of the table weights cannot empty them.
  *  4. (Periodic images are built inside the labeling, step 6.)
  *  5. Lloyd relaxation (morphology/lloyd.hpp, optionally centroidal power) and/or the volume fit
  *     (morphology/weight_fit.hpp), when requested.
@@ -129,13 +245,26 @@ struct GenerationReport {
  *  9. Fragment cleanup (labeling/fragment_cleanup.hpp) over the face adjacency of the mesh; with
  *     periodic axes the adjacency pairs matching faces on opposite periodic planes, so a grain
  *     that wraps around the box is one grain. Policy from [Cleanup] (auto = split large pieces
- *     and merge tiny ones for generated seeds), keep rule (largest piece or the piece containing
- *     the seed), min_grain_elements.
+ *     and merge tiny ones for generated seeds, merge every extra piece for data-driven sources:
+ *     seed tables and voxel maps), keep rule (largest piece or the piece containing the seed),
+ *     min_grain_elements.
  * 10. Orientations: one quaternion per final grain. Random orientations are keyed by the grain's
- *     source id: the seed's id, or for a grain split off by the cleanup a derived id
- *     (DeriveFragmentSourceId), so every piece gets its own reproducible orientation;
- *     orientations from a data source are copied from the parent seed.
- * 11. Regions: one region (region 1 for every grain); Regions.mode = "single" only so far.
+ *     source id: the seed's id (the feature id for voxel grains), or for a grain split off by the
+ *     cleanup a derived id (DeriveFragmentSourceId), so every piece gets its own reproducible
+ *     orientation; with Orientations.source = "from_source" measured orientations (table
+ *     quaternions, voxel feature quaternions) are taken from the parent seed or feature,
+ *     normalized to unit length and otherwise passed through unchanged (convention, sign and
+ *     component order kept), and grains without one (filler grains and their pieces) get random
+ *     ones. Every row of MicrostructureResult::grain_quat has norm 1 to machine precision
+ *     (checked before returning).
+ * 11. Phases: from the table / voxel features (filler grains: Regions.filler_phase), or synthetic
+ *     phases with prescribed fractions (AssignPhaseFractions on fixed-point element volumes).
+ * 12. Regions: "single" (every grain region 1), or AssignRegionsFromPhases
+ *     (regions/region_assigner.hpp); grains of non-crystalline regions get the identity
+ *     quaternion (1, 0, 0, 0).
+ * 13. Passthrough: labels mapped back to the whole mesh (AttributeDomain::ToParent) and one grain
+ *     appended per passthrough attribute (identity quaternion, its region, phase -1, source id
+ *     -attribute). The phase regions and passthrough regions together must be exactly 1..R.
  *
  * Collective over `comm`: every rank of `comm` must call it with identical `options`. The result
  * does not depend on the number of ranks: element labels of the same element are identical for
@@ -156,10 +285,12 @@ struct GenerationReport {
  *                pass it (the global reductions for the report run either way).
  * @return per-local-element grain ids and the replicated per-grain tables (see
  *         MicrostructureResult).
- * @throws std::runtime_error if the mesh fails preflight or seeding fails (infeasible minimum
- *         distance, stall, empty mesh, no nucleus); std::invalid_argument for options this
- *         pipeline does not implement yet (seed tables, connected/geodesic distance, "list"
- *         orientations, multi-region modes) and invalid combinations reaching the driver. Every
+ * @throws std::runtime_error if the mesh fails preflight, seeding fails (infeasible minimum
+ *         distance, stall, empty mesh, no nucleus), or a seed table / voxel map cannot be read;
+ *         std::invalid_argument for options this pipeline does not implement yet
+ *         (connected/geodesic distance, "list" orientations), invalid combinations reaching the
+ *         driver, data that the options need but the source lacks (e.g. from_source
+ *         orientations without quaternions), and region ids that are not exactly 1..R. Every
  *         check is either made on identical data on all ranks or globally reduced, so all ranks
  *         throw together.
  */

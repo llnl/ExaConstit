@@ -17,6 +17,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,10 +26,10 @@
  * @file microstructure_options.hpp
  * @brief Options of the microstructure generator (tool input and, later, the mechanics hook).
  *
- * One struct per TOML table ([Mesh], [Seeds], [Tessellation], [Cleanup], [Orientations],
- * [Regions], [Output]), collected in MicrostructureOptions. The defaults written here are the
- * "-n N" quick path: Voronoi tessellation of rejection-sampled random seeds, random orientations,
- * one region, gzip-compressed serial mesh output.
+ * One struct per TOML table ([Mesh], [Source], [Seeds], [Tessellation], [VoxelMap], [Cleanup],
+ * [Orientations], [Regions], [Output]), collected in MicrostructureOptions. The defaults written
+ * here are the "-n N" quick path: Voronoi tessellation of rejection-sampled random seeds, random
+ * orientations, one region, gzip-compressed serial mesh output.
  *
  * Fields that select among a few named choices but have no enum in microstructure_types.hpp are
  * stored as std::string; each lists its accepted values. Parsing lives in from_toml() and the
@@ -47,11 +48,12 @@
 namespace exaconstit::microstructure {
 
 /**
- * @brief Where the mesh comes from ([Mesh] and its sub-table [Mesh.Auto]).
+ * @brief Where the mesh comes from ([Mesh] and its sub-table [Mesh.Auto]), and which parts of it
+ * receive grains.
  *
- * TOML keys: `type`, `floc`, and for type = "auto" the sub-table [Mesh.Auto] with `ncuts` (alias
- * `nxyz`) and `length` (alias `mxyz`). If both a name and its alias are given, `ncuts` / `length`
- * win.
+ * TOML keys: `type`, `floc`, `active_attributes`, `passthrough_attributes`, and for type = "auto"
+ * the sub-table [Mesh.Auto] with `ncuts` (alias `nxyz`) and `length` (alias `mxyz`). If both a
+ * name and its alias are given, `ncuts` / `length` win.
  */
 struct MeshInput {
     /**
@@ -73,6 +75,34 @@ struct MeshInput {
      * [0, Lx] x [0, Ly] x [0, Lz] (TOML `length`, alias `mxyz`).
      */
     std::array<double, 3> mxyz = {1.0, 1.0, 1.0};
+    /**
+     * @brief Element attributes (> 0) of the parts of the mesh that receive grains (TOML
+     * `active_attributes = [1, 4]`). Empty (default) means every attribute not listed in
+     * passthrough_attributes. Seeding, labeling and cleanup then run on the sub-mesh of these
+     * elements only (mesh/attribute_domain.hpp).
+     */
+    std::vector<int> active_attributes;
+    /**
+     * @brief Parts of the mesh kept as one grain each, without a tessellation: mesh element
+     * attribute (> 0) -> ExaConstit region id (>= 1) of that part (TOML
+     * `passthrough_attributes = { "2" = 3 }`; TOML keys are strings and are read as integers).
+     * Typical use: the build plate under an additively manufactured part, or a grip. Each
+     * passthrough attribute becomes one extra grain with the identity orientation in its region;
+     * a passthrough region may share its id with a phase region (same material). Empty (default):
+     * every element is active.
+     */
+    std::map<int, int> passthrough_attributes;
+};
+
+/**
+ * @brief What defines the grains ([Source]).
+ */
+struct SourceOptions {
+    /**
+     * @brief "tessellation" (grains grown from seeds: [Seeds] and [Tessellation]) or "voxel_map"
+     * (grain ids read from a voxelized microstructure: [VoxelMap]; no seeds, no tessellation).
+     */
+    std::string type = "tessellation";
 };
 
 /**
@@ -213,7 +243,10 @@ struct SeedOptions {
     std::string lattice_type = "cubic";
     /** @brief Random lattice offset as a fraction of the lattice spacing (>= 0). */
     double lattice_jitter = 0.0;
-    /** @brief Seed table for source = "file" (relative to the current working directory). */
+    /**
+     * @brief Seed table for source = "file" (relative to the current working directory), in the
+     * "ExaConstit seed table v1" CSV format (io/seed_table_io.hpp).
+     */
     std::filesystem::path file;
     /**
      * @brief Scale applied to the table positions before `translate` (> 0): x_mesh = units_scale
@@ -223,6 +256,42 @@ struct SeedOptions {
     double units_scale = 1.0;
     /** @brief Translation (mesh length units) applied to the table positions after scaling. */
     std::array<double, 3> translate = {0.0, 0.0, 0.0};
+    /**
+     * @brief source = "file" only: a region of interest (ROI) was given (TOML
+     * `roi = {lo = [x, y, z], hi = [x, y, z]}`, mesh length units, after units_scale and
+     * translate). Table rows whose position lies outside the closed box [roi_lo, roi_hi] are
+     * dropped (and counted in the report). Typical use: the measured volume of an HEDM scan.
+     * Note the two box tests: rows are kept in the closed box (a row exactly on a face stays),
+     * while the ROI material volume V_roi of the filler counts material strictly inside it.
+     */
+    bool use_roi = false;
+    /** @brief Lower corner of the ROI box (mesh units). */
+    std::array<double, 3> roi_lo = {0.0, 0.0, 0.0};
+    /** @brief Upper corner of the ROI box (mesh units; > roi_lo on every axis). */
+    std::array<double, 3> roi_hi = {0.0, 0.0, 0.0};
+    /**
+     * @brief How the material outside the ROI gets grains: "none" (default; the table grains grow
+     * into it) or "random" (random "filler" seeds strictly outside the ROI box,
+     * seeding/roi_filler.hpp; needs `roi`). Filler seeds get source ids max table id + 1, + 2, ...
+     * (max over the whole table, before the ROI drop), random orientations, and the phase
+     * Regions.filler_phase. Their metric weight follows the table so they compete like an
+     * average table grain: with table weights and no size targets, the mean table weight; with
+     * table weights and size targets (Laguerre), their target weight r^2 plus the mean over the
+     * table rows of (table weight - target weight r^2). Weighted metrics only see weight
+     * differences, so this keeps a common offset of the table weights from emptying the filler
+     * grains.
+     */
+    std::string fill_outside_roi = "none";
+    /**
+     * @brief Number of filler seeds (>= 0); 0 (default) = automatic: the same mean grain volume as
+     * the ROI, round(N_roi V_outside / V_roi).
+     */
+    std::int64_t filler_num_seeds = 0;
+    /**
+     * @brief Minimum spacing of the filler seeds among themselves, as a fraction of
+     * (V_outside / N_filler)^(1/3) (>= 0; default 0 = none).
+     */
+    double filler_min_distance_factor = 0.0;
     /** @brief Target grain sizes ([Seeds.Size]). */
     SeedSizeOptions size;
     /** @brief Johnson-Mehl parameters ([Seeds.JohnsonMehl]); placement = "johnson_mehl" only. */
@@ -313,8 +382,13 @@ struct TessellationOptions {
      * - "columnar": grains unbounded along anisotropy_axis (A = I - a a^T, positive
      *   semidefinite), e.g. columnar grains of additively manufactured or directionally solidified
      *   material;
-     * - "lamellar": flat layers perpendicular to anisotropy_normal (A = n n^T).
-     * Columnar and lamellar need metric = "quadric".
+     * - "lamellar": flat layers perpendicular to anisotropy_normal (A = n n^T);
+     * - "per_seed": every seed has its own tensor A_i = M_i^-1 from the shape columns
+     *   (m11 .. m12) of a seed table (Seeds.source = "file"); random filler seeds get
+     *   A = I / r^2, with r the equivalent-sphere radius of their equal share V_outside / N_filler
+     *   of the material outside the ROI, so their f = 1 surface is the sphere of that volume.
+     * Columnar, lamellar and per_seed need metric = "quadric". Without "per_seed", shape columns
+     * of a seed table are ignored (with a warning).
      */
     std::string anisotropy_kind = "none";
     /** @brief Column axis for anisotropy_kind = "columnar" (normalized; TOML `axis`). */
@@ -335,6 +409,60 @@ struct TessellationOptions {
      * metric = "laguerre"; uses the fit_volumes tolerance and max_iterations.
      */
     bool centroidal_power = false;
+};
+
+/**
+ * @brief A voxelized microstructure as the grain source ([VoxelMap]; used with [Source] type =
+ * "voxel_map"). The file formats are described in io/voxel_map_io.hpp; the element labeling in
+ * labeling/voxel_labeler.hpp.
+ */
+struct VoxelMapOptions {
+    /** @brief "exaconstit" (canonical "ExaConstit voxel map v1" HDF5 layout) or "dream3d". */
+    std::string format = "exaconstit";
+    /** @brief The HDF5 file (relative to the current working directory). */
+    std::filesystem::path file;
+    /** @brief HDF5 path of the per-voxel id dataset; empty = the format's default / name search. */
+    std::string feature_ids_path;
+    /** @brief HDF5 path of the per-grain quaternions; empty = default / name search. */
+    std::string quats_path;
+    /**
+     * @brief HDF5 path of the per-grain phases; empty = default / name search. Phases are read
+     * whenever the file has them (they fill MicrostructureResult::grain_phase); a file without
+     * phases is an error only for Regions.mode = "from_phase".
+     */
+    std::string phases_path;
+    /**
+     * @brief How the file stores a quaternion: "" (not given), "wxyz" or "xyzw". Required for
+     * DREAM.3D files when quaternions are read (Orientations.source = "from_source"); no default.
+     */
+    std::string quat_layout;
+    /**
+     * @brief Whether the stored quaternions must be conjugated to give ExaConstit's crystal-to-
+     * sample passive rotation: -1 not given, 0 false, 1 true (TOML boolean `conjugate`). Required
+     * for DREAM.3D files when quaternions are read; no default.
+     */
+    int conjugate = -1;
+    /** @brief `origin` was given: replaces the file's lower corner of voxel (0,0,0). */
+    bool has_origin = false;
+    /** @brief Lower corner of voxel (0,0,0), file units (TOML `origin = [x, y, z]`). */
+    std::array<double, 3> origin = {0.0, 0.0, 0.0};
+    /** @brief `spacing` was given: replaces the file's voxel edge lengths. */
+    bool has_spacing = false;
+    /** @brief Voxel edge lengths, file units, > 0 (TOML `spacing = [dx, dy, dz]`). */
+    std::array<double, 3> spacing = {0.0, 0.0, 0.0};
+    /** @brief File-to-mesh length factor (> 0): x_mesh = units_scale * x_file + translate. */
+    double units_scale = 1.0;
+    /** @brief Added after scaling (mesh units). */
+    std::array<double, 3> translate = {0.0, 0.0, 0.0};
+    /**
+     * @brief How elements sample the voxels: "centroid" (default; the voxel under the element
+     * centroid) or "quadrature_vote" (volume-weighted vote of 8^vote_levels points per element).
+     */
+    SamplingMode sampling = SamplingMode::CENTROID;
+    /** @brief Vote sampling only: subdivision levels 0..3 (default 2). */
+    int vote_levels = 2;
+    /** @brief Edge of the voxel tiles each rank reads, in voxels (>= 1; performance only). */
+    int tile_size = 32;
 };
 
 /**
@@ -380,13 +508,15 @@ struct CleanupOptions {
 
 /**
  * @brief Orientation assignment ([Orientations]). Orientations are crystal-to-sample, passive
- * quaternions in ExaConstit's `w x y z` order and are passed through verbatim.
+ * quaternions in ExaConstit's `w x y z` order. Supplied orientations are normalized to unit length
+ * and otherwise passed through unchanged (convention, sign and component order kept).
  */
 struct OrientationOptions {
     /**
      * @brief "random" (uniformly distributed rotations from the counter RNG), "from_source"
-     * (taken from the seed table; needs Seeds.source = "file") or "list" (from a separate list).
-     * Only "random" is implemented so far; the driver refuses the others before any work.
+     * (taken from the seed table's qw, qx, qy, qz columns, or from the voxel map's per-grain
+     * quaternions; grains without one, such as random filler grains, get random orientations)
+     * or "list" (from a separate list; not implemented yet, refused by the driver).
      */
     std::string source = "random";
 };
@@ -395,8 +525,39 @@ struct OrientationOptions {
  * @brief Region assignment ([Regions]): how grains are grouped into ExaConstit material regions.
  */
 struct RegionOptions {
-    /** @brief "single" (one region), "from_phase" (region = seed phase) or "phase_fractions". */
+    /**
+     * @brief "single" (one region), "from_phase" (regions from the grain phases of the seed table
+     * or the voxel map, regions/region_assigner.hpp) or "phase_fractions" (synthetic phases with
+     * prescribed volume fractions, `phases`, then regions from those phases).
+     */
     std::string mode = "single";
+    /**
+     * @brief Phase ids (>= 0) whose grains are not crystals; their regions are flagged
+     * non-crystalline and their grains get the identity orientation (TOML
+     * `non_crystalline_phases = [2]`).
+     */
+    std::vector<int> non_crystalline_phases;
+    /**
+     * @brief Optional explicit phase -> region map (TOML `phase_to_region = { "0" = 1, "3" = 1,
+     * "7" = 2 }`; keys are strings read as integers >= 0, values region ids >= 1). Empty: regions
+     * 1..M in ascending phase order. Several phases may share a region; the region ids used must
+     * be exactly 1..M.
+     */
+    std::map<int, int> phase_to_region;
+    /**
+     * @brief phase_fractions only: the phase ids (>= 0, distinct) of TOML
+     * `phases = [{id = 1, fraction = 0.7}, {id = 2, fraction = 0.3}]`.
+     */
+    std::vector<int> phase_ids;
+    /** @brief phase_fractions only: volume fraction of phase_ids[k] (> 0, sum 1 within 1e-6). */
+    std::vector<double> phase_fractions;
+    /**
+     * @brief `filler_phase` was given. Required when random ROI filler seeds
+     * (Seeds.fill_outside_roi = "random") are combined with mode = "from_phase".
+     */
+    bool has_filler_phase = false;
+    /** @brief Phase id (>= 0) of the filler grains (TOML `filler_phase`). */
+    int filler_phase = 0;
 };
 
 /**
@@ -488,8 +649,10 @@ struct MicrostructureOptions {
     bool deterministic = true;
 
     MeshInput mesh;                   ///< [Mesh]
+    SourceOptions source;             ///< [Source]
     SeedOptions seeds;                ///< [Seeds]
     TessellationOptions tessellation; ///< [Tessellation]
+    VoxelMapOptions voxel_map;        ///< [VoxelMap]
     CleanupOptions cleanup;           ///< [Cleanup]
     OrientationOptions orientations;  ///< [Orientations]
     RegionOptions regions;            ///< [Regions]
@@ -502,6 +665,22 @@ struct MicrostructureOptions {
      * and the combinations of the size, Johnson-Mehl, volume-fit, Lloyd and periodic options
      * (e.g. Johnson-Mehl needs the additive metric; fitting needs a weighted metric; neither
      * Lloyd nor fitting works with periodic axes).
+     *
+     * Stage 1d checks: attribute and region ids (> 0 / >= 1, no attribute both active and
+     * passthrough; with Regions.mode = "single" the passthrough regions must make the region
+     * ids 1..R); passthrough attributes refuse boundary_clearance > 0 and periodic axes; the ROI
+     * (seed tables only, hi > lo) and filler keys (fill_outside_roi = "random" needs the ROI);
+     * seed tables refuse Lloyd / centroidal power and Johnson-Mehl; anisotropy "per_seed" needs
+     * the quadric metric and a seed table; [VoxelMap] parameters (format, existing file, the
+     * DREAM.3D quaternion declarations when orientations are read, positive scale and spacing,
+     * vote_levels 0-3, tile_size >= 1); voxel maps refuse every option that would shape a
+     * tessellation (seed table, Johnson-Mehl, sizes, ROI, metric, anisotropy, periodic,
+     * fit_volumes, Lloyd, keep_component = "seed") and only warn about harmless seed-placement
+     * leftovers; from_source orientations and from_phase regions need a seed table or a voxel
+     * map; phase fractions need distinct phase ids >= 0 with positive fractions summing to 1;
+     * from_phase with filler needs Regions.filler_phase. Whether a table or voxel map actually
+     * holds the needed columns or datasets is only known when it is read, so the driver checks
+     * that (on every rank together).
      *
      * Every problem is printed (rank 0) before returning, so the user sees all of them at once.
      * Not collective. Every rank holds the same options, but the file-existence checks assume
@@ -531,8 +710,9 @@ struct MicrostructureOptions {
      * Not collective, but needs MPI initialized (rank-0 warnings).
      *
      * @throws std::invalid_argument for values that cannot be stored (unknown enum name such as
-     *         metric or placement, wrong array length, negative rng_seed, unsupported [Source]
-     *         type); toml11 exceptions (toml::type_error) for values of the wrong TOML type.
+     *         metric or placement, wrong array length, negative rng_seed, unknown [Source] type,
+     *         a non-integer key of an attribute or phase map); toml11 exceptions
+     *         (toml::type_error) for values of the wrong TOML type.
      */
     static MicrostructureOptions from_toml(const toml::value& toml_input);
 

@@ -11,12 +11,40 @@
 #include "microstructure/orientation/random_orientation.hpp"
 #include "microstructure/util/counter_rng.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 
 namespace exaconstit::microstructure {
+
+namespace {
+
+/*
+ * CopyNormalizedQuaternion: writes in / |in| to out, |in| = sqrt(w^2 + x^2 + y^2 + z^2) in double
+ * precision. This is the single place where every per-grain orientation (supplied or random) is
+ * made a unit quaternion. For supplied (measured) orientations the convention, the sign (e.g. a
+ * w >= 0 choice of the source) and the component order are kept, only the length changes.
+ * Measured quaternions typically have norms within 1e-3 of 1 (the readers refuse anything
+ * further off), so the direction is not affected beyond round-off. Random quaternions are
+ * normalized too, so their unit norm does not depend on the accuracy of the math functions they
+ * were drawn with. A zero or non-finite quaternion has no direction and is an error, never a silent
+ * identity. Host only (the per-grain tables are host arrays).
+ */
+void CopyNormalizedQuaternion(const double* in, double* out, std::size_t grain) {
+    const double norm = std::sqrt(in[0] * in[0] + in[1] * in[1] + in[2] * in[2] + in[3] * in[3]);
+    if (!(norm > 0.0) || !std::isfinite(norm)) {
+        throw std::invalid_argument("AssignOrientations: the supplied quaternion of grain " +
+                                    std::to_string(grain + 1) +
+                                    " is zero or not finite, so it cannot be normalized");
+    }
+    for (std::size_t k = 0; k < 4; ++k) {
+        out[k] = in[k] / norm;
+    }
+}
+
+} // namespace
 
 /*
  * AssignOrientations: the per-grain source id is the source id of the grain's seed; everything
@@ -107,13 +135,58 @@ void AssignGrainOrientations(const OrientationOptions& orientations,
             // call order
             const CounterRng rng(rng_seed, RngPurpose::ORIENTATION,
                                  static_cast<std::uint64_t>(grain_source_id[g]));
-            RandomQuaternion(rng, 0u, q);
+            // Drawn, then normalized on the host in double precision like every other row, so
+            // the unit norm does not depend on the accuracy of sin/cos/sqrt where it was drawn
+            double drawn[4];
+            RandomQuaternion(rng, 0u, drawn);
+            CopyNormalizedQuaternion(drawn, q, g);
         } else {
-            // Verbatim pass-through of the parent seed's quaternion (w x y z as supplied)
+            // The parent seed's quaternion (w x y z as supplied), normalized to unit length
             const auto seed = static_cast<std::size_t>(grain_seed[g]);
-            for (std::size_t k = 0; k < 4; ++k) {
-                q[k] = seeds.quat[4 * seed + k];
-            }
+            CopyNormalizedQuaternion(&seeds.quat[4 * seed], q, g);
+        }
+    }
+}
+
+/*
+ * AssignMixedGrainOrientations
+ *
+ * Steps: check that the three per-grain arrays agree in size; then, grain by grain, copy the
+ * supplied quaternion normalized to unit length (CopyNormalizedQuaternion) or draw the random one
+ * of the grain's source-id stream (the same
+ * stream and int64 -> uint64 conversion as AssignGrainOrientations, so a random grain gets the
+ * same orientation whichever function is used).
+ */
+void AssignMixedGrainOrientations(std::uint64_t rng_seed,
+                                  const std::vector<std::int64_t>& grain_source_id,
+                                  const std::vector<double>& source_quat,
+                                  const std::vector<char>& has_source_quat,
+                                  MicrostructureResult& result) {
+    // Step 1: sizes (identical on every rank, so all ranks throw together)
+    const std::size_t num_grains = grain_source_id.size();
+    if (has_source_quat.size() != num_grains || source_quat.size() != 4 * num_grains) {
+        throw std::invalid_argument("AssignMixedGrainOrientations: need one flag and 4 quaternion "
+                                    "values per grain");
+    }
+
+    // Step 2: one row per grain
+    result.num_grains = static_cast<int>(num_grains);
+    result.grain_quat.assign(4 * num_grains, 0.0);
+    result.grain_source_id = grain_source_id;
+    for (std::size_t g = 0; g < num_grains; ++g) {
+        double* q = &result.grain_quat[4 * g];
+        if (has_source_quat[g] != 0) {
+            // Supplied (measured) orientation, normalized to unit length, otherwise unchanged
+            CopyNormalizedQuaternion(&source_quat[4 * g], q, g);
+        } else {
+            // Generated grain: random orientation of its own source-id stream
+            const CounterRng rng(rng_seed, RngPurpose::ORIENTATION,
+                                 static_cast<std::uint64_t>(grain_source_id[g]));
+            // Drawn, then normalized on the host in double precision like every other row, so
+            // the unit norm does not depend on the accuracy of sin/cos/sqrt where it was drawn
+            double drawn[4];
+            RandomQuaternion(rng, 0u, drawn);
+            CopyNormalizedQuaternion(drawn, q, g);
         }
     }
 }

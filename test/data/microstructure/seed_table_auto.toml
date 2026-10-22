@@ -1,0 +1,57 @@
+# Microstructure generator example: grains grown from a measured seed table (e.g. an HEDM scan)
+# inside a region of interest, with random filler grains in the rest of the specimen.
+#
+# Run with (from test/data/microstructure, since the seed table path is relative to the directory
+# the tool is started in):
+#     microstructure_generator -i seed_table_auto.toml
+# Every key not written here keeps its default (see src/microstructure/microstructure_options.hpp).
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        # A 2 x 1 x 1 bar; the measured region of interest is the left half
+        length = [2.0, 1.0, 1.0]
+        ncuts = [16, 8, 8]
+
+[Seeds]
+    # "file": read the seeds from a seed table ("ExaConstit seed table v1" CSV: x, y, z and
+    # optional id, qw..qz, phase, weight, volume/radius/diameter, m11..m12 columns). The
+    # placement is "file" automatically.
+    source = "file"
+    file = "seed_tables/all_columns.csv"
+    # Table positions to mesh coordinates: x_mesh = units_scale * x_table + translate
+    units_scale = 1.0
+    translate = [0.0, 0.0, 0.0]
+    # Region of interest (mesh units): table rows outside it are dropped
+    roi = {lo = [0.0, 0.0, 0.0], hi = [1.0, 1.0, 1.0]}
+    # Random filler seeds strictly outside the ROI; 0 = as many as give the filler grains the
+    # same mean volume as the measured ones. Their ids start at max table id + 1.
+    fill_outside_roi = "random"
+    filler_num_seeds = 0
+    rng_seed = 11
+    [Seeds.Size]
+        # Target grain volumes from the table's size column, scaled to fill the material inside
+        # the ROI; the filler grains share the outside volume equally
+        distribution = "from_source"
+
+[Tessellation]
+    # Quadric metric with one shape tensor per seed (A = M^-1 from the table's m11..m12 columns),
+    # so the grains grow with the measured ellipsoidal shapes; filler seeds get spheres
+    metric = "quadric"
+    anisotropy = {kind = "per_seed"}
+    # Fit the seed weights (starting from the table's weight column) to the target volumes
+    fit_volumes = {enabled = true, tolerance = 0.1, max_iterations = 50, samples = "quadrature"}
+
+[Orientations]
+    # The table's qw, qx, qy, qz, normalized to unit length (convention, sign and order kept; the
+    # table's second row has norm 1.0004); filler grains get random orientations
+    source = "from_source"
+
+[Regions]
+    # One ExaConstit material region per phase of the table (ascending phase order); the filler
+    # grains have no measured phase, so they are given one
+    mode = "from_phase"
+    filler_phase = 0
+
+[Output]
+    basename = "seed_table_auto"

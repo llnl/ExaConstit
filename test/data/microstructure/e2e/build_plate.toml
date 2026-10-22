@@ -1,0 +1,32 @@
+# Generator input of the Stage 1d end-to-end test "build plate".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# writes the mesh <build>/test/microstructure/end_to_end_stage1d/inputs/e2e_plate_box.mesh at
+# test time (test_tool_stage1d: an 8 x 8 x 10 hex box on [0, 1] x [0, 1] x [0, 1.25] whose two
+# bottom element layers have attribute 2, the rest attribute 1, with ExaConstit's auto-mesh
+# boundary ids), then runs
+#     microstructure_generator -i test/data/microstructure/e2e/build_plate.toml
+# in end_to_end_stage1d/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
+# byte-identical files, and then runs mechanics on the result (deck
+# test/data/microstructure/mechanics/ms_build_plate_np2.toml, two [[Materials]] blocks).
+#
+# What it exercises: an additively manufactured part on its build plate. Only the part
+# (attribute 1) is tessellated; the plate (attribute 2) is kept as one passthrough grain, the
+# last grain, with the identity orientation, in its own region 2.
+
+[Mesh]
+    type = "file"
+    # Relative to the directory the generator runs in (np1/ or np2/)
+    floc = "../inputs/e2e_plate_box.mesh"
+    active_attributes = [1]
+    passthrough_attributes = { "2" = 2 }
+
+[Seeds]
+    num_seeds = 8
+    rng_seed = 3
+
+[Output]
+    basename = "e2e_build_plate"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

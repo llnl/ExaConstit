@@ -1,0 +1,50 @@
+# Generator input of the Stage 1d end-to-end test "seed table".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# copies the seed table e2e/seed_table_roi.csv into <build>/test/microstructure/
+# end_to_end_stage1d/inputs/, then runs
+#     microstructure_generator -i test/data/microstructure/e2e/seed_table_roi.toml
+# in end_to_end_stage1d/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
+# byte-identical files, and then runs mechanics on the result (decks
+# test/data/microstructure/mechanics/ms_seed_table_np{1,2}.toml, two [[Materials]] blocks).
+#
+# What it exercises: grains grown from a measured seed table inside a region of interest (ROI),
+# with random filler grains in the rest of the bar; table orientations normalized to unit
+# length, otherwise passed through;
+# a many-to-one phase -> region map (phases 0 and 1 -> region 1, phase 2 -> region 2), so the
+# region map is written and ExaConstit needs two material blocks.
+
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        # A 2 x 1 x 1 bar; the ROI is its left half
+        length = [2.0, 1.0, 1.0]
+        ncuts = [16, 8, 8]
+
+[Seeds]
+    source = "file"
+    # Relative to the directory the generator runs in (np1/ or np2/)
+    file = "../inputs/seed_table_roi.csv"
+    # The row at x = 1.5 lies outside the ROI and is dropped
+    roi = {lo = [0.0, 0.0, 0.0], hi = [1.0, 1.0, 1.0]}
+    # Automatic filler count: same mean grain volume as the ROI, round(6 * 1 / 1) = 6
+    fill_outside_roi = "random"
+    filler_num_seeds = 0
+    rng_seed = 5
+
+[Orientations]
+    # Table quaternions, normalized to unit length, otherwise passed through; the filler grains
+    # get random orientations
+    source = "from_source"
+
+[Regions]
+    mode = "from_phase"
+    phase_to_region = { "0" = 1, "1" = 1, "2" = 2 }
+    # The filler grains have no measured phase
+    filler_phase = 0
+
+[Output]
+    basename = "e2e_seed_table"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

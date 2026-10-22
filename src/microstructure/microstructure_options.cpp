@@ -233,6 +233,76 @@ int get_int(const toml::value& table, const std::string& key, const std::string&
 }
 
 /**
+ * @brief Converts a TOML table key that names an integer (e.g. the "2" of
+ * `passthrough_attributes = { "2" = 3 }`) to an int.
+ *
+ * TOML keys are always strings, so integer-valued keys arrive as text. The whole key (after
+ * trimming nothing: keys are taken literally) must be a decimal integer that fits in an int;
+ * "2a", "", "1.5" or "99999999999" are refused rather than read as a prefix or wrapped around.
+ *
+ * @param key      The key text.
+ * @param full_key Dotted name of the table, used only in the error message.
+ * @throws std::invalid_argument if the key is not an integer in the range of int.
+ */
+int key_to_int(const std::string& key, const std::string& full_key) {
+    std::size_t pos = 0;
+    long long value = 0;
+    // The first character must be a digit or '-': std::stoll would also accept leading blanks
+    // and a '+', which are not how an integer key is written
+    bool ok = !key.empty() && ((key[0] >= '0' && key[0] <= '9') || key[0] == '-');
+    if (ok) {
+        try {
+            value = std::stoll(key, &pos, 10);
+        } catch (const std::exception&) {
+            ok = false;
+        }
+    }
+    if (!ok || pos != key.size() || value < std::numeric_limits<int>::min() ||
+        value > std::numeric_limits<int>::max()) {
+        throw std::invalid_argument("Microstructure options: key '" + key + "' of '" + full_key +
+                                    "' must be an integer");
+    }
+    return static_cast<int>(value);
+}
+
+/**
+ * @brief Reads `table[key]` as an inline table of integer -> integer entries, e.g.
+ * `phase_to_region = { "0" = 1, "3" = 1, "7" = 2 }` -> {0: 1, 3: 1, 7: 2}.
+ *
+ * Keys are converted with key_to_int, values must be TOML integers that fit in an int. Ranges
+ * (e.g. region ids >= 1) are checked in validate().
+ *
+ * @throws std::invalid_argument for a non-integer key or a value out of range; toml11 errors for
+ *         a value that is not a TOML integer or a `key` that is not a table.
+ */
+std::map<int, int> get_int_map(const toml::value& table,
+                               const std::string& key,
+                               const std::string& full_key) {
+    std::map<int, int> result;
+    for (const auto& entry : toml::find(table, key).as_table()) {
+        const int map_key = key_to_int(entry.first, full_key);
+        result[map_key] = checked_int(entry.second.as_integer(), full_key + "." + entry.first);
+    }
+    return result;
+}
+
+/**
+ * @brief Reads `table[key]` as an array of integers that fit in an int (e.g. a list of element
+ * attributes or phase ids).
+ *
+ * @throws std::invalid_argument for a value out of range; toml11 errors for non-integers.
+ */
+std::vector<int> get_int_vector(const toml::value& table,
+                                const std::string& key,
+                                const std::string& full_key) {
+    std::vector<int> result;
+    for (const std::int64_t value : toml::find<std::vector<std::int64_t>>(table, key)) {
+        result.push_back(checked_int(value, full_key));
+    }
+    return result;
+}
+
+/**
  * @brief Chooses which of two spellings of the same key to read, warning if both are written.
  *
  * Some keys accept an alias (e.g. [Mesh.Auto] `length` or `mxyz`) so that options files can use
@@ -288,11 +358,18 @@ bool is_nonnegative_finite(double x) {
  *       - `ncuts`  (alias `nxyz`): number of elements along x, y and z.
  *     If both the name and its alias are written, the first name (`length`, `ncuts`) wins and
  *     a rank-0 warning is printed.
+ *   - `active_attributes = [..]`: element attributes that receive grains (empty = all that are
+ *     not passthrough).
+ *   - `passthrough_attributes = { "attr" = region }`: element attributes kept as one grain each,
+ *     with the ExaConstit region id of that part.
  *
- * @throws std::invalid_argument if `length`/`ncuts` does not have 3 entries.
+ * @throws std::invalid_argument if `length`/`ncuts` does not have 3 entries, or an attribute or
+ *         region id is not an integer that fits in an int.
  */
 MeshInput mesh_from_toml(const toml::value& toml_input) {
-    warn_unknown_keys(toml_input, "Mesh", {"type", "floc", "Auto"});
+    warn_unknown_keys(toml_input,
+                      "Mesh",
+                      {"type", "floc", "Auto", "active_attributes", "passthrough_attributes"});
     MeshInput mesh;
 
     // Mesh source and location; checked against the disk in validate(), after CLI overrides.
@@ -301,6 +378,18 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
     }
     if (toml_input.contains("floc")) {
         mesh.floc = toml::find<std::string>(toml_input, "floc");
+    }
+
+    // Which element attributes get grains (active) and which are kept as one grain each
+    // (passthrough, attribute -> region). Ranges and overlaps are checked in validate(); whether
+    // the attributes exist is only known once the mesh is read (mesh/attribute_domain.hpp).
+    if (toml_input.contains("active_attributes")) {
+        mesh.active_attributes =
+            get_int_vector(toml_input, "active_attributes", "Mesh.active_attributes");
+    }
+    if (toml_input.contains("passthrough_attributes")) {
+        mesh.passthrough_attributes =
+            get_int_map(toml_input, "passthrough_attributes", "Mesh.passthrough_attributes");
     }
 
     // [Mesh.Auto]: box dimensions and element counts of the generated hex mesh.
@@ -362,6 +451,9 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
  *     fraction of the lattice spacing), for placement = "lattice".
  *   - `file`, `units_scale`, `translate`: seed table path and the scale-then-translate applied
  *     to its positions to bring them into mesh coordinates.
+ *   - `roi = {lo = [..], hi = [..]}`: region of interest of the table (mesh units); rows outside
+ *     it are dropped. `fill_outside_roi` ("none", "random"), `filler_num_seeds` (0 = automatic)
+ *     and `filler_min_distance_factor`: random filler seeds for the material outside the ROI.
  *   - [Seeds.Size] sub-table: `distribution` ("none", "lognormal", "from_source"),
  *     `mean_diameter` or `mean_volume`, `sigma`, `polydisperse_placement`, `exclusion_factor`
  *     (see SeedSizeOptions).
@@ -369,7 +461,8 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
  *     JohnsonMehlOptions), for placement = "johnson_mehl".
  *
  * @throws std::invalid_argument for a negative rng_seed, an unknown placement, a translate
- *         that does not have 3 entries, or a sampling_box that does not have 6 entries.
+ *         that does not have 3 entries, a sampling_box that does not have 6 entries, or a `roi`
+ *         without both corners of 3 entries.
  */
 SeedOptions seeds_from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
@@ -389,6 +482,10 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
                        "file",
                        "units_scale",
                        "translate",
+                       "roi",
+                       "fill_outside_roi",
+                       "filler_num_seeds",
+                       "filler_min_distance_factor",
                        "Size",
                        "JohnsonMehl"});
 
@@ -478,6 +575,30 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
     }
     if (toml_input.contains("translate")) {
         seeds.translate = get_number_array<3>(toml_input, "translate");
+    }
+
+    // Region of interest of the seed table and the filler seeds outside it. The box corners
+    // (hi > lo) and the combinations are checked in validate().
+    if (toml_input.contains("roi")) {
+        const auto& roi = toml::find(toml_input, "roi");
+        warn_unknown_keys(roi, "Seeds.roi", {"lo", "hi"});
+        if (!roi.contains("lo") || !roi.contains("hi")) {
+            throw std::invalid_argument(
+                "Microstructure options: 'Seeds.roi' needs both 'lo' and 'hi' (3 values each)");
+        }
+        seeds.use_roi = true;
+        seeds.roi_lo = get_number_array<3>(roi, "lo");
+        seeds.roi_hi = get_number_array<3>(roi, "hi");
+    }
+    if (toml_input.contains("fill_outside_roi")) {
+        seeds.fill_outside_roi = toml::find<std::string>(toml_input, "fill_outside_roi");
+    }
+    if (toml_input.contains("filler_num_seeds")) {
+        seeds.filler_num_seeds = toml::find<std::int64_t>(toml_input, "filler_num_seeds");
+    }
+    if (toml_input.contains("filler_min_distance_factor")) {
+        seeds.filler_min_distance_factor =
+            get_number(toml::find(toml_input, "filler_min_distance_factor"));
     }
 
     // [Seeds.Size]: target grain size distribution (values checked in validate())
@@ -811,6 +932,151 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
 }
 
 /**
+ * @brief Reads the [VoxelMap] table: a voxelized microstructure used with [Source] type =
+ * "voxel_map" (file formats in io/voxel_map_io.hpp).
+ *
+ * Keys (defaults in VoxelMapOptions, microstructure_options.hpp):
+ *   - `format`: "exaconstit" or "dream3d" (spelling checked in validate()).
+ *   - `file`: the HDF5 file.
+ *   - `feature_ids_path`, `quats_path`, `phases_path`: explicit HDF5 dataset paths (empty: the
+ *     format's default, or the DREAM.3D search by dataset name).
+ *   - `quat_layout` ("wxyz" or "xyzw") and `conjugate` (boolean): how the file stores its
+ *     quaternions. Both are required for DREAM.3D files when orientations are read, and have no
+ *     default, because guessing would silently rotate every grain.
+ *   - `origin`, `spacing` (3 values each, file units): replace the file's grid geometry.
+ *   - `units_scale`, `translate`: x_mesh = units_scale * x_file + translate.
+ *   - `sampling` ("centroid", "quadrature_vote"), `vote_levels` (0-3), `tile_size` (voxels).
+ *
+ * @throws std::invalid_argument for an unknown sampling name or arrays of the wrong length;
+ *         toml11 errors for wrong TOML types (e.g. `conjugate = "yes"`).
+ */
+VoxelMapOptions voxel_map_from_toml(const toml::value& toml_input) {
+    warn_unknown_keys(toml_input,
+                      "VoxelMap",
+                      {"format",
+                       "file",
+                       "feature_ids_path",
+                       "quats_path",
+                       "phases_path",
+                       "quat_layout",
+                       "conjugate",
+                       "origin",
+                       "spacing",
+                       "units_scale",
+                       "translate",
+                       "sampling",
+                       "vote_levels",
+                       "tile_size"});
+    static const std::map<std::string, SamplingMode> sampling_map = {
+        {"centroid", SamplingMode::CENTROID}, {"quadrature_vote", SamplingMode::QUADRATURE_VOTE}};
+
+    VoxelMapOptions map;
+
+    // File, layout and explicit dataset paths
+    if (toml_input.contains("format")) {
+        map.format = toml::find<std::string>(toml_input, "format");
+    }
+    if (toml_input.contains("file")) {
+        map.file = toml::find<std::string>(toml_input, "file");
+    }
+    if (toml_input.contains("feature_ids_path")) {
+        map.feature_ids_path = toml::find<std::string>(toml_input, "feature_ids_path");
+    }
+    if (toml_input.contains("quats_path")) {
+        map.quats_path = toml::find<std::string>(toml_input, "quats_path");
+    }
+    if (toml_input.contains("phases_path")) {
+        map.phases_path = toml::find<std::string>(toml_input, "phases_path");
+    }
+
+    // Quaternion storage declarations: no defaults (an absent key stays "not given")
+    if (toml_input.contains("quat_layout")) {
+        map.quat_layout = toml::find<std::string>(toml_input, "quat_layout");
+    }
+    if (toml_input.contains("conjugate")) {
+        map.conjugate = toml::find<bool>(toml_input, "conjugate") ? 1 : 0;
+    }
+
+    // Grid geometry overrides and the file-to-mesh transform (values checked in validate())
+    if (toml_input.contains("origin")) {
+        map.has_origin = true;
+        map.origin = get_number_array<3>(toml_input, "origin");
+    }
+    if (toml_input.contains("spacing")) {
+        map.has_spacing = true;
+        map.spacing = get_number_array<3>(toml_input, "spacing");
+    }
+    if (toml_input.contains("units_scale")) {
+        map.units_scale = get_number(toml::find(toml_input, "units_scale"));
+    }
+    if (toml_input.contains("translate")) {
+        map.translate = get_number_array<3>(toml_input, "translate");
+    }
+
+    // Element sampling
+    if (toml_input.contains("sampling")) {
+        map.sampling = string_to_ms_enum(
+            toml::find<std::string>(toml_input, "sampling"), sampling_map, "VoxelMap.sampling");
+    }
+    if (toml_input.contains("vote_levels")) {
+        map.vote_levels = get_int(toml_input, "vote_levels", "VoxelMap.vote_levels");
+    }
+    if (toml_input.contains("tile_size")) {
+        map.tile_size = get_int(toml_input, "tile_size", "VoxelMap.tile_size");
+    }
+    return map;
+}
+
+/**
+ * @brief Reads the [Regions] table: how grains are grouped into ExaConstit material regions.
+ *
+ * Keys (defaults in RegionOptions, microstructure_options.hpp):
+ *   - `mode`: "single", "from_phase" or "phase_fractions" (checked in validate());
+ *   - `non_crystalline_phases = [..]`: phases whose grains get the identity orientation;
+ *   - `phase_to_region = { "phase" = region, ... }`: explicit map (keys read as integers);
+ *   - `phases = [{id = .., fraction = ..}, ...]`: target phase fractions (phase_fractions);
+ *   - `filler_phase`: phase of the random ROI filler grains.
+ *
+ * @throws std::invalid_argument for a non-integer map key, a `phases` entry without `id` or
+ *         `fraction`, or integers out of range; toml11 errors for wrong TOML types.
+ */
+RegionOptions regions_from_toml(const toml::value& toml_input) {
+    warn_unknown_keys(toml_input,
+                      "Regions",
+                      {"mode", "non_crystalline_phases", "phase_to_region", "phases",
+                       "filler_phase"});
+    RegionOptions regions;
+    if (toml_input.contains("mode")) {
+        regions.mode = toml::find<std::string>(toml_input, "mode");
+    }
+    if (toml_input.contains("non_crystalline_phases")) {
+        regions.non_crystalline_phases =
+            get_int_vector(toml_input, "non_crystalline_phases", "Regions.non_crystalline_phases");
+    }
+    if (toml_input.contains("phase_to_region")) {
+        regions.phase_to_region =
+            get_int_map(toml_input, "phase_to_region", "Regions.phase_to_region");
+    }
+    // Target fractions: an array of inline tables, each with an id and a fraction
+    if (toml_input.contains("phases")) {
+        for (const auto& entry : toml::find(toml_input, "phases").as_array()) {
+            warn_unknown_keys(entry, "Regions.phases[]", {"id", "fraction"});
+            if (!entry.contains("id") || !entry.contains("fraction")) {
+                throw std::invalid_argument("Microstructure options: every 'Regions.phases' entry "
+                                            "needs 'id' and 'fraction'");
+            }
+            regions.phase_ids.push_back(get_int(entry, "id", "Regions.phases.id"));
+            regions.phase_fractions.push_back(get_number(toml::find(entry, "fraction")));
+        }
+    }
+    if (toml_input.contains("filler_phase")) {
+        regions.has_filler_phase = true;
+        regions.filler_phase = get_int(toml_input, "filler_phase", "Regions.filler_phase");
+    }
+    return regions;
+}
+
+/**
  * @brief Where validate() also collects its error messages when its caller asked for them
  * (validate(&problems)); null otherwise. Set and cleared by validate() itself, so it is only
  * non-null during a validate() call. Not thread-safe (options are validated from one thread).
@@ -873,20 +1139,21 @@ void check_choice(bool& valid,
  *   - `exec`: where kernels run, "cpu", "openmp" or "gpu" (spelling checked in validate()).
  *   - `deterministic`: require results independent of rank count and execution space.
  *   - [Mesh], [Seeds], [Tessellation], [Output]: see the readers above.
- *   - [Source] `type`: what defines the grains. Only "tessellation" exists so far.
+ *   - [Source] `type`: what defines the grains: "tessellation" (seeds) or "voxel_map".
+ *   - [VoxelMap]: the voxelized microstructure for type = "voxel_map" (see voxel_map_from_toml).
  *   - [Cleanup] `fragments` ("auto", "split", "merge", "none"), `keep_component` ("largest",
  *     "seed"), `min_fragment_elements` and `min_fragment_fraction` (what "auto" calls a tiny
  *     piece) and `min_grain_elements`: what to do with grains that end up split into
  *     disconnected pieces, which piece keeps the grain, and the smallest allowed grain.
  *   - [Orientations] `source`: "random", "from_source" or "list".
- *   - [Regions] `mode`: "single", "from_phase" or "phase_fractions" (how grains are grouped into
- *     ExaConstit material regions).
+ *   - [Regions]: `mode` ("single", "from_phase" or "phase_fractions": how grains are grouped into
+ *     ExaConstit material regions) and its phase keys (see regions_from_toml).
  * The string values of [Cleanup], [Orientations] and [Regions] are checked in validate().
  *
  * Not collective; every rank may call it on its own copy of the document.
  *
  * @throws std::invalid_argument for values that cannot be stored (see the table readers) and
- *         for an unsupported [Source] type; toml11 exceptions for wrong TOML types.
+ *         for an unknown [Source] type; toml11 exceptions for wrong TOML types.
  */
 MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
@@ -897,6 +1164,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
                        "Source",
                        "Seeds",
                        "Tessellation",
+                       "VoxelMap",
                        "Cleanup",
                        "Orientations",
                        "Regions",
@@ -917,20 +1185,25 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
         options.mesh = mesh_from_toml(toml::find(toml_input, "Mesh"));
     }
 
-    // [Source]: only tessellations are implemented. A later stage adds voxel maps (grain ids read
-    // from e.g. a DREAM.3D file). If such an input were merely warned about, the tool would
-    // tessellate random seeds instead and produce a completely different microstructure without
-    // the user noticing, so any other type is rejected outright.
+    // [Source]: "tessellation" (seeds) or "voxel_map" ([VoxelMap]). Any other type is rejected
+    // outright: if it were merely warned about, the tool would tessellate random seeds instead
+    // and produce a completely different microstructure without the user noticing.
     if (toml_input.contains("Source")) {
         const auto& source = toml::find(toml_input, "Source");
         warn_unknown_keys(source, "Source", {"type"});
         if (source.contains("type")) {
             const auto type = toml::find<std::string>(source, "type");
-            if (type != "tessellation") {
+            if (type != "tessellation" && type != "voxel_map") {
                 throw std::invalid_argument("Microstructure options: 'Source.type' = \"" + type +
-                                            "\" is not supported yet (only \"tessellation\")");
+                                            "\" is not supported (expected \"tessellation\" or "
+                                            "\"voxel_map\")");
             }
+            options.source.type = type;
         }
+    }
+    // [VoxelMap]: read whenever written; validate() warns if it is unused
+    if (toml_input.contains("VoxelMap")) {
+        options.voxel_map = voxel_map_from_toml(toml::find(toml_input, "VoxelMap"));
     }
 
     // [Seeds] and [Tessellation]
@@ -982,11 +1255,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
 
     // [Regions]
     if (toml_input.contains("Regions")) {
-        const auto& regions = toml::find(toml_input, "Regions");
-        warn_unknown_keys(regions, "Regions", {"mode"});
-        if (regions.contains("mode")) {
-            options.regions.mode = toml::find<std::string>(regions, "mode");
-        }
+        options.regions = regions_from_toml(toml::find(toml_input, "Regions"));
     }
 
     // [Output]
@@ -1102,6 +1371,151 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
             }
         }
     }
+    // Active / passthrough attributes: MFEM element attributes are positive, region ids start at
+    // 1, and an attribute cannot be both tessellated and kept as one grain. Whether the
+    // attributes exist in the mesh is checked when the mesh is read (AttributeDomain).
+    for (const int attribute : mesh.active_attributes) {
+        if (attribute <= 0) {
+            report_error(valid, "Mesh.active_attributes must be > 0 (got " +
+                                    std::to_string(attribute) + ")");
+        }
+    }
+    for (const auto& entry : mesh.passthrough_attributes) {
+        if (entry.first <= 0) {
+            report_error(valid, "Mesh.passthrough_attributes: attribute " +
+                                    std::to_string(entry.first) + " must be > 0");
+        }
+        if (entry.second < 1) {
+            report_error(valid, "Mesh.passthrough_attributes: region of attribute " +
+                                    std::to_string(entry.first) + " must be >= 1");
+        }
+        if (std::find(mesh.active_attributes.begin(), mesh.active_attributes.end(), entry.first) !=
+            mesh.active_attributes.end()) {
+            report_error(valid, "Mesh attribute " + std::to_string(entry.first) +
+                                    " is listed in both active_attributes and "
+                                    "passthrough_attributes");
+        }
+    }
+    const bool passthrough = !mesh.passthrough_attributes.empty();
+    bool any_periodic_axis = false;
+    for (const bool p : tessellation.periodic) {
+        any_periodic_axis = any_periodic_axis || p;
+    }
+    // The active part is a sub-mesh whose interface with the passthrough part is a free surface
+    // of that sub-mesh (mesh/attribute_domain.hpp): a boundary clearance would push seeds away
+    // from a bonded interface, and periodic-plane detection would take the interface faces for
+    // periodic faces. Both are refused until they are handled explicitly.
+    // (With a voxel map there are no seeds: the clearance is only warned about as ignored.)
+    const bool voxel_source = (source.type == "voxel_map");
+    if (passthrough && seeds.boundary_clearance > 0.0 && !voxel_source) {
+        report_error(valid,
+                     "Seeds.boundary_clearance > 0 cannot be combined with "
+                     "Mesh.passthrough_attributes (the interface with the passthrough part would "
+                     "count as an outer boundary)");
+    }
+    if (passthrough && any_periodic_axis) {
+        report_error(valid,
+                     "Tessellation.periodic cannot be combined with Mesh.passthrough_attributes");
+    }
+
+    // --- [Source] and [VoxelMap] ------------------------------------------------------------
+    check_choice(valid, "Source.type", source.type, {"tessellation", "voxel_map"});
+    if (voxel_source) {
+        const VoxelMapOptions& map = voxel_map;
+        check_choice(valid, "VoxelMap.format", map.format, {"exaconstit", "dream3d"});
+        if (map.file.empty()) {
+            report_error(valid, "Source.type = \"voxel_map\" needs 'VoxelMap.file'");
+        } else if (!fs::exists(map.file)) {
+            report_error(valid, "voxel map file '" + map.file.string() + "' does not exist");
+        }
+        check_choice(valid, "VoxelMap.quat_layout", map.quat_layout, {"", "wxyz", "xyzw"});
+        // The canonical layout fixes its storage (w x y z, crystal-to-sample): declaring another
+        // order or a conjugation contradicts the format (the reader would refuse it late)
+        if (map.format == "exaconstit" && (map.quat_layout == "xyzw" || map.conjugate == 1)) {
+            report_error(valid,
+                         "VoxelMap.format = \"exaconstit\" stores w x y z quaternions: "
+                         "quat_layout = \"xyzw\" and conjugate = true are not allowed");
+        }
+        // DREAM.3D files do not say how they store quaternions; guessing would rotate every
+        // grain, so both declarations are required whenever orientations are read
+        if (map.format == "dream3d" && orientations.source == "from_source" &&
+            (map.quat_layout.empty() || map.conjugate < 0)) {
+            report_error(valid,
+                         "VoxelMap.format = \"dream3d\" with Orientations.source = "
+                         "\"from_source\" needs both 'VoxelMap.quat_layout' (\"wxyz\" or "
+                         "\"xyzw\") and 'VoxelMap.conjugate' (true or false); there are no "
+                         "defaults");
+        }
+        if (!is_positive_finite(map.units_scale)) {
+            report_error(valid, "VoxelMap.units_scale must be finite and > 0");
+        }
+        for (std::size_t d = 0; d < 3; ++d) {
+            const bool bad_origin = map.has_origin && !std::isfinite(map.origin[d]);
+            if (!std::isfinite(map.translate[d]) || bad_origin) {
+                report_error(valid, "VoxelMap.translate and origin must be finite");
+                break;
+            }
+        }
+        if (map.has_spacing) {
+            for (const double h : map.spacing) {
+                if (!is_positive_finite(h)) {
+                    report_error(valid, "VoxelMap.spacing must be finite and > 0 on every axis");
+                    break;
+                }
+            }
+        }
+        if (map.vote_levels < 0 || map.vote_levels > 3) {
+            report_error(valid, "VoxelMap.vote_levels must be in 0-3");
+        }
+        if (map.tile_size < 1) {
+            report_error(valid, "VoxelMap.tile_size must be >= 1");
+        }
+
+        // Options that would change a tessellated microstructure have no meaning for a voxel map;
+        // refusing them is safer than ignoring them (the user expects them to act).
+        const auto refuse = [&](bool set, const std::string& what) {
+            if (set) {
+                report_error(valid, what + " cannot be used with Source.type = \"voxel_map\" "
+                                           "(no seeds and no tessellation)");
+            }
+        };
+        refuse(seeds.source == "file", "Seeds.source = \"file\"");
+        refuse(seeds.placement == SeedPlacement::JOHNSON_MEHL,
+               "Seeds.placement = \"johnson_mehl\"");
+        refuse(seeds.size.distribution != "none", "Seeds.Size.distribution");
+        refuse(seeds.size.polydisperse_placement, "Seeds.Size.polydisperse_placement");
+        refuse(seeds.use_roi || seeds.fill_outside_roi != "none", "Seeds.roi / fill_outside_roi");
+        refuse(tessellation.metric != MetricType::VORONOI, "Tessellation.metric");
+        refuse(tessellation.anisotropy_kind != "none", "Tessellation.anisotropy");
+        refuse(any_periodic_axis, "Tessellation.periodic");
+        refuse(tessellation.fit_volumes.enabled, "Tessellation.fit_volumes");
+        refuse(tessellation.lloyd_iterations > 0 || tessellation.centroidal_power,
+               "Tessellation.lloyd_iterations / centroidal_power");
+        refuse(cleanup.keep_component == "seed", "Cleanup.keep_component = \"seed\"");
+        // Harmless leftovers (e.g. from a template file, or -n on the command line) only warn
+        if (seeds.num_seeds > 0 || seeds.placement != SeedPlacement::REJECTION ||
+            seeds.min_distance > 0.0 || seeds.min_distance_factor > 0.0 ||
+            seeds.boundary_clearance > 0.0 || seeds.use_sampling_box ||
+            seeds.sampling_domain != "material" || seeds.lattice_type != "cubic" ||
+            seeds.lattice_jitter > 0.0) {
+            WARNING_0_OPT("Warning: the seed placement keys of [Seeds] (num_seeds, placement, "
+                          "min_distance, boundary_clearance, sampling_domain/box, lattice) are "
+                          "ignored with Source.type = \"voxel_map\"");
+        }
+        if (seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0 ||
+            seeds.size.sigma > 0.0 || tessellation.distance != DistanceMode::EUCLIDEAN) {
+            WARNING_0_OPT("Warning: Seeds.Size.mean_diameter, mean_volume, sigma and "
+                          "Tessellation.distance are ignored with Source.type = \"voxel_map\"");
+        }
+        if (tessellation.sampling != SamplingMode::CENTROID || tessellation.vote_levels != 2 ||
+            tessellation.num_bins != 8) {
+            WARNING_0_OPT("Warning: Tessellation.sampling, vote_levels and num_bins are ignored "
+                          "with Source.type = \"voxel_map\"; use VoxelMap.sampling and "
+                          "VoxelMap.vote_levels");
+        }
+    } else if (!voxel_map.file.empty()) {
+        WARNING_0_OPT("Warning: [VoxelMap] is ignored unless Source.type = \"voxel_map\"");
+    }
 
     // --- [Seeds] ----------------------------------------------------------------------------
     check_choice(valid, "Seeds.source", seeds.source, {"random", "file"});
@@ -1109,7 +1523,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
     const bool count_from_size =
         seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0;
     const bool johnson_mehl = (seeds.placement == SeedPlacement::JOHNSON_MEHL);
-    if (seeds.source == "random") {
+    if (voxel_source) {
+        // No seeds: the voxel-map checks above cover [Seeds]
+    } else if (seeds.source == "random") {
         // Zero seeds would leave every element without a grain.
         if (seeds.num_seeds < 0 || (seeds.num_seeds == 0 && !count_from_size && !johnson_mehl)) {
             report_error(valid,
@@ -1133,6 +1549,47 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
         } else if (!fs::exists(seeds.file)) {
             report_error(valid, "seed file '" + seeds.file.string() + "' does not exist");
         }
+        // Moving seeds would move the measured grain positions
+        if (tessellation.lloyd_iterations > 0 || tessellation.centroidal_power) {
+            report_error(valid,
+                         "Tessellation.lloyd_iterations / centroidal_power cannot be used with "
+                         "Seeds.source = \"file\" (they would move the measured seed positions)");
+        }
+        if (johnson_mehl) {
+            report_error(valid, "Seeds.placement = \"johnson_mehl\" cannot be used with "
+                                "Seeds.source = \"file\"");
+        }
+    }
+
+    // Region of interest of a seed table, and the random filler seeds outside it
+    check_choice(valid, "Seeds.fill_outside_roi", seeds.fill_outside_roi, {"none", "random"});
+    if (seeds.use_roi) {
+        if (seeds.source != "file") {
+            report_error(valid, "Seeds.roi needs Seeds.source = \"file\"");
+        }
+        for (std::size_t d = 0; d < 3; ++d) {
+            const double lo = seeds.roi_lo[d];
+            const double hi = seeds.roi_hi[d];
+            if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) {
+                report_error(valid,
+                             "Seeds.roi must be finite with hi > lo along every axis");
+                break;
+            }
+        }
+    }
+    if (seeds.fill_outside_roi == "random" && !seeds.use_roi) {
+        report_error(valid, "Seeds.fill_outside_roi = \"random\" needs Seeds.roi");
+    }
+    if (seeds.filler_num_seeds < 0) {
+        report_error(valid, "Seeds.filler_num_seeds must be >= 0 (0 = automatic)");
+    }
+    if (!is_nonnegative_finite(seeds.filler_min_distance_factor)) {
+        report_error(valid, "Seeds.filler_min_distance_factor must be finite and >= 0");
+    }
+    if (seeds.fill_outside_roi != "random" &&
+        (seeds.filler_num_seeds > 0 || seeds.filler_min_distance_factor > 0.0)) {
+        WARNING_0_OPT("Warning: Seeds.filler_num_seeds and filler_min_distance_factor are ignored "
+                      "unless fill_outside_roi = \"random\"");
     }
     check_choice(valid, "Seeds.sampling_domain", seeds.sampling_domain, {"material", "bbox"});
     check_choice(valid, "Seeds.lattice_type", seeds.lattice_type, {"cubic", "bcc", "fcc", "hcp"});
@@ -1218,8 +1675,13 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
             report_error(valid,
                          "Seeds.Size.exclusion_factor must be in (0, 0.669] (kappa^3 <= 0.3)");
         }
-        if (seeds.placement != SeedPlacement::REJECTION &&
-            seeds.placement != SeedPlacement::ELEMENT_WEIGHTED) {
+        if (seeds.source == "file") {
+            // Measured positions are given; there is nothing to place
+            report_error(valid,
+                         "Seeds.Size.polydisperse_placement cannot be used with Seeds.source = "
+                         "\"file\" (the seed table fixes the positions)");
+        } else if (seeds.placement != SeedPlacement::REJECTION &&
+                   seeds.placement != SeedPlacement::ELEMENT_WEIGHTED) {
             report_error(valid,
                          "Seeds.Size.polydisperse_placement needs placement \"rejection\" or "
                          "\"element_weighted\"");
@@ -1308,7 +1770,19 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
     check_choice(valid,
                  "Tessellation.anisotropy.kind",
                  tessellation.anisotropy_kind,
-                 {"none", "tensor", "columnar", "lamellar"});
+                 {"none", "tensor", "columnar", "lamellar", "per_seed"});
+    // Per-seed tensors come from the shape columns of a seed table and only the Quadric metric
+    // reads tensors (whether the table really has shape columns is checked when it is read)
+    if (tessellation.anisotropy_kind == "per_seed") {
+        if (tessellation.metric != MetricType::QUADRIC) {
+            report_error(valid,
+                         "Tessellation.anisotropy.kind = \"per_seed\" needs metric = \"quadric\"");
+        }
+        if (seeds.source != "file") {
+            report_error(valid, "Tessellation.anisotropy.kind = \"per_seed\" needs "
+                                "Seeds.source = \"file\" (a table with shape columns)");
+        }
+    }
     if (tessellation.anisotropy_kind == "tensor" && tessellation.metric != MetricType::QUADRIC) {
         WARNING_0_OPT("Warning: Tessellation global_tensor is ignored: only metric = "
                       "\"quadric\" uses it");
@@ -1432,13 +1906,128 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
     }
     check_choice(
         valid, "Orientations.source", orientations.source, {"random", "from_source", "list"});
-    // Orientations from the source exist only in a seed table; generated seeds have none, and
-    // the run would otherwise fail only at the very end (after seeding, labeling and cleanup).
-    if (orientations.source == "from_source" && seeds.source != "file") {
-        report_error(valid, "Orientations.source = \"from_source\" needs Seeds.source = \"file\"");
+    // Orientations from the source exist only in a seed table or a voxel map; generated seeds
+    // have none, and the run would otherwise fail only at the very end (after seeding, labeling
+    // and cleanup). Whether the table / map really holds quaternions is checked when it is read.
+    if (orientations.source == "from_source" && seeds.source != "file" && !voxel_source) {
+        report_error(valid,
+                     "Orientations.source = \"from_source\" needs Seeds.source = \"file\" or "
+                     "Source.type = \"voxel_map\"");
     }
+
+    // [Regions]: phases -> material regions
     check_choice(
         valid, "Regions.mode", regions.mode, {"single", "from_phase", "phase_fractions"});
+    for (const int phase : regions.non_crystalline_phases) {
+        if (phase < 0) {
+            report_error(valid, "Regions.non_crystalline_phases must be >= 0");
+            break;
+        }
+    }
+    for (const auto& entry : regions.phase_to_region) {
+        if (entry.first < 0 || entry.second < 1) {
+            report_error(valid, "Regions.phase_to_region needs phase ids >= 0 and region ids >= 1 "
+                                "(entry " + std::to_string(entry.first) + " = " +
+                                    std::to_string(entry.second) + ")");
+        }
+    }
+    // Phases from the data: only seed tables and voxel maps carry them
+    if (regions.mode == "from_phase" && seeds.source != "file" && !voxel_source) {
+        report_error(valid, "Regions.mode = \"from_phase\" needs Seeds.source = \"file\" or "
+                            "Source.type = \"voxel_map\" (generated seeds have no phase)");
+    }
+    // Synthetic phases: one positive fraction per distinct phase id, summing to 1
+    if (regions.mode == "phase_fractions") {
+        if (regions.phase_ids.empty() ||
+            regions.phase_ids.size() != regions.phase_fractions.size()) {
+            report_error(valid, "Regions.mode = \"phase_fractions\" needs Regions.phases = "
+                                "[{id = .., fraction = ..}, ...]");
+        } else {
+            double sum = 0.0;
+            bool fractions_ok = true;
+            for (const double f : regions.phase_fractions) {
+                fractions_ok = fractions_ok && is_positive_finite(f);
+                sum += f;
+            }
+            if (!fractions_ok || !(std::fabs(sum - 1.0) <= 1.0e-6)) {
+                report_error(valid, "Regions.phases fractions must be > 0 and sum to 1 (within "
+                                    "1e-6)");
+            }
+            std::vector<int> ids = regions.phase_ids;
+            std::sort(ids.begin(), ids.end());
+            if (ids.front() < 0 || std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+                report_error(valid, "Regions.phases ids must be >= 0 and distinct");
+            }
+        }
+    } else if (!regions.phase_ids.empty()) {
+        WARNING_0_OPT("Warning: Regions.phases is ignored unless mode = \"phase_fractions\"");
+    }
+    if (regions.mode == "single" &&
+        (!regions.phase_to_region.empty() || !regions.non_crystalline_phases.empty())) {
+        WARNING_0_OPT("Warning: Regions.phase_to_region and non_crystalline_phases are ignored "
+                      "with mode = \"single\"");
+    }
+    // Phase of the random filler grains
+    if (regions.has_filler_phase && regions.filler_phase < 0) {
+        report_error(valid, "Regions.filler_phase must be >= 0");
+    }
+    if (regions.has_filler_phase && seeds.fill_outside_roi != "random") {
+        WARNING_0_OPT("Warning: Regions.filler_phase is ignored without filler seeds "
+                      "(Seeds.fill_outside_roi = \"random\")");
+    }
+    // Synthetic phases are known now, so an explicit phase -> region map can be checked here with
+    // the rules of AssignRegionsFromPhases (regions/region_assigner.hpp): every listed phase
+    // mapped, region ids exactly 1..M, no region mixing crystalline and non-crystalline phases
+    if (regions.mode == "phase_fractions" && !regions.phase_to_region.empty()) {
+        std::map<int, std::vector<int>> region_members; // region -> listed phases
+        for (const int phase : regions.phase_ids) {
+            const auto it = regions.phase_to_region.find(phase);
+            if (it == regions.phase_to_region.end()) {
+                report_error(valid, "Regions.phase_to_region has no entry for phase " +
+                                        std::to_string(phase) + " of Regions.phases");
+            } else {
+                region_members[it->second].push_back(phase);
+            }
+        }
+        if (!region_members.empty() &&
+            region_members.rbegin()->first != static_cast<int>(region_members.size())) {
+            report_error(valid, "Regions.phase_to_region: the regions of the listed phases must "
+                                "be exactly 1..M (no unused region ids)");
+        }
+        for (const auto& entry : region_members) {
+            int amorphous = 0;
+            for (const int phase : entry.second) {
+                amorphous += std::count(regions.non_crystalline_phases.begin(),
+                                        regions.non_crystalline_phases.end(), phase) > 0 ? 1 : 0;
+            }
+            if (amorphous > 0 && amorphous < static_cast<int>(entry.second.size())) {
+                report_error(valid, "Regions.phase_to_region: region " +
+                                        std::to_string(entry.first) +
+                                        " mixes crystalline and non-crystalline phases");
+            }
+        }
+    }
+    if (regions.mode == "from_phase" && seeds.fill_outside_roi == "random" &&
+        !regions.has_filler_phase) {
+        report_error(valid, "Regions.mode = \"from_phase\" with Seeds.fill_outside_roi = "
+                            "\"random\" needs 'Regions.filler_phase' (filler grains have no "
+                            "measured phase)");
+    }
+    // With a single phase region the region ids are known now: {1} plus the passthrough regions
+    // must be exactly 1..R, so every [[Materials]] block is used
+    if (regions.mode == "single" && passthrough) {
+        std::vector<int> ids = {1};
+        for (const auto& entry : mesh.passthrough_attributes) {
+            ids.push_back(entry.second);
+        }
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        if (ids.back() != static_cast<int>(ids.size())) {
+            report_error(valid, "Mesh.passthrough_attributes: with Regions.mode = \"single\" the "
+                                "grains are region 1, so the passthrough regions must make the "
+                                "region ids exactly 1..R (no gaps)");
+        }
+    }
 
     // --- [Output] ---------------------------------------------------------------------------
     // Every output file name is built from basename; an empty one would give nameless files

@@ -85,7 +85,8 @@ enum class MeshFormat {
  * Seed i is entry i (0-based) of every per-seed array; multi-component attributes are stored
  * seed-major (all components of seed 0, then seed 1, ...). Optional arrays are empty when unused.
  * Positions are in mesh coordinates and length units (after any units_scale/translate of a seed
- * table). Orientations are passed through verbatim.
+ * table). Orientations are stored here as supplied; the generator normalizes them to unit length
+ * when it writes per-grain orientations (convention, sign and component order kept).
  */
 struct SeedSet {
     /** @brief Seed positions, one entry per seed (size N), mesh length units. */
@@ -102,7 +103,8 @@ struct SeedSet {
     std::vector<double> shape;
     /**
      * @brief Orientation quaternion per seed: quat[4*i + k], k = 0..3 -> w x y z, crystal-to-
-     * sample, passive, passed through verbatim. Size 4N or empty.
+     * sample, passive, as supplied (normalized to unit length when written per grain). Size 4N or
+     * empty.
      */
     std::vector<double> quat;
     /**
@@ -144,7 +146,18 @@ struct BestPair {
 /**
  * @brief Output of the labeling pipeline on the local ParMesh (this rank's mesh partition).
  *
- * Per-grain arrays are replicated on every rank and indexed by grain id - 1.
+ * Per-grain arrays are replicated on every rank and indexed by grain id - 1. Per-region arrays
+ * are replicated too and indexed by region id - 1.
+ *
+ * Kinds of grains (Stage 1d):
+ * - grains grown from a seed (random, lattice, Johnson-Mehl or seed-table seeds), including
+ *   "filler" grains grown from random seeds placed outside a measured region of interest;
+ * - grains read from a voxel map (one per feature id used by the mesh);
+ * - one "passthrough" grain per passthrough mesh attribute ([Mesh] passthrough_attributes): a
+ *   part of the mesh (e.g. a build plate) kept as a single grain with its own region. These are
+ *   always the last grains, num_grains - (number of passthrough attributes) + 1 .. num_grains.
+ *
+ * Every row of grain_quat is a unit quaternion (norm 1 to machine precision).
  */
 struct MicrostructureResult {
     /** @brief Per local element (0-based local element index), compact grain id 1..num_grains. */
@@ -155,10 +168,40 @@ struct MicrostructureResult {
     std::vector<double> grain_quat;
     /** @brief Size num_grains: region id (1..num_regions) of grain g at index g-1. */
     std::vector<int> grain_region;
-    /** @brief Size num_grains: SeedSet::source_id of the seed grain g grew from, at index g-1. */
+    /**
+     * @brief Size num_grains: stable source id of grain g at index g-1: the SeedSet::source_id of
+     * its seed, the feature id of a voxel-map grain, a derived id (DeriveFragmentSourceId) for a
+     * piece split off by the fragment cleanup, or -attribute for a passthrough grain.
+     */
     std::vector<std::int64_t> grain_source_id;
     /** @brief Global number of material regions (same on every rank). */
     int num_regions = 1;
+    /**
+     * @brief Size num_grains: phase id (>= 0) of grain g at index g-1, or -1 when the grain has
+     * no phase. Phases come from a seed table's phase column, from a voxel map's per-feature
+     * phases (read whenever the file has them, in every region mode), from Regions.filler_phase
+     * for filler grains, or from the synthetic phase fractions; -1 when no phase data exists and
+     * for passthrough grains.
+     */
+    std::vector<int> grain_phase;
+    /**
+     * @brief Size num_grains: 1 when grain g (index g-1) grew from a random filler seed placed
+     * outside the region of interest of a seed table (or was split off such a grain), else 0.
+     * char rather than bool so the vector is a plain byte array.
+     */
+    std::vector<char> grain_filler;
+    /**
+     * @brief Size num_regions: region_phases[r-1] = the phase ids (ascending) whose grains are in
+     * region r. Empty for a region without phase data (e.g. Regions.mode = "single" without
+     * phases, or a region that holds only passthrough grains).
+     */
+    std::vector<std::vector<int>> region_phases;
+    /**
+     * @brief Size num_regions: 1 when region r (index r-1) is crystalline (its grains carry real
+     * orientations), 0 when it is not (non-crystalline phases, or a passthrough-only region);
+     * the grains of non-crystalline regions get the identity quaternion (1, 0, 0, 0).
+     */
+    std::vector<char> region_crystalline;
 };
 
 } // namespace exaconstit::microstructure

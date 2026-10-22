@@ -1,0 +1,126 @@
+# ExaConstit deck for the microstructure generator Stage 1d end-to-end test "build plate"
+# (2 MPI ranks).
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
+# build directory, writes the input mesh at test time (test_tool_stage1d), runs there
+#     microstructure_generator -i test/data/microstructure/e2e/build_plate.toml
+# (paths shown relative to the repository root; CTest passes absolute paths) at 2 MPI ranks
+# (basename "e2e_build_plate"), and then runs mechanics on this deck with 2 MPI ranks.
+# The test passes when mechanics completes.
+#
+# What it exercises: a part on a passthrough build plate. The generator's serial mesh file
+# (type = "file") carries the grain ids as element attributes: grains 1..8 in the part, grain 9 is
+# the whole plate (identity orientation). The region map puts the part grains in region 1 and the
+# plate grain in region 2. Both blocks use the same crystal-plasticity model (the plate's identity
+# orientation is in the shared orientation file); only the region bookkeeping differs.
+# Five fixed steps of 0.1 s keep it short.
+Version = "0.8.0"
+basename = "ms_build_plate_np2"
+# "grain region" per line; [[Materials]] block k is region k (no grain_file: the mesh file
+# carries the grain ids)
+region_mapping_file = "e2e_build_plate.regions"
+
+[[Materials]]
+    # Region 1: the tessellated part (attribute 1 of the input mesh)
+    name = "part"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured): 8 grains in the part + 1
+        # passthrough grain for the plate; the same count in every block
+        num_grains = 9
+        orientation_file = "e2e_build_plate.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    # Region 2: the build plate (passthrough attribute 2, one grain)
+    name = "plate"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        # Final grain count printed by the generator (measured): 8 grains in the part + 1
+        # passthrough grain for the plate; the same count in every block
+        num_grains = 9
+        orientation_file = "e2e_build_plate.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+# Uniaxial tension along z. Boundary ids (ExaConstit's auto-mesh numbering): 1 bottom (z = 0),
+# 2 left (x = 0), 3 front (y = 0), 4 top (z = 1.25).
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    type = "file"
+    floc = "e2e_build_plate.mesh"
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1

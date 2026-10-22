@@ -240,6 +240,12 @@ RunPair RunAndCompare(mfem::Mesh& serial, const ms::MicrostructureOptions& optio
               pair.alone.report.cleanup.fragments_merged);
     EXPECT_EQ(pair.world.report.num_split_elements, pair.alone.report.num_split_elements);
     EXPECT_EQ(pair.world.report.grain_seed, pair.alone.report.grain_seed);
+    // Every orientation (random here) is a unit quaternion to machine precision
+    for (std::size_t g = 0; 4 * g < pair.alone.result.grain_quat.size(); ++g) {
+        const double* q = &pair.alone.result.grain_quat[4 * g];
+        const double norm = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        EXPECT_LE(std::fabs(norm - 1.0), 4e-16) << "grain " << g + 1;
+    }
     // Grain ids are compact: 1..N, every grain used
     std::vector<int> count(static_cast<std::size_t>(pair.alone.result.num_grains) + 1, 0);
     for (const int g : pair.alone.labels) {
