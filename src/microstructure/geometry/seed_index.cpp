@@ -255,6 +255,78 @@ void FindBestKernel(const View& view, int nq, const double* qx, const double* qy
 }
 
 /**
+ * @brief Query kernel of FindBestExcluding: one loop iteration per query point.
+ *
+ * The same search as FindBestKernel with the exact second best switched off, with one change in
+ * the visit function: before a seed is evaluated, the query's exclusion list
+ * ids[offsets[q] .. offsets[q+1] - 1] is scanned with a plain loop, and a listed seed is skipped.
+ * The pruning threshold is the best f among the seeds actually offered, so it only ever drops
+ * to values of non-excluded seeds; a box is skipped only when its lower bound is above that
+ * value, i.e. when no seed in it (excluded or not) can beat the current non-excluded best. The
+ * result is therefore exactly the brute-force minimum over the non-excluded seeds.
+ *
+ * The lists are short (one entry per round of the connected-cell labeler, at most a few dozen),
+ * so the linear scan costs little next to the metric evaluation and needs no scratch memory,
+ * which keeps the kernel GPU-ready.
+ */
+template <typename ExecSpace, typename View>
+void FindBestExcludingKernel(const View& view, int nq, const double* qx, const double* qy,
+                             const double* qz, const int* offsets, const int* ids,
+                             BestPair* out) {
+    axom::for_all<ExecSpace>(
+        nq, AXOM_LAMBDA(axom::IndexType q) {
+            const double x = qx[q];
+            const double y = qy[q];
+            const double z = qz[q];
+            const SeedPoint p = SeedPoint::make_point(x, y, z);
+            const int list_begin = offsets[q];
+            const int list_end = offsets[q + 1];
+
+            // Step 1: visiting order of the bins (as in FindBestKernel)
+            double root_lb[SEED_INDEX_MAX_BINS];
+            int order[SEED_INDEX_MAX_BINS];
+            OrderBins(view, p, root_lb, order);
+
+            // Step 2: running best over the seeds that are not on this query's list
+            RunningBest best;
+            double threshold = DBL_MAX;
+            auto visit = [&](int seed) {
+                for (int s = seed; s >= 0; s = view.coincident_next[s]) {
+                    // Is seed s on the exclusion list? (plain scan of a short list)
+                    bool excluded = false;
+                    for (int k = list_begin; k < list_end; ++k) {
+                        if (ids[k] == s) {
+                            excluded = true;
+                            break;
+                        }
+                    }
+                    if (!excluded) {
+                        best.Offer(view.metric.Eval(s, x, y, z), s);
+                    }
+                }
+                threshold = best.f1;
+            };
+
+            // Step 3: search the bins in order, carrying the best value across bins
+            for (int k = 0; k < view.num_bins; ++k) {
+                const int b = order[k];
+                if (root_lb[b] > threshold) {
+                    break;
+                }
+                TraverseBin(view, b, p, threshold, visit);
+            }
+
+            // Step 4: store; "none" (every seed excluded, or a NaN query) becomes -1
+            BestPair result;
+            result.id1 = (best.id1 != INT32_MAX) ? best.id1 : -1;
+            result.f1 = best.f1;
+            result.id2 = -1;
+            result.f2 = best.f2;
+            out[q] = result;
+        });
+}
+
+/**
  * @brief Range-query kernel of FindWithin. With `ids == nullptr` it counts, for each query, the
  * seeds with f <= f_max into counts[q]; otherwise it writes their indices to
  * ids[offsets[q] ...] (in traversal order; sorted later on the host). Both passes use the same
@@ -649,6 +721,54 @@ void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::
     detail::FindBestKernel<ExecSpace>(view, nq, qx.Read(on_device), qy.Read(on_device),
                                       qz.Read(on_device), out.Write(on_device), exact_second,
                                       visits);
+}
+
+/*
+ * FindBestExcluding: check the CSR sizes on the host (offsets has nq + 1 entries starting at 0,
+ * ids has at least offsets[nq] entries), then run FindBestExcludingKernel with the same kernel
+ * view as FindBest. The lists are read where ExecSpace runs (Read(on_device)), so on a GPU they
+ * are copied there once by MFEM and never come back to the host.
+ */
+template <typename ExecSpace, typename Metric>
+void SeedIndex<ExecSpace, Metric>::FindBestExcluding(const mfem::Vector& qx,
+                                                     const mfem::Vector& qy,
+                                                     const mfem::Vector& qz,
+                                                     const mfem::Array<int>& offsets,
+                                                     const mfem::Array<int>& ids,
+                                                     mfem::Array<BestPair>& out) const {
+    MFEM_VERIFY(m_built, "SeedIndex::FindBestExcluding called before Build");
+    detail::RequireMatchingMfemDevice(axom::execution_space<ExecSpace>::onDevice(),
+                                      "SeedIndex::FindBestExcluding");
+    MFEM_VERIFY(qx.Size() == qy.Size() && qx.Size() == qz.Size(),
+                "SeedIndex::FindBestExcluding: qx, qy, qz must have the same size");
+    const int nq = qx.Size();
+
+    // CSR size checks (host): one offset per query plus the end, lists inside ids
+    if (offsets.Size() != nq + 1) {
+        throw std::invalid_argument("SeedIndex::FindBestExcluding: offsets must have nq + 1 "
+                                    "entries");
+    }
+    const int* host_offsets = offsets.HostRead();
+    if (host_offsets[0] != 0 || host_offsets[nq] < 0 || host_offsets[nq] > ids.Size()) {
+        throw std::invalid_argument("SeedIndex::FindBestExcluding: offsets[0] must be 0 and "
+                                    "offsets[nq] must not exceed the size of ids");
+    }
+    out.SetSize(nq);
+    if (nq == 0) {
+        return;
+    }
+
+    // Kernel view (as in FindBest) and the search
+    const bool on_device = axom::execution_space<ExecSpace>::onDevice();
+    const auto view = detail::MakeSearchView(
+        m_metric, m_bvh, m_bin_root, m_bin_bound, m_bin_begin, m_indexed_ids.Read(on_device),
+        m_coincident_next.Read(on_device), std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
+    // An empty ids array has no data to move; pass a null pointer (never dereferenced, since
+    // every list is then empty)
+    const int* list_ids = (ids.Size() > 0) ? ids.Read(on_device) : nullptr;
+    detail::FindBestExcludingKernel<ExecSpace>(view, nq, qx.Read(on_device), qy.Read(on_device),
+                                               qz.Read(on_device), offsets.Read(on_device),
+                                               list_ids, out.Write(on_device));
 }
 
 /*

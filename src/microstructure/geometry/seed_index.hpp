@@ -186,6 +186,47 @@ public:
                   mfem::Array<int>* leaf_visits = nullptr) const;
 
     /**
+     * @brief For every query point q, the seed with the smallest f (ties: lowest index) among
+     * the seeds that are *not* on q's exclusion list.
+     *
+     * Used by the connected-cell labeler (labeling/connected_labeler.hpp): an element whose
+     * nearest seed's cell does not reach it through material puts that seed on its list and asks
+     * for the next best one.
+     *
+     * The exclusion lists are stored in CSR form (compressed rows: all lists back to back in one
+     * array, with an offset array saying where each list starts): the list of query q is
+     * ids[offsets[q] .. offsets[q+1] - 1]. Lists are short (a few entries), in any order, and may
+     * repeat an entry or be empty (then the result equals FindBest's id1/f1).
+     *
+     * Exact, with the same tie-break as FindBest: the result equals a brute-force loop over the
+     * non-excluded seeds with the same Metric::Eval. Excluded seeds are skipped only where seeds
+     * are evaluated (the BVH leaves); the box lower bounds that decide which branches to open are
+     * unchanged and are compared with the best value among non-excluded seeds found so far, so no
+     * branch holding a better non-excluded seed is ever skipped. A coincident seed (same position
+     * as a lower-index seed) is excluded only if its own index is on the list.
+     *
+     * Host function launching one kernel on ExecSpace (the list is scanned with a plain loop
+     * inside the kernel); not collective.
+     *
+     * @param qx, qy, qz query coordinates, size nq each (mesh length units). Read with
+     *                   Read(on_device) where on_device matches ExecSpace.
+     * @param offsets    size nq + 1, offsets[0] = 0, non-decreasing. Read on ExecSpace (its last
+     *                   entry is also read on the host for the size check).
+     * @param ids        size >= offsets[nq]: 0-based seed indices of the lists. Read on
+     *                   ExecSpace.
+     * @param out        resized to nq; out[q] = {id1, -1, f1, f2}: id1 is the best non-excluded
+     *                   seed (-1 with f1 = DBL_MAX if every seed is excluded or the query point is
+     *                   not finite); id2 is always -1 and f2 is a running value of the pruned
+     *                   search that must not be used. Written on ExecSpace.
+     * @pre Build was called.
+     * @throws std::invalid_argument if offsets/ids have inconsistent sizes, or if ExecSpace runs on
+     *         a GPU but the mfem::Device has no CUDA/HIP backend.
+     */
+    void FindBestExcluding(const mfem::Vector& qx, const mfem::Vector& qy, const mfem::Vector& qz,
+                           const mfem::Array<int>& offsets, const mfem::Array<int>& ids,
+                           mfem::Array<BestPair>& out) const;
+
+    /**
      * @brief Range query: for every query point q, all seeds with f_i(x_q) <= f_max.
      *
      * Uses the same pruned traversal in two kernels (count, then fill), with the prefix sum and

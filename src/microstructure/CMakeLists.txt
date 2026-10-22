@@ -155,9 +155,10 @@ ms_add_module(NAME ms_seeding  GLOBS seeding/*
               DEPENDS_ON ms_mesh)
 # orientation/ (random orientation sampler and the per-grain orientation assigner) and regions/
 # (grain -> material region assignment) are part of ms_labeling. ms_io provides the voxel map
-# reader used by the voxel labeler.
+# reader used by the voxel labeler, and ms_seeding the point-in-element locator used to find the
+# element that holds each seed (connected and geodesic labeling).
 ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/* regions/*
-              DEPENDS_ON ms_mesh ms_geometry ms_io)
+              DEPENDS_ON ms_mesh ms_geometry ms_io ms_seeding)
 # morphology/ (size control): target grain volumes, Laguerre weight fitting and Lloyd relaxation.
 # Uses the seed search (geometry), the cell measures (labeling) and the point-in-material test
 # (seeding).
