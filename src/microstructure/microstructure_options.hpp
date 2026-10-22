@@ -672,6 +672,21 @@ struct CliOverrides {
 };
 
 /**
+ * @brief How much MicrostructureOptions::validate() checks.
+ */
+enum class ValidationScope {
+    /** Everything, including the mesh source ([Mesh] type, floc, [Mesh.Auto]): the tool. */
+    FULL,
+    /**
+     * Everything except the mesh source: for callers that pass their own mesh to
+     * GenerateMicrostructure (ExaConstit's [Mesh.Microstructure] hook), which never reads
+     * MicrostructureOptions::mesh type / floc / nxyz / mxyz. The [Mesh] active_attributes and
+     * passthrough_attributes are still checked.
+     */
+    GENERATOR_ONLY
+};
+
+/**
  * @brief All options of the microstructure generator.
  *
  * Every rank parses the same input and holds an identical copy; nothing here communicates
@@ -747,11 +762,14 @@ struct MicrostructureOptions {
      *
      * @param problems optional; each error message is also appended here (all ranks, not only
      *                 rank 0), so a non-root rank whose checks fail alone can print them.
+     * @param scope    FULL (default) checks everything; GENERATOR_ONLY skips the mesh-source
+     *                 checks (type, floc, [Mesh.Auto]) for callers that supply the mesh.
      * @return true if every check passed.
      * @throws nothing for invalid options (they are reported, not thrown); only
      *         std::filesystem::filesystem_error if the file system cannot be queried at all.
      */
-    bool validate(std::vector<std::string>* problems = nullptr) const;
+    bool validate(std::vector<std::string>* problems = nullptr,
+                  ValidationScope scope = ValidationScope::FULL) const;
 
     /**
      * @brief Applies the tool's command-line overrides on top of the parsed options (see

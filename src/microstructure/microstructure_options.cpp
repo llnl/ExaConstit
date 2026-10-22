@@ -1331,7 +1331,8 @@ MicrostructureOptions MicrostructureOptions::parse_options_file(const fs::path& 
  *                 see an input file.
  * @return true if every check passed.
  */
-bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
+bool MicrostructureOptions::validate(std::vector<std::string>* problems,
+                                     ValidationScope scope) const {
     bool valid = true;
     // Collect messages for the caller during this call only; the guard clears the sink again on
     // every return path.
@@ -1362,15 +1363,20 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
 
     // --- [Mesh] -----------------------------------------------------------------------------
     // The mesh must be loadable; catching a missing file here avoids every rank failing inside
-    // the MFEM mesh reader.
-    check_choice(valid, "Mesh.type", mesh.type, {"file", "auto", "parallel"});
-    if (mesh.type == "file") {
+    // the MFEM mesh reader. With ValidationScope::GENERATOR_ONLY the caller supplies the mesh
+    // itself (the mechanics hook), so the mesh source (type, floc, [Mesh.Auto]) is not checked;
+    // the active/passthrough attribute checks below still run.
+    const bool check_mesh_source = (scope == ValidationScope::FULL);
+    if (check_mesh_source) {
+        check_choice(valid, "Mesh.type", mesh.type, {"file", "auto", "parallel"});
+    }
+    if (check_mesh_source && mesh.type == "file") {
         if (mesh.floc.empty()) {
             report_error(valid, "[Mesh] type = \"file\" needs 'floc'");
         } else if (!fs::exists(mesh.floc)) {
             report_error(valid, "mesh file '" + mesh.floc.string() + "' does not exist");
         }
-    } else if (mesh.type == "parallel") {
+    } else if (check_mesh_source && mesh.type == "parallel") {
         // floc is the prefix of a decomposition written with mfem::MakeParFilename
         // (mfem/general/globals.hpp:84), which appends the zero-padded part number, e.g.
         // "mesh." -> "mesh.000000". Part 0 always exists, so checking it catches a wrong prefix.
@@ -1384,7 +1390,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems) const {
                                  "') does not exist");
             }
         }
-    } else if (mesh.type == "auto") {
+    } else if (check_mesh_source && mesh.type == "auto") {
         // A generated box needs at least one element and a finite, positive length in every
         // direction; otherwise the mesh would be empty, inverted (negative element volumes) or
         // have NaN/infinite node coordinates (TOML accepts `nan` and `inf`).

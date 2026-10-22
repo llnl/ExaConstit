@@ -55,6 +55,7 @@
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
 #include "microstructure/util/collective_errors.hpp"
 #include "utilities/auto_mesh.hpp"
 
@@ -363,47 +364,6 @@ ms::GrainStatistics ComputeStatistics(const ms::GenerationReport& report,
                                       0);
 }
 
-/*
- * BuildGrainTable: the grain table columns. Orientation, region and source id come from the
- * result, and so do the phase and filler columns when they carry information (MakeGrainTable:
- * phases only when some grain has one, the filler flag only when some grain is a filler grain);
- * element count, volume, centroid and neighbor count come from the statistics; the target volume
- * column (the target of the seed each grain grew from) only when size targets were used, with 0
- * for grains that did not grow from a seed (passthrough grains, grain_seed = -1); the feature id
- * column (the grain id in the voxel file, -1 for passthrough grains) only for voxel maps.
- */
-ms::GrainTable BuildGrainTable(const ms::MicrostructureResult& result,
-                               const ms::GenerationReport& report,
-                               const ms::GrainStatistics& stats) {
-    ms::GrainTable table = ms::MakeGrainTable(result);
-    table.num_elements = stats.num_elements;
-    table.volume = stats.volume;
-    table.centroid = stats.centroid;
-    table.num_neighbors = stats.num_neighbors;
-    if (!report.seed_target_volume.empty()) {
-        table.target_volume.resize(report.grain_seed.size());
-        for (std::size_t g = 0; g < report.grain_seed.size(); ++g) {
-            const int seed = report.grain_seed[g];
-            table.target_volume[g] =
-                (seed >= 0) ? report.seed_target_volume[static_cast<std::size_t>(seed)] : 0.0;
-        }
-    }
-    if (report.used_voxel_map) {
-        table.feature_id = report.grain_feature;
-    }
-    return table;
-}
-
-/** The pair columns of the statistics as the writer's adjacency table. */
-ms::GrainAdjacencyTable BuildAdjacencyTable(const ms::GrainStatistics& stats) {
-    ms::GrainAdjacencyTable table;
-    table.grain_a = stats.pair_a;
-    table.grain_b = stats.pair_b;
-    table.shared_area = stats.pair_area;
-    table.num_faces = stats.pair_faces;
-    return table;
-}
-
 /** "first -> last" of a non-empty history, or "n/a". */
 template <typename T>
 std::string FirstToLast(const std::vector<T>& history) {
@@ -467,36 +427,6 @@ std::string DescribeGrainSource(const ms::MicrostructureOptions& options,
         return "Johnson-Mehl nucleation";
     }
     return "generated seeds";
-}
-
-/*
- * RequestedGrains: the requested grain count for the log and the mesh header.
- * - Johnson-Mehl: the count is not requested but follows from the nucleation (num_nuclei is only
- *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
- * - Voxel map: the grains are the features of the map that the mesh touches; nothing is
- *   requested.
- * - Seed table: the table seeds kept inside the ROI, plus the filler seeds asked for (given, or
- *   the automatic count).
- */
-std::string RequestedGrains(const ms::GenerationReport& report) {
-    if (report.used_voxel_map) {
-        return "read from the voxel map";
-    }
-    if (report.used_seed_table) {
-        std::string text = std::to_string(report.num_table_seeds) + " from the seed table";
-        if (report.used_filler) {
-            text += " + " + std::to_string(report.num_filler_requested) + " filler requested";
-        }
-        return text;
-    }
-    if (!report.used_johnson_mehl) {
-        return std::to_string(report.seeding.requested) + " requested";
-    }
-    if (report.seeding.requested > 0) {
-        return "set by Johnson-Mehl nucleation (at most " +
-               std::to_string(report.seeding.requested) + " nuclei)";
-    }
-    return "set by Johnson-Mehl nucleation (no nucleus limit)";
 }
 
 /** Prefixes every line of `text` with `indent` (for nesting a sub-report in the log). */
@@ -627,58 +557,6 @@ std::string SourceText(const ms::MicrostructureOptions& options,
     return report.seeding.Summary();
 }
 
-/**
- * Grain id of passthrough attribute number k (0-based, ascending attribute order): the
- * passthrough grains are always the last grains, num_grains - P + 1 .. num_grains.
- */
-int PassthroughGrainId(const ms::GenerationReport& report,
-                       const ms::MicrostructureResult& result,
-                       std::size_t k) {
-    return result.num_grains - report.num_passthrough_grains + 1 + static_cast<int>(k);
-}
-
-/*
- * RegionContents: what region r (1-based) holds, in words, for the region section and the
- * [[Materials]] guidance: its phases (MicrostructureResult::region_phases), whether it is
- * crystalline (region_crystalline), the passthrough attributes mapped to it (with their grain
- * ids), and whether filler grains are in it.
- */
-std::string RegionContents(const ms::GenerationReport& report,
-                           const ms::MicrostructureResult& result,
-                           int r) {
-    const auto ri = static_cast<std::size_t>(r - 1);
-    std::ostringstream os;
-    // Phases
-    if (ri < result.region_phases.size() && !result.region_phases[ri].empty()) {
-        const std::vector<int>& phases = result.region_phases[ri];
-        os << (phases.size() > 1 ? "phases " : "phase ") << JoinList(phases);
-    } else {
-        os << "no phase data";
-    }
-    // Crystallinity
-    const bool crystalline =
-        ri < result.region_crystalline.size() && result.region_crystalline[ri] != 0;
-    os << "; " << (crystalline ? "crystalline" : "not crystalline (identity orientations)");
-    // Passthrough parts of the mesh in this region
-    for (std::size_t k = 0; k < report.passthrough_attributes.size(); ++k) {
-        if (k < report.passthrough_regions.size() && report.passthrough_regions[k] == r) {
-            os << "; passthrough attribute " << report.passthrough_attributes[k] << " (grain "
-               << PassthroughGrainId(report, result, k) << ")";
-        }
-    }
-    // Filler grains in this region
-    int filler = 0;
-    for (std::size_t g = 0; g < result.grain_filler.size(); ++g) {
-        if (result.grain_filler[g] != 0 && result.grain_region[g] == r) {
-            ++filler;
-        }
-    }
-    if (filler > 0) {
-        os << "; " << filler << " filler grain(s)";
-    }
-    return os.str();
-}
-
 /*
  * DescribePhasesAndRegions: rank-0 text for phases and regions, printed when the grains carry
  * phases or there is more than one region.
@@ -754,7 +632,7 @@ std::string DescribePhasesAndRegions(const ms::MicrostructureOptions& options,
         }
         os << "  region " << r << ": " << grains << " grain(s), volume " << volume
            << " (fraction " << (stats.total_volume > 0.0 ? volume / stats.total_volume : 0.0)
-           << "); " << RegionContents(report, result, r) << "\n";
+           << "); " << ms::RegionContents(report, result, r) << "\n";
     }
     return os.str();
 }
@@ -775,7 +653,7 @@ std::string DescribePassthrough(const ms::GenerationReport& report,
        << " elements):\n";
     for (std::size_t k = 0; k < report.passthrough_attributes.size(); ++k) {
         os << "  attribute " << report.passthrough_attributes[k] << " -> grain "
-           << PassthroughGrainId(report, result, k) << " -> region "
+           << ms::PassthroughGrainId(report, result, k) << " -> region "
            << (k < report.passthrough_regions.size() ? report.passthrough_regions[k] : 0) << " ("
            << (k < report.passthrough_element_counts.size() ? report.passthrough_element_counts[k]
                                                             : 0)
@@ -947,7 +825,7 @@ std::string MaterialsGuidance(const ms::GenerationReport& report,
            << " [[Materials]] blocks, in region order (block k is region k):\n";
         for (int r = 1; r <= result.num_regions; ++r) {
             os << "    block " << r << " (region " << r << "): "
-               << RegionContents(report, result, r) << "\n";
+               << ms::RegionContents(report, result, r) << "\n";
         }
         os << "  every crystal-plasticity block uses\n"
            << "    " << grain_line << "\n"
@@ -993,7 +871,7 @@ void PrintSummary(const ms::MicrostructureOptions& options,
     if (!report.used_voxel_map) {
         os << ", metric = " << MetricName(options.tessellation.metric);
     }
-    os << "\ngrains: " << RequestedGrains(report);
+    os << "\ngrains: " << ms::RequestedGrains(report);
     if (!report.used_voxel_map) {
         os << ", " << report.num_seeds << " seeds placed";
     }
@@ -1227,7 +1105,7 @@ int main(int argc, char** argv) {
         // Distance mode and solver only, never counts (DistanceHeaderLine): the header must be
         // byte-identical for every rank count
         comments << DistanceHeaderLine(report);
-        comments << "grains: " << RequestedGrains(report) << "\n"
+        comments << "grains: " << ms::RequestedGrains(report) << "\n"
                  << "final grains: " << report.num_grains << "\n"
                  << "regions: " << result.num_regions << "\n"
                  << SourceText(options, report, false);
@@ -1267,9 +1145,9 @@ int main(int argc, char** argv) {
             if (result.num_regions > 1) {
                 ms::WriteRegionMap(files.region_map, result.grain_region);
             }
-            ms::WriteGrainTable(files.grain_table, BuildGrainTable(result, report, stats));
+            ms::WriteGrainTable(files.grain_table, ms::BuildGrainTable(result, report, stats));
             if (out.grain_adjacency) {
-                ms::WriteGrainAdjacency(files.grain_adjacency, BuildAdjacencyTable(stats));
+                ms::WriteGrainAdjacency(files.grain_adjacency, ms::BuildAdjacencyTable(stats));
             }
         }
 

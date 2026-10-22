@@ -165,8 +165,10 @@ ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/* regions/*
 ms_add_module(NAME ms_morphology GLOBS morphology/*
               DEPENDS_ON ms_seeding ms_labeling ms_geometry ms_mesh)
 
-# Driver library: everything a consumer (tool, tests, mechanics hook) links against
-ms_add_module(NAME exaconstit_microstructure GLOBS microstructure_driver
+# Driver library: everything a consumer (tool, tests, mechanics hook) links against: the
+# pipeline (microstructure_driver) and the record tables and log phrases both consumers write
+# (microstructure_report)
+ms_add_module(NAME exaconstit_microstructure GLOBS microstructure_driver microstructure_report
               DEPENDS_ON ms_options ms_io ms_morphology ms_seeding ms_labeling ms_geometry
                          ms_mesh)
 
