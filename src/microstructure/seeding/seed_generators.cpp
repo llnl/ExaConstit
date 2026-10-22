@@ -117,10 +117,17 @@ struct CandidateBatch {
 struct BatchMask {
     std::int64_t words = 0;
     std::vector<std::uint64_t> bits;
+    /**
+     * excluded[i] = 1 when candidate i is strictly inside the exclusion box. Computed from the
+     * replicated candidate positions, so identical on every rank and not part of the reduction.
+     * Empty when no exclusion box is used.
+     */
+    std::vector<char> excluded;
 
     void Reset(std::int64_t n) {
         words = (n + 63) / 64;
         bits.assign(static_cast<std::size_t>(2 * words), 0);
+        excluded.clear();
     }
     std::uint64_t* InDomain() {
         return bits.data();
@@ -283,6 +290,11 @@ public:
                 return;
             }
             report.candidates_generated++;
+            // Exclusion box first: such a candidate is never in the domain
+            if (!mask.excluded.empty() && mask.excluded[static_cast<std::size_t>(i)]) {
+                report.rejected_by_exclude_box++;
+                continue;
+            }
             if (!mask.InDomain(i)) {
                 continue;
             }
@@ -352,14 +364,58 @@ struct SeedingContext {
  * When any part is rank-local, one MPI_Allreduce(MPI_BOR) over both parts (2 * words 64-bit
  * words) gives every rank the global mask. Bits set identically on all ranks (filter_box) are
  * unchanged by the OR.
+ *
+ * Exclusion box (only when params.use_exclude_box): mask.excluded[i] marks the candidates strictly
+ * inside the box. Those candidates are left out of the point-in-material test (the remaining
+ * candidates are packed into a shorter list, tested, and their bits copied back to their original
+ * positions), and their in-domain bit stays 0. Without an exclusion box nothing of this runs, so
+ * the default path is unchanged.
  */
 void ClassifyBatch(const SeedingContext& ctx, const CandidateBatch& batch, bool test_inside,
                    bool filter_box, BatchMask& mask) {
     const std::int64_t n = batch.Size();
     mask.Reset(n);
 
+    // Exclusion flags (replicated: computed from the candidate positions alone)
+    const SeedingParameters& params = *ctx.params;
+    if (params.use_exclude_box) {
+        mask.excluded.assign(static_cast<std::size_t>(n), 0);
+        for (std::int64_t i = 0; i < n; i++) {
+            const double p[3] = {batch.x[i], batch.y[i], batch.z[i]};
+            bool inside = true;
+            for (int d = 0; d < 3; d++) {
+                inside = inside && p[d] > params.exclude_box_lo[d] &&
+                         p[d] < params.exclude_box_hi[d];
+            }
+            mask.excluded[static_cast<std::size_t>(i)] = inside ? 1 : 0;
+        }
+    }
+
     // In-domain bits
-    if (test_inside) {
+    if (test_inside && params.use_exclude_box) {
+        // Pack the candidates outside the exclusion box, test only those, and copy each bit back
+        // to the candidate's position in the batch
+        std::vector<double> px, py, pz;
+        std::vector<std::int64_t> original;
+        for (std::int64_t i = 0; i < n; i++) {
+            if (!mask.excluded[static_cast<std::size_t>(i)]) {
+                px.push_back(batch.x[i]);
+                py.push_back(batch.y[i]);
+                pz.push_back(batch.z[i]);
+                original.push_back(i);
+            }
+        }
+        const std::int64_t m = static_cast<std::int64_t>(original.size());
+        std::vector<std::uint64_t> packed(static_cast<std::size_t>((m + 63) / 64), 0);
+        if (m > 0) {
+            ctx.locator->MarkInside(m, px.data(), py.data(), pz.data(), packed.data());
+        }
+        for (std::int64_t j = 0; j < m; j++) {
+            if ((packed[static_cast<std::size_t>(j / 64)] >> (j % 64)) & 1u) {
+                mask.SetInDomain(original[static_cast<std::size_t>(j)]);
+            }
+        }
+    } else if (test_inside) {
         ctx.locator->MarkInside(n, batch.x.data(), batch.y.data(), batch.z.data(),
                                 mask.InDomain());
     } else {
@@ -970,6 +1026,22 @@ void ValidateSeedingParameters(const SeedingParameters& params) {
     if (params.max_batch_size < 64 || params.max_batch_size > MAX_BATCH_SIZE) {
         fail("max_batch_size must be in [64, 2^24]");
     }
+    if (params.use_exclude_box) {
+        for (int d = 0; d < 3; d++) {
+            if (!(params.exclude_box_hi[d] > params.exclude_box_lo[d])) {
+                fail("the exclusion box must have hi > lo along every axis");
+            }
+        }
+        if (!(params.exclude_box_outside_fraction > 0.0 &&
+              params.exclude_box_outside_fraction <= 1.0)) {
+            fail("exclude_box_outside_fraction must be in (0, 1]");
+        }
+    }
+    // Candidate indices stay below MAX_CANDIDATES = 2^40, so offset + index cannot overflow
+    if (params.source_id_offset < 0 ||
+        params.source_id_offset > std::numeric_limits<std::int64_t>::max() - MAX_CANDIDATES) {
+        fail("source_id_offset must be in [0, 2^63 - 1 - 2^40]");
+    }
 }
 
 /*
@@ -1050,6 +1122,8 @@ std::string SeedingReport::Summary() const {
  *  7. Run it; a measured-acceptance FALLBACK restarts with element-weighted sampling from
  *     scratch, so the result never mixes two streams.
  *  8. Stall handling: error, or (allow_fewer_seeds) a note in the report.
+ *  9. Add source_id_offset to every id (the exclusion box, if any, acted inside step 7 through
+ *     ClassifyBatch and SeedAcceptor::Offer).
  */
 SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParameters& params,
                       SeedingReport* report_out) {
@@ -1197,9 +1271,17 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         }
     }
 
-    // Step 6: choose the generator and the stall cap
-    const double prior_rate =
-        ctx.material_mode ? std::min(1.0, summary.volume / box_volume) : 1.0;
+    // Step 6: choose the generator and the stall cap. With an exclusion box only the material
+    // outside it can accept candidates, so the expected acceptance is scaled by the caller's
+    // outside fraction (1 unless given; never applied without a box, so the default is unchanged)
+    double outside_fraction = 1.0;
+    if (params.use_exclude_box) {
+        outside_fraction = params.exclude_box_outside_fraction;
+    }
+    double prior_rate = ctx.material_mode ? std::min(1.0, summary.volume / box_volume) : 1.0;
+    if (params.use_exclude_box) {
+        prior_rate *= outside_fraction;
+    }
     SeedPlacement placement = params.placement;
     if (placement == SeedPlacement::REJECTION && ctx.material_mode &&
         prior_rate < params.fallback_acceptance) {
@@ -1244,6 +1326,7 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
                 report.candidates_in_domain = 0;
                 report.rejected_by_clearance = 0;
                 report.rejected_by_distance = 0;
+                report.rejected_by_exclude_box = 0;
                 acceptor = std::make_unique<SeedAcceptor>(params.num_seeds, ctx.min_distance,
                                                           grid_lo, grid_hi, params.periodic,
                                                           params.rsa_radius);
@@ -1251,7 +1334,7 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
             }
         }
         if (placement == SeedPlacement::ELEMENT_WEIGHTED) {
-            ctx.candidate_cap = auto_cap(1.0);
+            ctx.candidate_cap = auto_cap(outside_fraction);
             status = RunElementWeighted(ctx, local_mesh, samples, *acceptor, report);
         }
     }
@@ -1265,18 +1348,44 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         os << "placed only " << report.achieved << " of " << params.num_seeds << " seeds after "
            << report.candidates_generated << " candidates (stall cap " << ctx.candidate_cap
            << "; in domain " << report.candidates_in_domain << ", rejected by min distance "
-           << report.rejected_by_distance << ", by clearance " << report.rejected_by_clearance
-           << ")";
-        if (!params.allow_fewer_seeds) {
-            throw std::runtime_error("GenerateSeeds: " + os.str() +
-                                     ". Reduce min_distance/boundary_clearance or num_seeds.");
+           << report.rejected_by_distance << ", by clearance " << report.rejected_by_clearance;
+        if (params.use_exclude_box) {
+            os << ", by the exclusion box " << report.rejected_by_exclude_box
+               << "; outside the exclusion box lies a fraction " << outside_fraction
+               << " of the material volume " << summary.volume << " (outside volume "
+               << outside_fraction * summary.volume << ")";
         }
+        os << ")";
+        if (!params.allow_fewer_seeds) {
+            std::string advice = ". Reduce min_distance/boundary_clearance or num_seeds.";
+            if (params.use_exclude_box) {
+                advice = ". Reduce num_seeds (only the material outside the exclusion box can hold "
+                         "seeds) or min_distance/boundary_clearance, or set max_candidates.";
+            }
+            throw std::runtime_error("GenerateSeeds: " + os.str() + advice);
+        }
+        report.notes.push_back(os.str());
+    }
+    if (params.use_exclude_box) {
+        std::ostringstream os;
+        os << report.rejected_by_exclude_box << " candidates rejected by the exclusion box ["
+           << params.exclude_box_lo[0] << ", " << params.exclude_box_hi[0] << "] x ["
+           << params.exclude_box_lo[1] << ", " << params.exclude_box_hi[1] << "] x ["
+           << params.exclude_box_lo[2] << ", " << params.exclude_box_hi[2] << "]";
         report.notes.push_back(os.str());
     }
     if (report_out) {
         *report_out = report;
     }
-    return std::move(acceptor->Seeds());
+
+    // Step 9: id offset (adding 0 leaves the ids unchanged)
+    SeedSet& seeds = acceptor->Seeds();
+    if (params.source_id_offset != 0) {
+        for (std::int64_t& id : seeds.source_id) {
+            id += params.source_id_offset;
+        }
+    }
+    return std::move(seeds);
 }
 
 /* ParMesh overload: the mesh's own communicator. */

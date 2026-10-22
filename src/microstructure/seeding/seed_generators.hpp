@@ -89,6 +89,12 @@
  * The id of a seed therefore does not change when other candidates are rejected (by RSA, the
  * clearance or a different num_seeds), so orientations keyed by source_id stay attached to the
  * same seed. For a box mesh without RSA every candidate is accepted and source_id = 0..N-1.
+ * A nonzero SeedingParameters::source_id_offset is added to every id at the end.
+ *
+ * **Exclusion box.** SeedingParameters::use_exclude_box rejects every candidate strictly inside a
+ * box before any other test (used for filler grains around a measured region of interest). With
+ * the default (off) and source_id_offset = 0 the seeds are bit for bit those of a run without
+ * these fields.
  */
 
 namespace exaconstit::microstructure {
@@ -166,6 +172,40 @@ struct SeedingParameters {
     double fallback_acceptance = 1.0e-4;
     /** @brief Largest batch of candidates tested at once (memory/performance only, 64..2^24). */
     std::int64_t max_batch_size = std::int64_t(1) << 20;
+    /**
+     * @brief Exclusion box (default off): when true, every candidate lying strictly inside
+     * (exclude_box_lo, exclude_box_hi), i.e. lo < p < hi on all three axes, is rejected before
+     * the point-in-material test. Used to place "filler" seeds around a measured region of
+     * interest (seeding/roi_filler.hpp) without putting any inside it.
+     *
+     * The decision depends only on candidate k's own position, so the seeds stay independent of
+     * the rank count. Every placement honors it: rejection candidates, lattice points (num_seeds
+     * still sets the lattice spacing from the whole material volume, the box only removes points)
+     * and element-weighted points. Excluded candidates count as examined but not in the domain
+     * (SeedingReport::rejected_by_exclude_box), so they also count toward the stall cap and the
+     * measured acceptance of the element-weighted fallback. No TOML key. Lengths in mesh units.
+     */
+    bool use_exclude_box = false;
+    std::array<double, 3> exclude_box_lo = {0.0, 0.0, 0.0}; ///< exclusion box lower corner
+    std::array<double, 3> exclude_box_hi = {0.0, 0.0, 0.0}; ///< exclusion box upper corner
+    /**
+     * @brief With use_exclude_box: the fraction (0, 1] of the material volume that lies outside
+     * the exclusion box, if the caller knows it (the ROI filler measures it). It scales the
+     * expected acceptance used for the automatic stall cap, the batch sizes and the up-front
+     * element-weighted fallback decision, and is quoted in the stall message. Default 1 (unknown:
+     * the cap then assumes the whole material accepts). It decides when generation gives up and,
+     * like any low expected acceptance, may switch rejection to element-weighted sampling up
+     * front; it never changes the accept/reject test of a candidate. Must be identical on every
+     * rank. Ignored without an exclusion box.
+     */
+    double exclude_box_outside_fraction = 1.0;
+    /**
+     * @brief Added to every generated SeedSet::source_id (>= 0, default 0 = unchanged ids). Lets
+     * generated seeds follow the ids of a seed table without collisions (the caller passes
+     * max table id + 1). Random orientations are keyed by source_id, so they follow the offset
+     * ids. No TOML key.
+     */
+    std::int64_t source_id_offset = 0;
 };
 
 /**
@@ -203,6 +243,7 @@ struct SeedingReport {
     std::int64_t candidates_in_domain = 0;  ///< of those, inside the material (or box)
     std::int64_t rejected_by_clearance = 0; ///< in domain but closer than the clearance
     std::int64_t rejected_by_distance = 0;  ///< in domain but closer than d to a seed (RSA)
+    std::int64_t rejected_by_exclude_box = 0; ///< strictly inside the exclusion box (not in domain)
     double material_volume = 0.0;         ///< V of the whole mesh (fixed-point sum, length^3)
     double min_distance = 0.0;            ///< d actually used (0: no RSA)
     double lattice_parameter = 0.0;       ///< a (lattices only)
