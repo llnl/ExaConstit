@@ -47,6 +47,13 @@
  *   `sqdist_point_box` and whose seed parameters are summarized by `bound`. The seed search
  *   (seed_index.hpp) skips a whole box of seeds when this bound is already larger than the best
  *   f found so far; that is what makes the search fast and still exact.
+ * - `double LowerBound(const double p[3], const double box_lo[3], const double box_hi[3],
+ *   double sqdist_point_box, const BinBound& bound)`: the same guarantee, but the box itself
+ *   (its corners) is also passed, not only its squared distance to the query point p. The seed
+ *   search always calls this form. Voronoi, Laguerre, Additive and the per-seed Quadric metric
+ *   ignore the corners and return the distance-only bound above. The Quadric metric with one
+ *   global tensor A uses the corners for a much sharper "projected-interval" bound (see
+ *   QuadricMetric), which is what makes columnar and lamellar grains (semidefinite A) fast.
  *
  * The functors hold raw pointers (a SeedDeviceView) into seed arrays owned by someone else
  * (normally SeedIndex), so they are cheap to copy into kernels. They do not own memory; the
@@ -61,6 +68,10 @@
  * is therefore lowered by a tiny relative margin, METRIC_ROUNDOFF_SLACK (64 machine epsilons,
  * about 1.4e-14) times the size of the terms involved. That is far below any geometric scale, so
  * it costs nothing in search speed, and it keeps LowerBound <= Eval true in floating point.
+ *
+ * **Columnar and lamellar grains.** The global quadric tensors A = I - a a^T and A = n n^T that
+ * produce them are built by MakeColumnarTensor / MakeLamellarTensor in
+ * geometry/anisotropy_tensors.hpp.
  *
  * **Math functions.** Device-callable code uses the C math library from <math.h> (sqrt, fabs),
  * not std::sqrt, because the C names are the ones reliably available in CUDA/HIP device code.
@@ -294,6 +305,19 @@ struct VoronoiMetric {
         (void)bound;
         return (1.0 - METRIC_ROUNDOFF_SLACK) * sqdist_point_box;
     }
+
+    /**
+     * @brief Box form used by the seed search; the box corners are not needed for Voronoi, so
+     * this returns LowerBound(sqdist_point_box, bound). @param p, box_lo, box_hi unused.
+     */
+    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
+                                       const double box_hi[3], double sqdist_point_box,
+                                       const BinBound& bound) const {
+        (void)p;
+        (void)box_lo;
+        (void)box_hi;
+        return LowerBound(sqdist_point_box, bound);
+    }
 };
 
 /**
@@ -338,6 +362,19 @@ struct LaguerreMetric {
     MFEM_HOST_DEVICE double LowerBound(double sqdist_point_box, const BinBound& bound) const {
         return (1.0 - METRIC_ROUNDOFF_SLACK) * sqdist_point_box - bound.w_max -
                METRIC_ROUNDOFF_SLACK * bound.w_absmax;
+    }
+
+    /**
+     * @brief Box form used by the seed search; returns LowerBound(sqdist_point_box, bound)
+     * (the box corners add nothing for an isotropic metric). @param p, box_lo, box_hi unused.
+     */
+    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
+                                       const double box_hi[3], double sqdist_point_box,
+                                       const BinBound& bound) const {
+        (void)p;
+        (void)box_lo;
+        (void)box_hi;
+        return LowerBound(sqdist_point_box, bound);
     }
 };
 
@@ -405,7 +442,9 @@ struct QuadricMetric {
     /**
      * @brief Lower bound mu_min d^2 - w_max: (x - s)^T A (x - s) >= lambda_min(A) |x - s|^2 >=
      * mu_min d^2. With a semidefinite A (mu_min = 0) this degenerates to -w_max and gives no
-     * distance pruning: the search then visits every seed (correct, but slow).
+     * distance pruning: the search then visits every seed (correct, but slow). For one global A
+     * the box form below adds the projected-interval bound, which does prune; per-seed
+     * semidefinite tensors still get only this bound.
      *
      * The round-off margin is applied to the eigenvalue (mu_min - slack * mu_max, never below
      * 0), because the rounding error of |M d|^2 scales with the largest eigenvalue times |d|^2,
@@ -417,6 +456,111 @@ struct QuadricMetric {
             mu = 0.0;
         }
         return mu * sqdist_point_box - bound.w_max - METRIC_ROUNDOFF_SLACK * bound.w_absmax;
+    }
+
+    /**
+     * @brief Box form used by the seed search. Per-seed tensors (factor_stride != 0): the
+     * eigenvalue bound above. One global tensor (factor_stride == 0): the larger of the
+     * eigenvalue bound and the **projected-interval bound** below; both are valid lower bounds,
+     * so their maximum is too.
+     *
+     * **Projected-interval bound in plain words.** With A = M^T M, f_i(x) + w_i = |M (x - s_i)|^2
+     * = sum over the three rows m_k of M of (m_k . x - m_k . s_i)^2. Fix one row m_k. When the
+     * seed s moves over the box [box_lo, box_hi], the number m_k . s is a linear function of s,
+     * so it takes its smallest and largest values at box corners: P_lo = sum_c m_kc * (box_lo_c
+     * if m_kc >= 0, else box_hi_c) and P_hi likewise with lo and hi swapped. Every seed in the
+     * box therefore has m_k . s in the interval [P_lo, P_hi] (the "shadow" of the box on the
+     * direction m_k), and the term (m_k . x - m_k . s)^2 is at least gap_k^2, where gap_k is
+     * the distance from the number m_k . x to that interval (0 if it lies inside). Summing over
+     * k and using w_i <= w_max:
+     *
+     *     f_i(x) >= gap_0^2 + gap_1^2 + gap_2^2 - w_max   for every seed i in the box.
+     *
+     * Writing A = sum_k lambda_k u_k u_k^T (eigen-decomposition, m_k = sqrt(lambda_k) u_k), this
+     * is sum_k lambda_k dist(x . u_k, [min_box s . u_k, max_box s . u_k])^2 - w_max.
+     *
+     * **Why it is valid, briefly.** For each k and each s in the box, m_k . s lies in [P_lo,
+     * P_hi] (a linear function on a box is extreme at a corner), so |m_k . x - m_k . s| >= gap_k
+     * (distance from a point to any member of an interval is at least the distance to the
+     * interval). Squares of non-negative numbers keep the order; sums of valid term bounds bound
+     * the sum; and -w_i >= -w_max. Nothing here assumes that the rows m_k are orthogonal or that
+     * A has full rank, so the bound holds for exactly the factor M that Eval uses, including the
+     * zero rows of a semidefinite A (they contribute gap 0).
+     *
+     * **Why it matters.** For columnar grains (A = I - a a^T) or lamellae (A = n n^T) the
+     * smallest eigenvalue is 0, so the eigenvalue bound mu_min d^2 - w_max is just -w_max and
+     * prunes nothing: every query would visit every seed. The projected-interval bound still
+     * measures the distance in the directions that A does see (the plane perpendicular to the
+     * column axis, or the layer normal), so boxes of seeds whose columns or layers are far from
+     * x are skipped.
+     *
+     * **Round-off margin.** Eval computes y_k = m_k . (x - s) in floating point, while the bound
+     * computes m_k . x and the corner sums separately. Both differ from the exact values by a few
+     * rounding units of scale_k = sum_c |m_kc| (|x_c| + max(|box_lo_c|, |box_hi_c|)), which
+     * bounds the size of every product involved (|s_c| <= max(|box_lo_c|, |box_hi_c|) for s in
+     * the box). Each gap is therefore lowered by METRIC_ROUNDOFF_SLACK * scale_k (64 rounding
+     * units, against about 12 that can occur) and clamped at 0, the sum of squares is
+     * scaled by (1 - METRIC_ROUNDOFF_SLACK), and the weight term gets the same margin as the
+     * other bounds. So the computed bound stays <= the computed f.
+     *
+     * Cost: 3 x 3 multiply-adds per box, done inside the BVH traversal (host or device).
+     *
+     * @param p                query point x (3 coordinates, mesh length units).
+     * @param box_lo, box_hi   corners of the box of seeds (3 coordinates each; box_lo <= box_hi).
+     * @param sqdist_point_box squared distance from p to the box (>= 0), for the eigenvalue bound.
+     * @param bound            weight and eigenvalue summary of the seeds in the box's bin.
+     */
+    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
+                                       const double box_hi[3], double sqdist_point_box,
+                                       const BinBound& bound) const {
+        // Bound from the smallest eigenvalue (the only one valid for per-seed tensors)
+        const double eigen_bound = LowerBound(sqdist_point_box, bound);
+        if (m_seeds.factor_stride != 0) {
+            return eigen_bound;
+        }
+
+        // One global factor M: projected-interval bound, row by row (M is row major)
+        const double* m = m_seeds.factor;
+        double sum_gap_sq = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double* row = m + 3 * k;
+            double proj_point = 0.0;  // m_k . x
+            double proj_lo = 0.0;     // smallest m_k . s over the box corners
+            double proj_hi = 0.0;     // largest m_k . s over the box corners
+            double scale = 0.0;       // size of the terms, for the round-off margin
+            for (int c = 0; c < 3; ++c) {
+                const double mc = row[c];
+                proj_point += mc * p[c];
+                // A positive coefficient is smallest at the low corner, a negative one at the
+                // high corner
+                if (mc >= 0.0) {
+                    proj_lo += mc * box_lo[c];
+                    proj_hi += mc * box_hi[c];
+                } else {
+                    proj_lo += mc * box_hi[c];
+                    proj_hi += mc * box_lo[c];
+                }
+                const double box_abs = (fabs(box_lo[c]) > fabs(box_hi[c])) ? fabs(box_lo[c])
+                                                                           : fabs(box_hi[c]);
+                scale += fabs(mc) * (fabs(p[c]) + box_abs);
+            }
+            // Distance from m_k . x to the interval [proj_lo, proj_hi], minus the margin
+            double gap = 0.0;
+            if (proj_point < proj_lo) {
+                gap = proj_lo - proj_point;
+            } else if (proj_point > proj_hi) {
+                gap = proj_point - proj_hi;
+            }
+            gap -= METRIC_ROUNDOFF_SLACK * scale;
+            if (gap > 0.0) {
+                sum_gap_sq += gap * gap;
+            }
+        }
+        const double interval_bound = (1.0 - METRIC_ROUNDOFF_SLACK) * sum_gap_sq - bound.w_max -
+                                      METRIC_ROUNDOFF_SLACK * bound.w_absmax;
+
+        // Both are valid lower bounds; the larger one prunes more
+        return (interval_bound > eigen_bound) ? interval_bound : eigen_bound;
     }
 };
 
@@ -472,6 +616,19 @@ struct AdditiveMetric {
     MFEM_HOST_DEVICE double LowerBound(double sqdist_point_box, const BinBound& bound) const {
         return sqrt((1.0 - METRIC_ROUNDOFF_SLACK) * sqdist_point_box) - bound.w_max -
                METRIC_ROUNDOFF_SLACK * bound.w_absmax;
+    }
+
+    /**
+     * @brief Box form used by the seed search; returns LowerBound(sqdist_point_box, bound).
+     * @param p, box_lo, box_hi unused.
+     */
+    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
+                                       const double box_hi[3], double sqdist_point_box,
+                                       const BinBound& bound) const {
+        (void)p;
+        (void)box_lo;
+        (void)box_hi;
+        return LowerBound(sqdist_point_box, bound);
     }
 };
 

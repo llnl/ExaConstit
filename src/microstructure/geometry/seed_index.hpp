@@ -37,6 +37,15 @@
  * from bin to bin, and stops as soon as the next bin's root bound exceeds it. Voronoi seeds
  * (no weights) always use one bin.
  *
+ * **Box-aware bound for one global quadric tensor.** The traversal passes each box's corners,
+ * not only its distance to the query, to the metric's LowerBound. The Quadric metric with one
+ * global tensor A uses them for its projected-interval bound (QuadricMetric in
+ * metric_functors.hpp): the box is projected onto each row of the factor M of A, and the
+ * distance of the query to those projected intervals bounds f. This keeps the search fast for
+ * semidefinite A (columnar grains A = I - a a^T, lamellae A = n n^T), where the smallest
+ * eigenvalue is 0 and the distance-only bound would make every query visit every seed.
+ * The optional leaf_visits output of FindBest measures this pruning.
+ *
  * **Coincident seeds.** Seeds with exactly the same coordinates are stored as one BVH leaf: the
  * lowest index is the representative and the others are chained behind it (ascending index).
  * Whenever the traversal reaches that leaf, the whole chain is evaluated together. This gives one
@@ -163,12 +172,18 @@ public:
      * coordinate (every comparison with NaN is false, so no seed is ever accepted). Callers
      * should check for it.
      *
+     * @param leaf_visits   optional diagnostic (default nullptr = not computed): resized to nq,
+     *                      (*leaf_visits)[q] = number of BVH leaves (distinct seed positions)
+     *                      the pruned search of query q reached. Equals the number of distinct
+     *                      seed positions when nothing is pruned. Written like `out`.
+     *
      * @pre Build was called; qx, qy, qz have equal sizes.
      * @throws std::invalid_argument if ExecSpace runs on a GPU but the mfem::Device has no
      *         CUDA/HIP backend.
      */
     void FindBest(const mfem::Vector& qx, const mfem::Vector& qy, const mfem::Vector& qz,
-                  mfem::Array<BestPair>& out, bool exact_second) const;
+                  mfem::Array<BestPair>& out, bool exact_second,
+                  mfem::Array<int>* leaf_visits = nullptr) const;
 
     /**
      * @brief Range query: for every query point q, all seeds with f_i(x_q) <= f_max.

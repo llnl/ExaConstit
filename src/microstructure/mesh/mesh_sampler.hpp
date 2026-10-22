@@ -2,6 +2,8 @@
 
 #include "mfem.hpp"
 
+#include <memory>
+
 /**
  * @file mesh_sampler.hpp
  * @brief Element volumes, volume centroids and quadrature-point coordinates of a mesh.
@@ -18,16 +20,28 @@
  * *quadrature-weighted* (true volume) centroid. For a curved or distorted element it differs
  * from the plain average of the vertices, which is only the centroid of affine hexes and tets.
  *
- * **Data source.** The values come from `mfem::GeometricFactors` with COORDINATES |
- * DETERMINANTS. It evaluates the mesh nodes at the quadrature points of every element using
- * MFEM's QuadratureInterpolator. Its arrays use the "byNODES" layout (`mesh.cpp:15237-15253`),
- * where NQ = quadrature points per element, SDIM = 3 and e, q, d are 0-based:
- * - `X[q + NQ*(d + SDIM*e)]`: coordinate d (0=x, 1=y, 2=z) of quadrature point q of element e;
- * - `detJ[q + NQ*e]`: signed Jacobian determinant at quadrature point q of element e.
+ * **Data source.**
+ * - Element volumes and centroids (ComputeElementSamples) come from `mfem::GeometricFactors`
+ *   with COORDINATES | DETERMINANTS, which evaluates the mesh nodes at the quadrature points of
+ *   every element with MFEM's QuadratureInterpolator. Its arrays use the "byNODES" layout
+ *   (`mesh.cpp:15237-15253`), where NQ = quadrature points per element, SDIM = 3 and e, q, d are
+ *   0-based: `X[q + NQ*(d + SDIM*e)]` is coordinate d (0=x, 1=y, 2=z) of point q of element e,
+ *   and `detJ[q + NQ*e]` its signed Jacobian determinant.
+ * - Quadrature points (ComputeQuadraturePointSamples, QuadraturePointSampler) are evaluated
+ *   *per element range* instead: the element-wise node coordinates and the rule's shape-function
+ *   tables (mfem::DofToQuad) are kept, and x_q and detJ_q are computed for one range at a time
+ *   with the same arithmetic as MFEM's non-tensor interpolation kernel (bitwise equal to
+ *   GeometricFactors for tets; equal to round-off for hexes, where GeometricFactors uses a
+ *   sum-factorized kernel that adds the same terms in another order).
  *
- * **Memory.** GeometricFactors always covers all local elements at once (it has no element
- * range), so peak memory is about `(SDIM + 1) * NQ * NE` values plus the element-restricted
- * nodes. The factors are built directly (not through the Mesh cache) and freed on return.
+ * **Memory.**
+ * - ComputeElementSamples: GeometricFactors covers all local elements at once (it has no element
+ *   range), so peak memory is about `(SDIM + 1) * NQ * NE` values plus the element-restricted
+ *   nodes, freed on return.
+ * - Quadrature points: the element-wise node coordinates, `3 * ND` doubles per element (ND =
+ *   nodes per element: 24 doubles = 192 bytes for a linear hex, 96 bytes for a linear tet; plus a
+ *   temporary copy of the vertex coordinates for a mesh without Nodes), kept for the whole local
+ *   mesh, plus 4 doubles (32 bytes) per point of the *requested range only*.
  *
  * **The mesh is not modified.** A mesh without high-order Nodes is sampled through a temporary
  * order-1 node GridFunction; calling `Mesh::EnsureNodes()` instead would permanently give the
@@ -129,9 +143,10 @@ void ComputeElementSamples(mfem::Mesh& mesh, int quad_order, ElementSamples& out
 /**
  * @brief Physical quadrature-point coordinates and weights of a local element range.
  *
- * Not collective. Same requirements and execution model as ComputeElementSamples. The geometric
- * factors are computed for the whole local mesh on each call and only the requested range is
- * copied out, so prefer a few large ranges over many small ones.
+ * Not collective. Same requirements and execution model as ComputeElementSamples. Each call
+ * gathers the element-wise node coordinates of the whole local mesh again (cheap, but use a
+ * QuadraturePointSampler when walking the mesh in many ranges) and evaluates the requested range
+ * only.
  *
  * @param mesh as for ComputeElementSamples.
  * @param quad_order as for ComputeElementSamples.
@@ -145,5 +160,80 @@ void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
                                    int elem_begin,
                                    int elem_end,
                                    QuadraturePointSamples& out);
+
+/**
+ * @brief Physical coordinates and weights w_q detJ_q of the points of a user-supplied
+ * integration rule, for a local element range.
+ *
+ * Same output layout and requirements as the quadrature-order overload, which calls this one with
+ * `mfem::IntRules.Get(geometry, order)`. Use it for point sets that are not one of MFEM's standard
+ * rules, e.g. the subcell-center voting points of labeling/quadrature_vote.hpp.
+ *
+ * Not collective. Host function launching device kernels.
+ *
+ * @param mesh       as for ComputeElementSamples.
+ * @param rule       points and weights on the reference element of the mesh's (single) element
+ *                   geometry; the weights of the rule are the reference weights w_q. MFEM caches
+ *                   interpolation data per rule *address* (FiniteElementSpace::
+ *                   GetQuadratureInterpolator, FiniteElement::GetDofToQuad), so a rule that is
+ *                   not from mfem::IntRules must stay alive (at a fixed address) for as long as
+ *                   the mesh and its FE spaces are used, e.g. in static storage.
+ * @param elem_begin first 0-based local element of the range.
+ * @param elem_end   one past the last local element; `0 <= elem_begin <= elem_end <= NE_local`.
+ * @param out        overwritten; see QuadraturePointSamples for the layout (num_qp =
+ *                   rule.GetNPoints(), or 0 on a rank without elements).
+ * @throws std::runtime_error for an invalid range, a mixed-geometry or non-3D mesh, or more
+ *         points in the range than fit in an int.
+ */
+void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
+                                   const mfem::IntegrationRule& rule,
+                                   int elem_begin,
+                                   int elem_end,
+                                   QuadraturePointSamples& out);
+
+/**
+ * @brief Evaluates the points of one integration rule for any element range, with memory bounded
+ * by the range.
+ *
+ * The constructor gathers, once, the element-wise node coordinates of all local elements (3 ND
+ * doubles per element) and the rule's shape-function tables; Sample() computes the coordinates
+ * and weights of the requested range only (4 doubles per point of the range). A caller that walks
+ * the elements in chunks (as the quadrature vote does) builds one sampler and calls Sample() per
+ * chunk, so its memory grows with the chunk, not with NE x points per element.
+ *
+ * Host object; Sample() launches device kernels on the mfem::Device backend. Not collective.
+ * The mesh and the rule must outlive the sampler (see the rule-lifetime note above).
+ */
+class QuadraturePointSampler {
+public:
+    /**
+     * @brief Checks the mesh and evaluates the rule's points on every local element (nothing is
+     * evaluated on a rank without elements).
+     * @param mesh as for ComputeElementSamples (not modified; see the cache caveat in the file
+     *             comment).
+     * @param rule integration rule on the reference element of the mesh's element geometry.
+     * @throws std::runtime_error for a mixed-geometry or non-3D mesh.
+     */
+    QuadraturePointSampler(mfem::Mesh& mesh, const mfem::IntegrationRule& rule);
+    ~QuadraturePointSampler();
+    QuadraturePointSampler(const QuadraturePointSampler&) = delete;
+    QuadraturePointSampler& operator=(const QuadraturePointSampler&) = delete;
+
+    /** @brief Points per element (rule.GetNPoints()), or 0 on a rank without elements. */
+    int NumPointsPerElement() const;
+
+    /**
+     * @brief Coordinates and weights w_q detJ_q of the points of local elements
+     * [elem_begin, elem_end) (QuadraturePointSamples layout).
+     * @throws std::runtime_error for an invalid range or more points than fit in an int.
+     */
+    void Sample(int elem_begin, int elem_end, QuadraturePointSamples& out) const;
+
+private:
+    struct Factors; ///< element node coordinates, shape tables and temporary nodes
+    mfem::Mesh& m_mesh;
+    const mfem::IntegrationRule& m_rule;
+    std::unique_ptr<Factors> m_factors; ///< null on a rank without elements
+};
 
 } // namespace exaconstit::microstructure

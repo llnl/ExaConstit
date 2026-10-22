@@ -152,10 +152,14 @@ MFEM_HOST_DEVICE inline void TraverseBin(const View& view, int b, const SeedPoin
         visit(bin_ids[leaf_nodes[leaf]]);
     };
 
-    // Predicate: open the box unless even the most favorable seed in it cannot reach threshold
+    // Predicate: open the box unless even the most favorable seed in it cannot reach threshold.
+    // The box corners are passed along with the squared distance because the global-tensor
+    // Quadric metric uses them for its projected-interval bound (metric_functors.hpp); the other
+    // metrics use only the squared distance.
     auto predicate = [&](const SeedPoint& q, const SeedBox& box) -> bool {
         const double sqdist = axom::primal::squared_distance(q, box);
-        return metric.LowerBound(sqdist, bound) <= threshold;
+        return metric.LowerBound(q.data(), box.getMin().data(), box.getMax().data(), sqdist,
+                                 bound) <= threshold;
     };
 
     view.trav[b].traverse_tree(p, leaf_action, predicate);
@@ -171,8 +175,10 @@ template <typename View>
 MFEM_HOST_DEVICE inline void OrderBins(const View& view, const SeedPoint& p, double* root_lb,
                                        int* order) {
     for (int b = 0; b < view.num_bins; ++b) {
-        root_lb[b] =
-            view.metric.LowerBound(axom::primal::squared_distance(p, view.root[b]), view.bound[b]);
+        const SeedBox& root = view.root[b];
+        root_lb[b] = view.metric.LowerBound(p.data(), root.getMin().data(), root.getMax().data(),
+                                            axom::primal::squared_distance(p, root),
+                                            view.bound[b]);
         order[b] = b;
     }
     for (int k = 1; k < view.num_bins; ++k) {
@@ -194,10 +200,13 @@ MFEM_HOST_DEVICE inline void OrderBins(const View& view, const SeedPoint& p, dou
  * a seed that beats the second-best still matters); stop at the first bin whose root bound
  * exceeds the threshold, because the bins are sorted and no later bin can do better. Every leaf
  * evaluates its representative seed and all seeds at the same position (coincident chain).
+ * When `leaf_visits` is not null, leaf_visits[q] receives the number of BVH leaves (distinct
+ * seed positions) the search of point q reached: a direct measure of how well the lower bound
+ * prunes (N for no pruning at all, a few dozen for good pruning).
  */
 template <typename ExecSpace, typename View>
 void FindBestKernel(const View& view, int nq, const double* qx, const double* qy,
-                    const double* qz, BestPair* out, bool exact_second) {
+                    const double* qz, BestPair* out, bool exact_second, int* leaf_visits) {
     axom::for_all<ExecSpace>(
         nq, AXOM_LAMBDA(axom::IndexType q) {
             const double x = qx[q];
@@ -213,7 +222,9 @@ void FindBestKernel(const View& view, int nq, const double* qx, const double* qy
             // Step 2: running best and the pruning threshold derived from it
             RunningBest best;
             double threshold = DBL_MAX;
+            int num_leaves = 0;
             auto visit = [&](int seed) {
+                ++num_leaves;
                 for (int s = seed; s >= 0; s = view.coincident_next[s]) {
                     best.Offer(view.metric.Eval(s, x, y, z), s);
                 }
@@ -237,6 +248,9 @@ void FindBestKernel(const View& view, int nq, const double* qx, const double* qy
             result.id2 = (exact_second && best.id2 != INT32_MAX) ? best.id2 : -1;
             result.f2 = best.f2;
             out[q] = result;
+            if (leaf_visits != nullptr) {
+                leaf_visits[q] = num_leaves;
+            }
         });
 }
 
@@ -608,7 +622,8 @@ void SeedIndex<ExecSpace, Metric>::Build(const SeedSet& seeds, const MetricSetup
 template <typename ExecSpace, typename Metric>
 void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::Vector& qy,
                                             const mfem::Vector& qz, mfem::Array<BestPair>& out,
-                                            bool exact_second) const {
+                                            bool exact_second,
+                                            mfem::Array<int>* leaf_visits) const {
     MFEM_VERIFY(m_built, "SeedIndex::FindBest called before Build");
     detail::RequireMatchingMfemDevice(axom::execution_space<ExecSpace>::onDevice(),
                                       "SeedIndex::FindBest");
@@ -616,6 +631,9 @@ void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::
                 "SeedIndex::FindBest: qx, qy, qz must have the same size");
     const int nq = qx.Size();
     out.SetSize(nq);
+    if (leaf_visits != nullptr) {
+        leaf_visits->SetSize(nq);
+    }
     if (nq == 0) {
         return;
     }
@@ -626,8 +644,11 @@ void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::
         m_metric, m_bvh, m_bin_root, m_bin_bound, m_bin_begin, m_indexed_ids.Read(on_device),
         m_coincident_next.Read(on_device), std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
 
+    // Optional diagnostic output (null pointer = not requested)
+    int* visits = (leaf_visits != nullptr) ? leaf_visits->Write(on_device) : nullptr;
     detail::FindBestKernel<ExecSpace>(view, nq, qx.Read(on_device), qy.Read(on_device),
-                                      qz.Read(on_device), out.Write(on_device), exact_second);
+                                      qz.Read(on_device), out.Write(on_device), exact_second,
+                                      visits);
 }
 
 /*
