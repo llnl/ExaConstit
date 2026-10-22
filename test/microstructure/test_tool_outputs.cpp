@@ -179,6 +179,17 @@ bool WorldRoot() {
     return Rank() == 0;
 }
 
+/**
+ * Scratch directory for the writer tests, unique per rank count: CTest runs this executable at
+ * 1, 2, 3 and 4 ranks, possibly at the same time (ctest -j), so a shared directory name would let
+ * one run delete the files another is still checking.
+ */
+fs::path ScratchDir(const std::string& base) {
+    int nranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+    return fs::current_path() / (base + "_np" + std::to_string(nranks));
+}
+
 /** Two grains on ExaConstit's 4x4x4 auto box: x < 0.5 is grain 1, x > 0.5 grain 2. */
 int HalfLabel(const std::array<double, 3>& c) {
     return (c[0] < 0.5) ? 1 : 2;
@@ -525,7 +536,7 @@ TEST(OutputWriter, NeighborColumnsAndAdjacencyCsv) {
     if (Rank() != 0) {
         return;
     }
-    const fs::path dir = fs::current_path() / "test_tool_outputs_scratch";
+    const fs::path dir = ScratchDir("test_tool_outputs_scratch");
     fs::create_directories(dir);
 
     ms::GrainTable table;
@@ -573,7 +584,7 @@ TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
     if (Rank() != 0) {
         return;
     }
-    const fs::path dir = fs::current_path() / "test_tool_outputs_stage1d_scratch";
+    const fs::path dir = ScratchDir("test_tool_outputs_stage1d_scratch");
     fs::create_directories(dir);
 
     ms::MicrostructureResult result;
