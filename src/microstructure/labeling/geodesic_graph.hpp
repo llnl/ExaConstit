@@ -43,8 +43,17 @@
  * the same VertexField removes this direction bias and should be preferred where accuracy
  * matters.
  *
+ * **Curved meshes (Wave 8).** The graph nodes are the field nodes of the VertexField and the
+ * "elements" above are its cells (FieldCellView): for a straight-sided mesh the mesh vertices and
+ * the elements, exactly as before; for a curved mesh (GeodesicParameters::field_nodes = AUTO) every
+ * nodal point of the mesh's Nodes space and the p^3 virtual lattice sub-cells of each element, so
+ * graph edges are chords of length about h/p between points on the true geometry instead of
+ * chords of length h between corners (which cut through concave curved walls). Every statement
+ * below holds with "vertex" read as "field node" and "element" as "cell"; no refined mesh is
+ * built (see vertex_field.hpp).
+ *
  * **Algorithm.**
- * 1. VertexField::InitializeSources: the vertices of each seed's source element start at
+ * 1. VertexField::InitializeSources: the corners of each seed's source cell start at
  *    T0 = |v - s_i| - a_i.
  * 2. Distances (phase 1). Each rank runs Dijkstra's algorithm on its own elements: vertices are
  *    taken in order of increasing T from a binary heap (a priority queue: the smallest entry comes

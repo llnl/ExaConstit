@@ -41,8 +41,18 @@
  *     spanned by its vertices. All of these triangles lie inside a straight-sided hex with planar
  *     faces (which is convex), so a path never leaves the element and never cuts across a void.
  *     A trilinear hex with warped (non-planar) faces is not convex: a path may leave it by up to
- *     the face warp. For a curved hex only the vertices are used (the element is replaced by the
- *     convex hull of its corners), the same approximation as VertexField's element labeling.
+ *     the face warp.
+ *   - Curved (high-order) elements: the update runs on the cells of the VertexField
+ *     (FieldCellView). For a curved mesh (GeodesicParameters::field_nodes = AUTO) these are the
+ *     p^3 straight virtual sub-cells spanned by each element's nodal lattice, with the nodal
+ *     points of the mesh's own Nodes space as field nodes, so a path follows chords of length about
+ *     h/p on the true geometry (a sub-hex uses its 35 triangles, a sub-tet its opposite face, as
+ *     above). The candidates of node v in element e are those of every sub-cell of e having v as a
+ *     corner, combined exactly like the candidates of one scan (smallest value; on exact ties the
+ *     union of the supports), and stored per (v, e) incidence as before; the supports are stored
+ *     as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is built. With
+ *     field_nodes = CORNERS a curved element is replaced by the convex hull of its corners (paths
+ *     on chords of length h, which may cut through a concave curved wall by the chord sag).
  *   - Paths go from element to element through every shared vertex, edge or face. Two elements
  *     touching only along an edge or at a vertex are therefore connected for the geodesic solvers
  *     (a front passes through the shared edge), whereas the face-based fragment cleanup
@@ -81,12 +91,15 @@
  *
  * **Why the result does not depend on the partition (bitwise).**
  *  - Every candidate value is computed by the same code (one kernel, CandidateSweep, in one
- *    binary on every rank) from the same inputs: the vertex coordinates are bitwise equal on all
+ *    binary on every rank) from the same inputs: the node coordinates are bitwise equal on all
  *    copies, and the local solver sorts the triangle or segment vertices by their coordinates
- *    before computing, so the arithmetic does not depend on the local vertex numbering or on the
- *    element's vertex order. This holds with or without MICROSTRUCTURE_STRICT_FP (off by
- *    default); it would *not* hold if a value were recomputed in a second kernel, where the
- *    compiler may fuse multiply-adds differently. The label pass therefore reads the candidate
+ *    before computing, so the arithmetic does not depend on the local node numbering or on the
+ *    element's vertex order. The cells of an element (for the nodal field, its lattice sub-cells)
+ *    are defined by the element alone, so every rank that holds the element sees the same cells,
+ *    and the minimum and tie-union over them do not depend on the order they are visited in.
+ *    This holds with or without MICROSTRUCTURE_STRICT_FP (off by default); it would *not* hold
+ *    if a value were recomputed in a second kernel, where the compiler may fuse multiply-adds
+ *    differently. The label pass therefore reads the candidate
  *    values and supports stored by the distance sweeps (per vertex-element pair) and never
  *    recomputes them.
  *  - Consistency of the stored values with T: a vertex's stored candidates are recomputed whenever
@@ -124,7 +137,8 @@
  * axes; the caller passes the active material mesh (AttributeDomain::ActiveMesh) so paths stay
  * inside it. A body of the mesh with no seed keeps T = +infinity and label -1, and its elements get
  * element_seed = -1 (the driver decides what to do with them). Elements must have at most 8
- * vertices (all linear 3D MFEM elements).
+ * vertices (all linear 3D MFEM elements); the nodal field for curved meshes needs all hexes or
+ * all tets.
  */
 
 namespace exaconstit::microstructure {

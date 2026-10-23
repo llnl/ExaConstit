@@ -15,7 +15,8 @@
  * Iterative Method eikonal solver (labeling/geodesic_fim.hpp).
  *
  * Both labelers measure the distance from each seed along paths that stay inside the material,
- * store it on the mesh vertices (VertexField: T(v) and label(v)), and turn it into one seed label
+ * store it on the field nodes (VertexField: T(v) and label(v); the mesh vertices, or every nodal
+ * point of a curved mesh), and turn it into one seed label
  * per element. They take the same options and return the same result, so the driver can switch
  * between them with a single option (`geodesic = { solver = "fim" | "graph" }`).
  */
@@ -36,6 +37,13 @@ struct GeodesicParameters {
      * cap means a bug or an extreme mesh/partition.
      */
     int max_rounds = 100000;
+    /**
+     * @brief Which points carry the distance field (labeling/vertex_field.hpp): AUTO (default)
+     * uses the element corners on straight-sided meshes, exactly as before curved support, and
+     * every nodal point of the mesh's own Nodes space with p^3 virtual sub-cells per element on
+     * curved meshes; CORNERS / MESH_NODES force one of the two.
+     */
+    FieldNodes field_nodes = FieldNodes::AUTO;
 };
 
 /**

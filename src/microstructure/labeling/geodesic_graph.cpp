@@ -62,26 +62,29 @@ struct GraphView {
     const int* vert_elem_offsets = nullptr; ///< vertex -> element CSR offsets
     const int* vert_elems = nullptr;        ///< vertex -> element CSR items
     const double* xyz = nullptr;            ///< coordinates xyz[3*v + d]
+    FieldCellView cells;                    ///< cells of every element (host pointers)
 };
 
 /**
- * @brief Calls visit(u) for every vertex u != v that shares a local element with v.
+ * @brief Calls visit(u) for every node u != v that shares a cell with v (the graph neighbors).
  *
- * Goes through the elements of v (vertex -> element table) and their vertices (element -> vertex
- * table). A neighbor that shares several elements with v is visited once per shared element;
- * that is harmless for both phases (the same candidate is offered again) and avoids a
- * de-duplication buffer. Host.
+ * Goes through the elements of v (node -> element table) and, in each, the cells having v as a
+ * corner (FieldCellView::ForEachCellOfIncidence): for the corner field the element itself, so u
+ * runs over the element's other vertices in element order exactly as in Stage 1e; for the nodal
+ * field the lattice sub-cells around v. A neighbor that shares several cells with v is visited
+ * once per shared cell; that is harmless for both phases (the same candidate is offered again)
+ * and avoids a de-duplication buffer. Host.
  */
 template <typename Visit>
 inline void ForEachGraphNeighbor(const GraphView& g, int v, Visit&& visit) {
     for (int ke = g.vert_elem_offsets[v]; ke < g.vert_elem_offsets[v + 1]; ++ke) {
         const int e = g.vert_elems[ke];
-        for (int kv = g.elem_vert_offsets[e]; kv < g.elem_vert_offsets[e + 1]; ++kv) {
-            const int u = g.elem_verts[kv];
-            if (u != v) {
-                visit(u);
+        g.cells.ForEachCellOfIncidence(v, e, g.cells.LatticeOfIncidence(ke),
+                                       [&](const int* others, const int*, int n) {
+            for (int i = 0; i < n; ++i) {
+                visit(others[i]);
             }
-        }
+        });
     }
 }
 
@@ -215,7 +218,7 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field = std::make_unique<VertexField>(pmesh);
+    result.field = std::make_unique<VertexField>(pmesh, params.field_nodes);
     VertexField& field = *result.field;
     const std::vector<double> no_weights;
     result.sources = field.InitializeSources(seeds, additive ? seeds.weight : no_weights);
@@ -229,6 +232,7 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
     g.vert_elem_offsets = field.VertexElementOffsets().HostRead();
     g.vert_elems = field.VertexElements().HostRead();
     g.xyz = field.Coordinates().HostRead();
+    g.cells = field.HostCellView();
 
     // Step 3: phase 1, distances
     std::vector<int> starts;

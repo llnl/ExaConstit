@@ -47,10 +47,11 @@ constexpr int UNSET_LABEL = INT_MAX;
 constexpr int MAX_ELEMENT_VERTICES = 8;
 
 /**
- * @brief Scans every candidate of vertex v inside one element and returns the smallest candidate
- * value together with the element vertices supporting the candidates that attain it.
+ * @brief Scans every candidate of node v inside one cell (the element itself for the corner field,
+ * a lattice sub-cell for the nodal field, see FieldCellView) and returns the smallest candidate
+ * value together with the cell corners supporting the candidates that attain it.
  *
- * The candidates (see the file comment) are, over the element's other vertices o_0 .. o_{n-1}:
+ * The candidates (see the file comment) are, over the cell's other corners o_0 .. o_{n-1}:
  *   - every vertex: T(o_i) + |v - o_i|                        (7 for a hex, 3 for a tet)
  *   - every pair:   the open-segment minimizer (o_i, o_j)       (21 for a hex, 3 for a tet)
  *   - every triple: the triangle-interior minimizer (o_i, o_j, o_k) (35 for a hex, 1 for a tet)
@@ -66,9 +67,11 @@ constexpr int MAX_ELEMENT_VERTICES = 8;
  * Host and device (called inside the mfem::forall sweep).
  *
  * @param xv     coordinates of v (3 doubles).
- * @param others local vertex ids of the other vertices of the element (n entries).
- * @param pos    position (0 .. 7) of each of them in the element's vertex list (n entries).
- * @param n      number of other vertices, 0 .. 7.
+ * @param others local node ids of the other corners of the cell (n entries).
+ * @param pos    neighbor bit of each of them (FieldCellView, n entries): the position 0 .. 7 in the
+ *               element's vertex list for the corner field, the lattice offset code 0 .. 26 for
+ *               the nodal field.
+ * @param n      number of other corners, 0 .. 7.
  * @param xyz    vertex coordinates, xyz[3*u + d].
  * @param t      distances T(u) per local vertex (+infinity = not reached).
  * @param mask   out: bit pos[i] set when o_i belongs to a candidate whose value equals the returned
@@ -136,29 +139,48 @@ MFEM_HOST_DEVICE inline double ScanElementCandidates(const double* xv,
 }
 
 /**
- * @brief Collects the other vertices of element e (all of e's vertices except v) and their
- * positions in e's vertex list. Host and device.
- * @return the number of other vertices (at most MAX_ELEMENT_VERTICES - 1; the caller has checked
- *         that no element has more than MAX_ELEMENT_VERTICES vertices).
+ * @brief The smallest candidate of node v inside element e, over every cell of e that has v as a
+ * corner, together with the neighbor bits (FieldCellView) of the nodes supporting it.
+ *
+ * Corner field: one cell, the element, with the other vertices in element order and bit = their
+ * position, i.e. exactly the Stage 1e scan (ScanElementCandidates on the same arrays, so the same
+ * bits). Nodal field: every lattice sub-cell around v (up to 8 sub-hexes or 24 sub-tets), each
+ * scanned like an element; the results are combined like candidates of one scan (a strictly
+ * smaller value replaces the best and its mask, an equal finite value adds its mask), so the
+ * value is the minimum over all sub-cell candidates and the mask the union of the supports that
+ * attain it, independent of the order in which the cells are visited.
+ *
+ * `lattice` is v's lattice point in e (FieldCellView::LatticeOfIncidence of the incidence).
+ * Host and device (called inside the mfem::forall sweep).
  */
-MFEM_HOST_DEVICE inline int GatherOtherVertices(int v, int e, const int* ev_offsets,
-                                                const int* ev_items, int* others, int* pos) {
-    int n = 0;
-    for (int j = ev_offsets[e]; j < ev_offsets[e + 1]; ++j) {
-        const int u = ev_items[j];
-        if (u != v && n < MAX_ELEMENT_VERTICES - 1) {
-            others[n] = u;
-            pos[n] = j - ev_offsets[e];
-            ++n;
+MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view, int v, int e,
+                                                   int lattice, const double* xyz,
+                                                   const double* t, int* mask) {
+    const double inf = EikonalInfinity();
+    const double* xv = &xyz[3 * v];
+    double best = inf;
+    int m = 0;
+    view.ForEachCellOfIncidence(v, e, lattice, [&](const int* others, const int* bits, int n) {
+        int cell_mask = 0;
+        const double value = ScanElementCandidates(xv, others, bits, n, xyz, t, &cell_mask);
+        if (value < best) {
+            best = value;
+            m = cell_mask;
+        } else if (value == best && value < inf) {
+            m |= cell_mask;
         }
-    }
-    return n;
+    });
+    *mask = m;
+    return best;
 }
 
 /**
- * @brief Marks the vertices to recompute in the next distance round: active[v] = 1 if any vertex
- * of any element of v (v included) has changed[u] = 1. One mfem::forall iteration per vertex
- * (gather over the CSR tables, no atomics). Not collective.
+ * @brief Marks the nodes to recompute in the next distance round: active[v] = 1 if any node that
+ * shares a cell with v (v included) has changed[u] = 1. The candidates of v read only such nodes.
+ * Corner field: every vertex of every element of v (as in Stage 1e); nodal field: the 3 x 3 x 3
+ * lattice block around v in each of its elements (a superset of its cell neighbors, which costs
+ * extra work only). One mfem::forall iteration per node (gather over the CSR tables, no atomics).
+ * Not collective.
  */
 void MarkActive(const VertexField& field, const mfem::Array<int>& changed,
                 mfem::Array<int>& active) {
@@ -169,16 +191,17 @@ void MarkActive(const VertexField& field, const mfem::Array<int>& changed,
     }
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
-    const int* ev_offsets = field.ElementVertexOffsets().Read();
-    const int* ev_items = field.ElementVertices().Read();
+    const FieldCellView view = field.CellView();
     const int* chg = changed.Read();
     int* act = active.Write();
     mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
         int a = 0;
         for (int k = ve_offsets[v]; k < ve_offsets[v + 1] && a == 0; ++k) {
             const int e = ve_items[k];
-            for (int j = ev_offsets[e]; j < ev_offsets[e + 1]; ++j) {
-                if (chg[ev_items[j]] != 0) {
+            const int lattice = view.LatticeOfIncidence(k);
+            for (int j = 0; j < view.NumNeighborBits(e); ++j) {
+                const int u = view.NeighborNode(e, lattice, j);
+                if (u >= 0 && chg[u] != 0) {
                     a = 1;
                     break;
                 }
@@ -216,8 +239,7 @@ void CandidateSweep(const VertexField& field, const mfem::Array<int>& active,
     }
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
-    const int* ev_offsets = field.ElementVertexOffsets().Read();
-    const int* ev_items = field.ElementVertices().Read();
+    const FieldCellView view = field.CellView();
     const double* xyz = field.Coordinates().Read();
     const double* t = field.Distance().Read();
     const int* act = active.Read();
@@ -228,15 +250,12 @@ void CandidateSweep(const VertexField& field, const mfem::Array<int>& active,
     mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
         double best = t[v];
         if (act[v] != 0) {
-            const double* xv = &xyz[3 * v];
-            int others[MAX_ELEMENT_VERTICES - 1];
-            int pos[MAX_ELEMENT_VERTICES - 1];
-            // Smallest candidate of every element of v, stored per incidence
+            // Smallest candidate of every element of v (over its cells), stored per incidence
             for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
                 const int e = ve_items[k];
-                const int n = GatherOtherVertices(v, e, ev_offsets, ev_items, others, pos);
                 int mask = 0;
-                const double value = ScanElementCandidates(xv, others, pos, n, xyz, t, &mask);
+                const double value =
+                    IncidenceCandidates(view, v, e, view.LatticeOfIncidence(k), xyz, t, &mask);
                 cvalue[k] = value;
                 cmask[k] = mask;
                 best = (value < best) ? value : best;
@@ -282,6 +301,7 @@ void SmallestCandidate(const VertexField& field, const mfem::Vector& cand_value,
 
 /**
  * @brief Upwind sets and starting labels for the label rounds, from the stored candidates.
+ * (Neighbor bits are turned back into nodes with FieldCellView::NeighborNode.)
  *
  * For every reached vertex v and incidence k (element e of v): upwind_mask[k] = cand_mask[k] if
  * cand_value[k] == m[v] (the element holds a candidate attaining the global minimum), restricted
@@ -301,8 +321,7 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
     }
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
-    const int* ev_offsets = field.ElementVertexOffsets().Read();
-    const int* ev_items = field.ElementVertices().Read();
+    const FieldCellView view = field.CellView();
     const double* t = field.Distance().Read();
     const double* t0 = field.SourceDistance().Read();
     const int* label0 = field.SourceLabel().Read();
@@ -327,9 +346,14 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
         for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
             const int e = ve_items[k];
             int mask = (cvalue[k] == mv[v]) ? cmask[k] : 0;
-            // Keep only vertices strictly upwind (smaller T), so the dependencies form no loop
-            for (int j = 0; j < ev_offsets[e + 1] - ev_offsets[e]; ++j) {
-                if ((mask & (1 << j)) != 0 && !(t[ev_items[ev_offsets[e] + j]] < tv)) {
+            // Keep only nodes strictly upwind (smaller T), so the dependencies form no loop
+            const int lattice = view.LatticeOfIncidence(k);
+            for (int j = 0; j < view.NumNeighborBits(e); ++j) {
+                if ((mask & (1 << j)) == 0) {
+                    continue;
+                }
+                const int u = view.NeighborNode(e, lattice, j);
+                if (u < 0 || !(t[u] < tv)) {
                     mask &= ~(1 << j);
                 }
             }
@@ -340,7 +364,9 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
 
 /**
  * @brief One synchronous label sweep: label_new[v] = min(label[v], labels of v's upwind vertices),
- * reading label only (previous round). One mfem::forall iteration per vertex. Not collective.
+ * reading label only (previous round); the upwind vertices are the set neighbor bits of each
+ * incidence, decoded by FieldCellView::NeighborNode. One mfem::forall iteration per vertex. Not
+ * collective.
  */
 void LabelSweep(const VertexField& field, const mfem::Array<int>& upwind_mask,
                 mfem::Array<int>& label_new) {
@@ -351,8 +377,7 @@ void LabelSweep(const VertexField& field, const mfem::Array<int>& upwind_mask,
     }
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
-    const int* ev_offsets = field.ElementVertexOffsets().Read();
-    const int* ev_items = field.ElementVertices().Read();
+    const FieldCellView view = field.CellView();
     const int* masks = upwind_mask.Read();
     const int* lab = field.Label().Read();
     int* out = label_new.Write();
@@ -364,10 +389,13 @@ void LabelSweep(const VertexField& field, const mfem::Array<int>& upwind_mask,
                 continue;
             }
             const int e = ve_items[k];
-            for (int j = 0; j < ev_offsets[e + 1] - ev_offsets[e]; ++j) {
-                if ((mask & (1 << j)) != 0) {
-                    const int u_label = lab[ev_items[ev_offsets[e] + j]];
-                    best = (u_label < best) ? u_label : best;
+            const int lattice = view.LatticeOfIncidence(k);
+            for (int j = 0; j < view.NumNeighborBits(e); ++j) {
+                // UpwindSets clears bits without a node; the u >= 0 test keeps this sweep safe on
+                // its own
+                const int u = ((mask & (1 << j)) != 0) ? view.NeighborNode(e, lattice, j) : -1;
+                if (u >= 0) {
+                    best = (lab[u] < best) ? lab[u] : best;
                 }
             }
         }
@@ -453,7 +481,7 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field = std::make_unique<VertexField>(pmesh);
+    result.field = std::make_unique<VertexField>(pmesh, params.field_nodes);
     VertexField& field = *result.field;
     const std::vector<double> no_weights;
     result.sources = field.InitializeSources(seeds, additive ? seeds.weight : no_weights);
