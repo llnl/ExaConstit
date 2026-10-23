@@ -15,6 +15,7 @@
 
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
@@ -297,9 +298,21 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
 }
 
 /*
- * NearestVertex: LocalNearest over the local vertices (Mesh::GetVertex) with VertexKey, then the
- * global (d^2, key) minimum; the coordinates of the winning vertex are shared with one more
- * MPI_Allreduce(MIN) in which ranks that do not hold the winner contribute DBL_MAX.
+ * NearestVertex
+ *
+ * Steps:
+ *  1. Vertex positions from VertexCoordinates (collective owner broadcast): the Nodes vertex
+ *     values for continuous Nodes, else the vertex array, identical on every copy of a shared
+ *     vertex. Mesh::GetVertex is not used: for a mesh with Nodes it is an average over the local
+ *     elements (partition dependent) or stale after node motion (mesh/vertex_coordinates.hpp).
+ *     Keys are VertexKey of those positions.
+ *  2. LocalNearest over the local vertices, then the global (d^2, key) minimum (ReduceNearest).
+ *  3. Local copies: every rank that holds the winning vertex finds it as its own local best
+ *     (it is the global minimum of (d^2, key), so it is also the minimum over any subset that
+ *     contains it, and its copies have identical coordinates and key); ReduceNearest flags
+ *     exactly those ranks, whose local winner index is the copy.
+ *  4. The coordinates of the winning vertex are shared with one more MPI_Allreduce(MIN) in which
+ *     ranks that do not hold the winner contribute DBL_MAX.
  */
 NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
                                   MPI_Comm comm,
@@ -307,14 +320,15 @@ NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
                                   const std::vector<int>& seed_ids) {
     CheckSeedIds(comm, seed_ids, static_cast<int>(seeds.Size()), "NearestVertex");
 
-    // Local vertices and their keys
-    const int nv = pmesh.GetNV();
+    // Step 1: local vertices (owner-broadcast positions, collective) and their keys
+    const VertexCoordinates coordinates(pmesh);
+    const int nv = coordinates.NumVertices();
     std::vector<double> px(static_cast<std::size_t>(nv));
     std::vector<double> py(static_cast<std::size_t>(nv));
     std::vector<double> pz(static_cast<std::size_t>(nv));
     std::vector<std::uint64_t> keys(static_cast<std::size_t>(nv));
     for (int v = 0; v < nv; ++v) {
-        const double* x = pmesh.GetVertex(v);
+        const double* x = coordinates.Vertex(v);
         const auto uv = static_cast<std::size_t>(v);
         px[uv] = x[0];
         py[uv] = x[1];
@@ -322,7 +336,7 @@ NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
         keys[uv] = VertexKey(x[0], x[1], x[2]);
     }
 
-    // Queries
+    // Queries: the listed seeds
     const std::size_t nq = seed_ids.size();
     std::vector<double> qx(nq), qy(nq), qz(nq);
     for (std::size_t k = 0; k < nq; ++k) {
@@ -332,11 +346,19 @@ NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
         qz[k] = seeds.z[s];
     }
 
-    // Local search, global reduction, then the winner's coordinates
+    // Steps 2-3: local search, global reduction, local copies of the winner
     NearestVertexResult out;
     std::vector<int> winner;
     LocalNearest(px, py, pz, keys, qx, qy, qz, out.distance_squared, out.key, &winner);
     const std::vector<char> mine = ReduceNearest(comm, out.distance_squared, out.key);
+    out.local_vertex.assign(nq, -1);
+    for (std::size_t k = 0; k < nq; ++k) {
+        if (mine[k] != 0) {
+            out.local_vertex[k] = winner[k];
+        }
+    }
+
+    // Step 4: the winner's coordinates on every rank
     std::vector<double> pos(3 * nq, DBL_MAX);
     for (std::size_t k = 0; k < nq; ++k) {
         if (mine[k] != 0) {

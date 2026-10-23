@@ -83,7 +83,18 @@ namespace exaconstit::microstructure {
  * planes (as a structured box mesh, or a mesh generated with periodic surface constraints, has).
  * If any face on a periodic plane has no unique partner, the constructor throws on every rank
  * with a message giving the number of unmatched faces (silently leaving them unpaired would
- * split or merge wrapped grains without notice).
+ * split or merge wrapped grains without notice). A periodic axis with no face at all on its two
+ * planes also throws on every rank.
+ *
+ * **Which coordinates.** Faces are tested and matched with the mesh's true geometry: for a mesh
+ * with continuous (H1) Nodes, a face is on a plane only if *every* nodal point of the face (its
+ * Nodes values at vertex, edge and face dofs) is on it, and corners are the Nodes vertex values,
+ * broadcast from their owner rank (mesh/vertex_coordinates.hpp). MFEM's vertex array is not used
+ * for such meshes (it is stale after node motion and partition dependent for a ParMesh). The box
+ * passed in should come from the same coordinates (PeriodicBoxFromMesh measures the Nodes).
+ * Curved meshes are supported as long as the faces on the periodic planes are flat; a face that
+ * bulges off its plane is not a plane face, so its partner is left unmatched and the constructor
+ * throws.
  *
  * Host data; every rank must pass the same values (checked collectively).
  */
@@ -98,7 +109,8 @@ struct PeriodicFaceParameters {
      * @brief Matching tolerance as a fraction of the smallest edge length h_min of the faces on
      * the periodic planes (over all ranks): two faces match when every vertex of one, shifted by
      * L_d, lies within tol = relative_tolerance x h_min of a vertex of the other in every
-     * coordinate. A face is on a periodic plane when all its vertices are within
+     * coordinate. A face is on a periodic plane when all its nodal points (all Nodes points of
+     * the face for a mesh with continuous Nodes, else its vertices) are within
      * relative_tolerance x (its own smallest edge) of the plane. tol is raised to at least
      * 1e-14 x the largest periodic box length, so the tolerance cells stay representable. Must be
      * in (0, 0.5).
@@ -162,7 +174,9 @@ public:
      * In addition to the steps of the other constructor:
      *  1. the parameters are compared over all ranks (MPI_Allreduce MIN/MAX); a mismatch throws
      *     on every rank;
-     *  2. every rank lists its boundary faces lying on a periodic plane, with their vertices;
+     *  2. every rank lists its boundary faces lying on a periodic plane (every nodal point on the
+     *     plane), with their corner positions (owner-broadcast Nodes vertex values, or the
+     *     vertices without Nodes; this step builds a VertexCoordinates, a collective call);
      *  3. the lists are gathered on every rank (MPI_Allgatherv; memory proportional to the number
      *     of faces on the periodic planes), and the tolerance is set from the smallest gathered
      *     face edge;
@@ -182,7 +196,8 @@ public:
      * @throws std::invalid_argument on every rank for a non-3D or nonconforming mesh, a
      *         non-positive box length on a periodic axis, a tolerance outside (0, 0.5), or
      *         parameters that differ between ranks; std::runtime_error on every rank if any face
-     *         on a periodic plane has no unique partner.
+     *         on a periodic plane has no unique partner, or if a periodic axis has no face on its
+     *         planes.
      */
     MeshAdjacency(mfem::ParMesh& pmesh, const PeriodicFaceParameters& periodic,
                   int area_quad_order = -1);

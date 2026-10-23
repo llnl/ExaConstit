@@ -143,6 +143,19 @@ void RequireConsistentSeedArrays(const SeedSet& seeds) {
  *     ranks contribute, so the box is the same for every rank count and partition.
  *  3. Check the extents (identical on every rank, so every rank throws together).
  * Mesh::GetBoundingBox is not used: it refines elements and is local only.
+ *
+ * Same coordinates as the periodic face pairing: MeshAdjacency (mesh/mesh_adjacency.cpp) decides
+ * which faces lie on the box planes from the Nodes values of each face (every nodal point) when
+ * the mesh has continuous Nodes, so a box measured here from the Nodes and those faces agree;
+ * the vertex array is never mixed in for a mesh with Nodes (it can be stale after node motion,
+ * which put no face on the planes and silently skipped the pairing before). Each rank reads its
+ * own copies of shared dofs; copies that differ in the last bits (after a parallel refinement)
+ * only make MIN / MAX pick one of the copies, the same one on every rank of this run. Which copy
+ * that is can depend on the partition, so after a parallel refinement the box (and with it the
+ * periodic lengths and image positions) can differ in the last bits between rank counts; the
+ * labels then agree except for elements within round-off of a periodic bisector. Meshes
+ * distributed from a serial mesh and not refined in parallel give the same bits for every rank
+ * count.
  */
 PeriodicBox PeriodicBoxFromMesh(const mfem::Mesh& local_mesh,
                                 MPI_Comm comm,

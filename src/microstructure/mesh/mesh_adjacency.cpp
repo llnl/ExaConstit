@@ -1,5 +1,7 @@
 #include "microstructure/mesh/mesh_adjacency.hpp"
 
+#include "microstructure/mesh/vertex_coordinates.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -38,13 +40,15 @@ double FaceArea(const mfem::Mesh& mesh, int f, int quad_order) {
     return area;
 }
 
-/** Centroid of local face f: the average of its vertex coordinates (host). */
-std::array<double, 3> FaceCentroid(const mfem::Mesh& mesh, int f) {
-    mfem::Array<int> vertices;
-    mesh.GetFaceVertices(f, vertices);
+/**
+ * Centroid of a face with the given vertices: the average of their positions in `coords`
+ * (VertexCoordinates: Nodes vertex values or the vertex array, owner-broadcast). Host.
+ */
+std::array<double, 3> FaceCentroid(const VertexCoordinates& coords,
+                                   const mfem::Array<int>& vertices) {
     std::array<double, 3> c = {0.0, 0.0, 0.0};
     for (int v = 0; v < vertices.Size(); v++) {
-        const double* x = mesh.GetVertex(vertices[v]);
+        const double* x = coords.Vertex(vertices[v]);
         for (int d = 0; d < 3; d++) {
             c[static_cast<std::size_t>(d)] += x[d];
         }
@@ -78,13 +82,16 @@ constexpr int PLANE_FACE_DOUBLES = 22;
 static_assert(sizeof(PlaneFace) == PLANE_FACE_DOUBLES * sizeof(double),
               "PlaneFace must be a plain block of doubles");
 
-/** Smallest distance between consecutive vertices of a face (its smallest edge). */
-double SmallestEdge(const mfem::Mesh& mesh, const mfem::Array<int>& vertices) {
+/**
+ * Smallest distance between consecutive vertices of a face (its smallest edge, measured as the
+ * straight chord between the corner positions in `coords`).
+ */
+double SmallestEdge(const VertexCoordinates& coords, const mfem::Array<int>& vertices) {
     double smallest = std::numeric_limits<double>::max();
     const int n = vertices.Size();
     for (int v = 0; v < n; v++) {
-        const double* a = mesh.GetVertex(vertices[v]);
-        const double* b = mesh.GetVertex(vertices[(v + 1) % n]);
+        const double* a = coords.Vertex(vertices[v]);
+        const double* b = coords.Vertex(vertices[(v + 1) % n]);
         double d2 = 0.0;
         for (int d = 0; d < 3; d++) {
             d2 += (a[d] - b[d]) * (a[d] - b[d]);
@@ -92,6 +99,49 @@ double SmallestEdge(const mfem::Mesh& mesh, const mfem::Array<int>& vertices) {
         smallest = std::min(smallest, std::sqrt(d2));
     }
     return smallest;
+}
+
+/**
+ * True if every nodal point of local face f lies within `plane_tol` of the plane x_axis = value.
+ *
+ * The nodal points are the positions that define the face's geometry:
+ *  - continuous (H1) Nodes: the Nodes values at all dofs of the face (FiniteElementSpace::
+ *    GetFaceDofs, fespace.cpp:3702-3781: its vertex dofs, then the dofs inside its edges, then
+ *    those inside the face; component d of dof i through DofToVDof). A curved face whose corners
+ *    lie on the plane but whose edges or middle bulge off it is therefore not on the plane;
+ *  - otherwise (no Nodes, or discontinuous Nodes without face dofs): the face's corners from
+ *    `coords`, which then describe the whole flat face.
+ * Only this rank's own Nodes values are read: a boundary face belongs to one rank only, and the
+ * test has a tolerance, so last-bit differences between copies of a shared dof do not matter.
+ */
+bool FaceOnPlane(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
+                 const mfem::Array<int>& vertices, std::size_t axis, double value,
+                 double plane_tol) {
+    const mfem::GridFunction* nodes = mesh.GetNodes();
+    if (coords.FromNodes()) {
+        const mfem::FiniteElementSpace* fes = nodes->FESpace();
+        const double* data = nodes->HostRead();
+        mfem::Array<int> dofs;
+        fes->GetFaceDofs(f, dofs);
+        for (int i = 0; i < dofs.Size(); i++) {
+            // An encoded negative dof marks a sign flip (never for H1 vertex/edge/face dofs of a
+            // conforming mesh); decode it anyway, as ElementCornerPoints does
+            const int dof = (dofs[i] >= 0) ? dofs[i] : -1 - dofs[i];
+            const double stored = data[fes->DofToVDof(dof, static_cast<int>(axis))];
+            const double x = (dofs[i] >= 0) ? stored : -stored;
+            if (!(std::fabs(x - value) <= plane_tol)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    for (int v = 0; v < vertices.Size(); v++) {
+        const double x = coords.Vertex(vertices[v])[axis];
+        if (!(std::fabs(x - value) <= plane_tol)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -306,9 +356,16 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
  *  2. Local plane faces: a boundary face is a face with no second element that is not a shared
  *     face of the partition (after ExchangeFaceNbrData, e2 = -1 marks both boundary faces and
  *     ghost 0, so the shared faces are excluded explicitly). It lies on the lower plane of axis d
- *     when all its vertices are within relative_tolerance x (its smallest edge) of lo_d (upper
- *     plane: of hi_d). Measuring against the face's own size makes this test independent of the
- *     box size and of the matching tolerance, which is only known after step 3.
+ *     when all its nodal points (FaceOnPlane: every Nodes point of the face for a mesh with
+ *     continuous Nodes, else its corners) are within relative_tolerance x (its smallest edge) of
+ *     lo_d (upper plane: of hi_d). Measuring against the face's own size makes this test
+ *     independent of the box size and of the matching tolerance, which is only known after
+ *     step 3. Corner positions (centroid, edges, the vertices compared in step 4) come from
+ *     VertexCoordinates: the Nodes vertex values when the mesh has continuous Nodes, which is
+ *     also what PeriodicBoxFromMesh measures the box from (geometry/periodic_images.cpp), so the
+ *     box planes and the faces use the same coordinates. The vertex array is not used for a mesh
+ *     with Nodes: after node motion (Mesh::Transform) it is stale and no face would lie on the
+ *     planes, and for a ParMesh it is a partition-dependent average.
  *  3. MPI_Allgatherv of all plane-face records (counts first with MPI_Allgather): every rank
  *     holds the same global list, ordered by rank and then by local face order. The matching
  *     tolerance is tol = max(relative_tolerance x smallest edge of all listed faces, 1e-14 x
@@ -320,7 +377,11 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
  *     centroid shifted by +L_d; a candidate matches when its centroid is within tol and every
  *     shifted vertex coincides with one of its vertices within tol. The face is paired when
  *     exactly one candidate matches and that candidate is not paired yet; everything else is
- *     unmatched. Unmatched faces (identical count on every rank) throw on every rank.
+ *     unmatched. Unmatched faces (identical count on every rank) throw on every rank. A periodic
+ *     axis without a single plane face (both planes empty) also throws on every rank: pairing
+ *     was requested for it, and silently doing nothing would leave every grain cut by its planes
+ *     in two pieces (this happened before when curved or moved Nodes left the vertex array off
+ *     the planes).
  *  5. Entries for pairs that involve this rank: a partner on this rank is a local neighbor (one
  *     entry from each side, like an interior face); a partner on rank r != this rank is a
  *     periodic ghost. Ghosts are numbered in increasing (r, partner's local element) order, after
@@ -382,6 +443,9 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
     for (int sf = 0; sf < pmesh.GetNSharedFaces(); sf++) {
         is_shared[static_cast<std::size_t>(pmesh.GetSharedFace(sf))] = 1;
     }
+    // Corner positions of the true geometry, identical on every copy of a shared vertex
+    // (collective: every rank reaches this line, the checks above throw on all ranks together)
+    const VertexCoordinates coords(pmesh);
     std::vector<PlaneFace> local_faces;
     mfem::Array<int> vertices;
     for (int f = 0; f < pmesh.GetNumFaces(); f++) {
@@ -395,20 +459,18 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
         if (vertices.Size() > MAX_FACE_VERTICES) {
             continue; // not a triangle or quadrilateral (cannot occur for hex/tet meshes)
         }
-        const double edge = SmallestEdge(pmesh, vertices);
+        const double edge = SmallestEdge(coords, vertices);
         const double plane_tol = rel_tol * edge;
-        const std::array<double, 3> c = FaceCentroid(pmesh, f);
+        const std::array<double, 3> c = FaceCentroid(coords, vertices);
         for (std::size_t d = 0; d < 3; d++) {
             if (!periodic.periodic[d]) {
                 continue;
             }
-            bool on_lo = true;
-            bool on_hi = true;
-            for (int v = 0; v < vertices.Size(); v++) {
-                const double x = pmesh.GetVertex(vertices[v])[d];
-                on_lo = on_lo && std::fabs(x - periodic.lo[d]) <= plane_tol;
-                on_hi = on_hi && std::fabs(x - periodic.hi[d]) <= plane_tol;
-            }
+            // On a plane only if every nodal point of the face is on it
+            const bool on_lo =
+                FaceOnPlane(pmesh, coords, f, vertices, d, periodic.lo[d], plane_tol);
+            const bool on_hi =
+                !on_lo && FaceOnPlane(pmesh, coords, f, vertices, d, periodic.hi[d], plane_tol);
             if (!on_lo && !on_hi) {
                 continue;
             }
@@ -423,7 +485,7 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
             record.face = static_cast<double>(f);
             record.num_vertices = static_cast<double>(vertices.Size());
             for (int v = 0; v < vertices.Size(); v++) {
-                const double* x = pmesh.GetVertex(vertices[v]);
+                const double* x = coords.Vertex(vertices[v]);
                 for (int k = 0; k < 3; k++) {
                     record.vertex[3 * v + k] = x[k];
                 }
@@ -452,8 +514,26 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
                    reinterpret_cast<double*>(all_faces.data()), counts.data(), displs.data(),
                    MPI_DOUBLE, comm);
     double smallest_edge = largest;
+    std::array<std::int64_t, 3> faces_on_axis = {0, 0, 0};
     for (const PlaneFace& face : all_faces) {
         smallest_edge = std::min(smallest_edge, face.min_edge);
+        faces_on_axis[static_cast<std::size_t>(face.axis)]++;
+    }
+
+    // A periodic axis with no face on either plane: the same global list on every rank, so every
+    // rank throws together
+    for (std::size_t d = 0; d < 3; d++) {
+        if (periodic.periodic[d] && faces_on_axis[d] == 0) {
+            const char* names[3] = {"x", "y", "z"};
+            throw std::runtime_error(
+                std::string("MeshAdjacency: periodic face pairing found no boundary face on the "
+                            "periodic planes of axis ") +
+                names[d] + " (" + std::to_string(periodic.lo[d]) + " and " +
+                std::to_string(periodic.hi[d]) +
+                "). A face counts only if all its nodal points lie on the plane; the mesh must "
+                "have flat boundary faces on both planes of every periodic axis, or the axis must "
+                "not be periodic.");
+        }
     }
     const double tol = std::max(rel_tol * smallest_edge, 1.0e-14 * largest);
     m_periodic_report.tolerance = tol;

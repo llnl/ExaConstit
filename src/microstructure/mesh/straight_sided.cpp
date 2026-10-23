@@ -1,5 +1,7 @@
 #include "microstructure/mesh/straight_sided.hpp"
 
+#include "microstructure/mesh/vertex_coordinates.hpp"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -116,6 +118,32 @@ void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
     double x[3];
     for (int j = 0; j < vertices.Size(); ++j) {
         VertexPoint(mesh, vertices[j], x);
+        for (int d = 0; d < sdim; ++d) {
+            pm(d, j) = x[d];
+        }
+    }
+    trans.SetFE(mfem::Mesh::GetTransformationFEforElementType(mesh.GetFaceElementType(f)));
+}
+
+/*
+ * StraightFaceTransformation (VertexCoordinates overload): the same steps as the overload above,
+ * with corner j of the face read from coords.Vertex(vertex j) (first SpaceDimension() of its
+ * three stored components).
+ */
+void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
+                                mfem::IsoparametricTransformation& trans) {
+    trans.Attribute = 1; // geometry only, as in the overload above
+    trans.ElementNo = f;
+    trans.ElementType = mfem::ElementTransformation::FACE;
+    trans.mesh = &mesh;
+    trans.Reset();
+    mfem::Array<int> vertices;
+    mesh.GetFaceVertices(f, vertices);
+    const int sdim = mesh.SpaceDimension();
+    mfem::DenseMatrix& pm = trans.GetPointMat();
+    pm.SetSize(sdim, vertices.Size());
+    for (int j = 0; j < vertices.Size(); ++j) {
+        const double* x = coords.Vertex(vertices[j]);
         for (int d = 0; d < sdim; ++d) {
             pm(d, j) = x[d];
         }

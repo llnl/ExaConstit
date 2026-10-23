@@ -34,9 +34,14 @@
  *
  * Corner points: for a straight-sided mesh with Nodes, the corners are read from the Nodes (the
  * vertex dofs, which every H1 element numbers first, in the element's vertex order), not from
- * the mesh vertex array, which MFEM does not keep in sync with moved Nodes. Without Nodes they
+ * the mesh vertex array, which MFEM does not keep in sync with moved Nodes and which a ParMesh
+ * fills with a partition-dependent average (mesh/vertex_coordinates.hpp). Without Nodes they
  * are the mesh vertices, exactly as before, so results for meshes without Nodes are unchanged
- * bit for bit.
+ * bit for bit. ElementCornerPoints and VertexPoint read this rank's own copy of the Nodes; that
+ * is exact for an element's own geometry (computed only by its owner), but two ranks can hold
+ * copies of a shared vertex that differ in the last bits after a parallel refinement. Code that
+ * must get bitwise the same face geometry on both ranks of a shared face uses the
+ * VertexCoordinates overload of StraightFaceTransformation (owner-broadcast corners).
  *
  * What the decision changes (in place, the mesh is never copied): the seeding element boxes and
  * point-in-element test (MaterialPointLocator), the unpadded seed sampling box, the surface
@@ -49,6 +54,8 @@
  */
 
 namespace exaconstit::microstructure {
+
+class VertexCoordinates; // mesh/vertex_coordinates.hpp
 
 /** @brief Relative tolerance of the higher-order straightness test (times the element size). */
 constexpr double STRAIGHT_SIDED_REL_TOL = 1.0e-12;
@@ -105,6 +112,17 @@ void VertexPoint(const mfem::Mesh& mesh, int v, double* x);
  * (mesh.cpp:539-561), bitwise the same for such a mesh. Host only.
  */
 void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
+                                mfem::IsoparametricTransformation& trans);
+
+/**
+ * @brief StraightFaceTransformation with the corner positions taken from `coords` (owner-
+ * broadcast vertex positions, mesh/vertex_coordinates.hpp) instead of this rank's own copies.
+ * Both ranks of a shared face then build bitwise the same corner matrix, also after a parallel
+ * refinement of a mesh with Nodes. Identical to the overload above for a mesh distributed from a
+ * serial mesh. Host only, not collective (building `coords` is).
+ * @param coords VertexCoordinates of this same mesh.
+ */
+void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
                                 mfem::IsoparametricTransformation& trans);
 
 } // namespace exaconstit::microstructure

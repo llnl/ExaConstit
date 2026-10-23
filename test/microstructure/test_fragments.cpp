@@ -319,7 +319,9 @@ std::vector<int> GrainSizes(const std::vector<int>& label, int num_grains) {
 // the key of its serial element (vertex coordinates are copied bit for bit into the partition),
 // all keys of a mesh are distinct (no two elements share a vertex set; the 6 Kuhn tets of a cell
 // share their smallest vertex, so a key from one vertex only would collide), the local vertex
-// order does not matter, and a 1-ulp change of one coordinate changes the key.
+// order does not matter, a 1-ulp change of one coordinate leaves the key unchanged (keys round
+// coordinates to a grid of about 2^-20 of the element size, mesh/element_key.hpp, so last-bit
+// differences between partitions cannot change them), and a real move (1e-3) changes it.
 TEST(ElementKey, PartitionIndependentUniqueAndOrderFree) {
     for (const bool tets : {false, true}) {
         GridMesh grid = UShape(2, tets);
@@ -350,8 +352,10 @@ TEST(ElementKey, PartitionIndependentUniqueAndOrderFree) {
     const int order_a[4] = {0, 1, 2, 3};
     const int order_b[4] = {2, 0, 3, 1};
     EXPECT_EQ(single_tet(order_a, 0.0), single_tet(order_b, 0.0));
-    // z of vertex 3 moved by one unit in the last place (1 ulp of 1.0 is 2^-52)
-    EXPECT_NE(single_tet(order_a, 0.0), single_tet(order_a, std::ldexp(1.0, -52)));
+    // z of vertex 3 moved by one unit in the last place (1 ulp of 1.0 is 2^-52): rounded away
+    EXPECT_EQ(single_tet(order_a, 0.0), single_tet(order_a, std::ldexp(1.0, -52)));
+    // moved by 1e-3 (far above the quantum of about 5e-7 for this unit-size tet): new key
+    EXPECT_NE(single_tet(order_a, 0.0), single_tet(order_a, 1.0e-3));
 }
 
 // ---------------------------------------------------------------------------------------------

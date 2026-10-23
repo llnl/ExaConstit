@@ -687,11 +687,21 @@ bool ArrivalBefore(const Arrival& a, const Arrival& b) {
  *  - any other element: uniform points in the element's bounding box until one is inside the
  *    element (exact test), at most MAX_IN_ELEMENT_ATTEMPTS times; if all fail (only for an
  *    extremely thin element) the element centroid is used.
+ * Rank invariance: after a parallel refinement the copies of a shared corner differ in the last
+ * bits between partitions, so a point computed from them would too. The tet corners and the box
+ * are therefore first rounded to the element's key grid q (ElementKeyQuantum; RoundToKeyQuantum
+ * for corners, RoundIntervalOutward for the box, mesh/element_key.hpp), which gives the same
+ * numbers on every rank count up to the key's residual risk. The rounded box still contains the
+ * element. A rounded tet can stick out of the true tet by at most q/2 (about 3e-4 h); a point
+ * that the exact test puts outside the element (rare: within q/2 of a face) is pulled toward the
+ * rounded tet's centroid by 1%, 10%, 50% and finally all the way, until the exact test accepts
+ * it. Only rounded data enter the point, so it stays rank invariant (the exact test can disagree
+ * between partitions only for a point within round-off of a face).
  * RNG blocks: (j, 0) is the arrival time; attempt m uses blocks (j, 1 + 2m) and (j, 2 + 2m).
  */
 void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& locator, int e,
-                          const CounterRng& rng, std::uint32_t j, const double centroid[3],
-                          double out[3]) {
+                          const CounterRng& rng, std::uint32_t j, double q,
+                          const double centroid[3], double out[3]) {
     if (locator.StraightSided() && mesh.GetElementGeometry(e) == mfem::Geometry::TETRAHEDRON) {
         const PhiloxBlock b0 = rng.Block(j, 1);
         const PhiloxBlock b1 = rng.Block(j, 2);
@@ -717,18 +727,52 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
         // Corner points: the vertices without Nodes, the Nodes vertex dofs otherwise
         mfem::DenseMatrix corners;
         ElementCornerPoints(mesh, e, corners);
-        const double* v0 = corners.GetColumn(0);
-        const double* v1 = corners.GetColumn(1);
-        const double* v2 = corners.GetColumn(2);
-        const double* v3 = corners.GetColumn(3);
-        for (int d = 0; d < 3; d++) {
-            out[d] = w0 * v0[d] + s * v1[d] + t * v2[d] + u * v3[d];
+        // The point from the corners rounded to the key grid (the same on every rank count)
+        mfem::DenseMatrix rounded(corners);
+        for (int c = 0; c < rounded.Width(); c++) {
+            for (int d = 0; d < rounded.Height(); d++) {
+                rounded(d, c) = RoundToKeyQuantum(rounded(d, c), q);
+            }
         }
+        auto combine = [&](const mfem::DenseMatrix& v, double p[3]) {
+            for (int d = 0; d < 3; d++) {
+                p[d] = w0 * v(d, 0) + s * v(d, 1) + t * v(d, 2) + u * v(d, 3);
+            }
+        };
+        combine(rounded, out);
+        // Rare: the rounded tet sticks out of the true one where the point landed. Pull the
+        // point toward the rounded tet's centroid (still from rounded data only, so the result
+        // stays the same on every rank count) until it is inside; the centroid of a valid tet is
+        // far inside it.
+        double center[3];
+        for (int d = 0; d < 3; d++) {
+            center[d] = 0.25 * (rounded(d, 0) + rounded(d, 1) + rounded(d, 2) + rounded(d, 3));
+        }
+        const double pulls[] = {0.01, 0.1, 0.5, 1.0};
+        std::array<double, 3> candidate = {out[0], out[1], out[2]};
+        for (const double pull : pulls) {
+            if (locator.PointInElement(e, candidate)) {
+                break;
+            }
+            for (int d = 0; d < 3; d++) {
+                candidate[d] = out[d] + pull * (center[d] - out[d]);
+            }
+        }
+        out[0] = candidate[0];
+        out[1] = candidate[1];
+        out[2] = candidate[2];
         return;
     }
 
-    // Rejection inside the element box
+    // Rejection inside the element box, rounded outward to the key grid
     const auto& box = locator.ElementBox(e);
+    double box_lo[3];
+    double box_hi[3];
+    for (int d = 0; d < 3; d++) {
+        box_lo[d] = box.getMin()[d];
+        box_hi[d] = box.getMax()[d];
+        RoundIntervalOutward(q, box_lo[d], box_hi[d]);
+    }
     for (int m = 0; m < MAX_IN_ELEMENT_ATTEMPTS; m++) {
         const PhiloxBlock b0 = rng.Block(j, static_cast<std::uint32_t>(1 + 2 * m));
         const PhiloxBlock b1 = rng.Block(j, static_cast<std::uint32_t>(2 + 2 * m));
@@ -737,7 +781,7 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
                              BitsToUnitDouble(b1.v[0], b1.v[1])};
         std::array<double, 3> p;
         for (int d = 0; d < 3; d++) {
-            p[d] = box.getMin()[d] + u[d] * (box.getMax()[d] - box.getMin()[d]);
+            p[d] = box_lo[d] + u[d] * (box_hi[d] - box_lo[d]);
         }
         if (locator.PointInElement(e, p)) {
             out[0] = p[0];
@@ -761,9 +805,14 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
  * like accepted rejection-sampling candidates, but with no wasted candidates.
  *
  * Steps:
- *  1. Element key (ElementKey, mesh/element_key.hpp): a hash of the element's exact vertex
- *     coordinates, the same for any rank count and execution space (bit-identical to the
- *     private key this file used before the shared version existed, so seeds did not change).
+ *  1. Element key (ElementKey, mesh/element_key.hpp): a hash of the element's corner positions
+ *     (Nodes vertex values when the mesh has Nodes) rounded to a grid q of about 2^-20 of the
+ *     element's length scale (ElementKeyQuantum), so last-bit differences between partitions or
+ *     a parallel refinement do not change it; the same for any rank count and execution space,
+ *     up to the residual risk documented there. The same grid rounds the element's sampling box
+ *     and tet corners (SamplePointInElement), so the points are identical too. (Since 2026-10-22
+ *     the rounded key and box replaced the exact-bit key and box, so element-weighted seeds
+ *     changed once for every mesh.)
  *     The element's RNG stream is
  *     (rng_seed, ELEMENT_WEIGHTED_POSITION, key). That purpose is reserved for these streams, so
  *     they never coincide with a rejection candidate's (SEED_POSITION, k) stream.
@@ -795,10 +844,12 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
 
     // Step 1: element keys and which elements contribute
     std::vector<std::uint64_t> key(static_cast<std::size_t>(ne));
+    std::vector<double> quantum(static_cast<std::size_t>(ne));
     std::vector<char> active(static_cast<std::size_t>(ne), 1);
     for (int e = 0; e < ne; e++) {
         const auto ue = static_cast<std::size_t>(e);
         key[ue] = ElementKey(mesh, e);
+        quantum[ue] = ElementKeyQuantum(mesh, e);
         if (!(volume[e] > 0.0)) {
             active[ue] = 0;
         }
@@ -890,7 +941,7 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
                 a.key = key[ue];
                 a.j = j;
                 double p[3];
-                SamplePointInElement(mesh, *ctx.locator, e, rng, j, centroid, p);
+                SamplePointInElement(mesh, *ctx.locator, e, rng, j, quantum[ue], centroid, p);
                 a.x = p[0];
                 a.y = p[1];
                 a.z = p[2];
@@ -1250,7 +1301,9 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     }
 
     // Surface clearance (local surface triangles; built only when requested). Construction is
-    // local and can fail on one rank only (unsupported face geometry), hence the combined check.
+    // collective for a straight-sided ParMesh (it builds the owner-broadcast VertexCoordinates), so
+    // it runs on every rank; it can still fail on one rank only (unsupported face geometry), hence
+    // the combined check.
     std::unique_ptr<BoundaryClearance> clearance;
     if (params.boundary_clearance > 0.0) {
         std::string clearance_error;

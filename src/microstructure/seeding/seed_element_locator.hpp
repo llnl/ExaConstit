@@ -20,8 +20,11 @@
  * material (in a void of a lattice, or just outside a curved surface) an element close to it.
  * The answer must not depend on how the mesh is split over the MPI ranks, so every choice is
  * named by a partition-independent key and every tie is broken by the smallest key:
- * - element key: a 64-bit hash of the element's exact vertex coordinates (mesh/element_key.hpp);
- * - vertex key: the same hash of the single vertex's exact coordinates (VertexKey below).
+ * - element key: a 64-bit hash of the element's corner positions rounded to a fine grid
+ *   (mesh/element_key.hpp);
+ * - vertex key: the splitmix64 hash of the single vertex's exact coordinates (VertexKey below),
+ *   taken from the owner-broadcast vertex positions (mesh/vertex_coordinates.hpp), so every copy
+ *   of a shared vertex has the same coordinates and key on every rank.
  *
  * **How.** Each rank answers for its own local elements or vertices, and the answers are combined
  * with MPI_Allreduce(MIN):
@@ -90,8 +93,18 @@ struct NearestKeys {
 
 /** @brief NearestKeys plus the position of the nearest vertex. */
 struct NearestVertexResult : NearestKeys {
-    /** @brief Per listed seed: coordinates of the nearest vertex (DBL_MAX when none). */
+    /**
+     * @brief Per listed seed: coordinates of the nearest vertex (DBL_MAX when none), as stored in
+     * VertexCoordinates (the Nodes vertex value for a mesh with continuous Nodes, broadcast from
+     * the owner rank; not Mesh::GetVertex, which can differ for a mesh with Nodes).
+     */
     std::vector<std::array<double, 3>> position;
+    /**
+     * @brief Per listed seed: this rank's 0-based local index of the nearest vertex, or -1 if this
+     * rank does not hold a copy of it. A shared vertex is found on every rank that holds it.
+     * Callers should use this instead of searching for `position` in Mesh::GetVertex.
+     */
+    std::vector<int> local_vertex;
 };
 
 /**
@@ -122,11 +135,15 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
  * @brief For the seeds seed_ids[k], the mesh vertex nearest to the seed (smallest squared
  * distance; ties: smallest VertexKey), over all ranks, with its exact coordinates.
  *
- * Vertices are those of the local mesh (Mesh::GetVertex, 0 <= v < GetNV()); a vertex shared by
- * several ranks has the same coordinates (copied bit for bit from the serial mesh) and key on
- * each of them. The caller finds the local vertex (and its elements) by key or position.
+ * Vertices are those of the local mesh (0 <= v < GetNV()) at the positions of VertexCoordinates
+ * (mesh/vertex_coordinates.hpp): the Nodes vertex values for a mesh with continuous Nodes (the
+ * true geometry, also when the vertex array is stale or partition dependent), else the vertex
+ * array, in both cases with the owner's value broadcast to every copy. A vertex shared by several
+ * ranks therefore has the same coordinates and key on each of them. The local copies of the
+ * winner are reported in NearestVertexResult::local_vertex.
  *
- * **Collective** over `comm` (three MPI_Allreduce calls). Host only.
+ * **Collective** over `comm` (the owner broadcast of VertexCoordinates, then three
+ * MPI_Allreduce calls). Host only.
  *
  * @param pmesh    this rank's part of the 3D mesh (may have no local vertices).
  * @param comm     communicator of the mesh.
