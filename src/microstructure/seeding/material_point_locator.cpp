@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace exaconstit::microstructure {
@@ -24,13 +25,63 @@ constexpr double TET_BARYCENTRIC_TOL = 1.0e-12;
 constexpr double REFERENCE_INSIDE_TOL = 1.0e-8;
 
 /**
- * Relative enlargement of the box of a curved element: 10% of the box diagonal on every side.
- * The unpadded box already contains every nodal point of the element and a refined grid of mapped
- * points, so the padding only has to cover the bulge of the polynomial map between those points,
- * which for well-shaped order-p elements is a small fraction of the element size. It is a safety
- * margin, not a proven bound.
+ * Relative enlargement of the box of a curved element of a geometry without a reference lattice
+ * (anything but hex and tet; the generator's pipeline only uses hexes and tets, so this is a
+ * fallback): 10% of the box diagonal on every side, the heuristic used for all curved elements
+ * before the sampled bulge margin. A safety margin, not a proven bound.
  */
 constexpr double CURVED_BOX_PADDING = 0.10;
+
+/**
+ * Round-off allowance added to the bulge margin of a curved element box: this many machine
+ * epsilons times the largest coordinate magnitude of the element, so that an element that is
+ * straight in fact (zero sampled deviation) still gets a box that covers the round-off of the
+ * map evaluation.
+ */
+constexpr double BOX_ROUNDOFF_EPS = 16.0;
+
+/**
+ * Relative mismatch accepted after the projected Newton solver: the mapped reference point must
+ * reproduce p to this fraction of the element size (the solver can stop on the element boundary
+ * for a point outside the element).
+ */
+constexpr double PROJECTED_MISMATCH_TOL = 1.0e-10;
+
+/**
+ * Early reject of the curved-element retries (PointInCurvedElement): attempts 3 and 4 are skipped
+ * when attempts 1 and 2 converged to the same root of x(xi) = p, at most this distance outside
+ * the reference element (reference units, element size 1), with the map clearly unfolded there. Box candidates
+ * that are really outside (points of neighboring elements) converge to such roots. Interior
+ * points of distorted elements can also have spurious roots this close (0.04 - 0.5 measured on
+ * randomly perturbed order 2-4 meshes), but in those cases the root had a small or negative detJ
+ * or the two starts disagreed (see the stress test CurvedGeometry.PerturbedElementsKeepInteriorPoints).
+ */
+constexpr double RETRY_REFERENCE_DISTANCE = 0.5;
+
+/**
+ * Early reject: the map at attempt 1's root must be clearly unfolded, detJ(root) > this fraction
+ * of detJ at the element center (detJ shrinks toward 0 where the continued map folds back).
+ */
+constexpr double ROOT_DETJ_FRACTION = 0.2;
+
+/** Reference-space distance below which two Newton roots count as the same root. */
+constexpr double SAME_ROOT_TOL = 1.0e-8;
+
+/**
+ * Distance of reference point ip outside the reference hex or tet (<= 0 inside): the largest
+ * violated constraint (x_d >= 0, x_d <= 1 for a cube; x_d >= 0, x + y + z <= 1 for a tet).
+ * Returns +infinity for other geometries, so they never skip the retries.
+ */
+double ReferenceDistanceOutside(mfem::Geometry::Type geom, const mfem::IntegrationPoint& ip) {
+    const double lower = std::max({-ip.x, -ip.y, -ip.z});
+    if (geom == mfem::Geometry::CUBE) {
+        return std::max({lower, ip.x - 1.0, ip.y - 1.0, ip.z - 1.0});
+    }
+    if (geom == mfem::Geometry::TETRAHEDRON) {
+        return std::max(lower, ip.x + ip.y + ip.z - 1.0);
+    }
+    return std::numeric_limits<double>::infinity();
+}
 
 /** Determinant of the 3x3 matrix with columns a, b, c. */
 double Det3(const double a[3], const double b[3], const double c[3]) {
@@ -56,16 +107,11 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  *     itself enlarges each box by its default scale factor 1.000123 (BVH.hpp:411), which only
  *     adds candidates; the exact test decides.
  *
- * For curved elements the box covers:
- *  - the element's nodal coordinates (the Nodes grid function values at the element's vector
- *    dofs, FiniteElementSpace::GetElementVDofs, laid out x dofs, then y dofs, then z dofs). For a
- *    Lagrange (interpolating) basis these are points of the element; for a Bernstein (positive)
- *    basis they are control points whose convex hull contains the element, so their box is then a
- *    rigorous bound;
- *  - the points of an n = 2 * order times subdivided reference element
- *    (mfem::GlobGeometryRefiner.Refine(geom, n): (n+1)^3 points for a hex, (n+1)(n+2)(n+3)/6 for
- *    a tet), mapped to physical space by IsoparametricTransformation::Transform;
- * and is then padded by CURVED_BOX_PADDING. Only the mapped points enter LocalPointBounds.
+ * For curved elements the box is built by CurvedElementBox (see there for the bulge margin):
+ * nodal points, the mapped 2p + 1 per direction reference lattice and the lattice edge midpoints,
+ * enlarged by the sampled bulge margin. Only the mapped lattice points enter LocalPointBounds
+ * (the same points as the refined grid used before the bulge margin, so the global mesh box of a
+ * curved mesh did not change; only the element boxes did).
  */
 MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided)
     : m_mesh(mesh) {
@@ -80,6 +126,13 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
     int node_order = 1;
     if (!m_straight_sided) {
         node_order = std::max(1, mesh.GetNodes()->FESpace()->GetMaxElementOrder());
+        // Reference lattices (n = 2p) of the geometries present on this rank
+        for (int e = 0; e < m_num_elements; e++) {
+            const mfem::Geometry::Type geom = mesh.GetElementGeometry(e);
+            if (!m_lattices[geom].valid) {
+                BuildLattice(geom, 2 * node_order);
+            }
+        }
     }
 
     // Step 2: per-element boxes and their union
@@ -99,8 +152,16 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
                 box.addPoint(PointType {corners(0, k), corners(1, k), corners(2, k)});
             }
             m_local_point_bounds.addBox(box);
+        } else if (m_lattices[mesh.GetElementGeometry(e)].valid) {
+            // Curved hex or tet: nodal points, lattice points and edge midpoints plus the sampled
+            // bulge margin (CurvedElementBox)
+            BoxType point_box;
+            CurvedElementBox(e, box, point_box);
+            m_local_point_bounds.addBox(point_box);
         } else {
-            // Sampled points: map a refined grid of reference points (2 * order subdivisions)
+            // Curved element of another geometry (fallback, not used by the generator's
+            // pipeline): refined grid of mapped points plus nodal points, padded by 10% of the
+            // diagonal
             mesh.GetElementTransformation(e, &trans);
             const mfem::Geometry::Type geom = mesh.GetElementGeometry(e);
             mfem::RefinedGeometry* refined =
@@ -121,7 +182,6 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
                                         nodal_values(k + 2 * num_dofs)});
             }
 
-            // Pad by 10% of the diagonal to cover bulges between the points
             const auto range = box.range();
             const double diagonal =
                 std::sqrt(range[0] * range[0] + range[1] * range[1] + range[2] * range[2]);
@@ -135,6 +195,185 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
     if (m_num_elements > 0) {
         m_bvh.initialize(m_element_boxes.data(), m_num_elements);
     }
+}
+
+/*
+ * BuildLattice
+ *
+ * Builds the reference lattice of one geometry (see ReferenceLattice in the header) for n
+ * subdivisions per direction:
+ *  1. Points: (i, j, k) / n for the hex (all 0 <= i, j, k <= n, i fastest) and for the tet
+ *     (i + j + k <= n, the same points as the uniform refinement of the reference tet with vertices
+ *     (0,0,0), (1,0,0), (0,1,0), (0,0,1)). A table index_of(i, j, k) records each point's index.
+ *  2. Edges: from every lattice point, one step along each lattice direction that stays in the
+ *     lattice. The hex lattice has the 3 axis directions. The tet lattice is cut by the planes
+ *     i, j, k = const and i + j + k = const into small tets and octahedra, whose edges point along
+ *     the 6 directions (1,0,0), (0,1,0), (0,0,1), (-1,1,0), (-1,0,1), (0,-1,1).
+ *  3. Midpoints: the reference midpoint of every edge, as an integration rule so that the whole
+ *     set is mapped by one IsoparametricTransformation::Transform(IntegrationRule&, DenseMatrix&)
+ *     call (eltrans.hpp:689).
+ */
+void MaterialPointLocator::BuildLattice(mfem::Geometry::Type geom, int n) {
+    ReferenceLattice& lattice = m_lattices[geom];
+    const bool is_hex = geom == mfem::Geometry::CUBE;
+    if (!is_hex && geom != mfem::Geometry::TETRAHEDRON) {
+        return; // no lattice: the constructor uses the padded fallback box
+    }
+
+    // Step 1: lattice points and the (i, j, k) -> point index table (-1 = not in the lattice)
+    const int side = n + 1;
+    std::vector<int> index_of(static_cast<std::size_t>(side * side * side), -1);
+    auto table = [side](int i, int j, int k) {
+        return static_cast<std::size_t>(i + side * (j + side * k));
+    };
+    std::vector<std::array<int, 3>> ijk;
+    for (int k = 0; k <= n; k++) {
+        for (int j = 0; j <= n; j++) {
+            for (int i = 0; i <= n; i++) {
+                if (!is_hex && i + j + k > n) {
+                    continue;
+                }
+                index_of[table(i, j, k)] = static_cast<int>(ijk.size());
+                ijk.push_back({i, j, k});
+            }
+        }
+    }
+    lattice.points.SetSize(static_cast<int>(ijk.size()));
+    for (std::size_t q = 0; q < ijk.size(); q++) {
+        mfem::IntegrationPoint& ip = lattice.points.IntPoint(static_cast<int>(q));
+        ip.Set3(static_cast<double>(ijk[q][0]) / n, static_cast<double>(ijk[q][1]) / n,
+                static_cast<double>(ijk[q][2]) / n);
+        ip.weight = 0.0; // not a quadrature rule
+    }
+
+    // Step 2: lattice edges along the 3 (hex) or 6 (tet) lattice directions
+    const int directions[6][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+                                  {-1, 1, 0}, {-1, 0, 1}, {0, -1, 1}};
+    const int num_directions = is_hex ? 3 : 6;
+    lattice.edge_a.clear();
+    lattice.edge_b.clear();
+    for (std::size_t q = 0; q < ijk.size(); q++) {
+        for (int d = 0; d < num_directions; d++) {
+            const int i = ijk[q][0] + directions[d][0];
+            const int j = ijk[q][1] + directions[d][1];
+            const int k = ijk[q][2] + directions[d][2];
+            if (i < 0 || j < 0 || k < 0 || i > n || j > n || k > n) {
+                continue;
+            }
+            const int other = index_of[table(i, j, k)];
+            if (other < 0) {
+                continue; // outside the tet lattice
+            }
+            lattice.edge_a.push_back(static_cast<int>(q));
+            lattice.edge_b.push_back(other);
+        }
+    }
+
+    // Step 3: reference midpoints of the edges
+    const int num_edges = static_cast<int>(lattice.edge_a.size());
+    lattice.midpoints.SetSize(num_edges);
+    for (int m = 0; m < num_edges; m++) {
+        const mfem::IntegrationPoint& a = lattice.points.IntPoint(lattice.edge_a[m]);
+        const mfem::IntegrationPoint& b = lattice.points.IntPoint(lattice.edge_b[m]);
+        mfem::IntegrationPoint& mid = lattice.midpoints.IntPoint(m);
+        mid.Set3(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z));
+        mid.weight = 0.0;
+    }
+    lattice.valid = true;
+}
+
+/*
+ * CurvedElementBox
+ *
+ * Box of a curved hex or tet, and why the margin covers the element.
+ *
+ * Every point of the element is x(xi) for a reference point xi in some cell of the reference
+ * lattice (a small hex of the hex lattice, or a small tet/octahedron of the tet lattice). Write
+ * x(xi) = I(xi) + err(xi), where I is the piecewise-linear (hex cells: trilinear) interpolant of
+ * the map at the lattice points of that cell. I(xi) is a weighted average of the cell's mapped
+ * lattice points with non-negative weights, so it lies in the box of the mapped lattice points.
+ * Hence x(xi) lies in that box enlarged by max |err| in each coordinate. For a map that is smooth
+ * on the scale of the lattice, err is dominated by the second derivatives along the lattice
+ * directions: along one lattice edge of reference length h the interpolation error of a quadratic
+ * is h^2 / 8 times its second derivative, which is exactly the deviation measured at the edge
+ * midpoint, x(mid) - (x(a) + x(b)) / 2. Inside a cell the error is at most the sum over the cell's
+ * directions (3 for a hex cell, at most 1.5 times the largest edge for a tet cell), and
+ * CURVED_BOX_MARGIN_FACTOR = 6 adds a factor 2 for the higher-order terms. The bound is sampled:
+ * it rests on the largest second derivative being seen at some edge midpoint, which holds for
+ * well-shaped elements but is not proven for arbitrary polynomial maps (hence "sampled bound").
+ * The argument covers the hex cells and the corner tets of the tet lattice, whose directions are
+ * all lattice edges. It does not cover the octahedra of the tet lattice: their interior diagonals
+ * are not lattice edges, so the second derivative along them is never sampled. Empirical support
+ * instead: a stress test (hex and tet, p = 2 - 4, every node moved at random by up to 30% of the
+ * element size) found no element point outside its box.
+ *
+ * Steps:
+ *  1. Element transformation through the Nodes (Mesh::GetElementTransformation). Its point
+ *     matrix (IsoparametricTransformation::GetPointMat) holds the element's nodal coordinates,
+ *     one column per dof: points of the element for a Lagrange basis, control points whose
+ *     convex hull contains the element for a Bernstein basis.
+ *  2. Map the lattice points and the edge midpoints (one Transform call each).
+ *  3. Box of the nodal points, the lattice points and the midpoints; `point_box` = box of the
+ *     lattice points only.
+ *  4. Largest edge-midpoint deviation per coordinate, and the margin
+ *     CURVED_BOX_MARGIN_FACTOR * deviation + BOX_ROUNDOFF_EPS * eps * max |coordinate|.
+ */
+void MaterialPointLocator::CurvedElementBox(int e, BoxType& box, BoxType& point_box) const {
+    const ReferenceLattice& lattice = m_lattices[m_mesh.GetElementGeometry(e)];
+
+    // Step 1: the Nodes transformation of the element
+    mfem::IsoparametricTransformation trans;
+    m_mesh.GetElementTransformation(e, &trans);
+    const mfem::DenseMatrix& nodal = trans.GetPointMat();
+
+    // Step 2: mapped lattice points and edge midpoints, 3 x n_points and 3 x n_edges
+    mfem::DenseMatrix lattice_x;
+    mfem::DenseMatrix midpoint_x;
+    trans.Transform(lattice.points, lattice_x);
+    trans.Transform(lattice.midpoints, midpoint_x);
+
+    // Step 3: per-axis extremes of the lattice points, then of the midpoints and nodal points
+    double lo[3];
+    double hi[3];
+    for (int d = 0; d < 3; d++) {
+        lo[d] = std::numeric_limits<double>::infinity();
+        hi[d] = -std::numeric_limits<double>::infinity();
+    }
+    auto include = [&lo, &hi](const mfem::DenseMatrix& pts) {
+        for (int q = 0; q < pts.Width(); q++) {
+            for (int d = 0; d < 3; d++) {
+                lo[d] = std::min(lo[d], pts(d, q));
+                hi[d] = std::max(hi[d], pts(d, q));
+            }
+        }
+    };
+    include(lattice_x);
+    point_box = BoxType(PointType {lo[0], lo[1], lo[2]}, PointType {hi[0], hi[1], hi[2]});
+    include(midpoint_x);
+    include(nodal);
+
+    // Step 4: largest deviation of the edge midpoints from the edge chords, per coordinate
+    double deviation[3] = {0.0, 0.0, 0.0};
+    for (int m = 0; m < midpoint_x.Width(); m++) {
+        const int a = lattice.edge_a[static_cast<std::size_t>(m)];
+        const int b = lattice.edge_b[static_cast<std::size_t>(m)];
+        for (int d = 0; d < 3; d++) {
+            const double chord_mid = 0.5 * (lattice_x(d, a) + lattice_x(d, b));
+            deviation[d] = std::max(deviation[d], std::fabs(midpoint_x(d, m) - chord_mid));
+        }
+    }
+    double magnitude = 0.0;
+    for (int d = 0; d < 3; d++) {
+        magnitude = std::max({magnitude, std::fabs(lo[d]), std::fabs(hi[d])});
+    }
+    const double roundoff =
+        BOX_ROUNDOFF_EPS * std::numeric_limits<double>::epsilon() * magnitude;
+    for (int d = 0; d < 3; d++) {
+        const double margin = CURVED_BOX_MARGIN_FACTOR * deviation[d] + roundoff;
+        lo[d] -= margin;
+        hi[d] += margin;
+    }
+    box = BoxType(PointType {lo[0], lo[1], lo[2]}, PointType {hi[0], hi[1], hi[2]});
 }
 
 /*
@@ -245,6 +484,9 @@ bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& 
 /*
  * PointInGeneralElement: Newton inverse map with mfem::InverseElementTransformation.
  *
+ * Straight-sided elements (unchanged since before curved elements were handled, so seeds on
+ * straight meshes are bit for bit the same):
+ *
  * First attempt: plain (unprojected) Newton from the element center, solver type Newton
  * (eltrans.hpp SolverType). For a candidate inside or near a hex this converges in a few
  * iterations, and NewtonSolve then checks the reference point with
@@ -260,19 +502,23 @@ bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& 
  * gives a single point, the element center, i.e. no better than the first attempt; rel_order = 1
  * gives 3 points per direction for linear elements and order + 2 in general.
  *
+ * Curved elements (PointInCurvedElement below): an "Outside" answer is not trusted on its own,
+ * because the polynomial map continued outside the reference element can have a second solution
+ * there; see PointInCurvedElement.
+ *
  * The reference tolerance is relaxed to 1e-12 so that convergence does not depend on reaching
  * 1e-15 for points near the origin (the physical tolerance 4e-15 * |p|_inf is ~0 there,
  * eltrans.cpp:178).
  */
 bool MaterialPointLocator::PointInGeneralElement(int e, const std::array<double, 3>& p) const {
-    // Straight-sided: the multilinear corner map, bitwise the transformation of the same mesh
-    // without Nodes; otherwise the mesh's own (Nodes) transformation
-    mfem::IsoparametricTransformation trans;
-    if (m_straight_sided) {
-        StraightElementTransformation(m_mesh, e, trans);
-    } else {
-        m_mesh.GetElementTransformation(e, &trans);
+    if (!m_straight_sided) {
+        return PointInCurvedElement(e, p);
     }
+
+    // Straight-sided: the multilinear corner map, bitwise the transformation of the same mesh
+    // without Nodes
+    mfem::IsoparametricTransformation trans;
+    StraightElementTransformation(m_mesh, e, trans);
 
     mfem::Vector point(3);
     point(0) = p[0];
@@ -311,7 +557,158 @@ bool MaterialPointLocator::PointInGeneralElement(int e, const std::array<double,
     const double element_size = std::max({range[0], range[1], range[2]});
     const double mismatch = std::max({std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]),
                                       std::fabs(mapped(2) - p[2])});
-    return mismatch <= 1.0e-10 * element_size;
+    return mismatch <= PROJECTED_MISMATCH_TOL * element_size;
+}
+
+/*
+ * PointInCurvedElement: Newton inverse map of a curved element, retried from several starts.
+ *
+ * Why retries. For a curved element, x(xi) is a polynomial of degree p in each reference
+ * coordinate, defined (as a formula) also outside the reference element. x(xi) = p can then have
+ * more than one solution: the one inside the element (when p is in the element) and others
+ * outside it, where the continued map folds back. Plain Newton converges to whichever solution
+ * is closest to its start in the Newton sense, so an "Outside" answer from one start only means
+ * "this start found a solution outside", not "p is outside". MFEM itself documents that none of
+ * its start/solver combinations guarantees finding an inside point (eltrans.hpp, the
+ * InverseElementTransformation constructor comment). An "Inside" answer, in contrast, is
+ * reliable: Newton converged (physical residual below 4e-15 |p| or step below 1e-12) to a
+ * reference point that Geometry::CheckPoint accepts.
+ *
+ * Attempts, stopping at the first "Inside" (the answer does not depend on the order, except for
+ * points within the round-off tolerances of the element boundary):
+ *  1. plain Newton from the element center (InitGuessType Center);
+ *  2. plain Newton from the reference position of the element's nodal point closest to p
+ *     (the transformation's point matrix holds the nodal coordinates, column k belonging to the
+ *     reference node GetFE()->GetNodes().IntPoint(k); cheap, no extra map evaluations);
+ *  3. plain Newton from the reference lattice point (n = 2p, as in the element box) whose mapped
+ *     position is closest to p (InitGuessType GivenPoint, eltrans.hpp:130);
+ *  4. projected Newton (NewtonElementProject) from that lattice point, accepted only if the
+ *     mapped reference point reproduces p to PROJECTED_MISMATCH_TOL times the element size
+ *     (the projected solver can stop on the boundary for an outside point).
+ * Only when all four fail is p declared outside.
+ *
+ * Early reject (cost). Most candidates tested here are outside the element: they lie in its box
+ * but in a neighboring element. For them attempts 1 and 2 converge to the same true root of
+ * x(xi) = p just outside the reference element, and attempts 3 and 4 (two more Newton solves and a
+ * mapping of the (2p+1)^3 lattice) would only confirm it. So p is declared outside after attempt 2
+ * when (a) attempt 1 converged (Outside) at most RETRY_REFERENCE_DISTANCE outside the element,
+ * (b) the map is clearly unfolded there (detJ > ROOT_DETJ_FRACTION x detJ at the element center),
+ * and (c) attempt 2, from a different start, converged
+ * to the same root (within SAME_ROOT_TOL). Retries still run when attempt 1 did not converge,
+ * converged far outside or near a fold of the continued map (small or negative detJ), or the two
+ * starts disagree:
+ * that is where spurious roots of interior points were found. The rule is a tested heuristic, not
+ * a proof: a randomly perturbed order 2-4 stress test (test_curved_geometry,
+ * PerturbedElementsKeepInteriorPoints) loses no interior point to it, while a distance-only rule
+ * lost about 1 in 1000 there. A heavier stress run (order 2-4, node noise up to 45% of the
+ * element size, about 386 000 interior points) lost one point to it, in an order-4 tet whose
+ * node noise was 60% of its node spacing: there the continued map has a genuine second root
+ * close to the element.
+ */
+bool MaterialPointLocator::PointInCurvedElement(int e, const std::array<double, 3>& p) const {
+    mfem::IsoparametricTransformation trans;
+    m_mesh.GetElementTransformation(e, &trans);
+
+    mfem::Vector point(3);
+    point(0) = p[0];
+    point(1) = p[1];
+    point(2) = p[2];
+    mfem::IntegrationPoint ip;
+
+    // Attempt 1: plain Newton from the element center
+    mfem::InverseElementTransformation inverse(&trans);
+    inverse.SetInitialGuessType(mfem::InverseElementTransformation::Center);
+    inverse.SetSolverType(mfem::InverseElementTransformation::Newton);
+    inverse.SetReferenceTol(1.0e-12);
+    inverse.SetElementTol(REFERENCE_INSIDE_TOL);
+    const int first = inverse.Transform(point, ip);
+    if (first == mfem::InverseElementTransformation::Inside) {
+        return true;
+    }
+    // Attempt 1's root, kept for the early reject below: converged (Outside) close to the
+    // element, at a point where the map is clearly unfolded (detJ there above ROOT_DETJ_FRACTION
+    // of its value at the center; preflight makes detJ positive inside the element, and it
+    // decreases to 0 and below where the continuation folds back)
+    const mfem::IntegrationPoint first_root = ip;
+    bool first_near = false;
+    if (first == mfem::InverseElementTransformation::Outside &&
+        ReferenceDistanceOutside(m_mesh.GetElementGeometry(e), first_root) <=
+            RETRY_REFERENCE_DISTANCE) {
+        trans.SetIntPoint(&first_root);
+        const double root_detj = trans.Weight();
+        trans.SetIntPoint(&mfem::Geometries.GetCenter(m_mesh.GetElementGeometry(e)));
+        first_near = root_detj > ROOT_DETJ_FRACTION * trans.Weight();
+    }
+
+    // Attempt 2: plain Newton from the reference node of the closest nodal point
+    const mfem::DenseMatrix& nodal = trans.GetPointMat();
+    const mfem::IntegrationRule& ref_nodes = trans.GetFE()->GetNodes();
+    int closest_node = 0;
+    double closest_node_dist = std::numeric_limits<double>::infinity();
+    for (int k = 0; k < nodal.Width(); k++) {
+        const double dist = point.DistanceSquaredTo(nodal.GetColumn(k));
+        if (dist < closest_node_dist) {
+            closest_node_dist = dist;
+            closest_node = k;
+        }
+    }
+    inverse.SetInitialGuess(ref_nodes.IntPoint(closest_node)); // switches to GivenPoint
+    const int second = inverse.Transform(point, ip);
+    if (second == mfem::InverseElementTransformation::Inside) {
+        return true;
+    }
+    // Early reject: two different starts converged to the same unfolded root just outside the
+    // element (see the function comment)
+    if (first_near && second == mfem::InverseElementTransformation::Outside &&
+        std::max({std::fabs(ip.x - first_root.x), std::fabs(ip.y - first_root.y),
+                  std::fabs(ip.z - first_root.z)}) <= SAME_ROOT_TOL) {
+        return false;
+    }
+
+    // Attempt 3: plain Newton from the closest mapped lattice point (hex/tet only; other
+    // geometries use MFEM's own closest-point search on a grid of 2p + 1 points per direction)
+    const ReferenceLattice& lattice = m_lattices[m_mesh.GetElementGeometry(e)];
+    mfem::IntegrationPoint lattice_start;
+    bool have_lattice_start = false;
+    if (lattice.valid) {
+        mfem::DenseMatrix lattice_x;
+        trans.Transform(lattice.points, lattice_x);
+        int closest = 0;
+        double closest_dist = std::numeric_limits<double>::infinity();
+        for (int q = 0; q < lattice_x.Width(); q++) {
+            const double dist = point.DistanceSquaredTo(lattice_x.GetColumn(q));
+            if (dist < closest_dist) {
+                closest_dist = dist;
+                closest = q;
+            }
+        }
+        lattice_start = lattice.points.IntPoint(closest);
+        have_lattice_start = true;
+        inverse.SetInitialGuess(lattice_start);
+    } else {
+        inverse.SetInitialGuessType(mfem::InverseElementTransformation::ClosestPhysNode);
+        inverse.SetInitGuessPointsType(mfem::Quadrature1D::ClosedUniform);
+        inverse.SetInitGuessOrder(2 * std::max(1, trans.Order()));
+    }
+    if (inverse.Transform(point, ip) == mfem::InverseElementTransformation::Inside) {
+        return true;
+    }
+
+    // Attempt 4: projected Newton from the same start, then check the mapped point
+    if (have_lattice_start) {
+        inverse.SetInitialGuess(lattice_start);
+    }
+    inverse.SetSolverType(mfem::InverseElementTransformation::NewtonElementProject);
+    if (inverse.Transform(point, ip) != mfem::InverseElementTransformation::Inside) {
+        return false;
+    }
+    mfem::Vector mapped(3);
+    trans.Transform(ip, mapped);
+    const auto range = m_element_boxes[e].range();
+    const double element_size = std::max({range[0], range[1], range[2]});
+    const double mismatch = std::max({std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]),
+                                      std::fabs(mapped(2) - p[2])});
+    return mismatch <= PROJECTED_MISMATCH_TOL * element_size;
 }
 
 } // namespace exaconstit::microstructure

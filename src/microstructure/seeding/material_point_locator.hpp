@@ -32,7 +32,14 @@
  *      barycentric coordinates lambda_i (the volume fractions of the 4 sub-tets formed by the
  *      point and each face) must all be >= -tol;
  *    - hexes and any curved element: mfem::InverseElementTransformation solves x(xi) = p for the
- *      reference point xi by Newton's method, then mfem::Geometry::CheckPoint tests xi.
+ *      reference point xi by Newton's method, then mfem::Geometry::CheckPoint tests xi. On a
+ *      curved element the polynomial map, continued outside the reference element, can have a
+ *      second solution xi outside it even when p is inside the element, and Newton started from
+ *      the element center can converge to that wrong solution. Curved elements are therefore
+ *      retried from several starting points (the element center, the reference position of the
+ *      element's closest nodal point, the closest point of a sampled reference lattice, and a
+ *      Newton variant that keeps the iterate inside the element) before a point is declared
+ *      outside.
  *
  * A point on a face shared by two elements counts as inside both (the tolerances are slightly
  * positive), so no point of the material falls into a crack between elements because of
@@ -45,6 +52,17 @@
  */
 
 namespace exaconstit::microstructure {
+
+/**
+ * @brief Margin factor of the curved element boxes: the box of the sampled points of a curved
+ * element is enlarged on each axis by this factor times the largest edge-midpoint deviation of
+ * that coordinate (see MaterialPointLocator's constructor). 6 = 3 x 2: within one lattice cell
+ * the deviation of the map from its piecewise-linear interpolant is at most about 3 times the
+ * largest edge-midpoint deviation (the three directions of a hex cell add up; for a tet cell the
+ * factor is 1.5), and the extra factor 2 is a safety factor for the higher-order terms that a
+ * single midpoint sample per edge does not see.
+ */
+constexpr double CURVED_BOX_MARGIN_FACTOR = 6.0;
 
 /**
  * @brief Point-in-material test over the local elements of one mesh partition.
@@ -70,9 +88,16 @@ public:
      *   The corners come from the Nodes when present, else from the mesh vertices; without Nodes
      *   this is the vertex box used before straight-sided Nodes were recognized, bit for bit;
      * - curved mesh: the box of the element's nodal coordinates and of the element mapped at a
-     *   refined grid of reference points, enlarged by 10% of its diagonal on every side to cover
-     *   any bulge between those points (a safety margin, not a proven bound; for Bernstein bases
-     *   the nodal box alone is already a rigorous bound).
+     *   reference lattice of 2p + 1 points per direction (p = Nodes order) and at the midpoints of
+     *   the lattice edges, enlarged by a margin that covers the bulge of the element between the
+     *   lattice points. The margin is CURVED_BOX_MARGIN_FACTOR times the largest deviation, over
+     *   all lattice edges, between the element map at the edge midpoint and the average of the
+     *   map at the edge ends (a sampled estimate of how far the element bends away from its
+     *   piecewise-linear interpolant on the lattice, see the constructor comment in the .cpp).
+     *   This is a **sampled bound, not a proven one**: it is reliable for elements whose map is
+     *   smooth on the scale of the lattice (any reasonable order-p element), but an element that
+     *   folds sharply between lattice points could stick out of its box. For Bernstein bases the
+     *   nodal box alone is already a rigorous bound.
      * A straight-sided mesh with Nodes therefore gives the same boxes and inside tests as the
      * same mesh without Nodes, so seeding draws the same seeds on both.
      *
@@ -91,18 +116,20 @@ public:
     }
 
     /**
-     * @brief Bounding box of all local elements (union of the element boxes, padded for curved
-     * elements): every point of the local material lies in it. Invalid (empty) when the rank has
-     * no elements.
+     * @brief Bounding box of all local elements (union of the element boxes, with the bulge
+     * margin for curved elements): every point of the local material lies in it (for curved
+     * elements, up to the sampled-bound caveat of the constructor). Invalid (empty) when the rank
+     * has no elements.
      */
     const BoxType& LocalBounds() const {
         return m_local_bounds;
     }
 
     /**
-     * @brief Box of the element points actually evaluated (vertices, or the sampled points of
-     * curved elements before the 10% padding): the best estimate of the true extent of the local
-     * material, used for the global mesh bounding box. Invalid when the rank has no elements.
+     * @brief Box of the element points actually evaluated (corners, or the 2p + 1 per direction
+     * lattice points of curved elements, without the bulge margin): the best estimate of the true
+     * extent of the local material, used for the global mesh bounding box. Invalid when the rank
+     * has no elements.
      */
     const BoxType& LocalPointBounds() const {
         return m_local_point_bounds;
@@ -145,12 +172,44 @@ private:
     /** @brief Newton inverse map (mfem::InverseElementTransformation) for any element. */
     bool PointInGeneralElement(int e, const std::array<double, 3>& p) const;
 
+    /** @brief Newton inverse map of a curved element, retried from several starting points. */
+    bool PointInCurvedElement(int e, const std::array<double, 3>& p) const;
+
+    /**
+     * @brief Reference lattice of one element geometry, used for the curved element boxes and
+     * as Newton starting points: the points (i, j, k) / n (hex: 0 <= i, j, k <= n; tet:
+     * i + j + k <= n) with n = 2p, plus the midpoints of the lattice edges (hex: the 3 axis
+     * directions; tet: the 6 edge directions of the simplex lattice). Edge m joins
+     * points.IntPoint(edge_a[m]) and points.IntPoint(edge_b[m]); its midpoint is
+     * midpoints.IntPoint(m). Built once per geometry in the constructor; empty (valid = false)
+     * for geometries that are not present or not hex/tet.
+     */
+    struct ReferenceLattice {
+        bool valid = false;            ///< built for this geometry
+        mfem::IntegrationRule points;  ///< (n+1)^3 (hex) or (n+1)(n+2)(n+3)/6 (tet) points
+        mfem::IntegrationRule midpoints; ///< one per lattice edge
+        std::vector<int> edge_a;       ///< first end of each edge (index into points)
+        std::vector<int> edge_b;       ///< second end of each edge
+    };
+
+    /** @brief Builds m_lattices[geom] for lattice size n (see ReferenceLattice). */
+    void BuildLattice(mfem::Geometry::Type geom, int n);
+
+    /**
+     * @brief Box of curved local element e (see the constructor): nodal points, lattice points
+     * and edge midpoints, enlarged by the bulge margin. `point_box` receives the box of the
+     * lattice points only. Host only.
+     */
+    void CurvedElementBox(int e, BoxType& box, BoxType& point_box) const;
+
     const mfem::Mesh& m_mesh;                 ///< the local mesh (not owned)
     int m_num_elements = 0;                   ///< local element count
     bool m_straight_sided = true;             ///< element = convex hull of its corners
     std::vector<BoxType> m_element_boxes;     ///< one box per local element
     BoxType m_local_bounds;                   ///< union of the element boxes
     BoxType m_local_point_bounds;             ///< box of the evaluated points (no padding)
+    /** @brief Reference lattices of the curved path, indexed by mfem::Geometry::Type. */
+    std::array<ReferenceLattice, mfem::Geometry::NumGeom> m_lattices;
     axom::spin::BVH<3, ExecSpace> m_bvh;      ///< BVH over m_element_boxes (if any elements)
 };
 

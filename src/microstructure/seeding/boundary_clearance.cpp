@@ -1,19 +1,95 @@
 #include "microstructure/seeding/boundary_clearance.hpp"
 
 #include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
 
 #include "axom/primal/operators/closest_point.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <memory>
 #include <stdexcept>
 
 namespace exaconstit::microstructure {
+
+namespace {
+
+/*
+ * WarpedQuadSubdivisions
+ *
+ * Number of subdivisions per edge for a straight-sided (bilinear) quadrilateral face, chosen so
+ * that the two-triangle split of every sub-quadrilateral stays within WARP_REL_TOL times the face
+ * size of the bilinear surface.
+ *
+ * The bilinear face map with corners v0, v1, v2, v3 (counterclockwise) is
+ *     x(s, t) = v0 + (v1 - v0) s + (v3 - v0) t + (v0 - v1 + v2 - v3) s t,
+ * so its only non-planar part is the twist vector w = v0 - v1 + v2 - v3 times s t. The triangles
+ * 0-1-2 and 0-2-3 contain the diagonal 0-2, whose midpoint is (v0 + v2) / 2, while the bilinear
+ * surface passes through the face center (v0 + v1 + v2 + v3) / 4; the two differ by w / 4. Only
+ * the part of that offset normal to the face moves the surface (for a planar quad, w lies in the
+ * plane of the face and the bilinear surface is the flat quad itself, exactly covered by the two
+ * triangles), so the warp is
+ *     warp = |w . n| / 4,   n = unit normal from the cross product of the two diagonals.
+ * Splitting the face into k x k sub-quadrilaterals divides the twist of each one by k^2 (the s t
+ * term scales with the square of the sub-quadrilateral size), so k = ceil(sqrt(warp / (tol *
+ * size))) brings every sub-quadrilateral's warp below tol * size. A planar face gives warp at the
+ * round-off level and k = 1, i.e. exactly the two triangles used before warped faces were
+ * subdivided, so straight-sided meshes with planar faces keep their surface bit for bit.
+ * k is capped at WARP_MAX_SUBDIVISIONS; at the cap the remaining warp is warp / k^2.
+ *
+ * @param corners the 4 face corners in face order (columns of a 3 x 4 matrix).
+ */
+int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
+    double twist[3];
+    double diag_a[3];
+    double diag_b[3];
+    double size_sq = 0.0;
+    for (int d = 0; d < 3; d++) {
+        twist[d] = corners(d, 0) - corners(d, 1) + corners(d, 2) - corners(d, 3);
+        diag_a[d] = corners(d, 2) - corners(d, 0);
+        diag_b[d] = corners(d, 3) - corners(d, 1);
+    }
+    // Face size: the longer diagonal
+    double len_a_sq = 0.0;
+    double len_b_sq = 0.0;
+    for (int d = 0; d < 3; d++) {
+        len_a_sq += diag_a[d] * diag_a[d];
+        len_b_sq += diag_b[d] * diag_b[d];
+    }
+    size_sq = std::max(len_a_sq, len_b_sq);
+    // Normal from the diagonals' cross product (its length is twice the projected face area)
+    const double normal[3] = {diag_a[1] * diag_b[2] - diag_a[2] * diag_b[1],
+                              diag_a[2] * diag_b[0] - diag_a[0] * diag_b[2],
+                              diag_a[0] * diag_b[1] - diag_a[1] * diag_b[0]};
+    const double normal_len =
+        std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    if (!(normal_len > 0.0) || !(size_sq > 0.0)) {
+        return 1; // degenerate face: nothing sensible to refine
+    }
+    const double warp =
+        std::fabs(twist[0] * normal[0] + twist[1] * normal[1] + twist[2] * normal[2]) /
+        (4.0 * normal_len);
+    const double allowed = BOUNDARY_WARP_REL_TOL * std::sqrt(size_sq);
+    if (warp <= allowed) {
+        return 1;
+    }
+    const int k = static_cast<int>(std::ceil(std::sqrt(warp / allowed)));
+    return std::min(k, BOUNDARY_WARP_MAX_SUBDIVISIONS);
+}
+
+} // namespace
 
 /*
  * BoundaryClearance constructor
  *
  * Steps:
+ *  0. Straight path only: owner-broadcast vertex positions (VertexCoordinates,
+ *     mesh/vertex_coordinates.hpp; collective for a ParMesh). Each rank's own copy of the Nodes
+ *     can differ in the last bits at a vertex shared with another rank after a parallel
+ *     refinement; with the broadcast, the corners (and therefore the warp test and the
+ *     triangles) of a surface face are the same whichever rank's data they come from. For a mesh
+ *     distributed from a serial mesh the values are unchanged, bit for bit.
  *  1. Mark the faces shared with other ranks (ParMesh only): ParMesh::GetSharedFace(i) returns the
  *     local face index of shared face i (pmesh.hpp:688).
  *  2. A local face f is a surface face if GetFaceElements gives no second element (e2 < 0) and f
@@ -22,9 +98,14 @@ namespace exaconstit::microstructure {
  *  3. Triangulate each surface face: map the points of an n-times subdivided reference face
  *     (mfem::GlobGeometryRefiner.Refine(face_geom, n)) through the face transformation and emit
  *     one triangle per sub-triangle, or two per sub-quadrilateral (corners 0-1-2 and 0-2-3).
- *     n = 1 for straight-sided meshes (the face itself, mapped by the corner transformation
- *     StraightFaceTransformation so a mesh with straight-sided Nodes gives the triangles of the
- *     same mesh without Nodes), 2 * order through the Nodes face transformation for curved ones.
+ *     - Straight-sided meshes: the corner transformation StraightFaceTransformation with the
+ *       owner-broadcast corners of step 0 (so a mesh with straight-sided Nodes gives the
+ *       triangles of the same mesh without Nodes). n = 1 for
+ *       triangles and planar quadrilaterals (the face itself); a warped (non-planar bilinear)
+ *       quadrilateral gets n = WarpedQuadSubdivisions(corners) >= 1, so the triangles follow the
+ *       bilinear surface to BOUNDARY_WARP_REL_TOL of the face size instead of cutting across it.
+ *     - Curved meshes: n = 2 * order through the Nodes face transformation (already subdivided;
+ *       the error is the sag of one sub-triangle, see the header).
  *  4. Build the BVH over the triangle boxes (axom::spin::BVH::initialize, BVH.hpp:427).
  */
 BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
@@ -44,6 +125,16 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
 
     // Subdivisions per face edge: 1 (the face itself) when straight-sided
     const bool straight = straight_sided || mesh.GetNodes() == nullptr;
+
+    // Owner-broadcast vertex positions for the straight path (collective for a ParMesh, so it is
+    // built here, before any step that could throw on one rank only; `straight` is the same on
+    // every rank: straight_sided comes from the collective IsStraightSided and every rank of a
+    // ParMesh has Nodes or none does)
+    std::unique_ptr<VertexCoordinates> coords;
+    if (straight) {
+        coords = std::make_unique<VertexCoordinates>(mesh);
+    }
+
     int subdivisions = 1;
     if (!straight) {
         subdivisions = 2 * std::max(1, mesh.GetNodes()->FESpace()->GetMaxElementOrder());
@@ -62,13 +153,20 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
         }
 
         // Step 3a: physical positions of the refined reference points of the face
+        const mfem::Geometry::Type geom = mesh.GetFaceGeometry(f);
+        int face_subdivisions = subdivisions;
         if (straight) {
-            StraightFaceTransformation(mesh, f, face_trans);
+            StraightFaceTransformation(mesh, *coords, f, face_trans);
+            // Warped bilinear quadrilaterals are subdivided; the point matrix of the corner
+            // transformation holds the 4 corners in face order
+            if (geom == mfem::Geometry::SQUARE) {
+                face_subdivisions = WarpedQuadSubdivisions(face_trans.GetPointMat());
+            }
         } else {
             mesh.GetFaceTransformation(f, &face_trans);
         }
-        const mfem::Geometry::Type geom = mesh.GetFaceGeometry(f);
-        mfem::RefinedGeometry* refined = mfem::GlobGeometryRefiner.Refine(geom, subdivisions);
+        mfem::RefinedGeometry* refined =
+            mfem::GlobGeometryRefiner.Refine(geom, face_subdivisions);
         face_points.resize(static_cast<std::size_t>(refined->RefPts.GetNPoints()));
         for (int q = 0; q < refined->RefPts.GetNPoints(); q++) {
             face_trans.Transform(refined->RefPts.IntPoint(q), x);

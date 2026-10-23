@@ -178,9 +178,10 @@ struct JohnsonMehlReport {
     /** @brief Time of the last candidate examined (time units). */
     double last_candidate_time = 0.0;
     /**
-     * @brief Smallest proven upper bound of the time at which the material is fully transformed
+     * @brief Smallest upper bound of the time at which the material is fully transformed
      * (+infinity if never computed). Every material point is reached by some grain no later than
-     * this.
+     * this. The bound is proven for straight-sided elements; for curved elements it relies on the
+     * sampled element boxes of MaterialPointLocator, so it is a sampled bound there.
      */
     double completion_time_bound = 0.0;
     std::array<double, 3> sampling_lo = {0, 0, 0}; ///< box the candidates were drawn from
@@ -210,8 +211,9 @@ struct JohnsonMehlReport {
  *     user sampling box is given.
  *  3. Candidates in batches of growing size: positions and times on every rank, in-material
  *     mask by bitwise-OR reduction, then the rate and coverage filters in candidate order.
- *  4. After any batch in which most in-material candidates were already covered, a proven upper
- *     bound T_done of the transformation-completion time is computed (collective, MPI_MAX):
+ *  4. After any batch in which most in-material candidates were already covered, an upper bound
+ *     T_done of the transformation-completion time is computed (collective, MPI_MAX; proven for
+ *     straight-sided elements, a sampled bound for curved elements, see MaterialPointLocator):
  *     T_done = max over elements e of [T(c_e) + r_e / v], where T(x) = min_j (t_j + |x - s_j| / v)
  *     is the arrival time of the first grain at x, c_e is the center of the bounding box of
  *     element e and r_e (slightly enlarged) is half its diagonal. T changes by at most

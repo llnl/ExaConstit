@@ -18,8 +18,15 @@
  *   quadrature-space kernels and restart checkpoint, `partial_qspace.cpp`,
  *   `exa_sidre_parmesh.cpp`);
  * - a conforming mesh, i.e. no hanging nodes from local refinement (same reason);
- * - a positive Jacobian determinant (detJ > 0) at every quadrature point, i.e. no inverted or
- *   folded elements (the samplers divide by element volume);
+ * - a positive Jacobian determinant (detJ > 0) at every quadrature point and at every nodal point
+ *   and corner of the element (the points that define an order-p element; corners included),
+ *   i.e. no inverted or folded elements (the samplers divide by element volume, and the point
+ *   locator's Newton inverse map needs an invertible element map). The nodal points catch
+ *   curved or distorted elements that are folded between the quadrature points; they are a
+ *   sample as well, so a fold narrower than the node spacing can still be missed. Since
+ *   2026-10-22 an element with detJ <= 0 at a corner fails even if every quadrature point is
+ *   positive: collapsed or degenerate hexes (e.g. a face collapsed to an edge) that passed
+ *   before are now rejected;
  * - no periodic identification. MFEM represents a periodic mesh with discontinuous (L2) Nodes,
  *   and grain-boundary fitting does not support it.
  *
@@ -51,19 +58,29 @@ struct PreflightReport {
     /** @brief No rank has discontinuous (L2) Nodes, i.e. the mesh is not periodic. */
     bool continuous_nodes = true;
     /**
-     * @brief Minimum signed detJ over all quadrature points of all elements (physical volume
-     *        per unit reference-element volume). Equals `std::numeric_limits<double>::max()`
-     *        for an empty mesh.
+     * @brief Minimum signed detJ over all quadrature points and nodal points of all elements
+     *        (physical volume per unit reference-element volume). Equals
+     *        `std::numeric_limits<double>::max()` for an empty mesh.
      */
     double min_detj = 0.0;
-    /** @brief Global number of elements with detJ <= 0 at one or more quadrature points. */
+    /**
+     * @brief Global number of elements with detJ <= 0 at one or more quadrature points or
+     *        nodal points.
+     */
     std::int64_t num_bad_elements = 0;
+    /**
+     * @brief Global number of those bad elements whose detJ is positive at every quadrature
+     *        point, i.e. that are folded only between the quadrature points and were caught by
+     *        the nodal points. Included in num_bad_elements.
+     */
+    std::int64_t num_folded_between_points = 0;
     /** @brief Global number of elements. */
     std::int64_t num_elements = 0;
     /**
-     * @brief 0-based local element ids (on this rank only) of the elements with detJ <= 0, in
-     *        increasing order. For a ParMesh built by MakeParMesh, the serial id of local
-     *        element `id` is `SerialOrder::local_to_serial[id]`.
+     * @brief 0-based local element ids (on this rank only) of the elements with detJ <= 0 at a
+     *        quadrature or nodal point, in increasing order. For a ParMesh built by
+     *        MakeParMesh, the serial id of local element `id` is
+     *        `SerialOrder::local_to_serial[id]`.
      */
     std::vector<int> local_bad_elements;
 
@@ -79,7 +96,7 @@ struct PreflightReport {
  *
  * Use this overload for a serial mesh (pass MPI_COMM_SELF) or for hand-built per-rank meshes.
  * detJ is evaluated at the quadrature points of DefaultSampleQuadOrder(mesh), the same points
- * the samplers use.
+ * the samplers use, and at the nodal points and corners of each element (see the file comment).
  *
  * Collective over `comm`. Runs on the host. Never throws for a bad mesh; inspect the report or
  * call ThrowOnPreflightFailure.

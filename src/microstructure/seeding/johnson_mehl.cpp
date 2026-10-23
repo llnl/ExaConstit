@@ -281,14 +281,23 @@ private:
 /*
  * CompletionTimeBound (collective)
  *
- * Proven upper bound of the time by which every material point has been reached by a grain,
- * given the nuclei accepted so far (proof in GenerateJohnsonMehlSeeds' header comment):
+ * Upper bound of the time by which every material point has been reached by a grain, given the
+ * nuclei accepted so far (argument in GenerateJohnsonMehlSeeds' header comment). The argument is
+ * a proof provided every material point of element e lies in the locator's box of e, i.e. within
+ * r_e of c_e:
  *
  *     T_done = max over local elements e of [ T(c_e) + r_e / v ],  then MPI_MAX over ranks,
  *
  * with c_e the center of element e's bounding box, r_e half the box diagonal (times
  * 1 + RADIUS_SAFETY) and T the arrival time of NucleusGrid::ArrivalTime. The element boxes are
- * the locator's (exact vertex boxes for straight-sided elements, padded boxes for curved ones).
+ * the locator's. For straight-sided elements they are the exact corner boxes, so the bound is
+ * proven. For curved elements they are the sampled-bound boxes of MaterialPointLocator (lattice
+ * points and edge midpoints plus a margin estimated from the sampled bulge,
+ * material_point_locator.hpp); the bound is then as reliable as those boxes: rigorous for
+ * Bernstein Nodes, and for Lagrange Nodes a sampled bound, not a proof. A part of a curved
+ * element sticking out of its box could in principle still be untransformed at T_done; the
+ * effect would be a late nucleus there that the process stopped too early to accept (labeling
+ * still gives that point the grain of the accepted nucleus that reaches it first).
  * A rank without elements contributes -infinity. The maximum of doubles is exact and
  * order-independent, so all ranks get the same value for any partition.
  */

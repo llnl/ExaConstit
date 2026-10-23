@@ -341,11 +341,24 @@ void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacency
  * The fields live in an order-0 L2 space (one value per element) and are written with
  * mfem::ParaViewDataCollection, which writes one .vtu piece per rank plus a .pvd/.pvtu index.
  *
+ * Curved meshes. By default ParaView receives every element as a straight (linear) cell through
+ * its corners, which draws a curved mesh as if it were straight. When the mesh has Nodes of order
+ * p > 1, the collection is written in MFEM's high-order mode with level of detail p
+ * (ParaViewDataCollectionBase::SetHighOrderOutput and SetLevelsOfDetail, datacollection.hpp:533,
+ * 553): each element becomes one VTK Lagrange cell of order p whose points are the element map
+ * evaluated at the (p+1) per direction reference points (Mesh::PrintVTU, mesh.cpp:12908-13000),
+ * so ParaView (5.5 or later) shows the true curved geometry. A mesh with order-p Nodes whose
+ * elements happen to be straight is written the same way; it only makes the files larger.
+ * Without Nodes, or with order-1 Nodes, the output is the plain linear one, as before.
+ *
  * @param pmesh Distributed mesh (non-const because the data collection takes a Mesh*).
  * @param element_grain Grain id (1-based) of each local element, size pmesh.GetNE().
  * @param grain_region Region of grain g at index g-1, or empty for no region field.
  * @param path Collection path: the parent directory is the ParaView prefix path, the file name
  *        the collection name (e.g. "out/sample_paraview" gives out/sample_paraview/...pvd).
+ * @param levels_of_detail 0 (default): automatic, as described above (the Nodes order, the
+ *        largest over all ranks). 1: always plain linear cells. p > 1: high-order cells of
+ *        order p, whatever the Nodes. Must be the same on every rank.
  * @throws std::invalid_argument wrapped in std::runtime_error on every rank if any rank has a
  *         wrong element_grain size or a grain without a region; std::runtime_error on every rank
  *         if the data collection reports an error.
@@ -353,7 +366,8 @@ void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacency
 void WriteParaView(mfem::ParMesh& pmesh,
                    const mfem::Array<int>& element_grain,
                    const std::vector<int>& grain_region,
-                   const std::filesystem::path& path);
+                   const std::filesystem::path& path,
+                   int levels_of_detail = 0);
 
 namespace detail {
 

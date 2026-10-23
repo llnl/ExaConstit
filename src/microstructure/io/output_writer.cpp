@@ -785,14 +785,21 @@ void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacency
  *    ParFiniteElementSpace construction, so bad input on one rank cannot hang the others.
  * 2. Build an order-0 L2 space: exactly one degree of freedom per element, so the field is the
  *    element value itself. Fill the grain (and region) field element by element.
- * 3. Save with mfem::ParaViewDataCollection (each rank writes its own .vtu piece, rank 0 the
+ * 3. Level of detail: in automatic mode (levels_of_detail = 0) the largest Nodes order over all
+ *    ranks (MPI_Allreduce MAX; 1 without Nodes), so every rank writes its piece the same way.
+ *    Above 1, MFEM's high-order mode is switched on (SetHighOrderOutput(true)) and the level of
+ *    detail becomes the order of the VTK Lagrange cells (datacollection.hpp:526-553). The
+ *    order-0 fields are then written at every point of each cell (SaveGFieldVTU evaluates them
+ *    at the same refined reference points as the geometry), which repeats the element value.
+ * 4. Save with mfem::ParaViewDataCollection (each rank writes its own .vtu piece, rank 0 the
  *    .pvd/.pvtu index), then agree on the collection's error state. DataCollection::Error()
  *    is compared with No_Error (datacollection.hpp:380-392; NO_ERROR may be a system macro).
  */
 void WriteParaView(mfem::ParMesh& pmesh,
                    const mfem::Array<int>& element_grain,
                    const std::vector<int>& grain_region,
-                   const std::filesystem::path& path) {
+                   const std::filesystem::path& path,
+                   int levels_of_detail) {
     const int ne = pmesh.GetNE();
 
     // Step 1: local input checks, agreed over all ranks
@@ -831,11 +838,25 @@ void WriteParaView(mfem::ParMesh& pmesh,
         }
     }
 
-    // Step 3: write the collection and agree on its error state
+    // Step 3: level of detail, the same on every rank
+    int lod = levels_of_detail;
+    if (lod <= 0) {
+        int local_order = 1;
+        if (pmesh.GetNodes() != nullptr) {
+            local_order = std::max(1, pmesh.GetNodes()->FESpace()->GetMaxElementOrder());
+        }
+        MPI_Allreduce(&local_order, &lod, 1, MPI_INT, MPI_MAX, pmesh.GetComm());
+    }
+
+    // Step 4: write the collection and agree on its error state
     const fs::path prefix = path.parent_path();
     mfem::ParaViewDataCollection dc(path.filename().string(), &pmesh);
     if (!prefix.empty()) {
         dc.SetPrefixPath(prefix.string());
+    }
+    if (lod > 1) {
+        dc.SetHighOrderOutput(true);
+        dc.SetLevelsOfDetail(lod);
     }
     dc.RegisterField("grain_id", &grain_gf);
     if (!grain_region.empty()) {

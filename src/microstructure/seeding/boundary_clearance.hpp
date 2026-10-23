@@ -34,12 +34,19 @@
  * Every rank tests every point against its own part of the surface; a point is "too close" if it
  * is too close to the surface on ANY rank, so the caller combines the per-rank answers with a
  * bitwise OR over ranks (MPI_Allreduce with MPI_BOR, a *collective* call: one that every rank
- * must make, in the same order, because it exchanges data between ranks). Nothing in this class
- * is collective itself.
+ * must make, in the same order, because it exchanges data between ranks). The constructor is
+ * collective for a straight-sided ParMesh (see there); MarkNear is not collective.
  *
  * Curved faces (meshes with Nodes) are approximated by triangulating the face at its refined
  * reference points (2 * order subdivisions per edge); the distance error is of the order of the
- * curvature sag of one sub-triangle.
+ * curvature sag of one sub-triangle (about h_sub^2 / 8 times the surface curvature, h_sub = the
+ * face size / (2 order)).
+ *
+ * Straight-sided quadrilateral faces are bilinear surfaces, which are flat only when the four
+ * corners are coplanar. A warped quadrilateral (corners not coplanar) is subdivided into k x k
+ * sub-quadrilaterals before it is split into triangles, with k chosen so that the triangles stay
+ * within BOUNDARY_WARP_REL_TOL times the face size of the bilinear surface (k <=
+ * BOUNDARY_WARP_MAX_SUBDIVISIONS). Planar quadrilaterals keep their two triangles.
  *
  * Host only (axom::SEQ_EXEC), like the material point locator.
  */
@@ -47,9 +54,20 @@
 namespace exaconstit::microstructure {
 
 /**
+ * @brief Largest distance, relative to the face size (its longer diagonal), allowed between the
+ * bilinear surface of a straight-sided quadrilateral face and its triangles before the face is
+ * subdivided.
+ */
+constexpr double BOUNDARY_WARP_REL_TOL = 1.0e-3;
+
+/** @brief Cap on the subdivisions per edge of a warped quadrilateral face. */
+constexpr int BOUNDARY_WARP_MAX_SUBDIVISIONS = 32;
+
+/**
  * @brief Distance-to-surface test over the boundary faces of one rank's mesh partition.
  *
- * Construction is local to the rank (not collective). Host only.
+ * Construction is collective for a straight-sided ParMesh (see the constructor), local
+ * otherwise. Host only.
  */
 class BoundaryClearance {
 public:
@@ -61,13 +79,20 @@ public:
     /**
      * @brief Collects and triangulates the local boundary faces and builds the triangle BVH.
      *
+     * **Collective when `mesh` is an mfem::ParMesh and the straight path is taken**
+     * (straight_sided true, or no Nodes): it builds the owner-broadcast vertex positions
+     * (VertexCoordinates, mesh/vertex_coordinates.hpp), so every rank of the mesh communicator
+     * must construct it, including ranks without elements. A serial mesh or a curved ParMesh
+     * communicates nothing.
+     *
      * @param mesh      this rank's 3D mesh partition. If it is an mfem::ParMesh, faces shared with
      *                  other ranks (ParMesh::GetSharedFace) are excluded; for a plain mfem::Mesh
      *                  every face with one element is a boundary face.
      * @param clearance c > 0, mesh length units.
      * @param straight_sided IsStraightSided(mesh, comm) (mesh/straight_sided.hpp): straight-sided
      *        faces are triangulated from their corner vertices (from the Nodes when present),
-     *        exactly as for a mesh without Nodes; curved faces are subdivided 2 * order times.
+     *        exactly as for a mesh without Nodes, with warped quadrilaterals subdivided (see the
+     *        file comment); curved faces are subdivided 2 * order times.
      *        Ignored (treated as true) for a mesh without Nodes.
      */
     BoundaryClearance(const mfem::Mesh& mesh, double clearance, bool straight_sided);
