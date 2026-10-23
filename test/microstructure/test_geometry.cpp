@@ -499,9 +499,14 @@ TEST(SeedIndex, CoincidentSeeds) {
     // Queries: random points plus the duplicated positions themselves
     Queries q = MakeQueries(s, 800, 8);
     const int base = q.Size();
-    q.x.SetSize(base + 60);
-    q.y.SetSize(base + 60);
-    q.z.SetSize(base + 60);
+    // mfem::Vector::SetSize does not keep the old entries when it has to grow, so grow copies
+    for (mfem::Vector* v : {&q.x, &q.y, &q.z}) {
+        mfem::Vector grown(base + 60);
+        for (int i = 0; i < base; ++i) {
+            grown(i) = (*v)(i);
+        }
+        v->Swap(grown);
+    }
     for (int c = 0; c < 60; ++c) {
         q.Set(base + c, s.x[400 + c], s.y[400 + c], s.z[400 + c]);
     }
