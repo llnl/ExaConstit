@@ -465,7 +465,7 @@ struct TessellationOptions {
  * labeling/voxel_labeler.hpp.
  */
 struct VoxelMapOptions {
-    /** @brief "exaconstit" (canonical "ExaConstit voxel map v1" HDF5 layout) or "dream3d". */
+    /** @brief "exaconstit" (canonical "ExaConstit voxel map v2" HDF5 layout) or "dream3d". */
     std::string format = "exaconstit";
     /** @brief The HDF5 file (relative to the current working directory). */
     std::filesystem::path file;
@@ -582,20 +582,21 @@ struct RegionOptions {
      */
     std::string mode = "single";
     /**
-     * @brief Phase ids (>= 0) whose grains are not crystals; their regions are flagged
+     * @brief Phase ids (>= 1) whose grains are not crystals; their regions are flagged
      * non-crystalline and their grains get the identity orientation (TOML
      * `non_crystalline_phases = [2]`).
      */
     std::vector<int> non_crystalline_phases;
     /**
-     * @brief Optional explicit phase -> region map (TOML `phase_to_region = { "0" = 1, "3" = 1,
-     * "7" = 2 }`; keys are strings read as integers >= 0, values region ids >= 1). Empty: regions
-     * 1..M in ascending phase order. Several phases may share a region; the region ids used must
-     * be exactly 1..M.
+     * @brief Optional explicit phase -> region map (TOML `phase_to_region = { "1" = 1, "3" = 1,
+     * "7" = 2 }`; keys are strings read as integers >= 1, values region ids >= 1). Empty: regions
+     * 1..M in ascending phase order, so phases 1..M are regions 1..M. Phase ids start at 1 like
+     * ExaConstit's region ids. Several phases may share a region; the region ids used must be
+     * exactly 1..M.
      */
     std::map<int, int> phase_to_region;
     /**
-     * @brief phase_fractions only: the phase ids (>= 0, distinct) of TOML
+     * @brief phase_fractions only: the phase ids (>= 1, distinct) of TOML
      * `phases = [{id = 1, fraction = 0.7}, {id = 2, fraction = 0.3}]`.
      */
     std::vector<int> phase_ids;
@@ -606,8 +607,8 @@ struct RegionOptions {
      * (Seeds.fill_outside_roi = "random") are combined with mode = "from_phase".
      */
     bool has_filler_phase = false;
-    /** @brief Phase id (>= 0) of the filler grains (TOML `filler_phase`). */
-    int filler_phase = 0;
+    /** @brief Phase id (>= 1) of the filler grains (TOML `filler_phase`). */
+    int filler_phase = 1;
 };
 
 /**
@@ -742,7 +743,7 @@ struct MicrostructureOptions {
      * tessellation (seed table, Johnson-Mehl, sizes, ROI, metric, anisotropy, periodic,
      * fit_volumes, Lloyd, keep_component = "seed", a distance other than "euclidean") and only
      * warn about harmless seed-placement leftovers; from_source orientations and from_phase
-     * regions need a seed table or a voxel map; phase fractions need distinct phase ids >= 0
+     * regions need a seed table or a voxel map; phase fractions need distinct phase ids >= 1
      * with positive fractions summing to 1; from_phase with filler needs Regions.filler_phase.
      * Whether a table or voxel map actually holds the needed columns or datasets is only known
      * when it is read, so the driver checks that (on every rank together).

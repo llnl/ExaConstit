@@ -17,7 +17,8 @@ Formats written:
 
 - **ExaConstit seed table v1** (CSV, `[Seeds] source = "file"`): `#` comments, a header of
   column names, one seed per row; real numbers with 17 significant digits.
-- **ExaConstit voxel map v1** (HDF5, `[Source] type = "voxel_map"`, `format = "exaconstit"`):
+- **ExaConstit voxel map v2** (HDF5, `[Source] type = "voxel_map"`, `format = "exaconstit"`;
+  "v2" because ExaConstit's auto-mesh `grain_file` plus orientation file is the original, v1):
   `/grain_ids` (nz, ny, nx), `/origin` (lower corner of voxel (0,0,0)), `/spacing`, optional
   `/features/{id,quat,phase}`.
 

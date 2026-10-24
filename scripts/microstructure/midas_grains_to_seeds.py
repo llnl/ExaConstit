@@ -203,8 +203,8 @@ def convert(args):
     # Step 4: optional phase (PhaseNr is printed as a real, e.g. "1.000000")
     if not args.no_phase and "PhaseNr" in names:
         phases = column(names, data, "PhaseNr", args.input)
-        if np.any(phases != np.floor(phases)) or np.any(phases < 0):
-            raise msio.ConverterError("PhaseNr values must be integers >= 0 (use --no-phase "
+        if np.any(phases != np.floor(phases)) or np.any(phases < 1):
+            raise msio.ConverterError("PhaseNr values must be integers >= 1 (use --no-phase "
                                       "to skip them)")
         columns["phase"] = phases.astype(np.int64)
 

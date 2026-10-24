@@ -180,7 +180,7 @@ TEST(SeedTable, AllColumns) {
                                       D("0.70710678118654757"), 0.0, 0.0,
                                       D("0.70710678118654757")};
     EXPECT_EQ(t.seeds.quat, quat);
-    EXPECT_EQ(t.seeds.phase, (std::vector<int>{1, 0, 2}));
+    EXPECT_EQ(t.seeds.phase, (std::vector<int>{2, 1, 3}));
     EXPECT_EQ(t.seeds.weight, (std::vector<double>{D("0.25"), D("-0.125"), 0.0}));
     const double radii[3] = {D("0.05"), D("0.1"), D("0.2")};
     for (int i = 0; i < 3; i++) {
@@ -229,7 +229,7 @@ TEST(SeedTable, MixedCaseHeader) {
     EXPECT_TRUE(t.has_quat && t.has_phase && t.has_volume);
     EXPECT_FALSE(t.has_weight || t.has_shape);
     EXPECT_EQ(t.seeds.quat, (std::vector<double>{1, 0, 0, 0, 0, 1, 0, 0}));
-    EXPECT_EQ(t.seeds.phase, (std::vector<int>{0, 3}));
+    EXPECT_EQ(t.seeds.phase, (std::vector<int>{1, 3}));
     EXPECT_EQ(t.volume, (std::vector<double>{D("0.001"), D("0.002")}));
 }
 
@@ -304,6 +304,9 @@ TEST(SeedTable, Errors) {
     ExpectCollectiveError(WriteText("neg_radius", "x,y,z,radius\n0,0,0,-1\n"),
                           {":2:", "'radius'", "> 0"});
     ExpectCollectiveError(WriteText("neg_id", "id,x,y,z\n-1,0,0,0\n"), {":2:", ">= 0"});
+    // Phase ids start at 1, like ExaConstit's region ids (phase k is region k by default)
+    ExpectCollectiveError(WriteText("phase_zero", "x,y,z,phase\n0,0,0,0\n"),
+                          {":2:", "'phase'", "[1, 2^31 - 1]"});
     ExpectCollectiveError(WriteText("empty", "# only a comment\n"), {"no header"});
     ExpectCollectiveError(WriteText("no_rows", "x,y,z\n"), {"no seed rows"});
     ExpectCollectiveError("no_such_seed_table.csv", {"cannot open"});
@@ -386,7 +389,7 @@ TEST(SeedTable, KeepSeedsInBox) {
     EXPECT_EQ(ms::KeepSeedsInBox(t, {0.0, 0.0, 0.0}, {0.5, 1.0, 1.0}), 1);
     ASSERT_EQ(t.seeds.Size(), 2u);
     EXPECT_EQ(t.seeds.source_id, (std::vector<std::int64_t>{10, 7}));
-    EXPECT_EQ(t.seeds.phase, (std::vector<int>{1, 2}));
+    EXPECT_EQ(t.seeds.phase, (std::vector<int>{2, 3}));
     EXPECT_EQ(t.volume, (std::vector<double>{full.volume[0], full.volume[2]}));
     for (int k = 0; k < 4; k++) {
         EXPECT_EQ(t.seeds.quat[4 + k], full.seeds.quat[8 + k]);

@@ -121,9 +121,9 @@ const std::array<std::array<double, 3>, 8> kTablePos = {{{0.21, 0.19, 0.22},
                                                           {0.69, 0.21, 0.79},
                                                           {0.18, 0.82, 0.71},
                                                           {0.77, 0.72, 0.78}}};
-/** Their ids (not 0..7), phases {0, 3, 7} and table volumes (ratios 1..8). */
+/** Their ids (not 0..7), phases {1, 3, 7} and table volumes (ratios 1..8). */
 const std::array<std::int64_t, 8> kTableId = {10, 4, 7, 22, 15, 3, 9, 30};
-const std::array<int, 8> kTablePhase = {0, 3, 7, 0, 3, 7, 0, 3};
+const std::array<int, 8> kTablePhase = {1, 3, 7, 1, 3, 7, 1, 3};
 
 /**
  * Quaternion row i of the table (w x y z). Row 0 has norm 1.0004 (accepted: | |q| - 1 | <=
@@ -205,14 +205,14 @@ void WriteSeedTables() {
 
     // U-shaped part [0,3] x [0,2] x [0,1] without the notch [1,2] x [1,2]: seed 42 sits in the
     // notch (no material there), so its cell holds only material next to the notch in both arms
-    // (x in (0.85, 1) and (2, 2.15) above y ~ 1): two disconnected pieces. Phases 0 / 3.
+    // (x in (0.85, 1) and (2, 2.15) above y ~ 1): two disconnected pieces. Phases 1 / 3.
     WriteText("ushape.csv",
               "id,x,y,z,qw,qx,qy,qz,phase\n"
-              "1,0.2,1.5,0.5,1,0,0,0,0\n"
-              "2,2.8,1.5,0.5,0,1,0,0,0\n"
-              "3,0.4,0.4,0.5,0,0,1,0,0\n"
-              "4,1.5,0.45,0.5,0,0,0,1,0\n"
-              "5,2.6,0.4,0.5,0.6,0.8,0,0,0\n"
+              "1,0.2,1.5,0.5,1,0,0,0,1\n"
+              "2,2.8,1.5,0.5,0,1,0,0,1\n"
+              "3,0.4,0.4,0.5,0,0,1,0,1\n"
+              "4,1.5,0.45,0.5,0,0,0,1,1\n"
+              "5,2.6,0.4,0.5,0.6,0.8,0,0,1\n"
               "42,1.5,1.5,0.5,0.5004,0.5,-0.5,0.5,3\n");
 
     // One measured seed in the bottom-left block of the U (ROI [0,1]^3); filler seeds elsewhere
@@ -220,15 +220,15 @@ void WriteSeedTables() {
               "id,x,y,z,qw,qx,qy,qz\n"
               "1,0.5,0.5,0.5,1,0,0,0\n");
 
-    // Seeds above the build plate of PlateMesh (z > 1/4) with phases 0 and 1
+    // Seeds above the build plate of PlateMesh (z > 1/4) with phases 1 and 2
     WriteText("plate.csv",
               "id,x,y,z,phase\n"
-              "1,0.21,0.23,0.41,0\n"
-              "2,0.74,0.27,0.46,1\n"
-              "3,0.27,0.76,0.62,0\n"
-              "4,0.71,0.73,0.67,1\n"
-              "5,0.33,0.31,0.86,1\n"
-              "6,0.68,0.66,0.91,0\n");
+              "1,0.21,0.23,0.41,1\n"
+              "2,0.74,0.27,0.46,2\n"
+              "3,0.27,0.76,0.62,1\n"
+              "4,0.71,0.73,0.67,2\n"
+              "5,0.33,0.31,0.86,2\n"
+              "6,0.68,0.66,0.91,1\n");
 }
 
 /** Writes every fixture once (rank 0), then synchronizes (collective). */
@@ -532,8 +532,8 @@ bool Refused(mfem::ParMesh& pmesh, const ms::MicrostructureOptions& options) {
 // (grain ids in seed order in both). The orientations are the table rows normalized to unit
 // length with sign and order kept (row 0 has norm 1.0004 and becomes (1, 0, 0, 0)); source ids
 // are the table ids. The phases
-// {0, 3, 7} go to regions through the many-to-one map {0: 1, 3: 1, 7: 2}, so region 1 holds
-// phases {0, 3} and region 2 phase 7. With phase 7 non-crystalline, region 2 is flagged and its
+// {1, 3, 7} go to regions through the many-to-one map {1: 1, 3: 1, 7: 2}, so region 1 holds
+// phases {1, 3} and region 2 phase 7. With phase 7 non-crystalline, region 2 is flagged and its
 // grains get the identity quaternion while the others keep their measured ones.
 TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
     WriteFixtures();
@@ -542,7 +542,7 @@ TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
     options.cleanup.fragments = "none";
     options.orientations.source = "from_source";
     options.regions.mode = "from_phase";
-    options.regions.phase_to_region = {{0, 1}, {3, 1}, {7, 2}};
+    options.regions.phase_to_region = {{1, 1}, {3, 1}, {7, 2}};
     const RunPair runs = RunAndCompare(serial, options);
     const ms::MicrostructureResult& result = runs.alone.result;
     const ms::GenerationReport& report = runs.alone.report;
@@ -582,7 +582,7 @@ TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
         EXPECT_EQ(result.grain_filler[gi], 0);
     }
     EXPECT_EQ(result.num_regions, 2);
-    EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{0, 3}, {7}}));
+    EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{1, 3}, {7}}));
     EXPECT_EQ(result.region_crystalline, (std::vector<char>{1, 1}));
 
     // Phase 7 non-crystalline: identity quaternions in region 2 only
@@ -673,11 +673,11 @@ TEST(DriverStage1d, RoiAndFillerSeeds) {
 
     // Synthetic phases with filler: every grain, filler grains included, gets one of the phases
     options.regions.mode = "phase_fractions";
-    options.regions.phase_ids = {0, 1};
+    options.regions.phase_ids = {1, 2};
     options.regions.phase_fractions = {0.5, 0.5};
     const RunPair fractions = RunAndCompare(serial, options);
     for (const int phase : fractions.alone.result.grain_phase) {
-        EXPECT_TRUE(phase == 0 || phase == 1);
+        EXPECT_TRUE(phase == 1 || phase == 2);
     }
 }
 
@@ -759,8 +759,8 @@ TEST(DriverStage1d, VolumeTargetsFromTable) {
 // element per voxel, the same lexicographic order), read in the canonical layout and in the
 // DREAM.3D SIMPL v6 layout. Every element gets its voxel's feature (the 8 hole elements are
 // filled from their neighbors), grains are numbered in ascending feature id (3, 5, 8, 13, 21,
-// 34 -> 1..6), and the phases r % 3 = {0, 2, 2, 1, 0, 1} go to 2 regions through
-// {0: 1, 1: 1, 2: 2}. Canonical quaternions are the stored rows normalized; the DREAM.3D file
+// 34 -> 1..6), and the phases 1 + r % 3 = {1, 3, 3, 2, 1, 2} go to 2 regions through
+// {1: 1, 2: 1, 3: 2}. Canonical quaternions are the stored rows normalized; the DREAM.3D file
 // stores float32 x y z w, so with quat_layout = "xyzw" and conjugate = false the result is the
 // float-rounded w x y z quaternion divided by its norm (float rounding moves the norm off 1 by
 // ~1e-8, so normalization is visible here).
@@ -785,7 +785,7 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
         }
         options.orientations.source = "from_source";
         options.regions.mode = "from_phase";
-        options.regions.phase_to_region = {{0, 1}, {1, 1}, {2, 2}};
+        options.regions.phase_to_region = {{1, 1}, {2, 1}, {3, 2}};
         const RunPair runs = RunAndCompare(serial, options);
         const ms::MicrostructureResult& result = runs.alone.result;
         const ms::GenerationReport& report = runs.alone.report;
@@ -821,12 +821,12 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
                                  "feature " + std::to_string(feature));
             const int phase = voxel_fixture::FeaturePhase(feature);
             EXPECT_EQ(result.grain_phase[gi], phase);
-            EXPECT_EQ(result.grain_region[gi], phase == 2 ? 2 : 1);
+            EXPECT_EQ(result.grain_region[gi], phase == 3 ? 2 : 1);
             EXPECT_EQ(result.grain_source_id[gi], feature);
             EXPECT_EQ(report.grain_seed[gi], -1);
         }
         EXPECT_EQ(result.num_regions, 2);
-        EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{0, 1}, {2}}));
+        EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{1, 2}, {3}}));
 
         // Single region and random orientations: the phases are still read (informative
         // grain_phase, region 1 lists them), as for a seed table's phase column
@@ -835,7 +835,7 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
         single.orientations.source = "random";
         const RunPair one = RunAndCompare(serial, single);
         EXPECT_EQ(one.alone.result.num_regions, 1);
-        EXPECT_EQ(one.alone.result.region_phases, (std::vector<std::vector<int>>{{0, 1, 2}}));
+        EXPECT_EQ(one.alone.result.region_phases, (std::vector<std::vector<int>>{{1, 2, 3}}));
         for (int g = 0; g < one.alone.result.num_grains; ++g) {
             const auto gi = static_cast<std::size_t>(g);
             EXPECT_EQ(one.alone.result.grain_phase[gi],
@@ -1213,7 +1213,7 @@ TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
         ExpectNormalizedFrom(&result.grain_quat[4 * g], {0.5004, 0.5, -0.5, 0.5},
                              "piece " + std::to_string(g + 1));
         EXPECT_EQ(result.grain_phase[g], 3);
-        EXPECT_EQ(result.grain_region[g], 2); // phases {0, 3} -> regions {1, 2}
+        EXPECT_EQ(result.grain_region[g], 2); // phases {1, 3} -> regions {1, 2}
         derived += (result.grain_source_id[g] != 42) ? 1 : 0;
     }
     EXPECT_EQ(derived, static_cast<int>(pieces.size()) - 1);
@@ -1263,7 +1263,7 @@ TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
     EXPECT_TRUE(found);
 }
 
-// Passthrough together with regions from phases: plate.csv phases {0, 1} give regions 1 and 2,
+// Passthrough together with regions from phases: plate.csv phases {1, 2} give regions 1 and 2,
 // and the plate (attribute 2) is mapped to region 3, so the regions are exactly 1..3 with region
 // 3 non-crystalline and without phases. Mapping the plate to region 4 leaves region 3 unused,
 // which only the driver can see (the number of phase regions is known after the table is read):
@@ -1282,12 +1282,12 @@ TEST(DriverStage1d, PassthroughWithPhaseRegions) {
     const RunPair runs = RunAndCompare(serial, options);
     const ms::MicrostructureResult& result = runs.alone.result;
     EXPECT_EQ(result.num_regions, 3);
-    EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{0}, {1}, {}}));
+    EXPECT_EQ(result.region_phases, (std::vector<std::vector<int>>{{1}, {2}, {}}));
     EXPECT_EQ(result.region_crystalline, (std::vector<char>{1, 1, 0}));
     EXPECT_EQ(result.grain_region.back(), 3);
     for (int g = 0; g + 1 < result.num_grains; ++g) {
         const auto gi = static_cast<std::size_t>(g);
-        EXPECT_EQ(result.grain_region[gi], result.grain_phase[gi] + 1);
+        EXPECT_EQ(result.grain_region[gi], result.grain_phase[gi]);
     }
 
     Distributed d = Distribute(serial, MPI_COMM_WORLD);

@@ -446,11 +446,11 @@ SeedTable ParseSeedTableFile(const SeedTableParameters& params,
             }
         }
 
-        // Phase: integer >= 0 that fits an int
+        // Phase: integer >= 1 that fits an int (phase ids start at 1, like ExaConstit regions)
         if (table.has_phase) {
             const std::int64_t phase = integer(map.phase, "phase");
-            if (phase < 0 || phase > INT_MAX) {
-                throw std::runtime_error(where + ": column 'phase': must be in [0, 2^31 - 1]");
+            if (phase < 1 || phase > INT_MAX) {
+                throw std::runtime_error(where + ": column 'phase': must be in [1, 2^31 - 1]");
             }
             seeds.phase.push_back(static_cast<int>(phase));
         }

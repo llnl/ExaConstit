@@ -972,7 +972,7 @@ tile_size = 16
 [Regions]
 mode = "phase_fractions"
 non_crystalline_phases = [2, 5]
-phase_to_region = { "0" = 1, "3" = 1, "7" = 2 }
+phase_to_region = { "1" = 1, "3" = 1, "7" = 2 }
 phases = [{id = 1, fraction = 0.7}, {id = 2, fraction = 0.3}]
 filler_phase = 4
 )");
@@ -1005,7 +1005,7 @@ filler_phase = 4
     EXPECT_EQ(map.tile_size, 16);
     EXPECT_EQ(options.regions.mode, "phase_fractions");
     EXPECT_EQ(options.regions.non_crystalline_phases, (std::vector<int>{2, 5}));
-    EXPECT_EQ(options.regions.phase_to_region, (std::map<int, int>{{0, 1}, {3, 1}, {7, 2}}));
+    EXPECT_EQ(options.regions.phase_to_region, (std::map<int, int>{{1, 1}, {3, 1}, {7, 2}}));
     EXPECT_EQ(options.regions.phase_ids, (std::vector<int>{1, 2}));
     EXPECT_EQ(options.regions.phase_fractions, (std::vector<double>{0.7, 0.3}));
     EXPECT_TRUE(options.regions.has_filler_phase);
@@ -1209,7 +1209,28 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         roi(o);
         o.regions.mode = "from_phase";
         o.regions.has_filler_phase = true;
+        o.regions.filler_phase = 1;
+    }));
+    // Phase ids start at 1 (phase k is ExaConstit region k by default), so 0 is refused as a
+    // filler phase, a phase_to_region key, a non-crystalline phase and a phase_fractions id
+    EXPECT_FALSE(check(table_options(), [&](O& o) {
+        roi(o);
+        o.regions.mode = "from_phase";
+        o.regions.has_filler_phase = true;
         o.regions.filler_phase = 0;
+    }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+        o.regions.phase_to_region = {{0, 1}};
+    }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+        o.regions.non_crystalline_phases = {0};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.regions.mode = "phase_fractions";
+        o.regions.phase_ids = {0, 1};
+        o.regions.phase_fractions = {0.5, 0.5};
     }));
 
     // Passthrough attributes

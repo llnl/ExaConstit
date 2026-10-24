@@ -8,7 +8,7 @@ SPPARKS, ExaCA) into the two input formats the ExaConstit microstructure generat
 
 * "ExaConstit seed table v1" (CSV): one seed (grain centre) per row, with optional
   orientation, phase and grain size. Used with ``[Seeds] source = "file"``.
-* "ExaConstit voxel map v1" (HDF5): a grain id per voxel of a regular grid, plus an optional
+* "ExaConstit voxel map v2" (HDF5): a grain id per voxel of a regular grid, plus an optional
   per-grain table of orientations and phases. Used with ``[Source] type = "voxel_map"``,
   ``format = "exaconstit"``.
 
@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover - depends on the local Python installati
 
 # Names written into the files so a human can tell what produced them.
 SEED_TABLE_FORMAT_NAME = "ExaConstit seed table v1"
-VOXEL_MAP_FORMAT_NAME = "ExaConstit voxel map v1"
+VOXEL_MAP_FORMAT_NAME = "ExaConstit voxel map v2"
 
 # The seed-table reader rejects a quaternion whose norm differs from 1 by more than this.
 QUAT_NORM_TOLERANCE = 1.0e-3
@@ -346,7 +346,7 @@ def write_seed_table(path, columns, comments=()):
       path     - output file path;
       columns  - dict mapping column name -> sequence of values, one per seed. Required:
                  "x", "y", "z". Optional: "id" (int >= 0, unique), "qw","qx","qy","qz" (all
-                 four or none), "phase" (0 <= int <= 2^31-1), "weight", one of "volume"/"radius"/
+                 four or none), "phase" (1 <= int <= 2^31-1), "weight", one of "volume"/"radius"/
                  "diameter" (> 0), and the six shape entries "m11".."m12" (all or none).
                  Unknown names are refused.
       comments - lines written first, each prefixed with "# ".
@@ -400,9 +400,10 @@ def write_seed_table(path, columns, comments=()):
     if not num_seeds:
         raise ConverterError("seed table: no seeds to write (the generator refuses an empty "
                              "table)")
-    if "phase" in arrays and (np.any(arrays["phase"] < 0)
+    # Phase ids start at 1, like ExaConstit's region ids (phase k is region k by default)
+    if "phase" in arrays and (np.any(arrays["phase"] < 1)
                               or np.any(arrays["phase"] > INT32_MAX)):
-        raise ConverterError("seed table: phases must be in [0, 2^31 - 1]")
+        raise ConverterError("seed table: phases must be in [1, 2^31 - 1]")
     for name in SEED_TABLE_SIZE_COLUMNS:
         if name in arrays and np.any(arrays[name] <= 0.0):
             raise ConverterError("seed table: column '%s' must be > 0" % name)
@@ -489,7 +490,7 @@ def require_h5py():
 def write_voxel_map(path, grain_ids, origin, spacing, feature_ids=None, feature_quats=None,
                     feature_phases=None, attributes=None):
     """
-    Write an "ExaConstit voxel map v1" HDF5 file.
+    Write an "ExaConstit voxel map v2" HDF5 file.
 
     Layout (see WORK_PACKAGES.md, "Shared formats"):
       /grain_ids      int64, shape (nz, ny, nx): x varies fastest. Values <= 0 = unassigned;
@@ -560,8 +561,8 @@ def write_voxel_map(path, grain_ids, origin, spacing, feature_ids=None, feature_
                 raise ConverterError("voxel map: %d phases for %d feature ids"
                                      % (fphases.size, fids.size))
             fphases = fphases[order]
-            if np.any(fphases < 0) or np.any(fphases > INT32_MAX):
-                raise ConverterError("voxel map: phases must be in [0, 2^31)")
+            if np.any(fphases < 1) or np.any(fphases > INT32_MAX):
+                raise ConverterError("voxel map: phases must be in [1, 2^31)")
 
     # Step 3: write the datasets
     with h5py.File(path, "w") as h5:
@@ -582,7 +583,7 @@ def write_voxel_map(path, grain_ids, origin, spacing, feature_ids=None, feature_
 
 def read_voxel_map(path):
     """
-    Read an "ExaConstit voxel map v1" HDF5 file (for tests and quick checks).
+    Read an "ExaConstit voxel map v2" HDF5 file (for tests and quick checks).
 
     Output: dict with "grain_ids" (int64, (nz, ny, nx)), "origin", "spacing" (float64[3]) and,
     when present, "feature_id", "feature_quat", "feature_phase", plus "attrs" (root attributes).

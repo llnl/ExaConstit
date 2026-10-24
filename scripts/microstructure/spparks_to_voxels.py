@@ -44,7 +44,7 @@ Source format (verified against the SPPARKS source and docs, github.com/spparks/
 
 What the converter writes
 -------------------------
-The "ExaConstit voxel map v1" (see exaconstit_microstructure_io.py): ``/grain_ids`` (nz, ny, nx)
+The "ExaConstit voxel map v2" (see exaconstit_microstructure_io.py): ``/grain_ids`` (nz, ny, nx)
 with the spin of each site, ``/origin`` (lower corner of voxel (0,0,0)) and ``/spacing``, both
 multiplied by ``--units-scale``. The voxel index of a site is round((x - x_min) / a) per axis,
 where a = (max - min) / (number of planes - 1) along that axis (or given with ``--spacing``).

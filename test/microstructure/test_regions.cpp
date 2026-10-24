@@ -49,86 +49,88 @@ namespace {
 //------------------------------------------------------------------------------------------------
 
 /*
- * Phases 0, 1, 2 already compact: region = phase + 1 (ascending phase order), one region per
+ * Phases 1, 2, 3 already compact: region = phase (ascending phase order), one region per
  * phase, all crystalline by default.
  */
 TEST(Regions, CompactPhases) {
-    const std::vector<int> phase = {2, 0, 1, 1, 0, 2, 2};
+    const std::vector<int> phase = {3, 1, 2, 2, 1, 3, 3};
     const ms::RegionAssignment r = ms::AssignRegionsFromPhases(phase, {});
     EXPECT_EQ(r.num_regions, 3);
     EXPECT_EQ(r.grain_region, (std::vector<int>{3, 1, 2, 2, 1, 3, 3}));
-    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{0}, {1}, {2}}));
+    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{1}, {2}, {3}}));
     EXPECT_EQ(r.region_crystalline, (std::vector<char>{1, 1, 1}));
 }
 
 /*
- * Sparse phases {0, 3, 7}: the regions are still 1..3 in ascending phase order (0 -> 1, 3 -> 2,
+ * Sparse phases {1, 3, 7}: the regions are still 1..3 in ascending phase order (1 -> 1, 3 -> 2,
  * 7 -> 3), so they line up with three [[Materials]] blocks.
  */
 TEST(Regions, SparsePhases) {
-    const std::vector<int> phase = {7, 3, 0, 7, 3};
+    const std::vector<int> phase = {7, 3, 1, 7, 3};
     const ms::RegionAssignment r = ms::AssignRegionsFromPhases(phase, {});
     EXPECT_EQ(r.num_regions, 3);
     EXPECT_EQ(r.grain_region, (std::vector<int>{3, 2, 1, 3, 2}));
-    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{0}, {3}, {7}}));
+    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{1}, {3}, {7}}));
 }
 
 /*
- * Explicit map 0 -> 2, 3 -> 3, 7 -> 1 is used as given; a key for a phase no grain has (9) is
+ * Explicit map 1 -> 2, 3 -> 3, 7 -> 1 is used as given; a key for a phase no grain has (9) is
  * ignored.
  */
 TEST(Regions, ExplicitMap) {
     ms::PhaseRegionParameters params;
-    params.phase_to_region = {{0, 2}, {3, 3}, {7, 1}, {9, 17}};
-    const std::vector<int> phase = {7, 3, 0, 7};
+    params.phase_to_region = {{1, 2}, {3, 3}, {7, 1}, {9, 17}};
+    const std::vector<int> phase = {7, 3, 1, 7};
     const ms::RegionAssignment r = ms::AssignRegionsFromPhases(phase, params);
     EXPECT_EQ(r.num_regions, 3);
     EXPECT_EQ(r.grain_region, (std::vector<int>{1, 3, 2, 1}));
-    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{7}, {0}, {3}}));
+    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{7}, {1}, {3}}));
 }
 
 /*
- * Many-to-one explicit map: phases 0 and 3 share region 1, phase 7 is region 2. The region ids
- * used are {1, 2} = 1..2, so there are 2 regions, region 1 holding phases {0, 3} (ascending).
+ * Many-to-one explicit map: phases 1 and 3 share region 1, phase 7 is region 2. The region ids
+ * used are {1, 2} = 1..2, so there are 2 regions, region 1 holding phases {1, 3} (ascending).
  */
 TEST(Regions, ManyToOneMap) {
     ms::PhaseRegionParameters params;
-    params.phase_to_region = {{0, 1}, {3, 1}, {7, 2}};
-    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({0, 3, 7}, params);
+    params.phase_to_region = {{1, 1}, {3, 1}, {7, 2}};
+    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({1, 3, 7}, params);
     EXPECT_EQ(r.num_regions, 2);
     EXPECT_EQ(r.grain_region, (std::vector<int>{1, 1, 2}));
-    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{0, 3}, {7}}));
+    EXPECT_EQ(r.region_phases, (std::vector<std::vector<int>>{{1, 3}, {7}}));
     EXPECT_EQ(r.region_crystalline, (std::vector<char>{1, 1}));
 }
 
 /*
  * Invalid explicit maps: a present phase missing (3); region ids {1, 3} leave region 2 unused
- * (not 1..M); a region id 4 with only 3 phases; a region id < 1 or a negative key, even for a
- * phase no grain has; negative phase ids; no grains.
+ * (not 1..M); a region id 4 with only 3 phases; a region id < 1 or a key < 1, even for a
+ * phase no grain has; phase ids < 1; no grains.
  */
 TEST(Regions, InvalidMapsThrow) {
-    const std::vector<int> phase = {0, 3, 7};
+    const std::vector<int> phase = {1, 3, 7};
     ms::PhaseRegionParameters missing;
-    missing.phase_to_region = {{0, 1}, {7, 2}};
+    missing.phase_to_region = {{1, 1}, {7, 2}};
     EXPECT_THROW(ms::AssignRegionsFromPhases(phase, missing), std::invalid_argument);
 
     ms::PhaseRegionParameters gap;
-    gap.phase_to_region = {{0, 1}, {3, 1}, {7, 3}};
+    gap.phase_to_region = {{1, 1}, {3, 1}, {7, 3}};
     EXPECT_THROW(ms::AssignRegionsFromPhases(phase, gap), std::invalid_argument);
 
     ms::PhaseRegionParameters out_of_range;
-    out_of_range.phase_to_region = {{0, 1}, {3, 2}, {7, 4}};
+    out_of_range.phase_to_region = {{1, 1}, {3, 2}, {7, 4}};
     EXPECT_THROW(ms::AssignRegionsFromPhases(phase, out_of_range), std::invalid_argument);
 
     ms::PhaseRegionParameters bad_absent_entry;
-    bad_absent_entry.phase_to_region = {{0, 1}, {3, 2}, {7, 3}, {9, 0}};
+    bad_absent_entry.phase_to_region = {{1, 1}, {3, 2}, {7, 3}, {9, 0}};
     EXPECT_THROW(ms::AssignRegionsFromPhases(phase, bad_absent_entry), std::invalid_argument);
 
     ms::PhaseRegionParameters negative_key;
-    negative_key.phase_to_region = {{-2, 1}, {0, 1}, {3, 2}, {7, 3}};
+    negative_key.phase_to_region = {{0, 1}, {1, 1}, {3, 2}, {7, 3}};
     EXPECT_THROW(ms::AssignRegionsFromPhases(phase, negative_key), std::invalid_argument);
 
-    EXPECT_THROW(ms::AssignRegionsFromPhases({0, -1}, {}), std::invalid_argument);
+    EXPECT_THROW(ms::AssignRegionsFromPhases({1, -1}, {}), std::invalid_argument);
+    // Phase ids start at 1 (phase k is region k by default), so phase 0 is refused too
+    EXPECT_THROW(ms::AssignRegionsFromPhases({1, 0}, {}), std::invalid_argument);
     EXPECT_THROW(ms::AssignRegionsFromPhases({}, {}), std::invalid_argument);
 }
 
@@ -139,23 +141,23 @@ TEST(Regions, InvalidMapsThrow) {
 TEST(Regions, NonCrystallineFlags) {
     ms::PhaseRegionParameters params;
     params.non_crystalline_phases = {5, 3};
-    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({0, 3, 7, 3}, params);
+    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({1, 3, 7, 3}, params);
     EXPECT_EQ(r.region_crystalline, (std::vector<char>{1, 0, 1}));
 }
 
 /*
- * One region is one material model: mapping crystalline phase 0 and non-crystalline phase 3 to
+ * One region is one material model: mapping crystalline phase 1 and non-crystalline phase 3 to
  * the same region throws; mapping two non-crystalline phases together is fine.
  */
 TEST(Regions, MixedCrystallinityThrows) {
     ms::PhaseRegionParameters params;
     params.non_crystalline_phases = {3};
-    params.phase_to_region = {{0, 1}, {3, 1}, {7, 2}};
-    EXPECT_THROW(ms::AssignRegionsFromPhases({0, 3, 7}, params), std::invalid_argument);
+    params.phase_to_region = {{1, 1}, {3, 1}, {7, 2}};
+    EXPECT_THROW(ms::AssignRegionsFromPhases({1, 3, 7}, params), std::invalid_argument);
 
     params.non_crystalline_phases = {3, 7};
-    params.phase_to_region = {{0, 1}, {3, 2}, {7, 2}};
-    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({0, 3, 7}, params);
+    params.phase_to_region = {{1, 1}, {3, 2}, {7, 2}};
+    const ms::RegionAssignment r = ms::AssignRegionsFromPhases({1, 3, 7}, params);
     EXPECT_EQ(r.region_crystalline, (std::vector<char>{1, 0}));
 }
 
@@ -224,7 +226,7 @@ TEST(PhaseFractions, DeterministicAndOrderIndependent) {
     std::vector<std::int64_t> source;
     MakeGrains(300, volume, source);
     ms::PhaseFractionParameters params;
-    params.phase_id = {0, 1};
+    params.phase_id = {1, 2};
     params.fraction = {0.7, 0.3};
     params.rng_seed = 7;
     const ms::PhaseFractionResult a = ms::AssignPhaseFractions(volume, source, params);
@@ -255,12 +257,13 @@ TEST(PhaseFractions, DeterministicAndOrderIndependent) {
     EXPECT_NE(a.grain_phase, d.grain_phase);
 }
 
-/* Invalid inputs: fractions not summing to 1, a zero fraction, repeated source ids or phases. */
+/* Invalid inputs: fractions not summing to 1, a zero fraction, repeated source ids or phases, a
+ * phase id < 1. */
 TEST(PhaseFractions, InvalidInputsThrow) {
     const std::vector<double> volume = {1.0, 2.0, 3.0};
     const std::vector<std::int64_t> source = {0, 1, 2};
     ms::PhaseFractionParameters params;
-    params.phase_id = {0, 1};
+    params.phase_id = {1, 2};
     params.fraction = {0.5, 0.4};
     EXPECT_THROW(ms::AssignPhaseFractions(volume, source, params), std::invalid_argument);
     params.fraction = {0.5, 0.5000005}; // within 1e-6 of 1: accepted (and normalized)
@@ -270,6 +273,8 @@ TEST(PhaseFractions, InvalidInputsThrow) {
     params.fraction = {0.5, 0.5};
     EXPECT_THROW(ms::AssignPhaseFractions(volume, {0, 1, 1}, params), std::invalid_argument);
     params.phase_id = {1, 1};
+    EXPECT_THROW(ms::AssignPhaseFractions(volume, source, params), std::invalid_argument);
+    params.phase_id = {0, 1}; // phase ids start at 1, like region ids
     EXPECT_THROW(ms::AssignPhaseFractions(volume, source, params), std::invalid_argument);
 }
 

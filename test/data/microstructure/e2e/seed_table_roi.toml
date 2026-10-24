@@ -11,7 +11,7 @@
 # What it exercises: grains grown from a measured seed table inside a region of interest (ROI),
 # with random filler grains in the rest of the bar; table orientations normalized to unit
 # length, otherwise passed through;
-# a many-to-one phase -> region map (phases 0 and 1 -> region 1, phase 2 -> region 2), so the
+# a many-to-one phase -> region map (phases 1 and 2 -> region 1, phase 3 -> region 2), so the
 # region map is written and ExaConstit needs two material blocks.
 
 [Mesh]
@@ -39,9 +39,9 @@
 
 [Regions]
     mode = "from_phase"
-    phase_to_region = { "0" = 1, "1" = 1, "2" = 2 }
-    # The filler grains have no measured phase
-    filler_phase = 0
+    phase_to_region = { "1" = 1, "2" = 1, "3" = 2 }
+    # The filler grains have no measured phase; phase 1 puts them in region 1
+    filler_phase = 1
 
 [Output]
     basename = "e2e_seed_table"

@@ -37,7 +37,7 @@ std::string JoinInts(const Container& values) {
  *     keeps its entries sorted, so iterating it gives the phases in ascending order).
  *  2. Region of each present phase: its 1-based position in that ascending list, or, with an
  *     explicit map, the map entry. The explicit map is checked so that the region ids line up
- *     with the [[Materials]] blocks: every entry well formed (key >= 0, region >= 1), every
+ *     with the [[Materials]] blocks: every entry well formed (key >= 1, region >= 1), every
  *     present phase listed, and the set of region ids used by the present phases exactly 1..M.
  *     Several phases may share a region (many-to-one).
  *  3. Per-region tables: the phases of every region (ascending, because the phase -> region map
@@ -54,24 +54,27 @@ RegionAssignment AssignRegionsFromPhases(const std::vector<int>& grain_phase,
     if (grain_phase.empty()) {
         throw std::invalid_argument("AssignRegionsFromPhases: there are no grains");
     }
+    // Phase ids start at 1, like ExaConstit's region ids, so phases 1..M become regions 1..M by
+    // default; 0 and negative ids (e.g. an "unknown" phase of a DREAM.3D file) are refused
     std::set<int> present;
-    std::set<int> negative;
+    std::set<int> invalid;
     for (const int phase : grain_phase) {
-        if (phase < 0) {
-            negative.insert(phase);
+        if (phase < 1) {
+            invalid.insert(phase);
         } else {
             present.insert(phase);
         }
     }
-    if (!negative.empty()) {
-        throw std::invalid_argument("AssignRegionsFromPhases: phase ids must be >= 0; found " +
-                                    JoinInts(negative));
+    if (!invalid.empty()) {
+        throw std::invalid_argument("AssignRegionsFromPhases: phase ids must be >= 1 (phase id "
+                                    "k becomes ExaConstit region k by default); found " +
+                                    JoinInts(invalid));
     }
     std::set<int> non_crystalline;
     for (const int phase : params.non_crystalline_phases) {
-        if (phase < 0) {
+        if (phase < 1) {
             throw std::invalid_argument(
-                "AssignRegionsFromPhases: non-crystalline phase ids must be >= 0; found " +
+                "AssignRegionsFromPhases: non-crystalline phase ids must be >= 1; found " +
                 std::to_string(phase));
         }
         non_crystalline.insert(phase);
@@ -90,11 +93,11 @@ RegionAssignment AssignRegionsFromPhases(const std::vector<int>& grain_phase,
     } else {
         // Every entry must be well formed, also those of phases no grain has
         for (const auto& entry : params.phase_to_region) {
-            if (entry.first < 0 || entry.second < 1) {
+            if (entry.first < 1 || entry.second < 1) {
                 throw std::invalid_argument(
                     "AssignRegionsFromPhases: phase_to_region entry " +
                     std::to_string(entry.first) + " -> " + std::to_string(entry.second) +
-                    " is invalid (phase ids must be >= 0 and region ids >= 1)");
+                    " is invalid (phase ids and region ids must be >= 1)");
             }
         }
         // Every present phase must be listed
@@ -225,9 +228,9 @@ PhaseFractionResult AssignPhaseFractions(const std::vector<double>& grain_volume
     double fraction_sum = 0.0;
     for (std::size_t k = 0; k < num_phases; k++) {
         const int phase = params.phase_id[k];
-        if (phase < 0 || !seen_phases.insert(phase).second) {
+        if (phase < 1 || !seen_phases.insert(phase).second) {
             throw std::invalid_argument("AssignPhaseFractions: phase id " +
-                                        std::to_string(phase) + " is negative or repeated");
+                                        std::to_string(phase) + " is < 1 or repeated");
         }
         const double f = params.fraction[k];
         if (!(f > 0.0) || !std::isfinite(f)) {

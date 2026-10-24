@@ -10,7 +10,7 @@
 /**
  * @file voxel_map_io.hpp
  * @brief Reads a voxelized microstructure (a 3D image whose voxels hold grain ids) from an HDF5
- * file: the canonical "ExaConstit voxel map v1" layout or a DREAM.3D file.
+ * file: the canonical "ExaConstit voxel map v2" layout or a DREAM.3D file.
  *
  * **What a voxel map is.** Measured microstructures (near-field HEDM, serial-section EBSD,
  * DREAM.3D or ExaCA output) are usually stored as a regular 3D grid of box-shaped voxels, each
@@ -29,7 +29,9 @@
  * - Ids <= 0 mean "unassigned" (void, unindexed or a measurement hole). Such voxels do not vote
  *   for any grain; the labeler fills the elements that receive no vote from their neighbors.
  *
- * **Canonical format** (`VoxelFormat::EXACONSTIT`):
+ * **Canonical format** (`VoxelFormat::EXACONSTIT`). Named v2 because ExaConstit's original voxel
+ * description, the auto-mesh `grain_file` (one grain id per element) with its orientation file,
+ * counts as v1; this reader does not read that pair.
  * - `/grain_ids`: any HDF5 integer type (read as int64), shape (nz, ny, nx) or (nz, ny, nx, 1);
  * - `/origin`, `/spacing`: float64[3] (x, y, z), spacing > 0;
  * - optional per-grain table: `/features/id` (int64[nf], unique, >= 1), `/features/quat`
@@ -98,7 +100,7 @@ namespace exaconstit::microstructure {
 
 /** @brief File layout of a voxel map (TOML `format = "exaconstit" | "dream3d"`). */
 enum class VoxelFormat {
-    EXACONSTIT, ///< canonical "ExaConstit voxel map v1" layout (see the file comment)
+    EXACONSTIT, ///< canonical "ExaConstit voxel map v2" layout (see the file comment)
     DREAM3D     ///< DREAM.3D SIMPL v6 or DREAM3D-NX file
 };
 

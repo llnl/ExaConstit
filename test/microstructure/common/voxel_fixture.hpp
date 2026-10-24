@@ -2,7 +2,7 @@
 /**
  * @file voxel_fixture.hpp
  * @brief Shared test fixture: a small voxelized Voronoi microstructure written as HDF5 voxel maps
- * in the canonical "ExaConstit voxel map v1" layout and the DREAM.3D (SIMPL v6 and NX-like)
+ * in the canonical "ExaConstit voxel map v2" layout and the DREAM.3D (SIMPL v6 and NX-like)
  * layouts. Used by test_voxel_map (reader and labeler) and test_driver_stage1d (the driver's
  * voxel-map path).
  *
@@ -12,7 +12,7 @@
  * tessellation of 6 seeds, computed here), with feature ids {3, 5, 8, 13, 21, 34} (not 1..6, to
  * exercise the compaction), and a 2 x 2 x 2 hole of id 0 placed inside one grain (where the
  * surrounding 4 x 4 x 4 voxels all have the same id). Feature r has the unit quaternion
- * FeatureQuat(r) and the phase FeaturePhase(r) = r % 3.
+ * FeatureQuat(r) and the phase FeaturePhase(r) = 1 + r % 3 (phase ids start at 1).
  *
  * Everything here is host code for tests; the writers use the HDF5 C API and are meant to be
  * called on one rank (rank 0) only. Only available when Axom was built with HDF5
@@ -187,7 +187,7 @@ inline std::array<double, 4> FeatureQuat(int r) {
 
 /** Phase of feature id r. */
 inline int FeaturePhase(int r) {
-    return r % 3;
+    return 1 + r % 3;
 }
 
 // ---------------------------------------------------------------------------------------------

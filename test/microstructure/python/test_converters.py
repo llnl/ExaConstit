@@ -166,7 +166,7 @@ class SeedTableWriterTest(unittest.TestCase):
         q = axis_angle_quat([1, 2, 3], 0.9)
         columns = {"id": [7, 3], "x": [0.1, 1.0 / 3.0], "y": [-2.5e-7, 1e10], "z": [0.0, -1.0],
                    "qw": [q[0], 1.0], "qx": [q[1], 0.0], "qy": [q[2], 0.0], "qz": [q[3], 0.0],
-                   "phase": [0, 2], "radius": [0.25, 1.0 / 7.0]}
+                   "phase": [1, 2], "radius": [0.25, 1.0 / 7.0]}
         msio.write_seed_table(path, columns, ["test"])
         table = msio.read_seed_table(path)
         for name, values in columns.items():
@@ -194,6 +194,7 @@ class SeedTableWriterTest(unittest.TestCase):
             dict(base, radius=[1.0], volume=[1.0]),                      # two size columns
             {"x": [0.0], "y": [0.0]},                                    # z missing
             dict(base, phase=[2 ** 31]),                                 # phase above C int
+            dict(base, phase=[0]),                                       # phases start at 1
             {"x": [], "y": [], "z": []},                                 # no seeds
         ]
         for columns in bad_cases:

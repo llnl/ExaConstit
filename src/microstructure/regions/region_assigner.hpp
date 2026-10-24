@@ -39,10 +39,10 @@ struct PhaseRegionParameters {
      */
     std::vector<int> non_crystalline_phases;
     /**
-     * @brief Optional explicit phase -> region map (key: phase id >= 0, value: region id >= 1).
+     * @brief Optional explicit phase -> region map (key: phase id >= 1, value: region id >= 1).
      *
      * Empty (default): the regions are numbered 1..M in ascending order of the phases present
-     * (the "compact ascending" numbering), e.g. phases {0, 3, 7} -> regions {1, 2, 3}.
+     * (the "compact ascending" numbering), e.g. phases {1, 3, 7} -> regions {1, 2, 3}.
      *
      * Non-empty: every entry must have a key >= 0 and a region id >= 1 (checked for every
      * entry, including phases no grain has). Every phase present must be a key. Several phases
@@ -95,7 +95,7 @@ struct RegionAssignment {
  *
  * Host only; not collective; deterministic.
  *
- * @param grain_phase size N >= 1: grain_phase[g - 1] = phase id (>= 0) of grain g.
+ * @param grain_phase size N >= 1: grain_phase[g - 1] = phase id (>= 1) of grain g.
  * @param params      non-crystalline phases and the optional explicit phase -> region map.
  * @return per-grain region ids, the phases of every region and its crystalline flag.
  * @throws std::invalid_argument when:

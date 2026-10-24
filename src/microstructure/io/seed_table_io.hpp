@@ -42,7 +42,7 @@
  *   reader returns the stored values unchanged (never reordered or sign-flipped); the generator
  *   normalizes the orientations it writes to unit length (q / |q|, convention, sign and order
  *   kept). A row with | |q| - 1 | > 1e-3 is an error (usually swapped columns or Euler angles).
- * - `phase` (optional): integer >= 0.
+ * - `phase` (optional): integer >= 1 (phase k becomes ExaConstit region k by default).
  * - `weight` (optional): metric weight (Laguerre/Quadric w, Additive a), already in mesh units,
  *   so it is NOT scaled.
  * - `volume` / `radius` / `diameter` (optional, at most one): grain size > 0, stored as a volume

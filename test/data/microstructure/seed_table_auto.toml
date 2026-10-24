@@ -51,7 +51,7 @@
     # One ExaConstit material region per phase of the table (ascending phase order); the filler
     # grains have no measured phase, so they are given one
     mode = "from_phase"
-    filler_phase = 0
+    filler_phase = 1
 
 [Output]
     basename = "seed_table_auto"

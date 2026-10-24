@@ -270,7 +270,7 @@ int key_to_int(const std::string& key, const std::string& full_key) {
 
 /**
  * @brief Reads `table[key]` as an inline table of integer -> integer entries, e.g.
- * `phase_to_region = { "0" = 1, "3" = 1, "7" = 2 }` -> {0: 1, 3: 1, 7: 2}.
+ * `phase_to_region = { "1" = 1, "3" = 1, "7" = 2 }` -> {1: 1, 3: 1, 7: 2}.
  *
  * Keys are converted with key_to_int, values must be TOML integers that fit in an int. Ranges
  * (e.g. region ids >= 1) are checked in validate().
@@ -2005,14 +2005,14 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     check_choice(
         valid, "Regions.mode", regions.mode, {"single", "from_phase", "phase_fractions"});
     for (const int phase : regions.non_crystalline_phases) {
-        if (phase < 0) {
-            report_error(valid, "Regions.non_crystalline_phases must be >= 0");
+        if (phase < 1) {
+            report_error(valid, "Regions.non_crystalline_phases must be >= 1");
             break;
         }
     }
     for (const auto& entry : regions.phase_to_region) {
-        if (entry.first < 0 || entry.second < 1) {
-            report_error(valid, "Regions.phase_to_region needs phase ids >= 0 and region ids >= 1 "
+        if (entry.first < 1 || entry.second < 1) {
+            report_error(valid, "Regions.phase_to_region needs phase ids >= 1 and region ids >= 1 "
                                 "(entry " + std::to_string(entry.first) + " = " +
                                     std::to_string(entry.second) + ")");
         }
@@ -2041,8 +2041,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             }
             std::vector<int> ids = regions.phase_ids;
             std::sort(ids.begin(), ids.end());
-            if (ids.front() < 0 || std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
-                report_error(valid, "Regions.phases ids must be >= 0 and distinct");
+            if (ids.front() < 1 || std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+                report_error(valid, "Regions.phases ids must be >= 1 and distinct");
             }
         }
     } else if (!regions.phase_ids.empty()) {
@@ -2054,8 +2054,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                       "with mode = \"single\"");
     }
     // Phase of the random filler grains
-    if (regions.has_filler_phase && regions.filler_phase < 0) {
-        report_error(valid, "Regions.filler_phase must be >= 0");
+    if (regions.has_filler_phase && regions.filler_phase < 1) {
+        report_error(valid, "Regions.filler_phase must be >= 1");
     }
     if (regions.has_filler_phase && seeds.fill_outside_roi != "random") {
         WARNING_0_OPT("Warning: Regions.filler_phase is ignored without filler seeds "
