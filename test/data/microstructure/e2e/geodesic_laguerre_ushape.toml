@@ -1,0 +1,39 @@
+# Generator input of the Stage 2 end-to-end test "Laguerre grains along paths".
+#
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake runs
+#     microstructure_generator -i test/data/microstructure/e2e/geodesic_laguerre_ushape.toml
+#                              -m test/data/microstructure/u_shape_hex.mesh
+# (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI
+# ranks and checks that both runs write byte-identical files. No mechanics run.
+#
+# What it exercises: the Laguerre metric with distance = "geodesic" on the U-shaped part. The
+# seeds get a log-normal size distribution, so they start with the Laguerre weights w = r^2 of
+# their target volumes, and the path lengths come from the weighted solver, which keeps a short
+# list of candidate seeds per mesh node (labeling/geodesic_weighted.hpp). The run must report no
+# seed list overflow, i.e. the result is exact for the mesh and the same on any rank count, which
+# the byte-identical outputs check. Measured: 8 seeds, one light seed wins no element (a Laguerre
+# cell can be empty), 7 final grains, longest seed list 3.
+
+[Mesh]
+    type = "file"
+    # Overridden by -m in the test (relative paths are relative to the working directory)
+    floc = "u_shape_hex.mesh"
+
+[Seeds]
+    num_seeds = 8
+    rng_seed = 75
+    [Seeds.Size]
+        distribution = "lognormal"
+        sigma = 0.4
+
+[Tessellation]
+    metric = "laguerre"
+    distance = "geodesic"
+    geodesic = { solver = "fim", max_seeds_per_node = 16 }
+
+[Output]
+    basename = "e2e_geodesic_laguerre_ushape"
+    mesh_format = "serial"
+    compression = 0
+    grain_adjacency = true
+    paraview = false

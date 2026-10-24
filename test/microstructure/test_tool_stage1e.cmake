@@ -14,7 +14,9 @@
 #                        quadrature-vote sampling, same seeds; mechanics at 1 and at 2 ranks, and
 #                        the two mechanics results compared;
 #   geodesic_graph_jm    Johnson-Mehl nucleation with geodesic (additive) arrival times from the
-#                        graph solver; generator only.
+#                        graph solver; generator only;
+#   geodesic_laguerre_ushape  the Laguerre metric along paths (weighted seed-list solver) with
+#                        size-distribution weights; generator only, no list overflow allowed.
 #
 # The tests form a chain through CTest fixtures (FIXTURES_SETUP / FIXTURES_REQUIRED: CTest runs
 # them in order and skips a step whose prerequisite failed), like the Stage 1d chain in
@@ -189,6 +191,14 @@ if(TARGET mechanics AND TARGET microstructure_generator
                     GRAINS 9
                     REGEX  "${_s1e_fim_regex}"
                     HEADER "# distance: geodesic \\(solver fim\\)")
+    # Laguerre along paths (weighted solver, size-distribution weights): 8 seeds, one light seed
+    # wins no element, 7 grains (measured); no seed list may overflow
+    ms_stage1e_case(NAME   geodesic_laguerre_ushape
+                    INPUT  ${_s1e_ms}/e2e/geodesic_laguerre_ushape.toml
+                    BASE   e2e_geodesic_laguerre_ushape
+                    GRAINS 7
+                    REGEX  "longest list [0-9]+ seed\\(s\\), overflow at 0 node"
+                    HEADER "# metric: laguerre.# distance: geodesic \\(solver fim\\)")
     # Johnson-Mehl along paths, graph solver: 18 nuclei, 2 win no element, 16 grains
     ms_stage1e_case(NAME   geodesic_graph_jm
                     INPUT  ${_s1e_ms}/e2e/geodesic_graph_jm.toml
