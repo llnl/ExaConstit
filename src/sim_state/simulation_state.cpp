@@ -127,6 +127,37 @@ void verifyParallelMeshParts(const std::string& prefix, const int my_id, const i
 }
 
 /**
+ * @brief Warns (rank 0) when the mesh carries Nodes of a higher order than the deck's
+ *        Mesh.order: SetCurvature(order) then projects the geometry onto order-`order`
+ *        polynomials, so the curvature of genuinely curved elements beyond that order is lost
+ *        without any other notice.
+ *
+ * @param mesh       the mesh as read (this rank's part for a decomposition)
+ * @param deck_order options.mesh.order (after raising it to at least 1)
+ * @param my_id      MPI rank of this process
+ *
+ * @details Collective (one MPI_Allreduce MAX of the local Nodes order, so a decomposition whose
+ * parts differ still gives one verdict). Host only. A file with straight elements stored at a
+ * higher order (e.g. a mesh written after Mesh::SetCurvature) loses nothing, but cannot be told
+ * apart without inspecting the geometry, so the message says "if".
+ */
+void warnIfCurvatureDropped(const mfem::Mesh& mesh, int deck_order, int my_id) {
+    int file_order = 0;
+    if (mesh.GetNodes() != nullptr) {
+        file_order = mesh.GetNodes()->FESpace()->GetMaxElementOrder();
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &file_order, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (my_id == 0 && file_order > deck_order) {
+        std::cout << "Warning: the mesh file has order-" << file_order
+                  << " nodes but Mesh.order (p_refinement) = " << deck_order
+                  << ". The geometry is projected onto order " << deck_order
+                  << ", so if the elements are curved their curvature beyond that order is "
+                  << "lost. Set Mesh.order >= " << file_order << " to keep the file's geometry."
+                  << std::endl;
+    }
+}
+
+/**
  * @brief Read a parallel mesh decomposition (Mesh type = "parallel"), one file per rank
  *
  * @param options Simulation options. options.mesh.mesh_file is the file prefix of the parts;
@@ -210,6 +241,7 @@ std::shared_ptr<mfem::ParMesh> readParallelMesh(ExaOptions& options, const int m
     if (my_id == 0) {
         std::cout << "Increasing mesh order of the mesh to " << options.mesh.order << std::endl;
     }
+    warnIfCurvatureDropped(*pmesh, options.mesh.order, my_id);
     pmesh->SetCurvature(options.mesh.order);
 
     // Both refinement counts are applied in parallel (see Refinement in the header comment).
@@ -324,6 +356,8 @@ std::shared_ptr<mfem::ParMesh> makeMesh(ExaOptions& options, const int my_id) {
             std::cout << "Increasing mesh order of the mesh to " << options.mesh.order << std::endl;
         }
         mesh_order = options.mesh.order;
+        // Every rank read the same file, so the collective check sees the same order everywhere
+        warnIfCurvatureDropped(mesh, mesh_order, my_id);
         mesh.SetCurvature(mesh_order);
     }
 

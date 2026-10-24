@@ -201,6 +201,8 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      by a run without the hook (same results).
     #   7. a genuinely curved order-2 file mesh: hook and tool use the same seeds and give the
     #      same labels (>= 99%).
+    #   8. the curved file refined once before distribution at 1 and 2 ranks (byte-identical record
+    #      files, equal mechanics), and at p_refinement = 1 (the curvature-loss warning).
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
     # command, prints its output, and fails unless the exit status is 0 AND the output matches the
     # expected text (PASS_REGULAR_EXPRESSION alone would ignore the exit status). mechanics writes
@@ -520,6 +522,40 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
                    ARGS  labels curved_tool.mesh.000000
                          results/hook_curved_np1/microstructure.mesh.000000 0.99
                    NEEDS ms_hook_tool_curved_files ms_hook_run_curved)
+
+        # Step 8: the curved file mesh refined once before distribution (ref_ser = 1, order 2),
+        # at 1 and 2 ranks. Refinement before distribution leaves every copy of a shared node
+        # with the same bits, so the record files must be byte-identical and the mechanics
+        # results equal. Then the same file at p_refinement = 1: makeMesh must warn that the
+        # order-2 curvature is projected away (the run continues).
+        foreach(_np 1 2)
+            ms_hook_run(NAME    test_microstructure_hook_e2e_curved_ref_np${_np}
+                        NP      ${_np}
+                        PASS    "generated the grains in memory"
+                        SETUP   ms_hook_run_curved_ref_np${_np}
+                        PROGRAM $<TARGET_FILE:mechanics> -opt hook_curved_ref_np${_np}.toml)
+        endforeach()
+        ms_hook_compare(NAME  test_microstructure_hook_e2e_compare_curved_ref
+                        DIR_A results/hook_curved_ref_np1
+                        DIR_B results/hook_curved_ref_np2
+                        NEEDS ms_hook_run_curved_ref_np1 ms_hook_run_curved_ref_np2)
+        set(_hk_a results/hook_curved_ref_np1/microstructure)
+        set(_hk_b results/hook_curved_ref_np2/microstructure)
+        set(_hk_pairs ${_hk_a}.ori=${_hk_b}.ori ${_hk_a}_grains.csv=${_hk_b}_grains.csv)
+        string(REPLACE ";" "," _hk_pairs_arg "${_hk_pairs}")
+        add_test(NAME              test_microstructure_hook_e2e_curved_ref_record_files
+                 COMMAND           ${CMAKE_COMMAND} -DPAIRS=${_hk_pairs_arg}
+                                   -P ${_hk_files_script}
+                 WORKING_DIRECTORY ${_hk_dir})
+        set_tests_properties(test_microstructure_hook_e2e_curved_ref_record_files PROPERTIES
+                             FIXTURES_REQUIRED
+                             "ms_hook_case;ms_hook_run_curved_ref_np1;ms_hook_run_curved_ref_np2"
+                             LABELS            "microstructure")
+        ms_hook_run(NAME    test_microstructure_hook_e2e_curved_order1
+                    NP      1
+                    PASS    "order-2 nodes but Mesh.order .p_refinement. = 1"
+                    SETUP   ms_hook_run_curved_order1
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_curved_order1_np1.toml)
     endif()
 endif()
 
