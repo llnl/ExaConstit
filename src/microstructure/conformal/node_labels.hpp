@@ -36,11 +36,10 @@
  *
  * **Label sets.** The label set of node v is the union of the labels of all elements that contain
  * v, over all ranks: each rank collects the labels of its own elements, the copies of every
- * shared node are exchanged (VertexField::ExchangeSharedPayload) and each copy keeps the sorted
+ * shared node are exchanged (VertexField::ExchangeSharedLists) and each copy keeps the sorted
  * union of all copies. A union of sets does not depend on the order in which they arrive, so all
  * copies end up identical and the result does not depend on the rank count or the partition.
- * There is no fixed limit on the size of a set: the exchange width is the largest local set over
- * all ranks.
+ * There is no fixed limit on the size of a set.
  *
  * **Boundary surfaces.** The outer boundary is the set of faces that belong to one element only
  * (faces shared between ranks are not boundary faces). For every boundary face its unit outward
@@ -53,7 +52,10 @@
  * which do not depend on the order of the normals). On a box this gives 1 on a face, 2 on an edge
  * and 3 at a corner; on a smoothly curved surface meshed with flat faces, neighboring faces
  * differ by less than the feature angle and the node sees 1 surface. Two opposite surfaces of a
- * one-element-thick plate count as 2.
+ * one-element-thick plate count as 2. Each surface keeps a normal and whether it is planar at the
+ * node (all its face normals agree), which the target computation (node_targets.hpp) uses to
+ * keep nodes on flat boundaries exactly. The normals of a node are sorted before they are
+ * grouped, so every copy computes the same bits.
  *
  * **Constraints.** Each surface a node must stay on removes one direction in which it can move:
  *   - grain constraints = (number of labels) - 1 (0 inside a grain, 1 on a grain boundary face,
@@ -162,6 +164,25 @@ public:
     int BoundarySurfaces(int v) const {
         return m_boundary_surfaces[v];
     }
+    /**
+     * @brief Boundary surface CSR offsets, size NumNodes() + 1: the surfaces of node v are
+     * [SurfaceOffsets()[v], SurfaceOffsets()[v + 1]).
+     */
+    const mfem::Array<int>& SurfaceOffsets() const {
+        return m_surface_offsets;
+    }
+    /**
+     * @brief Unit outward normal of each surface, 3 doubles per surface (surface k at 3 k). For a
+     * planar surface it is one of its face normals (exact axis normals stay exact); otherwise
+     * the normalized sum of its face normals.
+     */
+    const mfem::Vector& SurfaceNormals() const {
+        return m_surface_normals;
+    }
+    /** @brief 1 when all face normals of surface k agree to 1e-12 (flat at the node), else 0. */
+    const mfem::Array<int>& SurfacePlanar() const {
+        return m_surface_planar;
+    }
     /** @brief min(BoundarySurfaces(v), 3). */
     int BoundaryConstraints(int v) const {
         return m_boundary_surfaces[v] < 3 ? m_boundary_surfaces[v] : 3;
@@ -195,6 +216,9 @@ private:
     mfem::Array<int> m_label_offsets;
     mfem::Array<int> m_labels;
     mfem::Array<int> m_boundary_surfaces;
+    mfem::Array<int> m_surface_offsets;
+    mfem::Vector m_surface_normals;
+    mfem::Array<int> m_surface_planar;
     NodeLabelSummary m_summary;
 };
 

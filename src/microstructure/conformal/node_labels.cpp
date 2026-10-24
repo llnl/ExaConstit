@@ -6,6 +6,7 @@
 #include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -27,31 +28,81 @@ int FindRoot(std::vector<int>& parent, int i) {
     return i;
 }
 
+/** @brief One boundary surface at a node: its normal and whether it is flat there. */
+struct Surface {
+    double normal[3];
+    bool planar;
+};
+
 /**
- * @brief Number of groups of the unit normals (3 doubles each) connected by steps between
- * normals whose dot product is >= cos_angle. Connected components do not depend on the order of
- * the normals. Host.
+ * @brief Groups the unit normals (3 doubles each, sorted lexicographically) into surfaces:
+ * connected components of steps between normals whose dot product is >= cos_angle (components do
+ * not depend on the order of the normals). A surface is planar when all its normals agree to
+ * 1e-12 (then its normal is its first normal, so exact axis normals stay exact); otherwise its
+ * normal is the normalized sum in sorted order. Surfaces are listed in the order of their first
+ * normal. Host.
  */
-int CountSurfaces(const std::vector<double>& normals, double cos_angle) {
+std::vector<Surface> GroupSurfaces(const std::vector<double>& normals, double cos_angle) {
     const int m = static_cast<int>(normals.size() / 3);
     std::vector<int> parent(static_cast<std::size_t>(m));
     std::iota(parent.begin(), parent.end(), 0);
-    int groups = m;
-    for (int a = 0; a < m; ++a) {
+    const auto dot = [&](int a, int b) {
         const double* na = &normals[3 * static_cast<std::size_t>(a)];
+        const double* nb = &normals[3 * static_cast<std::size_t>(b)];
+        return na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+    };
+    for (int a = 0; a < m; ++a) {
         for (int b = a + 1; b < m; ++b) {
-            const double* nb = &normals[3 * static_cast<std::size_t>(b)];
-            if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] >= cos_angle) {
+            if (dot(a, b) >= cos_angle) {
                 const int ra = FindRoot(parent, a);
                 const int rb = FindRoot(parent, b);
                 if (ra != rb) {
                     parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
-                    --groups;
                 }
             }
         }
     }
-    return groups;
+    std::vector<Surface> surfaces;
+    for (int root = 0; root < m; ++root) {
+        if (FindRoot(parent, root) != root) {
+            continue;
+        }
+        Surface s{{0.0, 0.0, 0.0}, true};
+        for (int a = root; a < m; ++a) {
+            if (FindRoot(parent, a) != root) {
+                continue;
+            }
+            s.planar = s.planar && dot(root, a) >= 1.0 - 1e-12;
+            for (int d = 0; d < 3; ++d) {
+                s.normal[d] += normals[3 * static_cast<std::size_t>(a) + d];
+            }
+        }
+        if (s.planar) {
+            std::copy(&normals[3 * static_cast<std::size_t>(root)],
+                      &normals[3 * static_cast<std::size_t>(root)] + 3, s.normal);
+        } else {
+            const double len = std::sqrt(s.normal[0] * s.normal[0] + s.normal[1] * s.normal[1] +
+                                         s.normal[2] * s.normal[2]);
+            for (double& c : s.normal) {
+                c /= len;
+            }
+        }
+        surfaces.push_back(s);
+    }
+    return surfaces;
+}
+
+/** @brief Sorts a list of 3-vectors lexicographically (a canonical order on every copy). Host. */
+void SortNormals(std::vector<double>& list) {
+    const std::size_t m = list.size() / 3;
+    std::vector<std::array<double, 3>> v(m);
+    for (std::size_t k = 0; k < m; ++k) {
+        v[k] = {list[3 * k], list[3 * k + 1], list[3 * k + 2]};
+    }
+    std::sort(v.begin(), v.end());
+    for (std::size_t k = 0; k < m; ++k) {
+        std::copy(v[k].begin(), v[k].end(), &list[3 * k]);
+    }
 }
 
 /** @brief Appends normal n to list unless the same bits are already there. Host. */
@@ -101,8 +152,7 @@ JunctionKind NodeLabels::Kind(int v) const {
  * BuildLabelSets
  *  1. Local sets: the labels of the elements in the node -> element table (complete: the field
  *     has no element mask), sorted and made distinct.
- *  2. width = the largest local set over all ranks; every node sends its set padded with 0 (not a
- *     label) to the other copies.
+ *  2. The sets go to the other copies (VertexField::ExchangeSharedLists).
  *  3. Each copy merges its own and the received sets (sorted union) into the CSR arrays.
  */
 void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
@@ -114,7 +164,8 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
 
     // Step 1
     std::vector<std::vector<int>> sets(static_cast<std::size_t>(nv));
-    int width = 1;
+    std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
+    std::vector<double> send;
     for (int v = 0; v < nv; ++v) {
         auto& set = sets[static_cast<std::size_t>(v)];
         for (int k = ve_off[v]; k < ve_off[v + 1]; ++k) {
@@ -122,20 +173,14 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
         }
         std::sort(set.begin(), set.end());
         set.erase(std::unique(set.begin(), set.end()), set.end());
-        width = std::max(width, static_cast<int>(set.size()));
+        send.insert(send.end(), set.begin(), set.end());
+        send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
     }
 
     // Step 2
-    MPI_Allreduce(MPI_IN_PLACE, &width, 1, MPI_INT, MPI_MAX, field.Comm());
-    const auto w = static_cast<std::size_t>(width);
-    std::vector<double> send(w * static_cast<std::size_t>(nv), 0.0);
-    for (int v = 0; v < nv; ++v) {
-        const auto& set = sets[static_cast<std::size_t>(v)];
-        std::copy(set.begin(), set.end(), send.begin() + static_cast<std::ptrdiff_t>(w * v));
-    }
     std::vector<double> recv;
     std::vector<int> recv_off;
-    field.ExchangeSharedPayload(width, send, recv, recv_off);
+    field.ExchangeSharedLists(send_off, send, recv_off, recv);
 
     // Step 3
     m_label_offsets.SetSize(nv + 1);
@@ -143,14 +188,9 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     std::vector<int> items;
     for (int v = 0; v < nv; ++v) {
         auto& set = sets[static_cast<std::size_t>(v)];
-        for (int c = recv_off[static_cast<std::size_t>(v)];
-             c < recv_off[static_cast<std::size_t>(v) + 1]; ++c) {
-            for (std::size_t s = 0; s < w; ++s) {
-                const double label = recv[w * static_cast<std::size_t>(c) + s];
-                if (label != 0.0) {
-                    set.push_back(static_cast<int>(label));
-                }
-            }
+        for (int k = recv_off[static_cast<std::size_t>(v)];
+             k < recv_off[static_cast<std::size_t>(v) + 1]; ++k) {
+            set.push_back(static_cast<int>(recv[static_cast<std::size_t>(k)]));
         }
         std::sort(set.begin(), set.end());
         set.erase(std::unique(set.begin(), set.end()), set.end());
@@ -169,8 +209,9 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
  *     the mesh has them), which points out of the face's element. Each node of the face (its
  *     vertices for the corner field, its Nodes dofs for the nodal field) records the normal
  *     unless the same bits are already recorded.
- *  3. Exchange: width 1 + 3 * (largest local list over all ranks); entry 0 is the count.
- *  4. Surfaces = connected components of all normals of the node (CountSurfaces).
+ *  3. The lists go to the other copies (VertexField::ExchangeSharedLists).
+ *  4. Surfaces = connected components of all normals of the node, sorted first so every copy
+ *     sees the same order (GroupSurfaces), stored with their normal and planarity.
  */
 void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     const VertexField& field = *m_field;
@@ -216,39 +257,43 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     }
 
     // Step 3
-    int most = 0;
-    for (const auto& list : normals) {
-        most = std::max(most, static_cast<int>(list.size() / 3));
-    }
-    MPI_Allreduce(MPI_IN_PLACE, &most, 1, MPI_INT, MPI_MAX, field.Comm());
-    const int width = 1 + 3 * most;
-    const auto w = static_cast<std::size_t>(width);
-    std::vector<double> send(w * static_cast<std::size_t>(nv), 0.0);
+    std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
+    std::vector<double> send;
     for (int v = 0; v < nv; ++v) {
         const auto& list = normals[static_cast<std::size_t>(v)];
-        send[w * static_cast<std::size_t>(v)] = static_cast<double>(list.size() / 3);
-        std::copy(list.begin(), list.end(),
-                  send.begin() + static_cast<std::ptrdiff_t>(w * v + 1));
+        send.insert(send.end(), list.begin(), list.end());
+        send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
     }
     std::vector<double> recv;
     std::vector<int> recv_off;
-    field.ExchangeSharedPayload(width, send, recv, recv_off);
+    field.ExchangeSharedLists(send_off, send, recv_off, recv);
 
     // Step 4
     const double cos_angle = std::cos(feature_angle_degrees * PI / 180.0);
     m_boundary_surfaces.SetSize(nv);
+    m_surface_offsets.SetSize(nv + 1);
+    m_surface_offsets[0] = 0;
+    std::vector<double> normals_out;
+    std::vector<int> planar_out;
     for (int v = 0; v < nv; ++v) {
         auto& list = normals[static_cast<std::size_t>(v)];
-        for (int c = recv_off[static_cast<std::size_t>(v)];
-             c < recv_off[static_cast<std::size_t>(v) + 1]; ++c) {
-            const double* payload = &recv[w * static_cast<std::size_t>(c)];
-            const int count = static_cast<int>(payload[0]);
-            for (int k = 0; k < count; ++k) {
-                AddDistinctNormal(list, payload + 1 + 3 * k);
-            }
+        for (int k = recv_off[static_cast<std::size_t>(v)];
+             k < recv_off[static_cast<std::size_t>(v) + 1]; k += 3) {
+            AddDistinctNormal(list, &recv[static_cast<std::size_t>(k)]);
         }
-        m_boundary_surfaces[v] = CountSurfaces(list, cos_angle);
+        SortNormals(list);
+        const std::vector<Surface> surfaces = GroupSurfaces(list, cos_angle);
+        m_boundary_surfaces[v] = static_cast<int>(surfaces.size());
+        for (const Surface& s : surfaces) {
+            normals_out.insert(normals_out.end(), s.normal, s.normal + 3);
+            planar_out.push_back(s.planar ? 1 : 0);
+        }
+        m_surface_offsets[v + 1] = static_cast<int>(planar_out.size());
     }
+    m_surface_normals.SetSize(static_cast<int>(normals_out.size()));
+    std::copy(normals_out.begin(), normals_out.end(), m_surface_normals.begin());
+    m_surface_planar.SetSize(static_cast<int>(planar_out.size()));
+    std::copy(planar_out.begin(), planar_out.end(), m_surface_planar.begin());
 }
 
 /*

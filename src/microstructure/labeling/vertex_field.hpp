@@ -856,6 +856,26 @@ public:
                                std::vector<double>& recv, std::vector<int>& offsets) const;
 
     /**
+     * @brief The variable-length form of ExchangeSharedPayload: node v sends its list
+     * send_items[send_offsets[v] .. send_offsets[v + 1]) (any length, 0 included) to the other
+     * copies, and afterwards recv_items[recv_offsets[v] .. recv_offsets[v + 1]) holds the lists of
+     * all other copies of v, one after the other (in increasing neighbor order; callers must not
+     * depend on that order). Only the actual entries travel, so memory and messages are
+     * proportional to the data, not to NV times the longest list.
+     *
+     * Messages: per neighbor rank, first the buffer length, then one buffer holding, for the
+     * nodes of the shared groups in the canonical order of ExchangeSharedPayload, each node's
+     * length followed by its entries.
+     *
+     * **Collective**. Host.
+     * @throws std::invalid_argument for send_offsets without NV + 1 non-decreasing entries ending
+     *         at send_items.size() (on the calling rank, before any communication).
+     */
+    void ExchangeSharedLists(const std::vector<int>& send_offsets,
+                             const std::vector<double>& send_items, std::vector<int>& recv_offsets,
+                             std::vector<double>& recv_items) const;
+
+    /**
      * @brief Switches point labeling (LabelPoints, LabelElementCentroids, LabelElementsByVote) to
      * per-node seed lists, the result of the weighted solver (labeling/geodesic_weighted.hpp):
      * node v carries up to `capacity` entries (seed i, T_i(v)) at seeds[capacity * v + s] /

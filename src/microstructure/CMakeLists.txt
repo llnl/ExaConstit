@@ -164,10 +164,11 @@ ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/* regions/*
 # (seeding).
 ms_add_module(NAME ms_morphology GLOBS morphology/*
               DEPENDS_ON ms_seeding ms_labeling ms_geometry ms_mesh)
-# conformal/ (Stage 2, conformal grain boundaries): node label sets so far. Uses the node
-# numbering and rank exchange of labeling/vertex_field.
+# conformal/ (Stage 2, conformal grain boundaries): node label sets and node targets on the
+# analytic grain boundaries. Uses the node numbering and rank exchange of labeling/vertex_field
+# and the exact seed search of geometry/seed_index.
 ms_add_module(NAME ms_conformal GLOBS conformal/*
-              DEPENDS_ON ms_labeling ms_mesh)
+              DEPENDS_ON ms_labeling ms_geometry ms_mesh)
 
 # Driver library: everything a consumer (tool, tests, mechanics hook) links against: the
 # pipeline (microstructure_driver) and the record tables and log phrases both consumers write

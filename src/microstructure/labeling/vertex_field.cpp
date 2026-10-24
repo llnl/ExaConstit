@@ -1072,6 +1072,131 @@ void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& se
 }
 
 /*
+ * ExchangeSharedLists
+ *
+ * The groups shared with each neighbor in the order of ExchangeSharedPayload. Per neighbor the
+ * send buffer holds, node by node, the length of the node's list and its entries. The buffer
+ * lengths are exchanged first (one int per neighbor), then the buffers. Unpacking walks the
+ * received buffer in the same group order; two passes over the received buffers (count, then
+ * copy) build the receive CSR.
+ */
+void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
+                                      const std::vector<double>& send_items,
+                                      std::vector<int>& recv_offsets,
+                                      std::vector<double>& recv_items) const {
+    bool bad = send_offsets.size() != static_cast<std::size_t>(m_num_vertices) + 1 ||
+               send_offsets.front() != 0 ||
+               static_cast<std::size_t>(send_offsets.back()) != send_items.size();
+    for (std::size_t v = 0; !bad && v + 1 < send_offsets.size(); ++v) {
+        bad = send_offsets[v + 1] < send_offsets[v];
+    }
+    if (bad) {
+        throw std::invalid_argument("VertexField::ExchangeSharedLists: send_offsets must have NV + "
+                                    "1 non-decreasing entries from 0 to the number of items");
+    }
+    const mfem::GroupTopology& gt = m_gcomm->GetGroupTopology();
+    const mfem::Table& group_ldof = m_gcomm->GroupLDofTable();
+    const int num_groups = gt.NGroups();
+    const int num_lprocs = gt.GetNumNeighbors();
+
+    std::vector<std::vector<int>> groups_of(static_cast<std::size_t>(num_lprocs));
+    for (int g = 1; g < num_groups && g < group_ldof.Size(); ++g) {
+        const int* members = gt.GetGroup(g);
+        for (int q = 0; q < gt.GetGroupSize(g); ++q) {
+            if (members[q] != 0) {
+                groups_of[static_cast<std::size_t>(members[q])].push_back(g);
+            }
+        }
+    }
+    const auto key = [&](int g) {
+        return std::make_pair(gt.GetGroupMasterRank(g), gt.GetGroupMasterGroup(g));
+    };
+    std::vector<std::vector<double>> out(static_cast<std::size_t>(num_lprocs));
+    std::vector<std::vector<double>> in(static_cast<std::size_t>(num_lprocs));
+    std::vector<int> out_size(static_cast<std::size_t>(num_lprocs), 0);
+    std::vector<int> in_size(static_cast<std::size_t>(num_lprocs), 0);
+    for (int p = 1; p < num_lprocs; ++p) {
+        auto& groups = groups_of[static_cast<std::size_t>(p)];
+        std::sort(groups.begin(), groups.end(), [&](int a, int b) { return key(a) < key(b); });
+        auto& buf = out[static_cast<std::size_t>(p)];
+        for (const int g : groups) {
+            const int* row = group_ldof.GetRow(g);
+            for (int j = 0; j < group_ldof.RowSize(g); ++j) {
+                const auto v = static_cast<std::size_t>(row[j]);
+                buf.push_back(static_cast<double>(send_offsets[v + 1] - send_offsets[v]));
+                buf.insert(buf.end(), send_items.begin() + send_offsets[v],
+                           send_items.begin() + send_offsets[v + 1]);
+            }
+        }
+        out_size[static_cast<std::size_t>(p)] = static_cast<int>(buf.size());
+    }
+    const MPI_Comm comm = Comm();
+    constexpr int size_tag = 4712;
+    constexpr int data_tag = 4713;
+    std::vector<MPI_Request> requests;
+    for (int p = 1; p < num_lprocs; ++p) {
+        const int rank = gt.GetNeighborRank(p);
+        requests.emplace_back();
+        MPI_Irecv(&in_size[static_cast<std::size_t>(p)], 1, MPI_INT, rank, size_tag, comm,
+                  &requests.back());
+        requests.emplace_back();
+        MPI_Isend(&out_size[static_cast<std::size_t>(p)], 1, MPI_INT, rank, size_tag, comm,
+                  &requests.back());
+    }
+    if (!requests.empty()) {
+        MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+    }
+    requests.clear();
+    for (int p = 1; p < num_lprocs; ++p) {
+        const int rank = gt.GetNeighborRank(p);
+        auto& buf = in[static_cast<std::size_t>(p)];
+        buf.resize(static_cast<std::size_t>(in_size[static_cast<std::size_t>(p)]));
+        requests.emplace_back();
+        MPI_Irecv(buf.data(), static_cast<int>(buf.size()), MPI_DOUBLE, rank, data_tag, comm,
+                  &requests.back());
+        requests.emplace_back();
+        MPI_Isend(out[static_cast<std::size_t>(p)].data(), out_size[static_cast<std::size_t>(p)],
+                  MPI_DOUBLE, rank, data_tag, comm, &requests.back());
+    }
+    if (!requests.empty()) {
+        MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+    }
+
+    // Pass 1: received entries per node; pass 2: copy
+    recv_offsets.assign(static_cast<std::size_t>(m_num_vertices) + 1, 0);
+    for (int pass = 0; pass < 2; ++pass) {
+        std::vector<int> fill;
+        if (pass == 1) {
+            for (int v = 0; v < m_num_vertices; ++v) {
+                recv_offsets[static_cast<std::size_t>(v) + 1] +=
+                    recv_offsets[static_cast<std::size_t>(v)];
+            }
+            recv_items.assign(static_cast<std::size_t>(recv_offsets.back()), 0.0);
+            fill.assign(recv_offsets.begin(), recv_offsets.end() - 1);
+        }
+        for (int p = 1; p < num_lprocs; ++p) {
+            const auto& buf = in[static_cast<std::size_t>(p)];
+            std::size_t pos = 0;
+            for (const int g : groups_of[static_cast<std::size_t>(p)]) {
+                const int* row = group_ldof.GetRow(g);
+                for (int j = 0; j < group_ldof.RowSize(g); ++j) {
+                    const auto v = static_cast<std::size_t>(row[j]);
+                    const int count = static_cast<int>(buf[pos++]);
+                    if (pass == 0) {
+                        recv_offsets[v + 1] += count;
+                    } else {
+                        std::copy(buf.data() + pos, buf.data() + pos + count,
+                                  recv_items.data() + fill[v]);
+                        fill[v] += count;
+                    }
+                    pos += static_cast<std::size_t>(count);
+                }
+            }
+        }
+    }
+}
+
+/*
  * SetSeedLists: copies of the lists and weights (host write, read by the labeling kernels).
  */
 void VertexField::SetSeedLists(int capacity, const mfem::Array<int>& seeds,
