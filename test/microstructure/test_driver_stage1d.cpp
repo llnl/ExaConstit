@@ -34,6 +34,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/labeling/grain_statistics.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
@@ -44,6 +45,7 @@
 #include "microstructure/util/counter_rng.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "common/voxel_fixture.hpp"
@@ -1065,6 +1067,62 @@ TEST(DriverStage1d, BuildPlatePassthrough) {
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
     options.mesh.passthrough_attributes = {{2, 3}};
     EXPECT_TRUE(Refused(*d.pmesh, options));
+}
+
+// Output.microstructure_file = "grains": the grain table of a run (passthrough grain left out)
+// holds ids 1..N, the final orientations and each grain's seed position; written and read back
+// as a seed list with the same orientations, it reproduces the same labels on the same mesh
+// (no cleanup changes in this run, checked first) and the orientations to round-off (they are
+// normalized again on reading). The plate stays a passthrough part.
+TEST(DriverStage1d, MicrostructureFileExportRoundTrip) {
+    mfem::Mesh serial = PlateMesh();
+    ms::MicrostructureOptions options;
+    options.seeds.num_seeds = 10;
+    options.seeds.rng_seed = 3u;
+    options.mesh.passthrough_attributes = {{2, 2}};
+    const RunPair first = RunAndCompare(serial, options);
+    const ms::MicrostructureResult& result = first.alone.result;
+    const ms::GenerationReport& report = first.alone.report;
+    ASSERT_EQ(report.cleanup.fragments_split + report.cleanup.fragments_merged +
+                  report.cleanup.small_grains_merged,
+              0);
+
+    const ms::MicrostructureGrainTable table = ms::BuildMicrostructureGrainTable(result, report);
+    const auto n = static_cast<std::size_t>(result.num_grains - 1); // without the plate
+    ASSERT_EQ(table.Size(), n);
+    for (std::size_t g = 0; g < n; ++g) {
+        EXPECT_EQ(table.id[g], static_cast<std::int64_t>(g + 1));
+        const auto seed = static_cast<std::size_t>(report.grain_seed[g]);
+        EXPECT_EQ(table.position[3 * g + 0], report.seeds.x[seed]);
+        EXPECT_EQ(table.position[3 * g + 1], report.seeds.y[seed]);
+        EXPECT_EQ(table.position[3 * g + 2], report.seeds.z[seed]);
+    }
+    EXPECT_EQ(table.quat, std::vector<double>(result.grain_quat.begin(),
+                                              result.grain_quat.begin() +
+                                                  static_cast<std::ptrdiff_t>(4 * n)));
+    EXPECT_TRUE(table.phase.empty());  // no phase data in this run
+    EXPECT_TRUE(table.weight.empty() && table.shape.empty() && table.volume.empty());
+
+    const fs::path file = DataDir() / "export_microstructure.h5";
+    if (Rank() == 0) {
+        ms::WriteMicrostructureFile(file, table);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    ms::MicrostructureOptions again = options;
+    again.seeds.source = "file";
+    again.seeds.placement = ms::SeedPlacement::FILE;
+    again.seeds.file = file;
+    again.seeds.num_seeds = 0;
+    again.orientations.source = "from_source";
+    const RunPair second = RunAndCompare(serial, again);
+    EXPECT_EQ(second.alone.labels, first.alone.labels);
+    // The generator normalizes the orientations it reads, which can change the last bit
+    ASSERT_EQ(second.alone.result.grain_quat.size(), result.grain_quat.size());
+    for (std::size_t k = 0; k < result.grain_quat.size(); ++k) {
+        EXPECT_NEAR(second.alone.result.grain_quat[k], result.grain_quat[k], 1e-15) << k;
+    }
+    EXPECT_EQ(second.alone.result.grain_region, result.grain_region);
 }
 
 // ---------------------------------------------------------------------------------------------

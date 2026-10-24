@@ -1,7 +1,11 @@
 #include "microstructure/microstructure_report.hpp"
 
+#include "microstructure/io/seed_table_io.hpp"
+
 #include <cstddef>
+#include <cstdint>
 #include <sstream>
+#include <utility>
 
 /*
  * The record tables and log phrases of a generated microstructure (see the header). These used to
@@ -49,6 +53,63 @@ GrainTable BuildGrainTable(const MicrostructureResult& result,
     }
     if (report.used_voxel_map) {
         table.feature_id = report.grain_feature;
+    }
+    return table;
+}
+
+/*
+ * BuildMicrostructureGrainTable: the active grains (passthrough grains are the last
+ * num_passthrough_grains ids), then each optional column only when every grain has a value.
+ */
+MicrostructureGrainTable BuildMicrostructureGrainTable(const MicrostructureResult& result,
+                                                       const GenerationReport& report) {
+    const auto n = static_cast<std::size_t>(result.num_grains - report.num_passthrough_grains);
+    MicrostructureGrainTable table;
+    table.id.resize(n);
+    for (std::size_t g = 0; g < n; ++g) {
+        table.id[g] = static_cast<std::int64_t>(g + 1);
+    }
+    table.quat.assign(result.grain_quat.begin(),
+                      result.grain_quat.begin() + static_cast<std::ptrdiff_t>(4 * n));
+
+    bool all_phases = n > 0 && result.grain_phase.size() >= n;
+    for (std::size_t g = 0; all_phases && g < n; ++g) {
+        all_phases = result.grain_phase[g] >= 1;
+    }
+    if (all_phases) {
+        table.phase.assign(result.grain_phase.begin(),
+                           result.grain_phase.begin() + static_cast<std::ptrdiff_t>(n));
+    }
+
+    const SeedSet& seeds = report.seeds;
+    bool all_seeds = n > 0 && report.grain_seed.size() >= n && seeds.Size() > 0;
+    for (std::size_t g = 0; all_seeds && g < n; ++g) {
+        all_seeds = report.grain_seed[g] >= 0;
+    }
+    if (!all_seeds) {
+        return table;
+    }
+    std::vector<double> shape;
+    bool shapes_ok = !seeds.shape.empty();
+    for (std::size_t g = 0; g < n; ++g) {
+        const auto i = static_cast<std::size_t>(report.grain_seed[g]);
+        table.position.push_back(seeds.x[i]);
+        table.position.push_back(seeds.y[i]);
+        table.position.push_back(seeds.z[i]);
+        if (!seeds.weight.empty()) {
+            table.weight.push_back(seeds.weight[i]);
+        }
+        if (!report.seed_target_volume.empty()) {
+            table.volume.push_back(report.seed_target_volume[i]);
+        }
+        if (shapes_ok) {
+            double m[6];
+            shapes_ok = InvertShapeTensorPublic(&seeds.shape[6 * i], m);
+            shape.insert(shape.end(), m, m + 6);
+        }
+    }
+    if (shapes_ok) {
+        table.shape = std::move(shape);
     }
     return table;
 }

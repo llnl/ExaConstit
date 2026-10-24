@@ -27,6 +27,7 @@
  */
 #include "microstructure/io/voxel_map_io.hpp"
 
+#include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
 #include "axom/config.hpp"
@@ -382,16 +383,13 @@ std::string PathList(const std::vector<std::string>& paths) {
 }
 
 /**
- * @brief Path of the per-voxel id dataset: the explicit override, `/grain_ids` (canonical), or
- * the unique dataset named `FeatureIds` (DREAM.3D name search). Throws when it is missing or,
+ * @brief Path of the per-voxel id dataset of a DREAM.3D file: the explicit override, or the
+ * unique dataset named `FeatureIds` (name search). Throws when it is missing or,
  * for the search, ambiguous (listing the candidates and the override key).
  */
 std::string ResolveIdPath(hid_t file, const VoxelMapParameters& params) {
-    if (!params.feature_ids_path.empty() || params.format == VoxelFormat::EXACONSTIT) {
-        std::string path = params.feature_ids_path;
-        if (path.empty()) {
-            path = "/grain_ids";
-        }
+    if (!params.feature_ids_path.empty()) {
+        const std::string& path = params.feature_ids_path;
         if (!IsDataset(file, path)) {
             throw std::runtime_error(Prefix(params) + "no dataset '" + path +
                                      "' (set feature_ids_path to the per-voxel grain id dataset)");
@@ -436,6 +434,58 @@ std::array<std::int64_t, 3> DimsFromShape(const VoxelMapParameters& params,
 }
 
 /**
+ * @brief Checks the shape of the canonical per-cell id dataset against the grid's cell counts
+ * (nx, ny, nz): a flat array of nx ny nz values (as Conduit writes it), (nz, ny, nx) (as h5py
+ * writes a C-order numpy array), or (nz, ny, nx, 1). Any other shape is refused, which also
+ * catches the most common mistake, an array stored (nx, ny, nz), whenever nx != nz.
+ */
+void CheckCanonicalShape(const VoxelMapParameters& params, const std::string& path,
+                         const std::vector<hsize_t>& shape,
+                         const std::array<std::int64_t, 3>& dims) {
+    const auto nx = static_cast<hsize_t>(dims[0]);
+    const auto ny = static_cast<hsize_t>(dims[1]);
+    const auto nz = static_cast<hsize_t>(dims[2]);
+    const bool flat = shape.size() == 1 && shape[0] == nx * ny * nz;
+    const bool grid = shape.size() >= 3 && shape.size() <= 4 && shape[0] == nz &&
+                      shape[1] == ny && shape[2] == nx && (shape.size() == 3 || shape[3] == 1);
+    if (!flat && !grid) {
+        throw std::runtime_error(Prefix(params) + "dataset '" + path + "' has shape " +
+                                 ShapeText(shape) + "; the grid has (nx, ny, nz) = " +
+                                 Triple(dims) + " cells, so the shape must be (" +
+                                 std::to_string(nx * ny * nz) + ") or (nz, ny, nx) = (" +
+                                 std::to_string(nz) + ", " + std::to_string(ny) + ", " +
+                                 std::to_string(nx) + "), x varying fastest");
+    }
+}
+
+/**
+ * @brief When a dataset read fails, says which of its filters (compression) this HDF5 library
+ * cannot decode, e.g. gzip in an HDF5 built without zlib; empty when every filter is available.
+ */
+std::string MissingFilterNote(hid_t dset) {
+    H5Handle plist(H5Dget_create_plist(dset), H5Pclose);
+    if (!plist.Valid()) {
+        return "";
+    }
+    const int count = H5Pget_nfilters(plist.Get());
+    for (int f = 0; f < count; ++f) {
+        unsigned int flags = 0;
+        size_t num_values = 0;
+        char name[64] = {0};
+        unsigned int config = 0;
+        const H5Z_filter_t filter = H5Pget_filter2(plist.Get(), static_cast<unsigned>(f), &flags,
+                                                   &num_values, nullptr, sizeof(name), name,
+                                                   &config);
+        if (filter >= 0 && H5Zfilter_avail(filter) <= 0) {
+            return " (the dataset is compressed with the HDF5 filter '" + std::string(name) +
+                   "', which this HDF5 library cannot decode; gzip needs HDF5 built with zlib. "
+                   "Rewrite the file without compression, e.g. h5repack -f NONE in.h5 out.h5)";
+        }
+    }
+    return "";
+}
+
+/**
  * @brief Reads the voxel ids of the box [lo, hi) (x y z order, 0-based, non-empty) of the id
  * dataset into `out` (x fastest; room for the box's voxel count), with one hyperslab read.
  *
@@ -444,8 +494,9 @@ std::array<std::int64_t, 3> DimsFromShape(const VoxelMapParameters& params,
  * dataspace is a contiguous array of the same counts, which in C order puts x fastest, the
  * layout VoxelBlock documents.
  */
-void ReadIdBox(hid_t file, const std::string& path, const std::array<std::int64_t, 3>& lo,
-               const std::array<std::int64_t, 3>& hi, std::int64_t* out) {
+void ReadIdBox(hid_t file, const std::string& path, const std::array<std::int64_t, 3>& dims,
+               const std::array<std::int64_t, 3>& lo, const std::array<std::int64_t, 3>& hi,
+               std::int64_t* out) {
     const std::int64_t cx = hi[0] - lo[0];
     const std::int64_t cy = hi[1] - lo[1];
     const std::int64_t cz = hi[2] - lo[2];
@@ -453,7 +504,35 @@ void ReadIdBox(hid_t file, const std::string& path, const std::array<std::int64_
     H5Handle file_space(H5Dget_space(dset.Get()), H5Sclose);
     const int ndims = H5Sget_simple_extent_ndims(file_space.Get());
     if (ndims != 3 && ndims != 4) {
-        throw std::runtime_error("dataset '" + path + "' is not 3D or 4D");
+        // A flat dataset of nx ny nz values in C order (CheckCanonicalShape): voxel (i, j, k)
+        // is entry i + nx (j + ny k). The box is one strided hyperslab per z plane: cy rows of
+        // cx values, nx apart. HDF5 returns the union of the planes in file order (z, then y,
+        // then x), which is the x-fastest order of `out`.
+        const auto total = static_cast<hsize_t>(dims[0] * dims[1] * dims[2]);
+        H5Handle flat_space(H5Screate_simple(1, &total, nullptr), H5Sclose);
+        H5S_seloper_t op = H5S_SELECT_SET;
+        for (std::int64_t k = lo[2]; k < hi[2]; ++k) {
+            const hsize_t start = static_cast<hsize_t>((k * dims[1] + lo[1]) * dims[0] + lo[0]);
+            const hsize_t stride = static_cast<hsize_t>(dims[0]);
+            const hsize_t count = static_cast<hsize_t>(cy);
+            const hsize_t block = static_cast<hsize_t>(cx);
+            if (H5Sselect_hyperslab(flat_space.Get(), op, &start, &stride, &count, &block) < 0) {
+                throw std::runtime_error("cannot select a voxel block of dataset '" + path + "'");
+            }
+            op = H5S_SELECT_OR;
+        }
+        if (ndims != 1) {
+            throw std::runtime_error("dataset '" + path + "' must be 1D (nx ny nz values), "
+                                     "(nz, ny, nx) or (nz, ny, nx, 1)");
+        }
+        const auto n = static_cast<hsize_t>(cx * cy * cz);
+        H5Handle mem_space(H5Screate_simple(1, &n, nullptr), H5Sclose);
+        if (H5Dread(dset.Get(), H5T_NATIVE_INT64, mem_space.Get(), flat_space.Get(), H5P_DEFAULT,
+                    out) < 0) {
+            throw std::runtime_error("cannot read a voxel block of dataset '" + path + "'" +
+                                     MissingFilterNote(dset.Get()));
+        }
+        return;
     }
     // Start and count, slowest dimension first (z, y, x[, component])
     hsize_t start[4] = {static_cast<hsize_t>(lo[2]), static_cast<hsize_t>(lo[1]),
@@ -467,7 +546,8 @@ void ReadIdBox(hid_t file, const std::string& path, const std::array<std::int64_
     H5Handle mem_space(H5Screate_simple(ndims, count, nullptr), H5Sclose);
     if (H5Dread(dset.Get(), H5T_NATIVE_INT64, mem_space.Get(), file_space.Get(), H5P_DEFAULT,
                 out) < 0) {
-        throw std::runtime_error("cannot read a voxel block of dataset '" + path + "'");
+        throw std::runtime_error("cannot read a voxel block of dataset '" + path + "'" +
+                                 MissingFilterNote(dset.Get()));
     }
 }
 
@@ -562,17 +642,38 @@ VoxelGridInfo ReadGridInfoOnRoot(const VoxelMapParameters& params) {
     if (!(params.units_scale > 0.0) || !std::isfinite(params.units_scale)) {
         throw std::runtime_error(Prefix(params) + "units_scale must be a finite number > 0");
     }
+    // Canonical files: the grid description (Blueprint coordset, topology and field) is read
+    // with Conduit first; it also checks the format header
+    MicrostructureGrid canonical;
+    if (params.format == VoxelFormat::EXACONSTIT) {
+        if (!params.feature_ids_path.empty() || !params.quats_path.empty() ||
+            !params.phases_path.empty()) {
+            throw std::runtime_error(Prefix(params) +
+                                     "feature_ids_path, quats_path and phases_path apply to "
+                                     "DREAM.3D files only (an ExaConstit microstructure file has "
+                                     "fixed paths)");
+        }
+        canonical = ReadMicrostructureGrid(params.file);
+    }
     H5Handle file = OpenFile(params);
 
-    // Step 1: the id dataset and the voxel counts from its shape
+    // Step 1: the id dataset and the voxel counts (canonical: from the grid description, checked
+    // against the dataset's shape; DREAM.3D: from the shape)
     VoxelGridInfo info;
-    info.feature_ids_path = ResolveIdPath(file.Get(), params);
+    info.feature_ids_path = (params.format == VoxelFormat::EXACONSTIT)
+                                ? canonical.values_path
+                                : ResolveIdPath(file.Get(), params);
     if (!IsIntegerDataset(file.Get(), info.feature_ids_path)) {
         throw std::runtime_error(Prefix(params) + "dataset '" + info.feature_ids_path +
                                  "' must store integers (grain ids)");
     }
     const std::vector<hsize_t> shape = DatasetShape(file.Get(), info.feature_ids_path);
-    info.dims = DimsFromShape(params, info.feature_ids_path, shape);
+    if (params.format == VoxelFormat::EXACONSTIT) {
+        info.dims = canonical.dims;
+        CheckCanonicalShape(params, info.feature_ids_path, shape, info.dims);
+    } else {
+        info.dims = DimsFromShape(params, info.feature_ids_path, shape);
+    }
 
     // Step 2: origin and spacing in file units: the file's values, replaced by TOML values
     bool have_origin = false;
@@ -581,15 +682,12 @@ VoxelGridInfo ReadGridInfoOnRoot(const VoxelMapParameters& params) {
     std::array<double, 3> spacing = {0.0, 0.0, 0.0};
     std::string where = "the file";
     if (params.format == VoxelFormat::EXACONSTIT) {
-        if (!params.has_origin && IsDataset(file.Get(), "/origin")) {
-            origin = ReadTripleDataset<double>(file.Get(), "/origin", H5T_NATIVE_DOUBLE);
-            have_origin = true;
-        }
-        if (!params.has_spacing && IsDataset(file.Get(), "/spacing")) {
-            spacing = ReadTripleDataset<double>(file.Get(), "/spacing", H5T_NATIVE_DOUBLE);
-            have_spacing = true;
-        }
-        where = "datasets '/origin' and '/spacing'";
+        // Both are required by ReadMicrostructureGrid
+        origin = canonical.origin;
+        spacing = canonical.spacing;
+        have_origin = true;
+        have_spacing = true;
+        where = "'mesh/coordsets/coords'";
     } else {
         const FileGeometry geometry = FindDream3dGeometry(file.Get(), info.feature_ids_path);
         if (geometry.found) {
@@ -810,67 +908,31 @@ VoxelFeatureTable ReadFeaturesOnRoot(const VoxelMapParameters& params,
 
     VoxelFeatureTable table;
     if (params.format == VoxelFormat::EXACONSTIT) {
-        // Step 3a (canonical): explicit ids, then the requested columns
-        const std::string id_path = "/features/id";
-        if (!IsDataset(file.Get(), id_path)) {
-            throw std::runtime_error(Prefix(params) +
-                                     "per-grain data requested but there is no '/features/id'");
+        // Step 3a (canonical): the grain table, read and checked (ids >= 1 and unique, counts,
+        // quaternion norms, phases >= 1) by ReadMicrostructureGrainTable; rows sorted by id
+        const MicrostructureGrainTable grains = ReadMicrostructureGrainTable(params.file);
+        if (params.read_quats && grains.quat.empty()) {
+            throw std::runtime_error(Prefix(params) + "orientations requested but there is no "
+                                     "'grains/quat'");
         }
-        std::vector<hsize_t> shape;
-        const std::vector<std::int64_t> ids =
-            ReadWholeDataset<std::int64_t>(file.Get(), id_path, H5T_NATIVE_INT64, shape);
-        const std::size_t rows = TableRows(params, id_path, shape, 1);
-
-        std::vector<double> quat;
-        if (params.read_quats) {
-            const std::string path =
-                params.quats_path.empty() ? std::string("/features/quat") : params.quats_path;
-            if (!IsDataset(file.Get(), path)) {
-                throw std::runtime_error(Prefix(params) + "no quaternion dataset '" + path + "'");
-            }
-            quat = ReadWholeDataset<double>(file.Get(), path, H5T_NATIVE_DOUBLE, shape);
-            if (TableRows(params, path, shape, 4) != rows) {
-                throw std::runtime_error(Prefix(params) + "'" + path + "' and '" + id_path +
-                                         "' have different row counts");
-            }
+        if (params.read_phases && grains.phase.empty()) {
+            throw std::runtime_error(Prefix(params) + "phases requested but there is no "
+                                     "'grains/phase'");
         }
-        std::vector<int> phase;
-        if (params.read_phases) {
-            const std::string path =
-                params.phases_path.empty() ? std::string("/features/phase") : params.phases_path;
-            if (!IsDataset(file.Get(), path)) {
-                throw std::runtime_error(Prefix(params) + "no phase dataset '" + path + "'");
-            }
-            phase = ReadWholeDataset<int>(file.Get(), path, H5T_NATIVE_INT, shape);
-            if (TableRows(params, path, shape, 1) != rows) {
-                throw std::runtime_error(Prefix(params) + "'" + path + "' and '" + id_path +
-                                         "' have different row counts");
-            }
-        }
-
-        // Sort rows by id; ids must be >= 1 and unique
+        const std::size_t rows = grains.Size();
         std::vector<std::size_t> order(rows);
         std::iota(order.begin(), order.end(), std::size_t(0));
-        std::sort(order.begin(), order.end(),
-                  [&ids](std::size_t a, std::size_t b) { return ids[a] < ids[b]; });
+        std::sort(order.begin(), order.end(), [&grains](std::size_t a, std::size_t b) {
+            return grains.id[a] < grains.id[b];
+        });
         for (std::size_t r = 0; r < rows; ++r) {
-            const std::int64_t id = ids[order[r]];
-            if (id < 1) {
-                throw std::runtime_error(Prefix(params) + "'/features/id' holds the id " +
-                                         std::to_string(id) + "; ids must be >= 1");
-            }
-            if (r > 0 && id == ids[order[r - 1]]) {
-                throw std::runtime_error(Prefix(params) + "'/features/id' holds the id " +
-                                         std::to_string(id) + " more than once");
-            }
-            table.id.push_back(id);
+            table.id.push_back(grains.id[order[r]]);
             if (params.read_quats) {
-                const double* q = &quat[4 * order[r]];
-                CheckQuatNorm(params, id, q);
+                const double* q = &grains.quat[4 * order[r]];
                 table.quat.insert(table.quat.end(), q, q + 4); // verbatim, w x y z
             }
             if (params.read_phases) {
-                table.phase.push_back(phase[order[r]]);
+                table.phase.push_back(grains.phase[order[r]]);
             }
         }
     } else {
@@ -1060,7 +1122,8 @@ std::vector<std::int64_t> ReadVoxelBoxes(const VoxelMapParameters& params,
             continue;
         }
         try {
-            ReadIdBox(file.Get(), grid.feature_ids_path, box.lo, box.hi, ids.data() + offset);
+            ReadIdBox(file.Get(), grid.feature_ids_path, grid.dims, box.lo, box.hi,
+                      ids.data() + offset);
         } catch (const std::exception& e) {
             throw std::runtime_error(Prefix(params) + e.what());
         }

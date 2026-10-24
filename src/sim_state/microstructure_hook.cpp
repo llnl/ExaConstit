@@ -390,6 +390,8 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
     const std::string region_path = base.string() + ".regions";
     const std::string table_path = base.string() + "_grains.csv";
     const std::string adjacency_path = base.string() + "_adjacency.csv";
+    const std::string microstructure_path = base.string() + ".h5";
+    const bool want_microstructure_file = (out.microstructure_file == "grains");
     if (root) {
         try {
             fs::create_directories(out.directory);
@@ -400,6 +402,10 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
             ms::WriteGrainTable(table_path, ms::BuildGrainTable(result, report, stats));
             if (out.grain_adjacency) {
                 ms::WriteGrainAdjacency(adjacency_path, ms::BuildAdjacencyTable(stats));
+            }
+            if (want_microstructure_file) {
+                ms::WriteMicrostructureFile(microstructure_path,
+                                            ms::BuildMicrostructureGrainTable(result, report));
             }
         } catch (const std::exception& e) {
             MFEM_ABORT(HOOK_PREFIX << "cannot write the record files in " << out.directory
@@ -491,6 +497,9 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
         std::cout << "    grain table: " << table_path << "\n";
         if (out.grain_adjacency) {
             std::cout << "    grain adjacency: " << adjacency_path << "\n";
+        }
+        if (want_microstructure_file) {
+            std::cout << "    microstructure file: " << microstructure_path << "\n";
         }
         if (!mesh_prefix.empty()) {
             std::cout << "    grain mesh (one part per rank): " << mesh_prefix << "*\n";

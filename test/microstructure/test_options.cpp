@@ -28,6 +28,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -904,6 +905,61 @@ TEST(MicrostructureOptions, GrainAdjacencyOutput) {
     EXPECT_TRUE(options.validate());
 }
 
+// [Output] microstructure_file: "none" by default (no extra file); "grains" validates; any other
+// spelling is refused by validate().
+TEST(MicrostructureOptions, MicrostructureFileOutput) {
+    EXPECT_EQ(ms::MicrostructureOptions{}.output.microstructure_file, "none");
+    EXPECT_EQ(FromString("[Output]\nmicrostructure_file = \"grains\"\n").output.microstructure_file,
+              "grains");
+    ms::MicrostructureOptions options = ValidAutoOptions();
+    options.output.microstructure_file = "grains";
+    EXPECT_TRUE(options.validate());
+    options.output.microstructure_file = "full";
+    std::vector<std::string> problems;
+    EXPECT_FALSE(options.validate(&problems));
+    ASSERT_EQ(problems.size(), 1u);
+    EXPECT_NE(problems[0].find("Output.microstructure_file"), std::string::npos) << problems[0];
+}
+
+// [Regions] phase_to_region_file: read while parsing into phase_to_region (comments and blank
+// lines skipped, a phase repeated with the same region accepted); a phase with two regions, a
+// malformed line, a missing file and giving both forms throw while parsing, naming the file.
+TEST(MicrostructureOptions, PhaseToRegionFile) {
+    // One file per rank and rank count, so ranks and concurrent np runs never share a file
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const fs::path dir = "test_options_data";
+    fs::create_directories(dir);
+    auto write = [&](const std::string& name, const std::string& text) {
+        const fs::path path =
+            dir / (name + "_np" + std::to_string(size) + "_r" + std::to_string(rank) + ".txt");
+        std::ofstream(path) << text;
+        return path.string();
+    };
+    const std::string good = write("good", "# phase region\n1 1\n\n3 1\n  7\t2\n3 1\n");
+    const auto options =
+        FromString("[Regions]\nphase_to_region_file = \"" + good + "\"\n");
+    EXPECT_EQ(options.regions.phase_to_region, (std::map<int, int>{{1, 1}, {3, 1}, {7, 2}}));
+    EXPECT_EQ(options.regions.phase_to_region_file, fs::path(good));
+
+    const std::string twice = write("twice", "1 1\n1 2\n");
+    const std::string bad = write("bad", "1 1\n2 x\n");
+    const std::string extra = write("extra", "1 1 5\n");
+    for (const std::string& path : {twice, bad, extra, std::string("no_such_file.txt")}) {
+        try {
+            FromString("[Regions]\nphase_to_region_file = \"" + path + "\"\n");
+            ADD_FAILURE() << path << " was accepted";
+        } catch (const std::invalid_argument& e) {
+            EXPECT_NE(std::string(e.what()).find(path), std::string::npos) << e.what();
+        }
+    }
+    EXPECT_THROW(FromString("[Regions]\nphase_to_region = { \"1\" = 1 }\n"
+                            "phase_to_region_file = \"" + good + "\"\n"),
+                 std::invalid_argument);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Stage 1d: seed tables, ROI and filler, voxel maps, phases and regions, passthrough attributes
 // ---------------------------------------------------------------------------------------------
@@ -1623,6 +1679,7 @@ TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     EXPECT_EQ(pr.mode, er.mode);
     EXPECT_EQ(pr.non_crystalline_phases, er.non_crystalline_phases);
     EXPECT_EQ(pr.phase_to_region, er.phase_to_region);
+    EXPECT_EQ(pr.phase_to_region_file, er.phase_to_region_file);
     EXPECT_EQ(pr.phase_ids, er.phase_ids);
     EXPECT_EQ(pr.phase_fractions, er.phase_fractions);
     EXPECT_EQ(pr.has_filler_phase, er.has_filler_phase);
@@ -1639,6 +1696,7 @@ TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     EXPECT_EQ(po.grain_file, eo.grain_file);
     EXPECT_EQ(po.paraview, eo.paraview);
     EXPECT_EQ(po.grain_adjacency, eo.grain_adjacency);
+    EXPECT_EQ(po.microstructure_file, eo.microstructure_file);
 }
 
 // MPI must be initialized because the options code prints warnings through WARNING_0_OPT, which

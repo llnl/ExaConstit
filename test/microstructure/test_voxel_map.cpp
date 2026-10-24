@@ -35,6 +35,9 @@
 #include "mfem.hpp"
 
 #ifdef AXOM_USE_HDF5
+#include "conduit.hpp"
+#include "conduit_blueprint.hpp"
+#include "conduit_relay_io_hdf5.hpp"
 #include "hdf5.h"
 #endif
 
@@ -135,6 +138,14 @@ void WriteFixtures() {
             r4.rank4_uint16 = true;
             r4.features = false;
             WriteCanonical(Fixture("canonical_rank4.h5"), r4);
+
+            CanonicalOptions flat = base;
+            flat.flat = true;
+            WriteCanonical(Fixture("canonical_flat.h5"), flat);
+
+            CanonicalOptions newer = base;
+            newer.format_version = 2;
+            WriteCanonical(Fixture("newer_version.h5"), newer);
 
             CanonicalOptions scaled = base;
             scaled.origin = kScaledOrigin;
@@ -338,21 +349,22 @@ void ElementCenterAndRadius(const mfem::Mesh& mesh, int e, std::array<double, 3>
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Canonical file: dimensions come from the (nz, ny, nx) shape, origin/spacing from the file, the
- * largest id is 34; a hyperslab block returns exactly the stored ids of that box; the feature
- * table is sorted by id (the file stores the ids unsorted) with quaternions bitwise verbatim and
- * the phases. The rank-4 uint16 variant gives the same grid and blocks (any integer type works).
+ * Canonical file: dimensions, origin and spacing come from the Blueprint coordset (point counts
+ * minus 1), the largest id is 34; a hyperslab block returns exactly the stored ids of that box;
+ * the feature table is sorted by id (the file stores the ids unsorted) with quaternions bitwise
+ * verbatim and the phases. The rank-4 uint16 variant and the flat (Conduit-style) variant give
+ * the same grid and blocks (any integer type and both stored shapes work).
  */
 TEST(VoxelMapReader, CanonicalGridBlockAndFeatures) {
     WriteFixtures();
     const VoxelMapData& map = MapData();
-    for (const std::string name : {"canonical.h5", "canonical_rank4.h5"}) {
+    for (const std::string name : {"canonical.h5", "canonical_rank4.h5", "canonical_flat.h5"}) {
         const ms::VoxelMapParameters params = Canonical(name);
         const ms::VoxelGridInfo grid = ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD);
         EXPECT_EQ(grid.dims, (std::array<std::int64_t, 3>{NX, NY, NZ}));
         EXPECT_EQ(grid.origin, (std::array<double, 3>{0.0, 0.0, 0.0}));
         EXPECT_EQ(grid.spacing, (std::array<double, 3>{H, H, H}));
-        EXPECT_EQ(grid.feature_ids_path, "/grain_ids");
+        EXPECT_EQ(grid.feature_ids_path, "/mesh/fields/grain_id/values");
 
         // Block [3, 11) x [2, 9) x [4, 7): compare every voxel with the stored map
         const std::array<std::int64_t, 3> lo = {3, 2, 4};
@@ -616,7 +628,7 @@ TEST(VoxelMapReader, ValidationErrors) {
     bad.read_quats = true;
     const ms::VoxelGridInfo bad_grid = ms::ReadVoxelGridInfo(bad, MPI_COMM_WORLD);
     error = ErrorOf([&] { ms::ReadVoxelFeatures(bad, bad_grid, kUsedIds, MPI_COMM_WORLD); });
-    EXPECT_TRUE(Contains(error, "feature id 13")) << error;
+    EXPECT_TRUE(Contains(error, "grain 13: quaternion norm")) << error;
 
     ms::VoxelMapParameters missing = Canonical("missing_feature.h5");
     missing.read_phases = true;
@@ -626,6 +638,18 @@ TEST(VoxelMapReader, ValidationErrors) {
     // With a used-id list without 34 (a mesh that never touches grain 34) the table is fine
     EXPECT_EQ(ms::ReadVoxelFeatures(missing, missing_grid, {3, 5, 8}, MPI_COMM_WORLD).id.size(),
               std::size_t(5));
+
+    // Format header: a newer format_version and an HDF5 file that is not an ExaConstit
+    // microstructure file (here a DREAM.3D file) are refused; the DREAM.3D path overrides do not
+    // apply
+    error = ErrorOf([&] { ms::ReadVoxelGridInfo(Canonical("newer_version.h5"), MPI_COMM_WORLD); });
+    EXPECT_TRUE(Contains(error, "format_version 2 is newer")) << error;
+    error = ErrorOf([&] { ms::ReadVoxelGridInfo(Canonical("simpl.h5"), MPI_COMM_WORLD); });
+    EXPECT_TRUE(Contains(error, "not an ExaConstit microstructure file")) << error;
+    ms::VoxelMapParameters with_path = Canonical("canonical.h5");
+    with_path.quats_path = "/grains/quat";
+    error = ErrorOf([&] { ms::ReadVoxelGridInfo(with_path, MPI_COMM_WORLD); });
+    EXPECT_TRUE(Contains(error, "DREAM.3D files only")) << error;
 
     ms::VoxelMapParameters zero = Canonical("canonical.h5");
     zero.has_spacing = true;
@@ -1053,6 +1077,26 @@ TEST(VoxelLabeler, CompactFeatureLabels) {
     mfem::Array<int> invalid({rank == NumRanks() - 1 ? 0 : 5});
     EXPECT_THROW(ms::CompactFeatureLabels(MPI_COMM_WORLD, invalid, element_grain, grain_feature),
                  std::invalid_argument);
+}
+
+/**
+ * The grid part of a microstructure file is a valid Conduit Blueprint mesh: the whole fixture
+ * loads into a conduit::Node with relay (which reads datasets only), and
+ * conduit::blueprint::mesh::verify accepts its `mesh` group, for the (nz, ny, nx), rank-4 uint16
+ * and flat variants alike.
+ */
+TEST(VoxelMapReader, GridIsBlueprintMesh) {
+    WriteFixtures();
+    for (const std::string name : {"canonical.h5", "canonical_rank4.h5", "canonical_flat.h5"}) {
+        conduit::Node file;
+        conduit::relay::io::hdf5_read(Fixture(name).string(), file);
+        conduit::Node info;
+        EXPECT_TRUE(conduit::blueprint::mesh::verify(file["mesh"], info)) << name << "\n"
+                                                                           << info.to_yaml();
+        EXPECT_EQ(file["format"].as_string(), "ExaConstit microstructure");
+        EXPECT_EQ(file["mesh/fields/grain_id/values"].dtype().number_of_elements(),
+                  static_cast<conduit::index_t>(NX * NY * NZ));
+    }
 }
 
 #else // AXOM_USE_HDF5

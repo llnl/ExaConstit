@@ -1,3 +1,4 @@
+#include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/seeding/roi_filler.hpp"
@@ -5,6 +6,9 @@
 #include "microstructure/util/collective_errors.hpp"
 
 #include "mfem.hpp"
+
+#include "conduit.hpp"
+#include "conduit_relay_io_hdf5.hpp"
 
 #include <gtest/gtest.h>
 
@@ -150,14 +154,15 @@ bool StrictlyInside(double x, double y, double z, const std::array<double, 3>& l
 // Parsing the checked-in tables
 // ------------------------------------------------------------------------------------------------
 
-// Only x, y, z: positions copied, ids default to the 0-based row index, every optional array empty.
+// Only x, y, z: positions copied, ids default to the row number counting from 1, every optional
+// array empty.
 TEST(SeedTable, MinimalXyz) {
     const ms::SeedTable t = Read(data_dir / "minimal_xyz.csv");
     ASSERT_EQ(t.seeds.Size(), 3u);
     EXPECT_EQ(t.seeds.x, (std::vector<double>{0.25, 0.75, 0.5}));
     EXPECT_EQ(t.seeds.y, (std::vector<double>{0.25, 0.25, 0.75}));
     EXPECT_EQ(t.seeds.z, (std::vector<double>{0.25, 0.25, 0.75}));
-    EXPECT_EQ(t.seeds.source_id, (std::vector<std::int64_t>{0, 1, 2}));
+    EXPECT_EQ(t.seeds.source_id, (std::vector<std::int64_t>{1, 2, 3}));
     EXPECT_FALSE(t.has_quat || t.has_phase || t.has_weight || t.has_volume || t.has_shape);
     EXPECT_TRUE(t.seeds.quat.empty() && t.seeds.phase.empty() && t.seeds.weight.empty() &&
                 t.seeds.shape.empty() && t.volume.empty() && t.shape_tensor.empty());
@@ -303,7 +308,9 @@ TEST(SeedTable, Errors) {
     ExpectCollectiveError(WriteText("field_count", "x,y,z\n0,0,0\n0,0\n"), {":3:", "fields"});
     ExpectCollectiveError(WriteText("neg_radius", "x,y,z,radius\n0,0,0,-1\n"),
                           {":2:", "'radius'", "> 0"});
-    ExpectCollectiveError(WriteText("neg_id", "id,x,y,z\n-1,0,0,0\n"), {":2:", ">= 0"});
+    ExpectCollectiveError(WriteText("neg_id", "id,x,y,z\n-1,0,0,0\n"), {":2:", ">= 1"});
+    // Ids start at 1, as in the microstructure file
+    ExpectCollectiveError(WriteText("zero_id", "id,x,y,z\n0,0,0,0\n"), {":2:", ">= 1"});
     // Phase ids start at 1, like ExaConstit's region ids (phase k is region k by default)
     ExpectCollectiveError(WriteText("phase_zero", "x,y,z,phase\n0,0,0,0\n"),
                           {":2:", "'phase'", "[1, 2^31 - 1]"});
@@ -379,6 +386,61 @@ TEST(SeedTable, WriteReadRoundTrip) {
         ExpectSameTable(original, again);
         MPI_Barrier(MPI_COMM_WORLD); // before rank 0 overwrites the file in the next pass
     }
+}
+
+// A microstructure file holding only a grain table is read as a seed list with the CSV rules:
+// the same values as the CSV give bit for bit the same table (units_scale and translate
+// included, ids from grains/id). A file with labeled points, or without positions, is refused
+// with a message that says what to do; so is a file that is not a microstructure file.
+TEST(SeedTable, MicrostructureFileAsSeeds) {
+    const ms::SeedTable csv = Read(data_dir / "all_columns.csv", 2.0, {1.0, -2.0, 0.5});
+    const ms::SeedTable raw = Read(data_dir / "all_columns.csv");
+    ms::MicrostructureGrainTable grains;
+    for (std::size_t i = 0; i < raw.seeds.Size(); i++) {
+        grains.id.push_back(raw.seeds.source_id[i]);
+        grains.position.insert(grains.position.end(),
+                               {raw.seeds.x[i], raw.seeds.y[i], raw.seeds.z[i]});
+    }
+    grains.quat = raw.seeds.quat;
+    grains.phase = raw.seeds.phase;
+    grains.weight = raw.seeds.weight;
+    grains.volume = raw.volume;
+    grains.shape = raw.shape_tensor;
+    const std::string prefix = "seed_table_np" + std::to_string(WorldSize());
+    const fs::path h5 = prefix + "_grains.h5";
+    ms::MicrostructureGrainTable no_position = grains;
+    no_position.position.clear();
+    const fs::path h5_no_position = prefix + "_no_position.h5";
+    if (WorldRank() == 0) {
+        ms::WriteMicrostructureFile(h5, grains);
+        ms::WriteMicrostructureFile(h5_no_position, no_position);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    EXPECT_TRUE(ms::IsHdf5File(h5));
+    EXPECT_FALSE(ms::IsHdf5File(data_dir / "all_columns.csv"));
+    const ms::SeedTable from_h5 = Read(h5, 2.0, {1.0, -2.0, 0.5});
+    ExpectSameTable(csv, from_h5);
+
+    ExpectCollectiveError(h5_no_position, {"grains/position", "required"});
+    // A file with labeled points (a `mesh` group) is a voxel map, not a seed list; a file that
+    // is HDF5 but not a microstructure file is refused by the header check
+    const fs::path with_mesh = prefix + "_with_mesh.h5";
+    const fs::path foreign = prefix + "_foreign.h5";
+    if (WorldRank() == 0) {
+        conduit::Node node;
+        node["format"] = std::string(ms::k_microstructure_format_name);
+        node["format_version"].set_int64(1);
+        node["grains/id"].set_int64(1);
+        node["grains/position"].set(std::vector<double>{0.5, 0.5, 0.5});
+        node["mesh/coordsets/coords/type"] = "uniform";
+        conduit::relay::io::hdf5_save(node, with_mesh.string(), "/");
+        conduit::Node other;
+        other["data"].set_int64(1);
+        conduit::relay::io::hdf5_save(other, foreign.string(), "/");
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    ExpectCollectiveError(with_mesh, {"labeled points", "voxel_map"});
+    ExpectCollectiveError(foreign, {"not an ExaConstit microstructure file"});
 }
 
 // The box [0, 0.5] x [0, 1] x [0, 1] keeps the seeds at x = 0.1 and 0.4 (ids 10 and 7) and drops

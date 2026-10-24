@@ -35,7 +35,8 @@ Meaning of the columns used here:
 What the converter writes
 -------------------------
 Columns ``id, x, y, z, qw, qx, qy, qz`` of the "ExaConstit seed table v1" (see
-exaconstit_microstructure_io.py): id = HEXRD grain ID, (x, y, z) = units_scale * t_vec_c,
+exaconstit_microstructure_io.py): id = HEXRD grain ID + 1 (HEXRD numbers grains from 0,
+ExaConstit ids start at 1), (x, y, z) = units_scale * t_vec_c,
 q = quaternion of exp_map_c (cos(theta/2), sin(theta/2) n), conjugated when ``--conjugate yes``.
 The quaternion conversion only changes the parametrization; ``--conjugate`` is a required,
 explicit statement by the user of whether HEXRD's crystal->sample change-of-basis rotation must
@@ -164,12 +165,14 @@ def convert(args):
     # Step 4: positions in output units
     positions = args.units_scale * grains["tvec"][keep]
 
-    columns = {"id": grains["id"][keep],
+    # ExaConstit ids start at 1, HEXRD grain IDs at 0
+    columns = {"id": grains["id"][keep] + 1,
                "x": positions[:, 0], "y": positions[:, 1], "z": positions[:, 2],
                "qw": quats[:, 0], "qx": quats[:, 1], "qy": quats[:, 2], "qz": quats[:, 3]}
     comments = msio.provenance_lines(
         "hexrd_grains_to_seeds.py", args.input,
-        ["conjugate: %s, units_scale: %s, min_completeness: %s, max_chi2: %s"
+        ["id = HEXRD grain ID + 1",
+         "conjugate: %s, units_scale: %s, min_completeness: %s, max_chi2: %s"
          % (args.conjugate, msio.format_real(args.units_scale),
             msio.format_real(args.min_completeness), msio.format_real(args.max_chi2))])
     msio.write_seed_table(args.output, columns, comments)

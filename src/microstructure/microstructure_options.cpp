@@ -45,9 +45,11 @@
 #include "mfem.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -884,6 +886,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
  *   - `paraview`: boolean that switches the ParaView visualization of the grain ids on or off.
  *   - `grain_adjacency`: boolean; also write <basename>_adjacency.csv (pairs of grains sharing
  *     element faces, with the shared face area and face count). Default false.
+ *   - `microstructure_file`: "none" or "grains"; also write <basename>.h5, an
+ *     ExaConstit microstructure file with the grain table (spelling checked in validate()).
  * The tool does not write ExaConstit input decks; users write their own options.toml.
  *
  * @throws std::invalid_argument for an unknown mesh_format; toml11's type error (a
@@ -899,7 +903,8 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
                        "compression",
                        "grain_file",
                        "paraview",
-                       "grain_adjacency"});
+                       "grain_adjacency",
+                       "microstructure_file"});
 
     // Accepted spellings of `mesh_format`.
     static const std::map<std::string, MeshFormat> format_map = {
@@ -952,6 +957,11 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
     // Optional grain adjacency table (pairs of face-sharing grains and their shared area).
     if (toml_input.contains("grain_adjacency")) {
         output.grain_adjacency = toml::find<bool>(toml_input, "grain_adjacency");
+    }
+
+    // Optional microstructure file (grain table) for reuse on another mesh
+    if (toml_input.contains("microstructure_file")) {
+        output.microstructure_file = toml::find<std::string>(toml_input, "microstructure_file");
     }
     return output;
 }
@@ -1053,12 +1063,62 @@ VoxelMapOptions voxel_map_from_toml(const toml::value& toml_input) {
 }
 
 /**
+ * @brief Reads a phase -> region text file (Regions.phase_to_region_file): one `phase region`
+ * pair of integers per line, separated by spaces or tabs, the grammar of ExaConstit's
+ * region_mapping_file. Blank lines and lines whose first non-blank character is `#` are
+ * skipped. A phase listed twice with the same region is accepted; with different regions it is
+ * an error. The value rules (ids >= 1, regions 1..M) are checked by validate(), as for the inline
+ * map.
+ *
+ * @throws std::invalid_argument naming the file (and the line) when it cannot be opened, a line
+ *         is not two integers that fit an int, or a phase has two regions.
+ */
+std::map<int, int> read_phase_to_region_file(const std::filesystem::path& path) {
+    const std::string where = "Microstructure options: Regions.phase_to_region_file '" +
+                              path.string() + "'";
+    std::ifstream in(path);
+    if (!in) {
+        throw std::invalid_argument(where + ": cannot open the file");
+    }
+    std::map<int, int> result;
+    std::string line;
+    int line_number = 0;
+    while (std::getline(in, line)) {
+        ++line_number;
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos || line[first] == '#') {
+            continue;
+        }
+        std::istringstream fields(line);
+        long long phase = 0;
+        long long region = 0;
+        std::string rest;
+        if (!(fields >> phase >> region) || (fields >> rest) || phase < INT_MIN ||
+            phase > INT_MAX || region < INT_MIN || region > INT_MAX) {
+            throw std::invalid_argument(where + ", line " + std::to_string(line_number) +
+                                        ": expected two integers 'phase region', found '" +
+                                        line + "'");
+        }
+        const auto inserted =
+            result.emplace(static_cast<int>(phase), static_cast<int>(region));
+        if (!inserted.second && inserted.first->second != static_cast<int>(region)) {
+            throw std::invalid_argument(where + ", line " + std::to_string(line_number) +
+                                        ": phase " + std::to_string(phase) +
+                                        " is mapped to two different regions");
+        }
+    }
+    return result;
+}
+
+/**
  * @brief Reads the [Regions] table: how grains are grouped into ExaConstit material regions.
  *
  * Keys (defaults in RegionOptions, microstructure_options.hpp):
  *   - `mode`: "single", "from_phase" or "phase_fractions" (checked in validate());
  *   - `non_crystalline_phases = [..]`: phases whose grains get the identity orientation;
  *   - `phase_to_region = { "phase" = region, ... }`: explicit map (keys read as integers);
+ *   - `phase_to_region_file`: the same map from a text file (read here, see
+ *     read_phase_to_region_file); not together with `phase_to_region`;
  *   - `phases = [{id = .., fraction = ..}, ...]`: target phase fractions (phase_fractions);
  *   - `filler_phase`: phase of the random ROI filler grains.
  *
@@ -1068,8 +1128,8 @@ VoxelMapOptions voxel_map_from_toml(const toml::value& toml_input) {
 RegionOptions regions_from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
                       "Regions",
-                      {"mode", "non_crystalline_phases", "phase_to_region", "phases",
-                       "filler_phase"});
+                      {"mode", "non_crystalline_phases", "phase_to_region",
+                       "phase_to_region_file", "phases", "filler_phase"});
     RegionOptions regions;
     if (toml_input.contains("mode")) {
         regions.mode = toml::find<std::string>(toml_input, "mode");
@@ -1081,6 +1141,16 @@ RegionOptions regions_from_toml(const toml::value& toml_input) {
     if (toml_input.contains("phase_to_region")) {
         regions.phase_to_region =
             get_int_map(toml_input, "phase_to_region", "Regions.phase_to_region");
+    }
+    if (toml_input.contains("phase_to_region_file")) {
+        if (toml_input.contains("phase_to_region")) {
+            throw std::invalid_argument("Microstructure options: give either "
+                                        "'Regions.phase_to_region' or "
+                                        "'Regions.phase_to_region_file', not both");
+        }
+        regions.phase_to_region_file =
+            toml::find<std::string>(toml_input, "phase_to_region_file");
+        regions.phase_to_region = read_phase_to_region_file(regions.phase_to_region_file);
     }
     // Target fractions: an array of inline tables, each with an id and a fraction
     if (toml_input.contains("phases")) {
@@ -1460,6 +1530,15 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             report_error(valid,
                          "VoxelMap.format = \"exaconstit\" stores w x y z quaternions: "
                          "quat_layout = \"xyzw\" and conjugate = true are not allowed");
+        }
+        // The microstructure file has fixed paths; the overrides exist for DREAM.3D files
+        if (map.format == "exaconstit" &&
+            (!map.feature_ids_path.empty() || !map.quats_path.empty() ||
+             !map.phases_path.empty())) {
+            report_error(valid,
+                         "VoxelMap.feature_ids_path, quats_path and phases_path apply to "
+                         "format = \"dream3d\" only (an ExaConstit microstructure file has "
+                         "fixed paths)");
         }
         // DREAM.3D files do not say how they store quaternions; guessing would rotate every
         // grain, so both declarations are required whenever orientations are read
@@ -2129,6 +2208,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         report_error(valid, "Output.compression must be in 0-9");
     }
     check_choice(valid, "Output.grain_file", output.grain_file, {"auto", "true", "false"});
+    check_choice(valid, "Output.microstructure_file", output.microstructure_file,
+                 {"none", "grains"});
     // Output.paraview and Output.grain_adjacency are plain booleans: every value is valid, and a
     // value of another TOML type is already rejected by the reader (output_from_toml).
 

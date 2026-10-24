@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/output_writer.hpp"
 #include "microstructure/labeling/grain_statistics.hpp"
 #include "microstructure/microstructure_driver.hpp"
@@ -37,6 +38,22 @@ namespace exaconstit::microstructure {
 GrainTable BuildGrainTable(const MicrostructureResult& result,
                            const GenerationReport& report,
                            const GrainStatistics& stats);
+
+/**
+ * @brief The grain table of a finished run for the microstructure file (Output.
+ * microstructure_file = "grains", io/microstructure_file_io.hpp).
+ *
+ * - Grains 1..N of the active part only: passthrough grains (the last ids) belong to one mesh
+ *   and are left out. Filler grains are included.
+ * - id = the grain id, quat = the final orientation; phase only when every grain has one (>= 1).
+ * - Seed data only when every grain grew from a seed (GenerationReport::grain_seed >= 0, so not
+ *   for voxel maps): position (mesh units), weight when the seeds have weights, shape M = A^-1
+ *   when the seeds have per-seed tensors that are all invertible (degenerate columnar or lamellar
+ *   tensors are not), volume = the seed's size target when size targets were used. A grain split
+ *   off by the fragment cleanup shares its parent's seed, so its row repeats that seed.
+ */
+MicrostructureGrainTable BuildMicrostructureGrainTable(const MicrostructureResult& result,
+                                                       const GenerationReport& report);
 
 /**
  * @brief The grain adjacency table (pairs of face-sharing grains with their shared area and face

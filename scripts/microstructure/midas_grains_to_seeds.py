@@ -38,7 +38,9 @@ What the converter writes
 -------------------------
 Columns ``id, x, y, z, qw, qx, qy, qz`` and, by default, ``phase`` and ``radius`` of the
 "ExaConstit seed table v1" (see exaconstit_microstructure_io.py):
-id = GrainID, (x, y, z) = units_scale * (X, Y, Z), radius = units_scale * GrainRadius,
+id = GrainID + ``--id-offset`` (default 0; ExaConstit ids start at 1, so a file with GrainID 0
+needs ``--id-offset 1``), (x, y, z) = units_scale * (X, Y, Z), radius = units_scale *
+GrainRadius,
 q = quaternion of the orientation matrix (Shepperd's method, w >= 0), conjugated when
 ``--conjugate yes``. The matrix is used as read (with ``--matrix-layout row``, the default and
 the documented MIDAS layout); converting it to a quaternion only changes the parametrization.
@@ -142,6 +144,9 @@ def build_parser():
                         help="order of O11..O33 in the file: 'row' (default; O11 O12 O13 O21 "
                              "..., the documented MIDAS layout) or 'column' (read the 9 values "
                              "column by column, i.e. use the transpose)")
+    parser.add_argument("--id-offset", type=int, default=0,
+                        help="added to every GrainID to give the seed id (ExaConstit ids start "
+                             "at 1: use 1 when the file has GrainID 0; default 0)")
     parser.add_argument("--min-confidence", type=float, default=0.0,
                         help="keep grains with Confidence >= this value (default 0: keep all)")
     parser.add_argument("--no-radius", action="store_true",
@@ -194,7 +199,13 @@ def convert(args):
             q = msio.conjugate_quat(q)
         quats[row] = q
 
-    columns = {"id": grain_ids.astype(np.int64),
+    ids = grain_ids.astype(np.int64) + args.id_offset
+    if np.any(ids < 1):
+        raise msio.ConverterError("GrainID %d + --id-offset %d gives id %d; ExaConstit ids start "
+                                  "at 1 (use --id-offset 1 for a file that numbers grains from "
+                                  "0)" % (int(grain_ids[ids < 1][0]), args.id_offset,
+                                          int(ids[ids < 1][0])))
+    columns = {"id": ids,
                "x": args.units_scale * positions[:, 0],
                "y": args.units_scale * positions[:, 1],
                "z": args.units_scale * positions[:, 2],
@@ -219,9 +230,9 @@ def convert(args):
 
     comments = msio.provenance_lines(
         "midas_grains_to_seeds.py", args.input,
-        ["conjugate: %s, matrix_layout: %s, units_scale: %s, min_confidence: %s"
+        ["conjugate: %s, matrix_layout: %s, units_scale: %s, min_confidence: %s, id_offset: %d"
          % (args.conjugate, args.matrix_layout, msio.format_real(args.units_scale),
-            msio.format_real(args.min_confidence))])
+            msio.format_real(args.min_confidence), args.id_offset)])
     msio.write_seed_table(args.output, columns, comments)
     print("midas_grains_to_seeds: wrote %d seeds to %s (%d grains dropped by filters)"
           % (data.shape[0], args.output, int(np.count_nonzero(~keep))))

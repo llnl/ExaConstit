@@ -155,8 +155,16 @@
 #              holding the number of the grain it belongs to, plus a list of grain orientations.
 #              This is how near-field HEDM, EBSD stacks, DREAM.3D, ExaCA and SPPARKS data are
 #              stored. The generator can put such a picture onto any mesh ([VoxelMap]).
-# Seed table   A text (CSV) file listing grains as seed points, one row per grain, with optional
-#              orientation, phase, size and shape. Far-field HEDM grain lists come in this way.
+# Microstructure file  ExaConstit's own file for grain data (HDF5, usually ending in .h5). It
+#              holds a grain table (one row per grain: grain number, and optionally orientation,
+#              phase, seed position, size, shape) and, optionally, a voxel map. The converters
+#              in scripts/microstructure/ write it, the generator reads it ([Seeds] file or
+#              [VoxelMap] file) and can write one itself ([Output] microstructure_file).
+#              Exact contents: doc/microstructure.md, section 3.2.
+# Seed table   A list of grains given as seed points, one per grain, with optional orientation,
+#              phase, size and shape: a microstructure file without a voxel map, or a CSV text
+#              file (handy for a short list written by hand or in a spreadsheet). Far-field HEDM
+#              grain lists come in this way.
 # RD/TD/ND     Rolling, transverse and normal direction: the specimen axes of a rolled plate.
 
 # =====================================
@@ -229,9 +237,10 @@
 # BRINGING IN YOUR OWN DATA
 # =====================================
 # Measured or simulated microstructures come in through one of two doors:
-#   - a seed table (one row per grain: position, orientation, phase, size): far-field HEDM grain
-#     lists (HEXRD, MIDAS converters), or any grain list you write yourself. Keys: [Seeds]
-#     source = "file", file, units_scale, translate, roi, fill_outside_roi.
+#   - a seed table (one row per grain: position, orientation, phase, size), as a microstructure
+#     file or a CSV file: far-field HEDM grain lists (HEXRD, MIDAS converters), or any grain
+#     list you write yourself. Keys: [Seeds] source = "file", file, units_scale, translate,
+#     roi, fill_outside_roi.
 #   - a voxel map (a 3D grid of grain numbers): near-field HEDM, DREAM.3D reconstructions of
 #     EBSD serial sections (.ang/.ctf stacks: reconstruct them in DREAM.3D first), ExaCA,
 #     SPPARKS. Keys: [Source] type = "voxel_map" and the [VoxelMap] table.
@@ -361,6 +370,8 @@ exec = "cpu"
 #   <basename>_grains.csv         table of every grain: orientation, size, centroid, number of
 #                                 neighbors (for your own statistics and plots)
 #   <basename>_adjacency.csv      which grains touch, and over what area (grain_adjacency)
+#   <basename>.h5                 the grain table as a       [Seeds] file, in a later
+#                                 microstructure file        generator run (microstructure_file)
 #   <basename>_paraview/          ParaView files: open the .pvd file, color by "grain_id"
 # Exact layouts of every file: doc/microstructure.md, section 3.3.
 #
@@ -417,6 +428,20 @@ exec = "cpu"
     # Write <basename>_adjacency.csv: one row per pair of touching grains, with the shared
     # boundary area. Useful for grain boundary statistics or misorientation studies.
     grain_adjacency = false
+
+    # Write <basename>.h5, a microstructure file with the grain table of the final
+    # grains: grain number, orientation, phase (when every grain has one) and, when the grains
+    # grew from seeds, each grain's seed position, weight, shape and target size. Parts kept
+    # as they are ([Mesh] passthrough_attributes) are left out.
+    # - "none"   = do not write it (default)
+    # - "grains" = write it
+    # Typical use: put the same grains on another mesh of the same part (finer, or remeshed).
+    # Read the file in that run with [Seeds] source = "file", placement = "file" (or delete the
+    # placement key), file = "<basename>.h5", and [Orientations] source = "from_source", with
+    # the same [Tessellation] options. This gives the same grains only when they come straight
+    # from the seeds: not for voxel maps (no seeds), and not when [Cleanup] split or merged
+    # grains (the run summary reports this).
+    microstructure_file = "none"
 
 # =====================================
 # GRAIN SOURCE
@@ -532,11 +557,18 @@ exec = "cpu"
     lattice_jitter = 0.0
 
     # ===== Seed table (source = "file") =====
-    # A CSV text file, "ExaConstit seed table v1" format (path relative to where you run):
+    # Two file types are accepted; the generator tells them apart by the file's content:
+    # - a microstructure file (HDF5, see the glossary) without a voxel map, as written by
+    #   [Output] microstructure_file = "grains" or by Python (write_microstructure_file in
+    #   scripts/microstructure/exaconstit_microstructure_io.py). Its grain table must have seed
+    #   positions (grains/position); the other entries match the CSV columns below (grains/id,
+    #   quat, phase, weight, volume, shape). Same rules as the CSV.
+    # - a CSV text file, "ExaConstit seed table v1" (handy for a short list written by hand):
     #   - lines starting with '#' are comments; the first other line names the columns;
     #   - columns in any order, names in any letter case:
     #       x, y, z         seed position (required)
-    #       id              your grain number, whole number >= 0 (default: the row number)
+    #       id              your grain number, whole number >= 1 (default: the row number,
+    #                       counting from 1). Converters from tools that count from 0 add 1.
     #       qw, qx, qy, qz  orientation: unit quaternion, crystal-to-sample, w first
     #                       (used with [Orientations] source = "from_source")
     #       phase           which material, a whole number >= 1 (used with [Regions]
@@ -558,7 +590,7 @@ exec = "cpu"
     # Converters that write this format: scripts/microstructure/hexrd_grains_to_seeds.py (HEXRD
     # grains.out) and midas_grains_to_seeds.py (MIDAS Grains.csv). Exact grammar (spaces,
     # number formats, refused columns): doc/microstructure.md, section 3.1.
-    # file = "grains.csv"
+    # file = "grains.csv"       (or file = "grains.h5")
 
     # Table coordinates to mesh coordinates: x_mesh = units_scale * x_table + translate.
     # Example: a table in microns and a mesh in millimeters: units_scale = 1.0e-3.
@@ -882,7 +914,7 @@ exec = "cpu"
 # unindexed points) are skipped; elements that land only on those take a neighbor's grain.
 #
 # Supported data and how to bring it in:
-#   - ExaConstit voxel map v2 (HDF5) ........ read directly, format = "exaconstit"
+#   - ExaConstit microstructure file (HDF5) . read directly, format = "exaconstit"
 #   - DREAM.3D files (6.x and DREAM3D-NX) ... read directly, format = "dream3d"
 #   - ExaCA (VTK output with GrainID) ....... convert first with the utility
 #     scripts/microstructure/exaca_to_voxels.py (documented in scripts/microstructure/README.md
@@ -901,10 +933,13 @@ exec = "cpu"
 #     than the CA cells.
 #   - SPPARKS site dumps .................... convert first:
 #         python scripts/microstructure/spparks_to_voxels.py --help
-#   - Anything else: write the v2 layout yourself (a few lines of Python with h5py; see the
-#     writer in scripts/microstructure/exaconstit_microstructure_io.py).
-# ("v2" because ExaConstit's auto-box grain_file plus orientation file counts as v1; v1 is not
-# read here.)
+#   - Anything else: write a microstructure file yourself, a few lines of Python with h5py:
+#         import exaconstit_microstructure_io as msio   # in scripts/microstructure/
+#         msio.write_voxel_map("grains.h5", grain_ids, origin, spacing,
+#                              feature_ids=ids, feature_quats=quats)
+#     grain_ids is a numpy array of shape (nz, ny, nx) (x varies fastest); quats are w x y z,
+#     crystal-to-sample, one row per grain. The Conduit Python module is not needed.
+# (ExaConstit's older auto-box grain_file plus orientation file is not read here.)
 #
 # The voxel map is DATA with its own grid, separate from the mesh. That is why it carries its
 # own corner (origin) and voxel size (spacing): a scan or an ExaCA run has its own resolution
@@ -912,35 +947,37 @@ exec = "cpu"
 # shape). It does not replace the mesh. If you want one element per voxel, as ExaConstit's
 # auto mesh + grain_file did, use [Mesh] type = "auto" with ncuts = the voxel counts (nx, ny,
 # nz) and length = counts x spacing, placed so the boxes coincide (translate if needed).
-# Note: this format can only describe a regular box grid. Data on other point layouts (an
-# unstructured point cloud, the elements of another mesh) cannot be stored in it today.
+# Note: only voxel maps on a regular box grid can be read today. Data on other point layouts
+# (an unstructured point cloud, the elements of another mesh) cannot be used yet.
 
 [VoxelMap]
     # File layout:
-    # - "exaconstit" = ExaConstit voxel map v2, an HDF5 file with:
-    #     /grain_ids        grain number per voxel, an array of shape (nz, ny, nx). Memory
-    #                       order: x varies fastest, then y, then z (x -> y -> z, the C / numpy
-    #                       and DREAM.3D order). Voxel (i, j, k) (i along x, 0-based) is entry
-    #                       i + nx (j + ny k) of the flattened array. No other order is accepted;
-    #                       data stored z -> y -> x must be transposed before writing.
-    #     /origin           lower corner of voxel (0, 0, 0): (x, y, z)
-    #     /spacing          voxel edge lengths (dx, dy, dz); voxel (i, j, k) is the box from
-    #                       origin + (i, j, k) * spacing to origin + (i+1, j+1, k+1) * spacing
-    #     /features/id      (optional) grain numbers of the table below
-    #     /features/quat    (optional) orientation per grain, w x y z, crystal-to-sample
-    #     /features/phase   (optional) phase per grain, numbers >= 1
+    # - "exaconstit" = an ExaConstit microstructure file with a voxel map (see the glossary).
+    #   What it holds, in plain terms:
+    #     - the grain number of every voxel, an array of shape (nz, ny, nx). Memory order: x
+    #       varies fastest, then y, then z (x -> y -> z, the C / numpy and DREAM.3D order).
+    #       Voxel (i, j, k) (i along x, 0-based) is entry i + nx (j + ny k) of the flattened
+    #       array. No other order is accepted; data stored z -> y -> x must be transposed first.
+    #     - the grid: the lower corner of voxel (0, 0, 0) (origin) and the voxel edge lengths
+    #       (spacing); voxel (i, j, k) is the box from origin + (i, j, k) * spacing to
+    #       origin + (i+1, j+1, k+1) * spacing.
+    #     - the grain table: grain numbers (>= 1), and optionally an orientation per grain
+    #       (w x y z, crystal-to-sample) and a phase per grain (>= 1).
+    #   The voxel part is stored as a Conduit "Blueprint" mesh, a standard layout for mesh data
+    #   that VisIt and Conduit-based tools read. The Python writer in scripts/microstructure/
+    #   handles that; you only pass numpy arrays.
     # - "dream3d"    = a DREAM.3D file: FeatureIds, AvgQuats and Phases are found by name (or
     #                  set the *_path keys below when the file has several)
-    # Exact specification for writing your own files (accepted data types, datasets vs
-    # attributes, id rules, chunking and compression): doc/microstructure.md, section 3.2.
+    # Exact specification for writing your own files (dataset names, accepted data types, id
+    # rules, chunking and compression): doc/microstructure.md, section 3.2.
     format = "exaconstit"
 
     # The file (relative to where you run). Required.
     # file = "microstructure.dream3d"
 
-    # Where in the HDF5 file the grain numbers, orientations and phases are. Leave empty to use
-    # the format's standard names; set them only if the file has several candidates (the error
-    # message then lists them).
+    # DREAM.3D only: where in the file the grain numbers, orientations and phases are. Leave
+    # empty to find them by name; set them only if the file has several candidates (the error
+    # message then lists them). Not allowed with format = "exaconstit" (fixed names).
     feature_ids_path = ""
     quats_path = ""
     phases_path = ""
@@ -1082,6 +1119,16 @@ exec = "cpu"
     #   phase_to_region = { "1" = 1, "3" = 1, "7" = 2 }
     phase_to_region = {}
 
+    # Optional: the same phase -> region list from a text file, for data with many phases. One
+    # "phase region" pair of whole numbers per line, separated by spaces (the same layout as
+    # ExaConstit's region_mapping_file); empty lines and lines starting with # are skipped. The
+    # example above as a file:
+    #   1 1
+    #   3 1
+    #   7 2
+    # Give phase_to_region or phase_to_region_file, not both.
+    # phase_to_region_file = "phases.txt"
+
     # Which phase (>= 1) the random filler grains get (only with Seeds.fill_outside_roi =
     # "random"; see there). Needed only with mode = "from_phase": every grain needs a phase to
     # get a material, and filler grains were not measured, so they have none. Pick the phase of
@@ -1116,7 +1163,7 @@ exec = "cpu"
 #     contains them, so do not point `file =` at it directly: copy the tables you need into
 #     your own file.
 #   - `exec` is refused (the generator follows [Solvers] rtmodel).
-#   - [Output]: the record files (.ori, .regions, _grains.csv, _adjacency.csv) go to
+#   - [Output]: the record files (.ori, .regions, _grains.csv, _adjacency.csv, .h5) go to
 #     results/<simulation basename>/ unless `directory` is given. paraview is OFF unless you set
 #     paraview = true. mesh_format may only be "parallel": it saves the grain mesh, one file per
 #     rank, for later runs, which must use the same number of MPI ranks and ref_ser = ref_par =

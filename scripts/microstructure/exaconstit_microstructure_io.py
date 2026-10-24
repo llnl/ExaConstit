@@ -4,17 +4,22 @@
 Shared writers, readers and quaternion helpers for the ExaConstit microstructure converters.
 
 The converters in this directory turn the output of other microstructure tools (HEXRD, MIDAS,
-SPPARKS, ExaCA) into the two input formats the ExaConstit microstructure generator reads:
+SPPARKS, ExaCA) into the input files the ExaConstit microstructure generator reads:
 
-* "ExaConstit seed table v1" (CSV): one seed (grain centre) per row, with optional
-  orientation, phase and grain size. Used with ``[Seeds] source = "file"``.
-* "ExaConstit voxel map v2" (HDF5): a grain id per voxel of a regular grid, plus an optional
-  per-grain table of orientations and phases. Used with ``[Source] type = "voxel_map"``,
-  ``format = "exaconstit"``.
+* the "ExaConstit microstructure file" (HDF5): a grain table (``grains/id``, optional
+  orientation, phase, seed position, size, weight, shape) and, optionally, a grain id per cell of
+  a regular grid stored as a Conduit Blueprint mesh under ``mesh/``. A file with a grid is used
+  with ``[Source] type = "voxel_map"``, ``[VoxelMap] format = "exaconstit"``; a file with only a
+  grain table (with positions) with ``[Seeds] source = "file"``. Written by
+  ``write_microstructure_file`` (and its grid shortcut ``write_voxel_map``) with h5py only: the
+  Conduit Python module is not needed.
+* the optional CSV seed table, for grain lists written by hand or with a spreadsheet
+  (``write_seed_table``). Used with ``[Seeds] source = "file"`` like a grain-table-only HDF5 file.
 
-Both formats are specified in the C++ reader headers, ``src/microstructure/io/seed_table_io.hpp``
-and ``src/microstructure/io/voxel_map_io.hpp``; the functions here write exactly what the readers
-(``seed_table_io.cpp`` and ``voxel_map_io.cpp``) expect.
+Both formats are specified in the C++ reader headers,
+``src/microstructure/io/microstructure_file_io.hpp`` and ``src/microstructure/io/seed_table_io.hpp``
+(user-level description: ``doc/microstructure.md``, section 3); the functions here write exactly
+what the readers expect.
 
 Orientations
 ------------
@@ -46,8 +51,8 @@ Mapping between parametrizations (all standard; no convention is chosen here):
 Both conversions return w >= 0. q and -q are the same rotation, so picking the sign is not a
 convention change; it only makes the output unique.
 
-Requirements: Python 3 and numpy. h5py is needed only to write or read voxel maps; without it
-those functions raise ``ConverterError`` with a clear message.
+Requirements: Python 3 and numpy. h5py is needed only to write or read microstructure files;
+without it those functions raise ``ConverterError`` with a clear message.
 """
 
 import math
@@ -57,7 +62,7 @@ import sys
 import numpy as np
 
 try:
-    import h5py  # noqa: F401  (optional; only the voxel map functions need it)
+    import h5py  # noqa: F401  (optional; only the HDF5 microstructure file functions need it)
     HAVE_H5PY = True
 except ImportError:  # pragma: no cover - depends on the local Python installation
     h5py = None
@@ -66,7 +71,10 @@ except ImportError:  # pragma: no cover - depends on the local Python installati
 
 # Names written into the files so a human can tell what produced them.
 SEED_TABLE_FORMAT_NAME = "ExaConstit seed table v1"
-VOXEL_MAP_FORMAT_NAME = "ExaConstit voxel map v2"
+# The microstructure file's `format` value and the version this module writes (the C++ reader
+# refuses versions newer than it knows; adding optional datasets never changes the version)
+MICROSTRUCTURE_FORMAT_NAME = "ExaConstit microstructure"
+MICROSTRUCTURE_FORMAT_VERSION = 1
 
 # The seed-table reader rejects a quaternion whose norm differs from 1 by more than this.
 QUAT_NORM_TOLERANCE = 1.0e-3
@@ -345,7 +353,7 @@ def write_seed_table(path, columns, comments=()):
     Input:
       path     - output file path;
       columns  - dict mapping column name -> sequence of values, one per seed. Required:
-                 "x", "y", "z". Optional: "id" (int >= 0, unique), "qw","qx","qy","qz" (all
+                 "x", "y", "z". Optional: "id" (int >= 1, unique), "qw","qx","qy","qz" (all
                  four or none), "phase" (1 <= int <= 2^31-1), "weight", one of "volume"/"radius"/
                  "diameter" (> 0), and the six shape entries "m11".."m12" (all or none).
                  Unknown names are refused.
@@ -392,8 +400,8 @@ def write_seed_table(path, columns, comments=()):
     # Step 3: value rules (unique non-negative ids, unit quaternions, positive sizes, ...)
     if "id" in arrays:
         ids = arrays["id"]
-        if np.any(ids < 0):
-            raise ConverterError("seed table: ids must be >= 0")
+        if np.any(ids < 1):
+            raise ConverterError("seed table: ids must be >= 1")
         unique_ids, counts = np.unique(ids, return_counts=True)
         if np.any(counts > 1):
             raise ConverterError("seed table: duplicate id %d" % unique_ids[counts > 1][0])
@@ -482,124 +490,270 @@ def read_seed_table(path):
 def require_h5py():
     """Raise ConverterError with an explanation when h5py is not installed."""
     if not HAVE_H5PY:
-        raise ConverterError("writing or reading an HDF5 voxel map needs the Python package "
-                             "h5py, which is not installed (try: pip install h5py, or conda "
-                             "install h5py)")
+        raise ConverterError("writing or reading an HDF5 microstructure file needs the Python "
+                             "package h5py, which is not installed (try: pip install h5py, or "
+                             "conda install h5py)")
+
+
+# Per-grain datasets of the grain table: name -> (values per grain, numpy type)
+GRAIN_DATASETS = (("quat", 4, np.float64), ("phase", 1, np.int32), ("position", 3, np.float64),
+                  ("volume", 1, np.float64), ("weight", 1, np.float64),
+                  ("shape", 6, np.float64))
+
+
+def _check_grains(grains):
+    """
+    Check a grain table dict and return a new dict sorted by id with numpy arrays: "id" int64
+    (G,), and the optional entries of GRAIN_DATASETS shaped (G,) or (G, c). Raises
+    ConverterError for any rule of the format (ids in [1, 2^31 - 1] and unique, counts, unit
+    quaternions, phases >= 1, finite values, volumes > 0).
+    """
+    if "id" not in grains:
+        raise ConverterError("microstructure file: the grain table needs 'id'")
+    unknown = set(grains) - {"id"} - {name for name, _, _ in GRAIN_DATASETS}
+    if unknown:
+        raise ConverterError("microstructure file: unknown grain table entries %s"
+                             % sorted(unknown))
+    ids = np.asarray(grains["id"])
+    if ids.size == 0 or not np.issubdtype(ids.dtype, np.integer):
+        raise ConverterError("microstructure file: 'id' must be a non-empty integer array")
+    ids = ids.astype(np.int64).reshape(-1)
+    order = np.argsort(ids, kind="stable")
+    ids = ids[order]
+    if ids[0] < 1 or ids[-1] > INT32_MAX:
+        raise ConverterError("microstructure file: grain ids must be in [1, 2^31 - 1]")
+    if np.any(ids[1:] == ids[:-1]):
+        raise ConverterError("microstructure file: duplicate grain id %d"
+                             % ids[1:][ids[1:] == ids[:-1]][0])
+    result = {"id": ids}
+    for name, per_grain, dtype in GRAIN_DATASETS:
+        if grains.get(name) is None:
+            continue
+        values = np.asarray(grains[name], dtype=np.float64)
+        if values.size != per_grain * ids.size:
+            raise ConverterError("microstructure file: '%s' holds %d values; expected %d per "
+                                 "grain for %d grains" % (name, values.size, per_grain, ids.size))
+        values = values.reshape((ids.size, per_grain) if per_grain > 1 else (ids.size,))[order]
+        if not np.all(np.isfinite(values)):
+            raise ConverterError("microstructure file: '%s' holds values that are not finite"
+                                 % name)
+        if name == "quat":
+            norms = np.linalg.norm(values, axis=1)
+            bad = np.nonzero(np.abs(norms - 1.0) > QUAT_NORM_TOLERANCE)[0]
+            if bad.size > 0:
+                raise ConverterError("microstructure file: grain %d has quaternion norm %.6g"
+                                     % (ids[bad[0]], norms[bad[0]]))
+        if name == "phase":
+            if np.any(values != np.floor(values)) or np.any(values < 1) or \
+                    np.any(values > INT32_MAX):
+                raise ConverterError("microstructure file: phases must be whole numbers in "
+                                     "[1, 2^31 - 1]")
+        if name == "volume" and np.any(values <= 0.0):
+            raise ConverterError("microstructure file: volumes must be > 0")
+        result[name] = values.astype(dtype)
+    return result
+
+
+def _check_grid(grid):
+    """
+    Check a grid dict ("grain_ids" integer (nz, ny, nx), "origin", "spacing" 3 floats each) and
+    return (ids int64 (nz, ny, nx), origin float64[3], spacing float64[3]).
+    """
+    for key in ("grain_ids", "origin", "spacing"):
+        if key not in grid:
+            raise ConverterError("microstructure file: the grid needs '%s'" % key)
+    ids = np.asarray(grid["grain_ids"])
+    if ids.ndim != 3:
+        raise ConverterError("microstructure file: grain_ids must have shape (nz, ny, nx) (x "
+                             "varying fastest), got %s" % (ids.shape,))
+    if not np.issubdtype(ids.dtype, np.integer):
+        raise ConverterError("microstructure file: grain_ids must be integers")
+    ids = ids.astype(np.int64)
+    # Grain ids become C ints in the generator
+    if ids.size and int(ids.max()) > INT32_MAX:
+        raise ConverterError("microstructure file: grain id %d is above the limit 2^31 - 1"
+                             % int(ids.max()))
+    origin = np.asarray(grid["origin"], dtype=np.float64).reshape(3)
+    spacing = np.asarray(grid["spacing"], dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(spacing)):
+        raise ConverterError("microstructure file: origin and spacing must be finite")
+    if np.any(spacing <= 0.0):
+        raise ConverterError("microstructure file: spacing must be > 0, got %s" % spacing)
+    return ids, origin, spacing
+
+
+def write_microstructure_file(path, grains, grid=None, provenance=None, compression=None):
+    """
+    Write an "ExaConstit microstructure file" (HDF5, format_version 1) with h5py.
+
+    Layout (every value is a dataset, never an HDF5 attribute, so Conduit can load the file;
+    exact rules in src/microstructure/io/microstructure_file_io.hpp):
+      format, format_version          "ExaConstit microstructure", 1
+      grains/id                       int64 (G,), in [1, 2^31 - 1], unique (sorted on write)
+      grains/quat                     float64 (G, 4), w x y z, crystal-to-sample   (optional)
+      grains/phase                    int32 (G,), >= 1                             (optional)
+      grains/position                 float64 (G, 3), seed point                   (optional)
+      grains/volume                   float64 (G,), > 0, target size               (optional)
+      grains/weight                   float64 (G,), laguerre / additive weight     (optional)
+      grains/shape                    float64 (G, 6), m11 m22 m33 m23 m13 m12      (optional)
+      mesh/...                        only with `grid`: a Conduit Blueprint uniform mesh,
+                                      coordset "coords" (dims = POINTS per axis = cells + 1,
+                                      origin = lower corner of cell (0,0,0), spacing), topology
+                                      "topo", element field "grain_id" with values (nz, ny, nx),
+                                      x varying fastest; values <= 0 = unassigned
+      provenance/<key>                strings, informational (readers ignore them)
+
+    Input:
+      path       - output .h5 file (overwritten);
+      grains     - dict: "id" plus any of the optional entries above, one row per grain in the
+                   same order (rows are sorted by id before writing);
+      grid       - optional dict: "grain_ids" (integer array (nz, ny, nx)), "origin", "spacing"
+                   (3 floats each, the units the user will give the generator);
+      provenance - optional dict of strings (converter name, source file, options);
+      compression - None (default) or "gzip": compress the grid values. Off by default because
+                   the generator can only read gzip data when its HDF5 library was built with
+                   zlib (ExaConstit's own HDF5 build is not).
+    Output: none. Raises ConverterError on invalid content or missing h5py.
+    """
+    require_h5py()
+    if compression not in (None, "gzip"):
+        raise ConverterError("microstructure file: compression must be None or \"gzip\"")
+    table = _check_grains(grains)
+    if grid is not None:
+        ids, origin, spacing = _check_grid(grid)
+    with h5py.File(path, "w") as h5:
+        h5.create_dataset("format", data=MICROSTRUCTURE_FORMAT_NAME)
+        h5.create_dataset("format_version", data=np.int64(MICROSTRUCTURE_FORMAT_VERSION))
+        for name, values in table.items():
+            h5.create_dataset("grains/" + name, data=values)
+        if grid is not None:
+            nz, ny, nx = ids.shape
+            cs = h5.create_group("mesh/coordsets/coords")
+            cs.create_dataset("type", data="uniform")
+            for axis, cells in zip(("i", "j", "k"), (nx, ny, nz)):
+                cs.create_dataset("dims/" + axis, data=np.int64(cells + 1))
+            for d, axis in enumerate(("x", "y", "z")):
+                cs.create_dataset("origin/" + axis, data=origin[d])
+                cs.create_dataset("spacing/d" + axis, data=spacing[d])
+            topo = h5.create_group("mesh/topologies/topo")
+            topo.create_dataset("type", data="uniform")
+            topo.create_dataset("coordset", data="coords")
+            field = h5.create_group("mesh/fields/grain_id")
+            field.create_dataset("association", data="element")
+            field.create_dataset("topology", data="topo")
+            # Chunks of up to 32^3 cells match the generator's default read tiles
+            chunks = tuple(min(32, n) for n in ids.shape)
+            if compression is None:
+                field.create_dataset("values", data=ids, chunks=chunks)
+            else:
+                field.create_dataset("values", data=ids, chunks=chunks, compression=compression,
+                                     shuffle=True)
+        for key, value in (provenance or {}).items():
+            h5.create_dataset("provenance/" + key, data=str(value))
+
+
+def _as_text(value):
+    """
+    A string dataset's value as str: h5py variable-length strings (str or bytes), fixed-length
+    strings (bytes), and Conduit's form, an array of 1-byte characters ending in a NUL.
+    """
+    if isinstance(value, np.ndarray):
+        value = b"".join(value.reshape(-1).tolist())
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    return str(value).rstrip("\0")
+
+
+def _scalar(value):
+    """A one-number dataset's value: an HDF5 scalar (h5py) or a 1-element array (Conduit)."""
+    return np.asarray(value).reshape(-1)[0]
+
+
+def read_microstructure_file(path):
+    """
+    Read an ExaConstit microstructure file written by write_microstructure_file or the generator
+    (for tests and quick checks; the generator has its own reader).
+
+    Output: dict with "format_version", "grains" (dict of numpy arrays, per-grain rows reshaped
+    to (G, c)), "provenance" (dict of strings) and, for a file with a grid, "grain_ids" (int64,
+    (nz, ny, nx)), "origin" and "spacing" (float64[3]).
+    """
+    require_h5py()
+    result = {"grains": {}, "provenance": {}}
+    with h5py.File(path, "r") as h5:
+        name = _as_text(h5["format"][()])
+        if name != MICROSTRUCTURE_FORMAT_NAME:
+            raise ConverterError("%s is not an ExaConstit microstructure file" % path)
+        result["format_version"] = int(_scalar(h5["format_version"][()]))
+        grains = h5["grains"]
+        result["grains"]["id"] = np.asarray(grains["id"][...], dtype=np.int64).reshape(-1)
+        count = result["grains"]["id"].size
+        for key, per_grain, _ in GRAIN_DATASETS:
+            if key in grains:
+                values = grains[key][...]
+                result["grains"][key] = values.reshape((count, per_grain) if per_grain > 1
+                                                       else (count,))
+        if "mesh" in h5:
+            cs = h5["mesh/coordsets/coords"]
+            dims = [int(_scalar(cs["dims/" + axis][()])) - 1 for axis in ("i", "j", "k")]
+            result["origin"] = np.array([_scalar(cs["origin/" + a][()]) for a in ("x", "y", "z")],
+                                        dtype=np.float64)
+            result["spacing"] = np.array([_scalar(cs["spacing/d" + a][()])
+                                          for a in ("x", "y", "z")], dtype=np.float64)
+            values = np.asarray(h5["mesh/fields/grain_id/values"][...], dtype=np.int64)
+            result["grain_ids"] = values.reshape(dims[2], dims[1], dims[0])
+        if "provenance" in h5:
+            for key in h5["provenance"]:
+                result["provenance"][key] = _as_text(h5["provenance"][key][()])
+    return result
 
 
 def write_voxel_map(path, grain_ids, origin, spacing, feature_ids=None, feature_quats=None,
                     feature_phases=None, attributes=None):
     """
-    Write an "ExaConstit voxel map v2" HDF5 file.
-
-    Layout (see WORK_PACKAGES.md, "Shared formats"):
-      /grain_ids      int64, shape (nz, ny, nx): x varies fastest. Values <= 0 = unassigned;
-                      values must be < 2^31 (the generator stores grains as C ints).
-      /origin         float64[3]: x, y, z of the LOWER CORNER of voxel (0,0,0). Voxel (i,j,k)
-                      covers origin + [i, i+1]*spacing_x, etc.
-      /spacing        float64[3], all > 0.
-      /features/id    int64[nf], unique, in [1, 2^31 - 1]   (optional)
-      /features/quat  float64[nf, 4], w x y z               (optional, needs /features/id)
-      /features/phase int32[nf]                             (optional, needs /features/id)
-    String attributes on the root group (format name, provenance) are informational only.
+    Write a microstructure file with a grid (a "voxel map"): the shortcut the grid converters
+    use for write_microstructure_file.
 
     Input:
       path        - output .h5 file (overwritten);
-      grain_ids   - integer array of shape (nz, ny, nx);
-      origin, spacing - 3 floats each, in the units the user will give the generator;
+      grain_ids   - integer array of shape (nz, ny, nx), x varying fastest; values <= 0 =
+                    unassigned, values < 2^31;
+      origin, spacing - 3 floats each: lower corner of voxel (0, 0, 0) and voxel edge lengths;
       feature_ids, feature_quats, feature_phases - optional per-grain table, rows in the same
-                    order (they are sorted by id before writing);
-      attributes  - optional dict of extra root attributes (strings or numbers).
+                    order. Without feature_ids the grain table lists the positive ids of the
+                    grid (the format always has grains/id);
+      attributes  - optional dict of provenance strings.
     Output: none. Raises ConverterError on invalid content or missing h5py.
     """
-    require_h5py()
-
-    # Step 1: check the grid
-    ids = np.asarray(grain_ids)
-    if ids.ndim != 3:
-        raise ConverterError("voxel map: grain_ids must have shape (nz, ny, nx), got %s"
-                             % (ids.shape,))
-    if not np.issubdtype(ids.dtype, np.integer):
-        raise ConverterError("voxel map: grain_ids must be integers")
-    ids = ids.astype(np.int64)
-    # Grain ids become C ints in the generator
-    if ids.size and int(ids.max()) > INT32_MAX:
-        raise ConverterError("voxel map: grain id %d is above the limit 2^31 - 1"
-                             % int(ids.max()))
-    origin = np.asarray(origin, dtype=np.float64).reshape(3)
-    spacing = np.asarray(spacing, dtype=np.float64).reshape(3)
-    if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(spacing)):
-        raise ConverterError("voxel map: origin and spacing must be finite")
-    if np.any(spacing <= 0.0):
-        raise ConverterError("voxel map: spacing must be > 0, got %s" % spacing)
-
-    # Step 2: check the optional per-grain table and sort it by id
     if feature_ids is None and (feature_quats is not None or feature_phases is not None):
         raise ConverterError("voxel map: feature quaternions/phases need feature ids")
-    if feature_ids is not None:
-        fids = np.asarray(feature_ids, dtype=np.int64).reshape(-1)
-        order = np.argsort(fids, kind="stable")
-        fids = fids[order]
-        if fids.size > 0 and (fids[0] < 1 or fids[-1] > INT32_MAX):
-            raise ConverterError("voxel map: feature ids must be in [1, 2^31 - 1]")
-        if np.any(fids[1:] == fids[:-1]):
-            raise ConverterError("voxel map: duplicate feature id")
-        if feature_quats is not None:
-            fquats = np.asarray(feature_quats, dtype=np.float64).reshape(-1, 4)
-            if fquats.shape[0] != fids.size:
-                raise ConverterError("voxel map: %d quaternions for %d feature ids"
-                                     % (fquats.shape[0], fids.size))
-            fquats = fquats[order]
-            norms = np.linalg.norm(fquats, axis=1)
-            bad = np.nonzero(np.abs(norms - 1.0) > QUAT_NORM_TOLERANCE)[0]
-            if bad.size > 0:
-                raise ConverterError("voxel map: feature id %d has quaternion norm %.6g"
-                                     % (fids[bad[0]], norms[bad[0]]))
-        if feature_phases is not None:
-            fphases = np.asarray(feature_phases, dtype=np.int64).reshape(-1)
-            if fphases.size != fids.size:
-                raise ConverterError("voxel map: %d phases for %d feature ids"
-                                     % (fphases.size, fids.size))
-            fphases = fphases[order]
-            if np.any(fphases < 1) or np.any(fphases > INT32_MAX):
-                raise ConverterError("voxel map: phases must be in [1, 2^31)")
-
-    # Step 3: write the datasets
-    with h5py.File(path, "w") as h5:
-        h5.attrs["format"] = VOXEL_MAP_FORMAT_NAME
-        for key, value in (attributes or {}).items():
-            h5.attrs[key] = value
-        h5.create_dataset("grain_ids", data=ids, dtype=np.int64)
-        h5.create_dataset("origin", data=origin, dtype=np.float64)
-        h5.create_dataset("spacing", data=spacing, dtype=np.float64)
-        if feature_ids is not None:
-            group = h5.create_group("features")
-            group.create_dataset("id", data=fids, dtype=np.int64)
-            if feature_quats is not None:
-                group.create_dataset("quat", data=fquats, dtype=np.float64)
-            if feature_phases is not None:
-                group.create_dataset("phase", data=fphases.astype(np.int32), dtype=np.int32)
+    grid = {"grain_ids": grain_ids, "origin": origin, "spacing": spacing}
+    ids, _, _ = _check_grid(grid)
+    if feature_ids is None:
+        present = np.unique(ids[ids > 0])
+        if present.size == 0:
+            raise ConverterError("voxel map: no voxel holds a grain id > 0")
+        grains = {"id": present}
+    else:
+        grains = {"id": feature_ids, "quat": feature_quats, "phase": feature_phases}
+    write_microstructure_file(path, grains, grid=grid, provenance=attributes)
 
 
 def read_voxel_map(path):
     """
-    Read an "ExaConstit voxel map v2" HDF5 file (for tests and quick checks).
+    Read a microstructure file with a grid (for tests and quick checks).
 
-    Output: dict with "grain_ids" (int64, (nz, ny, nx)), "origin", "spacing" (float64[3]) and,
-    when present, "feature_id", "feature_quat", "feature_phase", plus "attrs" (root attributes).
+    Output: dict with "grain_ids" (int64, (nz, ny, nx)), "origin", "spacing" (float64[3]),
+    "feature_id" and, when present, "feature_quat", "feature_phase", plus "provenance".
     """
-    require_h5py()
-    result = {}
-    with h5py.File(path, "r") as h5:
-        result["grain_ids"] = np.asarray(h5["grain_ids"][...], dtype=np.int64)
-        result["origin"] = np.asarray(h5["origin"][...], dtype=np.float64)
-        result["spacing"] = np.asarray(h5["spacing"][...], dtype=np.float64)
-        if "features" in h5:
-            group = h5["features"]
-            for name in ("id", "quat", "phase"):
-                if name in group:
-                    result["feature_" + name] = group[name][...]
-        result["attrs"] = {key: h5.attrs[key] for key in h5.attrs}
+    data = read_microstructure_file(path)
+    if "grain_ids" not in data:
+        raise ConverterError("%s has no grid (it holds only a grain table)" % path)
+    result = {"grain_ids": data["grain_ids"], "origin": data["origin"],
+              "spacing": data["spacing"], "provenance": data["provenance"]}
+    for name in ("id", "quat", "phase"):
+        if name in data["grains"]:
+            result["feature_" + name] = data["grains"][name]
     return result
 
 

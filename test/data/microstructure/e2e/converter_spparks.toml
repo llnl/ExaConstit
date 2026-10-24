@@ -5,7 +5,8 @@
 # e2e_spparks.dump at test time (test_tool_stage1d: 8 x 8 x 8 sites, four column grains, one
 # unassigned site and one one-site island of a repeated spin), converts it with
 #     python scripts/microstructure/spparks_to_voxels.py e2e_spparks.dump e2e_spparks.h5
-# (an "ExaConstit voxel map v2" in lattice units: origin 0, spacing 1), then runs
+# (an ExaConstit microstructure file with a voxel map in lattice units: origin 0, spacing 1),
+# then runs
 #     microstructure_generator -i test/data/microstructure/e2e/converter_spparks.toml
 # in end_to_end_stage1d/np1 and np2 and checks the grain count (4) and that both runs write
 # byte-identical files. No mechanics run.

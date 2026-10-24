@@ -30,7 +30,8 @@
  *     file, region map (whenever there is more than one region), grain table <base>_grains.csv
  *     (with phase, filler and voxel feature id columns when they carry information), optional
  *     grain adjacency table
- *     <base>_adjacency.csv ([Output] grain_adjacency), ParaView view.
+ *     <base>_adjacency.csv ([Output] grain_adjacency), optional microstructure file
+ *     <base>.h5 ([Output] microstructure_file), ParaView view.
  *  8. Rank-0 summary: provenance (including the grain source: generated seeds, a seed table or
  *     a voxel map, with its file and format), how the grains were made (seed generator,
  *     Johnson-Mehl nucleation, seed table with its region of interest and filler seeds, or voxel
@@ -786,6 +787,7 @@ struct WrittenFiles {
     fs::path region_map;
     fs::path grain_table;
     fs::path grain_adjacency;
+    fs::path microstructure_file;
     fs::path paraview;
 };
 
@@ -909,6 +911,9 @@ void PrintSummary(const ms::MicrostructureOptions& options,
     os << "  grain table:       " << files.grain_table.string() << "\n";
     if (!files.grain_adjacency.empty()) {
         os << "  grain adjacency:   " << files.grain_adjacency.string() << "\n";
+    }
+    if (!files.microstructure_file.empty()) {
+        os << "  microstructure:    " << files.microstructure_file.string() << "\n";
     }
     if (!files.paraview.empty()) {
         os << "  ParaView:          " << files.paraview.string() << "\n";
@@ -1137,6 +1142,9 @@ int main(int argc, char** argv) {
         if (out.grain_adjacency) {
             files.grain_adjacency = base.string() + "_adjacency.csv";
         }
+        if (out.microstructure_file == "grains") {
+            files.microstructure_file = base.string() + ".h5";
+        }
         if (root) {
             ms::WriteOrientationFile(files.orientation_file, result.grain_quat);
             if (want_grain_file) {
@@ -1148,6 +1156,10 @@ int main(int argc, char** argv) {
             ms::WriteGrainTable(files.grain_table, ms::BuildGrainTable(result, report, stats));
             if (out.grain_adjacency) {
                 ms::WriteGrainAdjacency(files.grain_adjacency, ms::BuildAdjacencyTable(stats));
+            }
+            if (!files.microstructure_file.empty()) {
+                ms::WriteMicrostructureFile(files.microstructure_file,
+                                            ms::BuildMicrostructureGrainTable(result, report));
             }
         }
 

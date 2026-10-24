@@ -20,6 +20,13 @@
  * generator turns the rows into a SeedSet (microstructure_types.hpp), so measured grains can be
  * grown into the mesh with any of the tessellation metrics.
  *
+ * **Two file forms.** The CSV text form described below is optional, for users who write a grain
+ * list by hand. ReadSeedTable also accepts an ExaConstit microstructure file (HDF5, detected by
+ * its signature; microstructure_file_io.hpp) holding only a grain table: its grains/ datasets are
+ * the CSV columns (`id`, `position` = x y z, `quat`, `phase`, `weight`, `volume`, `shape`), read
+ * with the same rules and unit conversion (the CSV's radius and diameter columns have no HDF5
+ * counterpart).
+ *
  * **File syntax.**
  * - A UTF-8 byte-order mark at the start of the file (written by Excel's "CSV UTF-8" export)
  *   and Windows (CRLF) line endings are accepted.
@@ -34,8 +41,8 @@
  *
  * **Columns** (table units are the units of the file, s = units_scale, t = translate):
  * - `x, y, z` (required): position; mesh position = s * x + t.
- * - `id` (optional): int64 in [0, 2^63 - 1], unique; becomes SeedSet::source_id. Default: the
- *   0-based row index. Limit with ROI filler grains (seeding/roi_filler.hpp): the filler ids
+ * - `id` (optional): int64 in [1, 2^63 - 1], unique; becomes SeedSet::source_id. Default: the
+ *   1-based row number (first seed row = 1). Ids start at 1 as in the microstructure file. Limit with ROI filler grains (seeding/roi_filler.hpp): the filler ids
  *   start at max id + 1 and add the generator's candidate index (< 2^40), so every id must then
  *   be below 2^63 - 1 - 2^40 (FillOutsideRoi throws otherwise).
  * - `qw, qx, qy, qz` (optional, all four or none): crystal-to-sample passive orientation. The
@@ -118,8 +125,8 @@ struct SeedTable {
 };
 
 /**
- * @brief Reads a seed table on rank 0, converts it to mesh units and gives every rank an
- * identical copy.
+ * @brief Reads a seed table (CSV, or an HDF5 microstructure file holding a grain table) on rank 0,
+ * converts it to mesh units and gives every rank an identical copy.
  *
  * Steps: rank 0 opens and parses the file and checks every rule listed in the file comment; the
  * outcome (an error message, or the packed table) is broadcast, so all ranks either return the
@@ -151,6 +158,15 @@ SeedTable ReadSeedTable(const SeedTableParameters& params, MPI_Comm comm);
  *         has the wrong size for its has_* flag.
  */
 void WriteSeedTable(const std::filesystem::path& path, const SeedTable& table);
+
+/**
+ * @brief Inverse of a symmetric positive definite 3x3 tensor stored as (11, 22, 33, 23, 13, 12):
+ * the conversion between a grain shape tensor M and the Quadric metric tensor A = M^-1 (it works
+ * in both directions). Scale-independent test by Sylvester's criterion after dividing by the
+ * largest diagonal entry. Host only.
+ * @return false (and `a` unspecified) when `m` is not finite or not positive definite.
+ */
+bool InvertShapeTensorPublic(const double m[6], double a[6]);
 
 /**
  * @brief Removes the seeds whose position lies outside the closed box [lo, hi] (mesh units),

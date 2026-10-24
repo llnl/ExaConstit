@@ -9,18 +9,23 @@ describes the source format and cites the source code or documentation it follow
 |---|---|---|
 | `hexrd_grains_to_seeds.py` | HEXRD `grains.out` (far-field HEDM) | seed table CSV: position `t_vec_c`, quaternion of `exp_map_c` |
 | `midas_grains_to_seeds.py` | MIDAS `Grains.csv` (far-field HEDM) | seed table CSV: position `X,Y,Z`, quaternion of `O11..O33`, `radius`, `phase` |
-| `spparks_to_voxels.py` | SPPARKS text site dump | voxel map HDF5: spin = grain id, no orientations |
-| `exaca_to_voxels.py` | ExaCA VTK `GrainID` field (+ orientation file) | voxel map HDF5, optional per-grain quaternions |
-| `exaconstit_microstructure_io.py` | (shared module) | seed-table and voxel-map writers/readers, quaternion helpers |
+| `spparks_to_voxels.py` | SPPARKS text site dump | microstructure file with a voxel map: spin = grain id, no orientations |
+| `exaca_to_voxels.py` | ExaCA VTK `GrainID` field (+ orientation file) | microstructure file with a voxel map, optional per-grain quaternions |
+| `exaconstit_microstructure_io.py` | (shared module) | microstructure file and seed-table writers/readers, quaternion helpers |
 
 Formats written:
 
-- **ExaConstit seed table v1** (CSV, `[Seeds] source = "file"`): `#` comments, a header of
-  column names, one seed per row; real numbers with 17 significant digits.
-- **ExaConstit voxel map v2** (HDF5, `[Source] type = "voxel_map"`, `format = "exaconstit"`;
-  "v2" because ExaConstit's auto-mesh `grain_file` plus orientation file is the original, v1):
-  `/grain_ids` (nz, ny, nx), `/origin` (lower corner of voxel (0,0,0)), `/spacing`, optional
-  `/features/{id,quat,phase}`.
+- **ExaConstit microstructure file** (HDF5, `format_version` 1): a grain table (`grains/id`,
+  optional `quat`, `phase`, `position`, `volume`, `weight`, `shape`) and, for the grid
+  converters, a voxel map stored as a Conduit Blueprint uniform mesh under `mesh/`. Used with
+  `[Source] type = "voxel_map"`, `format = "exaconstit"` (with a voxel map) or `[Seeds] source =
+  "file"` (grain table with positions). Written with h5py only (`write_microstructure_file`,
+  `write_voxel_map`); the Conduit Python module is not needed. Specification:
+  `doc/microstructure.md`, section 3.2.
+- **ExaConstit seed table v1** (CSV, `[Seeds] source = "file"`, optional): `#` comments, a header
+  of column names, one seed per row; real numbers with 17 significant digits. Ids start at 1:
+  `hexrd_grains_to_seeds.py` writes HEXRD grain ID + 1 (HEXRD counts from 0), and
+  `midas_grains_to_seeds.py` has `--id-offset` for files that count from 0.
 
 Orientations: ExaConstit uses crystal->sample passive quaternions `w x y z` and passes them
 through unchanged, apart from normalizing them to unit length. The converters only change the

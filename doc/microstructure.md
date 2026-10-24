@@ -8,8 +8,9 @@ files with your own scripts.
 Contents:
 1. Johnson-Mehl grain count
 2. Why geodesic distance supports only some metrics
-3. File formats: inputs (seed table, voxel map) and outputs (mesh, grain file, orientation file,
-   region map, grain table, adjacency table)
+3. File formats: inputs (seed table CSV, ExaConstit microstructure file, phase-to-region file) and
+   outputs (mesh, grain file, orientation file, region map, grain table, adjacency table,
+   microstructure file)
 
 ---
 
@@ -105,7 +106,12 @@ and maps tensors from crystal to sample components as A_sample = C A_crystal C^T
 (ExaCMech `quat_to_tensor`). The Bunge matrix g (sample to crystal, rows = crystal axes in sample
 coordinates) is C^T, so a quaternion computed from g must be conjugated.
 
-### 3.1 Seed table ("ExaConstit seed table v1", CSV text)
+### 3.1 Seed table as CSV text ("ExaConstit seed table v1", optional)
+
+The CSV form is for short grain lists written by hand or in a spreadsheet. It is never required:
+a microstructure file with only a grain table (section 3.2) says the same and is what the
+converters and the generator write. Both are read by `[Seeds] source = "file"`; the reader tells
+them apart by the HDF5 signature at the start of the file.
 
 Grammar (reader: `src/microstructure/io/seed_table_io.hpp`):
 - UTF-8; a byte-order mark and Windows (CRLF) line endings are accepted.
@@ -122,7 +128,7 @@ Columns:
 | Column | Required | Meaning |
 |---|---|---|
 | `x, y, z` | yes | seed position |
-| `id` | no | integer, unique, >= 0 (default: row index, 0-based) |
+| `id` | no | integer, unique, >= 1 (default: the row number, counting from 1) |
 | `qw, qx, qy, qz` | no (all four or none) | orientation; a row with norm off 1 by more than 1e-3 is an error; written normalized |
 | `phase` | no | integer >= 1 |
 | `weight` | no | laguerre / quadric w or additive a, in mesh units (not scaled) |
@@ -137,36 +143,73 @@ duplicate positions only warn.
 The quaternion sign does not matter physically (q and -q are the same rotation); it is kept as
 written, apart from normalization.
 
-### 3.2 Voxel map ("ExaConstit voxel map v2", HDF5)
+### 3.2 ExaConstit microstructure file (HDF5)
 
-Reader: `src/microstructure/io/voxel_map_io.hpp`. Writer for scripts:
-`write_voxel_map` in `scripts/microstructure/exaconstit_microstructure_io.py`. ("v2" because
-ExaConstit's auto-mesh grain file plus orientation file counts as v1.) This format is scheduled to
-be replaced in Stage 2 by one format covering seeds, regular grids and arbitrary point sets
-(`agent_microstructure/DATA_FORMAT_PROPOSAL.md`).
+One HDF5 file holds a grain table and, optionally, a voxel map (a grain id per cell of a regular
+grid). With a voxel map it is read by `[Source] type = "voxel_map"`, `[VoxelMap] format =
+"exaconstit"`; with only a grain table (with positions) by `[Seeds] source = "file"`. The
+generator writes the grain table of a run with `[Output] microstructure_file = "grains"`.
 
-| Path | Kind | Stored type | Shape | Meaning |
-|---|---|---|---|---|
-| `/grain_ids` | dataset | any HDF5 integer type (read as int64) | (nz, ny, nx) or (nz, ny, nx, 1) | grain id of every voxel; <= 0 = unassigned |
-| `/origin` | dataset (not an attribute) | any float type (read as double) | (3,) | lower corner of voxel (0,0,0), x y z |
-| `/spacing` | dataset | any float type | (3,) | voxel edge lengths dx dy dz, > 0 |
-| `/features/id` | dataset, optional | any integer type | (nf,) | grain ids of the per-grain table, unique, >= 1 |
-| `/features/quat` | dataset, optional | any float type | (nf, 4) | w x y z per grain, crystal-to-sample |
-| `/features/phase` | dataset, optional | any integer type | (nf,) | phase per grain, >= 1 |
+Readers: `src/microstructure/io/microstructure_file_io.hpp` (header, grain table, grid
+description; through Conduit relay) and `voxel_map_io.hpp` (the per-cell ids, read in tiles).
+Writer for scripts: `write_microstructure_file` (and its grid shortcut `write_voxel_map`) in
+`scripts/microstructure/exaconstit_microstructure_io.py`, which needs only h5py.
+
+**Every value is an HDF5 dataset, never an HDF5 attribute.** Conduit's HDF5 reader reads groups
+and datasets only, so a datasets-only file loads into a `conduit::Node` with one call, and the
+voxel part is a valid Conduit Blueprint mesh (`conduit::blueprint::mesh::verify` accepts the
+`mesh` group; tested for files written by the C++ test fixtures and by the Python writer).
+
+| Path | Type | Values | Meaning |
+|---|---|---|---|
+| `format` | string | | `"ExaConstit microstructure"` |
+| `format_version` | integer | 1 | checked: a newer version is refused |
+| `grains/id` | integer | G | grain ids, >= 1, < 2^31, unique (required) |
+| `grains/quat` | float | 4 per grain | w x y z, crystal-to-sample (passive), norm within 1e-3 of 1 |
+| `grains/phase` | integer | G | phase per grain, >= 1 |
+| `grains/position` | float | 3 per grain | seed point x y z (required to use the file as seeds) |
+| `grains/volume` | float | G | target grain volume, > 0 (scaled by s^3) |
+| `grains/weight` | float | G | laguerre / additive weight, in mesh units (not scaled) |
+| `grains/shape` | float | 6 per grain | shape tensor M = m11 m22 m33 m23 m13 m12 (SPD, length^2, scaled by s^2) |
+| `mesh/coordsets/coords/type` | string | | `"uniform"` |
+| `mesh/coordsets/coords/dims/i`, `j`, `k` | integer | 1 each | grid POINTS per axis = cells + 1 (Blueprint convention) |
+| `mesh/coordsets/coords/origin/x`, `y`, `z` | float | 1 each | lower corner of cell (0, 0, 0) |
+| `mesh/coordsets/coords/spacing/dx`, `dy`, `dz` | float | 1 each | cell edge lengths, > 0 |
+| `mesh/topologies/topo/type`, `coordset` | string | | `"uniform"`, `"coords"` |
+| `mesh/fields/grain_id/association`, `topology` | string | | `"element"`, `"topo"` |
+| `mesh/fields/grain_id/values` | integer | nx ny nz | grain id per cell, <= 0 = unassigned |
 
 Rules:
-- **Memory order:** x varies fastest, then y, then z. Voxel (i, j, k), 0-based with i along x, is
-  entry i + nx (j + ny k) of the flattened array, i.e. `grain_ids[k, j, i]` in numpy. Data in
-  another order must be transposed before writing.
-- Voxel (i, j, k) is the box from origin + (i, j, k) * spacing to origin + (i+1, j+1, k+1) * spacing.
-- HDF5 converts stored types to the reader's types, so int32/int64 and float32/float64 all work.
-- Every grain id that the mesh actually uses must have a row in the feature table when
-  orientations or phases are read; unused rows are allowed. Ids need not be contiguous.
-- Chunked and compressed datasets are fine (HDF5 handles them; gzip is built into HDF5, other
-  filters need the matching HDF5 plugin). Ranks read cubes of `tile_size`^3 voxels, so chunks of a
-  similar size (e.g. 32^3) read efficiently. The serial HDF5 library is enough: ranks open the
-  file read-only, each reading only its own cubes.
-- A `format` attribute is written by the Python writer but not checked by the reader.
+- **Optional means "not given".** Every `grains/` dataset except `id` is optional, and a missing
+  dataset never stands for a default value.
+- **Row layout.** Per-grain datasets hold one row per grain: shape (c G) flat (as Conduit writes
+  it) or (G, c) (as h5py writes a list of rows), with c values per grain. A transposed (c, G)
+  array is refused instead of being misread.
+- **Memory order of the grid:** x varies fastest, then y, then z. Cell (i, j, k), 0-based with i
+  along x, is entry i + nx (j + ny k) of the flattened array, i.e. `values[k, j, i]` in numpy.
+  `values` may be stored flat (nx ny nz) or as (nz, ny, nx), optionally (nz, ny, nx, 1); any other
+  shape, including (nx, ny, nz) with nx != nz, is refused. Data in another order must be
+  transposed before writing.
+- Cell (i, j, k) is the box from origin + (i, j, k) * spacing to origin + (i+1, j+1, k+1) * spacing.
+  Origin and spacing are required, although Blueprint itself would default them.
+- **Types.** Any HDF5 integer or float type is converted on reading (int32, uint16, float32, ...).
+  Strings may be fixed or variable length (h5py) or an array of 1-byte characters ending in a NUL
+  (Conduit, so also the files the generator writes). Single numbers may be HDF5 scalars (h5py) or
+  1-element arrays (Conduit).
+- **Grain table and grid.** `grains/id` must list every id the mesh uses when orientations or
+  phases are read; extra rows are allowed and ids need not be contiguous. The Python writer, given
+  no per-grain data, writes the positive ids found in the grid.
+- **Growing the format.** Readers ignore groups and datasets they do not know (e.g. the
+  `provenance/` strings the converters write). Adding an optional dataset never changes
+  `format_version`; the version only changes when the meaning of existing data changes, and a
+  reader refuses versions newer than it knows.
+- **Compression.** Chunked datasets are fine; ranks read cubes of `tile_size`^3 cells, so chunks
+  of a similar size (e.g. 32^3) read efficiently. Compressed datasets need an HDF5 library built
+  with the matching filter: gzip needs HDF5 built with zlib, which ExaConstit's own HDF5 build is
+  not, so the Python writer does not compress unless asked (`compression="gzip"`). The reader names
+  a missing filter in its error; `h5repack -f NONE in.h5 out.h5` removes compression.
+- The serial HDF5 library is enough: ranks open the file read-only, each reading only its cubes.
+- ExaConstit's older auto-mesh grain file plus orientation file is not read here.
 
 DREAM.3D files are read directly (`format = "dream3d"`): `FeatureIds` per voxel, per-feature
 `AvgQuats` and `Phases` (row = feature id, row 0 unused). Files written by DREAM.3D's EbsdLib store
@@ -180,6 +223,15 @@ and `conjugate = true` (verified against EbsdLib's Euler-to-quaternion conversio
 the grid. Outside points take a neighbor's grain, so a large count means the mesh extends past the
 data; compare the mesh bounding box with origin .. origin + dims * spacing.
 
+### 3.2a Phase-to-region file (`[Regions] phase_to_region_file`)
+
+Plain text, read while the options are parsed: one `phase region` pair of integers per line,
+separated by spaces or tabs, the layout of ExaConstit's `region_mapping_file`. Blank lines and
+lines whose first non-blank character is `#` are skipped. A phase listed twice with the same region
+is accepted, with two different regions it is an error, and so is any line that is not exactly two
+integers. The values follow the inline `phase_to_region` rules (phase ids >= 1, the regions used
+must be exactly 1..M). It replaces the inline map; giving both is an error.
+
 ### 3.3 Output files (written by the tool; `<b>` = `<directory>/<basename>`)
 
 | File | Format |
@@ -191,6 +243,7 @@ data; compare the mesh bounding box with origin .. origin + dims * spacing.
 | `<b>.regions` | text, one `grain region` line per grain, no header (only written with 2+ regions); read by `region_mapping_file` |
 | `<b>_grains.csv` | CSV with header: grain_id, qw, qx, qy, qz, then region, source_id, num_elements, volume, cx, cy, cz, num_neighbors, target_volume, phase, filler, feature_id (optional columns only when they carry information) |
 | `<b>_adjacency.csv` | CSV with header `grain_a,grain_b,shared_area,num_faces`, one row per pair of grains sharing element faces (grain_a < grain_b) |
+| `<b>.h5` | microstructure file (section 3.2), only with `microstructure_file = "grains"`: `grains/id` = 1..N (passthrough grains left out, filler grains kept), `quat` (final orientations), `phase` (when every grain has one), and when every grain grew from a seed `position`, `weight`, `shape` (M = A^-1, only when every per-seed tensor is invertible) and `volume` (the seed's size target, when targets were used). A grain split off by the cleanup repeats its parent's seed. |
 | `<b>_paraview/` | ParaView collection (`.pvd`), cell field `grain_id` |
 
 Passthrough parts ([Mesh] passthrough_attributes) become the last grain ids, N+1, N+2, ..., so in

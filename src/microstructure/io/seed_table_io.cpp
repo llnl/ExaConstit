@@ -1,5 +1,6 @@
 #include "microstructure/io/seed_table_io.hpp"
 
+#include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
@@ -321,6 +322,37 @@ bool InvertShapeTensor(const double m_in[6], double a[6]) {
     return true;
 }
 
+/**
+ * Number of seeds whose position equals that of another seed (sorted by x, y, z, then index;
+ * every equal neighbor counts once).
+ */
+std::int64_t CountDuplicatePositions(const SeedSet& seeds) {
+    const std::size_t n = seeds.x.size();
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), std::size_t(0));
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        if (seeds.x[a] != seeds.x[b]) {
+            return seeds.x[a] < seeds.x[b];
+        }
+        if (seeds.y[a] != seeds.y[b]) {
+            return seeds.y[a] < seeds.y[b];
+        }
+        if (seeds.z[a] != seeds.z[b]) {
+            return seeds.z[a] < seeds.z[b];
+        }
+        return a < b;
+    });
+    std::int64_t duplicates = 0;
+    for (std::size_t k = 1; k < n; k++) {
+        const std::size_t a = order[k - 1];
+        const std::size_t b = order[k];
+        if (seeds.x[a] == seeds.x[b] && seeds.y[a] == seeds.y[b] && seeds.z[a] == seeds.z[b]) {
+            duplicates++;
+        }
+    }
+    return duplicates;
+}
+
 /*
  * ParseSeedTableFile (rank 0 only, throws std::runtime_error on the first error)
  *
@@ -416,15 +448,15 @@ SeedTable ParseSeedTableFile(const SeedTableParameters& params,
         seeds.y.push_back(s * number(map.y, "y") + params.translate[1]);
         seeds.z.push_back(s * number(map.z, "z") + params.translate[2]);
 
-        // Id: given (>= 0) or the 0-based row index
+        // Id: given (>= 1) or the 1-based row number
         if (map.id >= 0) {
             const std::int64_t id = integer(map.id, "id");
-            if (id < 0) {
-                throw std::runtime_error(where + ": column 'id': ids must be >= 0");
+            if (id < 1) {
+                throw std::runtime_error(where + ": column 'id': ids must be >= 1");
             }
             seeds.source_id.push_back(id);
         } else {
-            seeds.source_id.push_back(row);
+            seeds.source_id.push_back(row + 1);
         }
 
         // Quaternion: copied verbatim after the norm check
@@ -533,30 +565,79 @@ SeedTable ParseSeedTableFile(const SeedTableParameters& params,
     for (const std::string& name : table.ignored_columns) {
         warnings.push_back("seed table '" + file + "': ignoring unknown column '" + name + "'");
     }
-    std::vector<std::size_t> order(n);
-    std::iota(order.begin(), order.end(), std::size_t(0));
-    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-        if (seeds.x[a] != seeds.x[b]) {
-            return seeds.x[a] < seeds.x[b];
-        }
-        if (seeds.y[a] != seeds.y[b]) {
-            return seeds.y[a] < seeds.y[b];
-        }
-        if (seeds.z[a] != seeds.z[b]) {
-            return seeds.z[a] < seeds.z[b];
-        }
-        return a < b;
-    });
-    std::int64_t duplicates = 0;
-    for (std::size_t k = 1; k < n; k++) {
-        const std::size_t a = order[k - 1];
-        const std::size_t b = order[k];
-        if (seeds.x[a] == seeds.x[b] && seeds.y[a] == seeds.y[b] && seeds.z[a] == seeds.z[b]) {
-            duplicates++;
-        }
-    }
+    const std::int64_t duplicates = CountDuplicatePositions(seeds);
     if (duplicates > 0) {
         warnings.push_back("seed table '" + file + "': " + std::to_string(duplicates) +
+                           " seed(s) share their position with another seed; the seed search "
+                           "keeps the one with the lowest index");
+    }
+    return table;
+}
+
+/*
+ * ParseMicrostructureFile (rank 0 only, throws std::runtime_error on the first error)
+ *
+ * A microstructure file (microstructure_file_io.hpp) used as a seed list: its grain table is
+ * read and checked there, then converted here with exactly the CSV rules (positions s x + t,
+ * volumes s^3 V, shape tensors s^2 M and their inverse, quaternions and weights unchanged,
+ * source_id = grains/id). Labeled points make the file a voxel map, which is refused here.
+ */
+SeedTable ParseMicrostructureFile(const SeedTableParameters& params,
+                                  std::vector<std::string>& warnings) {
+    const std::string file = params.path.string();
+    if (MicrostructureFileHasLabeledPoints(params.path)) {
+        throw std::runtime_error("seed file '" + file +
+                                 "' has labeled points (a 'mesh' group), so it is a voxel map: "
+                                 "use [Source] type = \"voxel_map\" with [VoxelMap] file");
+    }
+    const MicrostructureGrainTable grains = ReadMicrostructureGrainTable(params.path);
+    const std::size_t n = grains.Size();
+    if (grains.position.empty()) {
+        throw std::runtime_error("seed file '" + file +
+                                 "': 'grains/position' is required to use the grain table as "
+                                 "seeds");
+    }
+    const double s = params.units_scale;
+
+    SeedTable table;
+    SeedSet& seeds = table.seeds;
+    table.has_quat = !grains.quat.empty();
+    table.has_phase = !grains.phase.empty();
+    table.has_weight = !grains.weight.empty();
+    table.has_volume = !grains.volume.empty();
+    table.has_shape = !grains.shape.empty();
+    for (std::size_t i = 0; i < n; i++) {
+        seeds.x.push_back(s * grains.position[3 * i + 0] + params.translate[0]);
+        seeds.y.push_back(s * grains.position[3 * i + 1] + params.translate[1]);
+        seeds.z.push_back(s * grains.position[3 * i + 2] + params.translate[2]);
+        seeds.source_id.push_back(grains.id[i]);
+        if (table.has_volume) {
+            table.volume.push_back(s * s * s * grains.volume[i]);
+        }
+        if (table.has_shape) {
+            double m[6];
+            for (int k = 0; k < 6; k++) {
+                m[k] = s * s * grains.shape[6 * i + static_cast<std::size_t>(k)];
+            }
+            double a[6];
+            if (!InvertShapeTensor(m, a)) {
+                throw std::runtime_error("seed file '" + file + "': grain " +
+                                         std::to_string(grains.id[i]) +
+                                         ": the shape tensor is not symmetric positive definite");
+            }
+            for (int k = 0; k < 6; k++) {
+                table.shape_tensor.push_back(m[k]);
+                seeds.shape.push_back(a[k]);
+            }
+        }
+    }
+    seeds.quat = grains.quat;
+    seeds.phase = grains.phase;
+    seeds.weight = grains.weight;
+
+    const std::int64_t duplicates = CountDuplicatePositions(seeds);
+    if (duplicates > 0) {
+        warnings.push_back("seed file '" + file + "': " + std::to_string(duplicates) +
                            " seed(s) share their position with another seed; the seed search "
                            "keeps the one with the lowest index");
     }
@@ -578,12 +659,18 @@ void BroadcastVector(std::vector<T>& data, std::size_t count, MPI_Datatype type,
 
 } // namespace
 
+/* InvertShapeTensorPublic: the anonymous-namespace InvertShapeTensor, for other modules. */
+bool InvertShapeTensorPublic(const double m[6], double a[6]) {
+    return InvertShapeTensor(m, a);
+}
+
 /*
  * ReadSeedTable (collective)
  *
  * Steps:
  *  1. Check the parameters on every rank (identical data, so every rank throws together).
- *  2. Rank 0 parses the file (ParseSeedTableFile); any exception becomes an error message.
+ *  2. Rank 0 parses the file (ParseMicrostructureFile for an HDF5 file, else the CSV parser
+ *     ParseSeedTableFile); any exception becomes an error message.
  *  3. The message is broadcast (BroadcastString); if it is not empty, every rank throws it.
  *  4. Rank 0 prints the warnings.
  *  5. The sizes and flags, then every array, are broadcast from rank 0, so all ranks return the
@@ -608,7 +695,8 @@ SeedTable ReadSeedTable(const SeedTableParameters& params, MPI_Comm comm) {
     std::string error;
     if (rank == 0) {
         try {
-            table = ParseSeedTableFile(params, warnings);
+            table = IsHdf5File(params.path) ? ParseMicrostructureFile(params, warnings)
+                                            : ParseSeedTableFile(params, warnings);
         } catch (const std::exception& e) {
             error = std::string("ReadSeedTable: ") + e.what();
         }

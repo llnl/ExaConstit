@@ -44,9 +44,10 @@ Source format (verified against the SPPARKS source and docs, github.com/spparks/
 
 What the converter writes
 -------------------------
-The "ExaConstit voxel map v2" (see exaconstit_microstructure_io.py): ``/grain_ids`` (nz, ny, nx)
-with the spin of each site, ``/origin`` (lower corner of voxel (0,0,0)) and ``/spacing``, both
-multiplied by ``--units-scale``. The voxel index of a site is round((x - x_min) / a) per axis,
+An ExaConstit microstructure file with a voxel map (see exaconstit_microstructure_io.py and
+doc/microstructure.md, section 3.2): the spin of each site as the grain id of its voxel, the lower
+corner of voxel (0,0,0) and the voxel size, both multiplied by ``--units-scale``, and a grain
+table listing the spins present (no orientations). The voxel index of a site is round((x - x_min) / a) per axis,
 where a = (max - min) / (number of planes - 1) along that axis (or given with ``--spacing``).
 In ``corner`` mode the detected lattice is cross-checked against ``ITEM: BOX BOUNDS`` (the box
 must start at the first plane of sites and span n * a); a mismatch beyond the %g print

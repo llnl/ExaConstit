@@ -2,8 +2,8 @@
 /**
  * @file voxel_fixture.hpp
  * @brief Shared test fixture: a small voxelized Voronoi microstructure written as HDF5 voxel maps
- * in the canonical "ExaConstit voxel map v2" layout and the DREAM.3D (SIMPL v6 and NX-like)
- * layouts. Used by test_voxel_map (reader and labeler) and test_driver_stage1d (the driver's
+ * in the canonical ExaConstit microstructure file layout (io/microstructure_file_io.hpp) and the
+ * DREAM.3D (SIMPL v6 and NX-like) layouts. Used by test_voxel_map (reader and labeler) and test_driver_stage1d (the driver's
  * voxel-map path).
  *
  * **The map.** A 20 x 16 x 12 voxel grid with voxel size h = 1/16 and origin 0 (so the box is
@@ -238,6 +238,27 @@ public:
         }
     }
 
+    /** Writes a scalar dataset of file type file_type. */
+    void Scalar(const std::string& path, hid_t file_type, hid_t mem_type, const void* data) {
+        Closer space{H5Screate(H5S_SCALAR), H5Sclose};
+        Closer dset{H5Dcreate2(m_file, path.c_str(), file_type, space.id, m_lcpl, H5P_DEFAULT,
+                               H5P_DEFAULT),
+                    H5Dclose};
+        if (dset.id < 0 ||
+            H5Dwrite(dset.id, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
+            throw std::runtime_error("cannot write dataset " + path);
+        }
+    }
+
+    /** Writes a scalar fixed-length ASCII string dataset (h5py's variable-length strings are
+     * covered by the Python-written files of the end-to-end tests). */
+    void String(const std::string& path, const std::string& text) {
+        Closer type{H5Tcopy(H5T_C_S1), H5Tclose};
+        H5Tset_size(type.id, text.size());
+        H5Tset_strpad(type.id, H5T_STR_NULLPAD);
+        Scalar(path, type.id, type.id, text.data());
+    }
+
     /** Creates a group (and its parents). */
     void Group(const std::string& path) {
         Closer group{H5Gcreate2(m_file, path.c_str(), m_lcpl, H5P_DEFAULT, H5P_DEFAULT),
@@ -277,29 +298,75 @@ struct CanonicalOptions {
     std::array<double, 3> origin = {0.0, 0.0, 0.0};
     std::array<double, 3> spacing = {H, H, H};
     bool rank4_uint16 = false;                     ///< store as uint16 (nz, ny, nx, 1)
-    bool features = true;
+    bool flat = false;                             ///< store flat (nx ny nz), as Conduit writes
+    bool features = true; ///< write feature_ids with quat and phase (else only the grid's ids)
     std::vector<int> feature_ids = {21, 3, 34, 8, 13, 5}; ///< unsorted on purpose
     int bad_quat_id = -1;                          ///< this id gets a quaternion of norm 0.5
+    std::int64_t format_version = 1;               ///< written format_version
 };
 
-/** Writes a canonical voxel map. Ids are stored as int64 unless rank4_uint16. */
+/**
+ * Writes a canonical microstructure file with a grid: header, grain table (grains/id always;
+ * quat and phase when `features`) and the Blueprint uniform mesh. Ids are stored as int64
+ * unless rank4_uint16.
+ */
 inline void WriteCanonical(const fs::path& path, const CanonicalOptions& opt) {
     H5Writer w(path);
+    w.String("/format", "ExaConstit microstructure");
+    w.Scalar("/format_version", H5T_STD_I64LE, H5T_NATIVE_INT64, &opt.format_version);
+
+    // Blueprint uniform mesh: dims count points (cells + 1)
+    const std::string cs = "/mesh/coordsets/coords";
+    w.String(cs + "/type", "uniform");
+    const char* dim_names[3] = {"i", "j", "k"};
+    const char* origin_names[3] = {"x", "y", "z"};
+    const char* spacing_names[3] = {"dx", "dy", "dz"};
+    for (int d = 0; d < 3; ++d) {
+        const std::int64_t points = static_cast<std::int64_t>(opt.dims[d]) + 1;
+        w.Scalar(cs + "/dims/" + dim_names[d], H5T_STD_I64LE, H5T_NATIVE_INT64, &points);
+        w.Scalar(cs + "/origin/" + origin_names[d], H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE,
+                 &opt.origin[d]);
+        w.Scalar(cs + "/spacing/" + spacing_names[d], H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE,
+                 &opt.spacing[d]);
+    }
+    w.String("/mesh/topologies/topo/type", "uniform");
+    w.String("/mesh/topologies/topo/coordset", "coords");
+    w.String("/mesh/fields/grain_id/association", "element");
+    w.String("/mesh/fields/grain_id/topology", "topo");
+    const std::string values = "/mesh/fields/grain_id/values";
     if (opt.rank4_uint16) {
         std::vector<std::uint16_t> ids(opt.ids.begin(), opt.ids.end());
-        w.Dataset("/grain_ids", H5T_STD_U16LE, H5T_NATIVE_UINT16,
+        w.Dataset(values, H5T_STD_U16LE, H5T_NATIVE_UINT16,
                   {opt.dims[2], opt.dims[1], opt.dims[0], 1}, ids.data());
+    } else if (opt.flat) {
+        w.Dataset(values, H5T_STD_I64LE, H5T_NATIVE_INT64,
+                  {opt.dims[0] * opt.dims[1] * opt.dims[2]}, opt.ids.data());
     } else {
-        w.Dataset("/grain_ids", H5T_STD_I64LE, H5T_NATIVE_INT64,
+        w.Dataset(values, H5T_STD_I64LE, H5T_NATIVE_INT64,
                   {opt.dims[2], opt.dims[1], opt.dims[0]}, opt.ids.data());
     }
-    w.Dataset("/origin", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, {3}, opt.origin.data());
-    w.Dataset("/spacing", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, {3}, opt.spacing.data());
+
+    // Grain table: without features, the positive ids of the grid (the format requires
+    // grains/id)
+    std::vector<std::int64_t> fid(opt.feature_ids.begin(), opt.feature_ids.end());
+    if (!opt.features) {
+        fid.clear();
+        for (const std::int64_t id : opt.ids) {
+            if (id > 0) {
+                fid.push_back(id);
+            }
+        }
+        std::sort(fid.begin(), fid.end());
+        fid.erase(std::unique(fid.begin(), fid.end()), fid.end());
+        if (fid.empty()) {
+            fid.push_back(1);
+        }
+    }
+    const hsize_t nf = fid.size();
+    w.Dataset("/grains/id", H5T_STD_I64LE, H5T_NATIVE_INT64, {nf}, fid.data());
     if (!opt.features) {
         return;
     }
-    const hsize_t nf = opt.feature_ids.size();
-    std::vector<std::int64_t> fid(opt.feature_ids.begin(), opt.feature_ids.end());
     std::vector<double> quat;
     std::vector<int> phase;
     for (int id : opt.feature_ids) {
@@ -312,9 +379,8 @@ inline void WriteCanonical(const fs::path& path, const CanonicalOptions& opt) {
         quat.insert(quat.end(), q.begin(), q.end());
         phase.push_back(FeaturePhase(id));
     }
-    w.Dataset("/features/id", H5T_STD_I64LE, H5T_NATIVE_INT64, {nf}, fid.data());
-    w.Dataset("/features/quat", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, {nf, 4}, quat.data());
-    w.Dataset("/features/phase", H5T_STD_I32LE, H5T_NATIVE_INT, {nf}, phase.data());
+    w.Dataset("/grains/quat", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, {nf, 4}, quat.data());
+    w.Dataset("/grains/phase", H5T_STD_I32LE, H5T_NATIVE_INT, {nf}, phase.data());
 }
 
 /** Number of DREAM.3D feature rows: ids 0..34. */

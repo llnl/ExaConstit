@@ -244,8 +244,9 @@ struct SeedOptions {
     /** @brief Random lattice offset as a fraction of the lattice spacing (>= 0). */
     double lattice_jitter = 0.0;
     /**
-     * @brief Seed table for source = "file" (relative to the current working directory), in the
-     * "ExaConstit seed table v1" CSV format (io/seed_table_io.hpp).
+     * @brief Seed file for source = "file" (relative to the current working directory): a CSV seed
+     * table, or an ExaConstit microstructure file (HDF5) holding a grain table with positions,
+     * told apart by the file's content (io/seed_table_io.hpp).
      */
     std::filesystem::path file;
     /**
@@ -465,7 +466,8 @@ struct TessellationOptions {
  * labeling/voxel_labeler.hpp.
  */
 struct VoxelMapOptions {
-    /** @brief "exaconstit" (canonical "ExaConstit voxel map v2" HDF5 layout) or "dream3d". */
+    /** @brief "exaconstit" (an ExaConstit microstructure file with a grid,
+     * io/microstructure_file_io.hpp) or "dream3d". */
     std::string format = "exaconstit";
     /** @brief The HDF5 file (relative to the current working directory). */
     std::filesystem::path file;
@@ -596,6 +598,13 @@ struct RegionOptions {
      */
     std::map<int, int> phase_to_region;
     /**
+     * @brief Text file with the phase -> region map (TOML `phase_to_region_file`), read while
+     * the options are parsed into `phase_to_region`: one `phase region` pair of integers per
+     * line (the grammar of ExaConstit's region_mapping_file), blank lines and lines starting with
+     * `#` skipped. Giving it together with `phase_to_region` is an error. Empty: not given.
+     */
+    std::filesystem::path phase_to_region_file;
+    /**
      * @brief phase_fractions only: the phase ids (>= 1, distinct) of TOML
      * `phases = [{id = 1, fraction = 0.7}, {id = 2, fraction = 0.3}]`.
      */
@@ -644,6 +653,14 @@ struct OutputOptions {
      * opposite box planes count too. TOML `grain_adjacency` (boolean, default false).
      */
     bool grain_adjacency = false;
+    /**
+     * @brief Also write `<basename>.h5`, an ExaConstit microstructure file
+     * (io/microstructure_file_io.hpp): "none" (default) or "grains" (the grain table of the
+     * final grains: ids 1..N, orientations, phases, and the seed position, weight, shape and
+     * target volume each grain grew from when every grain has a seed). Passthrough grains are
+     * left out. TOML `microstructure_file`.
+     */
+    std::string microstructure_file = "none";
     // No ExaConstit input (TOML) files are generated: users write their own ExaConstit options.
     // Provenance (tool version, rng_seed, requested and final grain counts) goes in the mesh file
     // header comments and in the rank-0 log at the end of a run.

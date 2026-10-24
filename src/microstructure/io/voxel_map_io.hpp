@@ -10,7 +10,8 @@
 /**
  * @file voxel_map_io.hpp
  * @brief Reads a voxelized microstructure (a 3D image whose voxels hold grain ids) from an HDF5
- * file: the canonical "ExaConstit voxel map v2" layout or a DREAM.3D file.
+ * file: an ExaConstit microstructure file with a grid (microstructure_file_io.hpp) or a DREAM.3D
+ * file.
  *
  * **What a voxel map is.** Measured microstructures (near-field HEDM, serial-section EBSD,
  * DREAM.3D or ExaCA output) are usually stored as a regular 3D grid of box-shaped voxels, each
@@ -29,15 +30,19 @@
  * - Ids <= 0 mean "unassigned" (void, unindexed or a measurement hole). Such voxels do not vote
  *   for any grain; the labeler fills the elements that receive no vote from their neighbors.
  *
- * **Canonical format** (`VoxelFormat::EXACONSTIT`). Named v2 because ExaConstit's original voxel
- * description, the auto-mesh `grain_file` (one grain id per element) with its orientation file,
- * counts as v1; this reader does not read that pair.
- * - `/grain_ids`: any HDF5 integer type (read as int64), shape (nz, ny, nx) or (nz, ny, nx, 1);
- * - `/origin`, `/spacing`: float64[3] (x, y, z), spacing > 0;
- * - optional per-grain table: `/features/id` (int64[nf], unique, >= 1), `/features/quat`
- *   (float64[nf, 4], w x y z, crystal-to-sample passive), `/features/phase` (int32[nf]).
- *   The quaternion storage is fixed by the format, so no `quat_layout` / `conjugate`
- *   declaration is needed (declaring xyzw or conjugate = true is refused, see below).
+ * **Canonical format** (`VoxelFormat::EXACONSTIT`): an ExaConstit microstructure file
+ * (microstructure_file_io.hpp, which defines the layout) with labeled points on a uniform grid:
+ * - the grid (cell counts, origin, spacing) is the Blueprint coordset `mesh/coordsets/coords`,
+ *   read with Conduit together with the format header;
+ * - the per-cell ids are `mesh/fields/grain_id/values`, any HDF5 integer type (read as int64),
+ *   shape (nx ny nz) flat or (nz, ny, nx) (optionally with a trailing 1), read in tiles with
+ *   plain HDF5 hyperslabs;
+ * - the per-grain table is `grains/id`, `grains/quat` (w x y z, crystal-to-sample passive) and
+ *   `grains/phase`. The quaternion storage is fixed by the format, so no `quat_layout` /
+ *   `conjugate` declaration is needed (declaring xyzw or conjugate = true is refused), and the
+ *   `*_path` overrides are refused (fixed paths).
+ * ExaConstit's original voxel description, the auto-mesh `grain_file` (one grain id per element)
+ * with its orientation file, is not read here.
  *
  * **DREAM.3D** (`VoxelFormat::DREAM3D`):
  * - SIMPL v6 files (DREAM.3D 6.x): `FeatureIds` (nz, ny, nx, 1) int32 per voxel, per-feature
@@ -100,7 +105,7 @@ namespace exaconstit::microstructure {
 
 /** @brief File layout of a voxel map (TOML `format = "exaconstit" | "dream3d"`). */
 enum class VoxelFormat {
-    EXACONSTIT, ///< canonical "ExaConstit voxel map v2" layout (see the file comment)
+    EXACONSTIT, ///< ExaConstit microstructure file with a grid (see the file comment)
     DREAM3D     ///< DREAM.3D SIMPL v6 or DREAM3D-NX file
 };
 
@@ -121,18 +126,18 @@ struct VoxelMapParameters {
     /** @brief The HDF5 file. */
     std::filesystem::path file;
     /**
-     * @brief HDF5 path of the per-voxel id dataset ("/group/dataset"). Empty: `/grain_ids`
-     * (canonical) or a search for datasets named `FeatureIds` (DREAM.3D).
+     * @brief HDF5 path of the per-voxel id dataset ("/group/dataset"), DREAM.3D only. Empty: a
+     * search for datasets named `FeatureIds`. Must be empty for the canonical format.
      */
     std::string feature_ids_path;
     /**
-     * @brief HDF5 path of the per-grain quaternion dataset. Empty: `/features/quat` (canonical)
-     * or a search for `AvgQuats` (DREAM.3D).
+     * @brief HDF5 path of the per-grain quaternion dataset, DREAM.3D only. Empty: a search for
+     * `AvgQuats`. Must be empty for the canonical format.
      */
     std::string quats_path;
     /**
-     * @brief HDF5 path of the per-grain phase dataset. Empty: `/features/phase` (canonical) or a
-     * search for `Phases` (DREAM.3D).
+     * @brief HDF5 path of the per-grain phase dataset, DREAM.3D only. Empty: a search for
+     * `Phases`. Must be empty for the canonical format.
      */
     std::string phases_path;
     /** @brief ReadVoxelFeatures reads the quaternions. */
@@ -225,16 +230,17 @@ struct VoxelFeatureTable {
  * @brief Reads and checks the grid description: dimensions, origin, spacing and the id dataset's
  * path. Metadata only: no voxel id is read.
  *
- * Steps (rank 0): open the file; find the id dataset (explicit path, `/grain_ids`, or the
- * DREAM.3D name search); check it stores integers; take (nx, ny, nz) from its shape; read origin
- * and spacing (file values, replaced by the TOML values when given; DREAM.3D geometry from
- * `_SIMPL_GEOMETRY` or the NX attributes, cross-checked against the shape); convert to mesh
+ * Steps (rank 0): canonical files: check the header and read the grid description
+ * (ReadMicrostructureGrid), then check the id dataset's type and shape against it; DREAM.3D:
+ * find the id dataset (explicit path or name search), take (nx, ny, nz) from its shape and the
+ * geometry from `_SIMPL_GEOMETRY` or the NX attributes (cross-checked against the shape). Then
+ * origin and spacing (file values, replaced by the TOML values when given) are converted to mesh
  * units. The result (or the error message) is broadcast.
  *
  * Checks: units_scale > 0 and finite; finite translate and origin; spacing > 0 and finite both
  * in file units and after scaling (a tiny units_scale could underflow to 0); integer id dataset
- * of rank 3, or rank 4 with last extent 1; dimensions > 0 and equal to the file's declared
- * dimensions. The "ids < 2^31" check is done on the voxels each rank actually reads (by the
+ * of rank 3, or rank 4 with last extent 1 (canonical files also a flat rank-1 dataset);
+ * dimensions > 0 and equal to the file's declared dimensions. The "ids < 2^31" check is done on the voxels each rank actually reads (by the
  * voxel labeler), not here.
  *
  * **Collective** over `comm`. Host only.
@@ -283,8 +289,9 @@ VoxelBlock ReadVoxelBlock(const VoxelMapParameters& params,
  * @brief Reads the per-grain table (ids, and the quaternions / phases that were requested) and
  * checks it against the feature ids the mesh actually uses.
  *
- * - Canonical: `/features/id` plus `/features/quat` and/or `/features/phase` (or the override
- *   paths). Ids must be unique and >= 1; rows are sorted by id.
+ * - Canonical: the grain table `grains/id`, `grains/quat`, `grains/phase`
+ *   (ReadMicrostructureGrainTable checks ids >= 1 and unique, counts, norms, phases >= 1); rows
+ *   are sorted by id.
  * - DREAM.3D: rows are indexed by feature id (row 0 unused), so the table holds ids
  *   1..rows-1. AvgQuats is reordered to w x y z according to `quat_layout` and conjugated when
  *   `conjugate` = 1. The datasets are searched inside the data container of the voxel ids (see

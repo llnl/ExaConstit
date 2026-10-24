@@ -222,6 +222,60 @@ class VoxelMapWriterTest(unittest.TestCase):
         np.testing.assert_array_equal(result["feature_phase"], [4, 5])
         self.assertEqual(result["feature_phase"].dtype, np.int32)
 
+    def test_layout_is_datasets_only_blueprint(self):
+        # Conduit never reads HDF5 attributes, so the whole file must be datasets; the grid is a
+        # Blueprint uniform mesh whose dims count POINTS (cells + 1)
+        import h5py
+        path = os.path.join(case_dir("voxel_writer"), "layout.h5")
+        ids = np.arange(1, 25, dtype=np.int64).reshape(2, 3, 4)
+        msio.write_voxel_map(path, ids, [1.0, 2.0, 3.0], [0.5, 0.5, 0.25],
+                             attributes={"converter": "test"})
+        with h5py.File(path, "r") as h5:
+            def no_attributes(name, obj):
+                self.assertEqual(len(obj.attrs), 0, name)
+            h5.visititems(no_attributes)
+            self.assertEqual(len(h5.attrs), 0)
+            self.assertEqual(h5["format"][()].decode(), msio.MICROSTRUCTURE_FORMAT_NAME)
+            self.assertEqual(int(h5["format_version"][()]), 1)
+            cs = h5["mesh/coordsets/coords"]
+            self.assertEqual([int(cs["dims/" + a][()]) for a in "ijk"], [5, 4, 3])
+            self.assertEqual(cs["type"][()].decode(), "uniform")
+            self.assertEqual(h5["mesh/topologies/topo/coordset"][()].decode(), "coords")
+            self.assertEqual(h5["mesh/fields/grain_id/association"][()].decode(), "element")
+            np.testing.assert_array_equal(h5["grains/id"][...], np.arange(1, 25))
+            self.assertEqual(h5["provenance/converter"][()].decode(), "test")
+
+    def test_grain_table_only_file(self):
+        path = os.path.join(case_dir("voxel_writer"), "seeds.h5")
+        msio.write_microstructure_file(path, {"id": [3, 1], "position": [[1, 2, 3], [4, 5, 6]],
+                                              "phase": [2, 1]})
+        data = msio.read_microstructure_file(path)
+        self.assertNotIn("grain_ids", data)
+        np.testing.assert_array_equal(data["grains"]["id"], [1, 3])
+        np.testing.assert_array_equal(data["grains"]["position"], [[4, 5, 6], [1, 2, 3]])
+        np.testing.assert_array_equal(data["grains"]["phase"], [1, 2])
+        with self.assertRaises(msio.ConverterError):
+            msio.write_microstructure_file(path, {"id": [1], "phase": [0]})   # phase 0
+        with self.assertRaises(msio.ConverterError):
+            msio.write_microstructure_file(path, {"id": [1], "quat": [2, 0, 0, 0]})   # norm
+        with self.assertRaises(msio.ConverterError):
+            msio.write_microstructure_file(path, {"id": [1], "radius": [1.0]})   # unknown
+
+    def test_reads_conduit_written_strings_and_scalars(self):
+        # Conduit (and so the generator's [Output] microstructure_file) stores a string as an
+        # array of 1-byte characters ending in a NUL and a number as a 1-element array
+        import h5py
+        path = os.path.join(case_dir("voxel_writer"), "conduit_style.h5")
+        text = np.frombuffer(msio.MICROSTRUCTURE_FORMAT_NAME.encode() + b"\0", dtype="S1")
+        with h5py.File(path, "w") as h5:
+            h5.create_dataset("format", data=text)
+            h5.create_dataset("format_version", data=np.array([1], dtype=np.int64))
+            h5.create_dataset("grains/id", data=np.array([1, 2], dtype=np.int64))
+            h5.create_dataset("grains/quat", data=np.array([1.0, 0, 0, 0, 0, 1.0, 0, 0]))
+        data = msio.read_microstructure_file(path)
+        self.assertEqual(data["format_version"], 1)
+        np.testing.assert_array_equal(data["grains"]["quat"], [[1, 0, 0, 0], [0, 1, 0, 0]])
+
     def test_invalid_maps_are_refused(self):
         path = os.path.join(case_dir("voxel_writer"), "bad.h5")
         ids = np.ones((2, 2, 2), dtype=np.int64)
@@ -297,7 +351,7 @@ class HexrdConverterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         table = msio.read_seed_table(output)
         # Only grain 0 passes both filters; position is 10 * t_vec_c
-        np.testing.assert_array_equal(table["id"], [0])
+        np.testing.assert_array_equal(table["id"], [1])    # HEXRD grain ID 0 + 1
         np.testing.assert_allclose([table["x"][0], table["y"][0], table["z"][0]],
                                    [0.5, -1.0, 2.0], rtol=1e-15)
         expmap = np.array(self.grains[0][3])
@@ -311,7 +365,7 @@ class HexrdConverterTest(unittest.TestCase):
         result = run_script("hexrd_grains_to_seeds.py", [self.input, output, "--conjugate", "yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         table = msio.read_seed_table(output)
-        np.testing.assert_array_equal(table["id"], [0, 2, 5])
+        np.testing.assert_array_equal(table["id"], [1, 3, 6])   # HEXRD grain IDs + 1
         for row, grain in enumerate(self.grains):
             expmap = np.array(grain[3])
             angle = np.linalg.norm(expmap)
@@ -334,7 +388,7 @@ class HexrdConverterTest(unittest.TestCase):
                             [nan_input, output, "--conjugate", "no", "--drop-nan"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("1 with NaN", result.stdout)
-        np.testing.assert_array_equal(msio.read_seed_table(output)["id"], [0, 2, 5])
+        np.testing.assert_array_equal(msio.read_seed_table(output)["id"], [1, 3, 6])
 
     def test_required_conjugate_flag(self):
         result = run_script("hexrd_grains_to_seeds.py",
@@ -455,6 +509,22 @@ class MidasConverterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("GrainID 10", result.stderr)
 
+    def test_id_offset(self):
+        # ExaConstit ids start at 1: GrainID 0 is refused unless --id-offset makes it >= 1
+        grains = [dict(g) for g in self.grains]
+        for k, g in enumerate(grains):
+            g["id"] = k
+        zero_based = os.path.join(self.dir, "Grains_zero_based.csv")
+        write_midas_grains(zero_based, grains)
+        out = os.path.join(self.dir, "seeds_offset.csv")
+        result = run_script("midas_grains_to_seeds.py", [zero_based, out, "--conjugate", "no"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--id-offset 1", result.stderr)
+        result = run_script("midas_grains_to_seeds.py",
+                            [zero_based, out, "--conjugate", "no", "--id-offset", "1"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        np.testing.assert_array_equal(msio.read_seed_table(out)["id"], [1, 2, 3])
+
 
 def spparks_spin(i, j, k):
     """Spin of lattice site (i, j, k) in the synthetic SPPARKS model (values 1..5)."""
@@ -518,7 +588,10 @@ class SpparksConverterTest(unittest.TestCase):
         # Corner sites: the first site (0,0,0) is the lower corner; spacing 0.5 * 2 = 1
         np.testing.assert_array_equal(voxels["origin"], [0.0, 0.0, 0.0])
         np.testing.assert_array_equal(voxels["spacing"], [1.0, 1.0, 1.0])
-        self.assertNotIn("feature_id", voxels)
+        # No orientations: the grain table lists only the ids present in the grid
+        np.testing.assert_array_equal(voxels["feature_id"],
+                                      np.unique(self.expected_ids()[self.expected_ids() > 0]))
+        self.assertNotIn("feature_quat", voxels)
 
     def test_first_snapshot_center_sites(self):
         output = os.path.join(self.dir, "map_first.h5")
