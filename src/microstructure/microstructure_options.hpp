@@ -381,9 +381,9 @@ struct TessellationOptions {
      *   Johnson-Mehl), Laguerre (d^2 - w_i) and Quadric metrics; Quadric measures paths with
      *   the tensor A (labeling/geodesic_metric.hpp: anisotropy "none" / "tensor" as given,
      *   "columnar" / "lamellar" regularized with geodesic_elongation). Laguerre and weighted
-     *   Quadric keep several candidate seeds per node (labeling/geodesic_weighted.hpp,
-     *   geodesic_max_seeds_per_node) and need solver "fim". Not yet per-seed tensors. Two
-     *   properties to know:
+     *   Quadric (seed weights or per-seed tensors) keep several candidate seeds per node
+     *   (labeling/geodesic_weighted.hpp, geodesic_max_seeds_per_node) and need solver "fim".
+     *   Two properties to know:
      *   - paths connect elements through shared vertices, edges and faces (the solvers work on
      *     the mesh vertices), while the connected mode and the fragment cleanup connect elements
      *     through shared faces only. Elements that share nodes are connected in the conforming FE

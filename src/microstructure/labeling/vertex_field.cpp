@@ -1062,8 +1062,8 @@ void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& se
             const int* row = group_ldof.GetRow(g);
             for (int j = 0; j < group_ldof.RowSize(g); ++j) {
                 const int v = row[j];
-                const std::size_t slot = static_cast<std::size_t>(offsets[static_cast<std::size_t>(v)] +
-                                                                  fill[static_cast<std::size_t>(v)]++);
+                const auto vs = static_cast<std::size_t>(v);
+                const auto slot = static_cast<std::size_t>(offsets[vs] + fill[vs]++);
                 std::copy(&buf[pos], &buf[pos] + width, &recv[slot * width]);
                 pos += static_cast<std::size_t>(width);
             }
@@ -1075,7 +1075,8 @@ void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& se
  * SetSeedLists: copies of the lists and weights (host write, read by the labeling kernels).
  */
 void VertexField::SetSeedLists(int capacity, const mfem::Array<int>& seeds,
-                               const mfem::Vector& dist, const std::vector<double>& weights) {
+                               const mfem::Vector& dist, const std::vector<double>& weights,
+                               const std::vector<double>& seed_stretch) {
     const std::size_t size =
         static_cast<std::size_t>(capacity) * static_cast<std::size_t>(m_num_vertices);
     if (capacity < 1 || static_cast<std::size_t>(seeds.Size()) != size ||
@@ -1096,6 +1097,18 @@ void VertexField::SetSeedLists(int capacity, const mfem::Array<int>& seeds,
     double* w = m_list_weight.HostWrite();
     for (std::size_t i = 0; i < weights.size(); ++i) {
         w[i] = weights[i];
+    }
+    if (!seed_stretch.empty() && (seed_stretch.size() != 9 * weights.size() || m_has_metric)) {
+        throw std::invalid_argument("VertexField::SetSeedLists: seed_stretch must have 9 entries "
+                                    "per seed, and the field no metric of its own");
+    }
+    m_list_stretch.SetSize(static_cast<int>(seed_stretch.size()));
+    m_list_stretch.UseDevice(true);
+    if (!seed_stretch.empty()) {
+        double* st = m_list_stretch.HostWrite();
+        for (std::size_t k = 0; k < seed_stretch.size(); ++k) {
+            st[k] = seed_stretch[k];
+        }
     }
 }
 
@@ -1619,6 +1632,8 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
     const int* lseed = (cap > 0) ? m_list_seed.Read() : nullptr;
     const double* ldist = (cap > 0) ? m_list_dist.Read() : nullptr;
     const double* lweight = (cap > 0) ? m_list_weight.Read() : nullptr;
+    const double* lstretch =
+        (cap > 0 && m_list_stretch.Size() > 0) ? m_list_stretch.Read() : nullptr;
     const int* src_offsets = m_elem_src_offsets.Read();
     const int* src_seeds = m_elem_src_seeds.Read();
     const int* src_cell = m_elem_src_cell.Read();
@@ -1660,13 +1675,29 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
                     best_seed = seed;
                 }
             };
+            // |r| of a difference vector, with seed s's own stretch for per-seed tensors
+            const auto length = [&](int s, double dx, double dy, double dz) {
+                if (lstretch != nullptr) {
+                    const double r[3] = {dx, dy, dz};
+                    double y[3];
+                    MapToMetric(&lstretch[9 * s], r[0], r[1], r[2], y);
+                    return sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+                }
+                return sqrt(dx * dx + dy * dy + dz * dz);
+            };
             for (int k = 0; k < nc; ++k) {
                 const int v = corners[k];
-                const double r = sqrt(SquaredDistanceToVertex(xyz, v, p[0], p[1], p[2]));
+                const double dx = p[0] - xyz[3 * v + 0];
+                const double dy = p[1] - xyz[3 * v + 1];
+                const double dz = p[2] - xyz[3 * v + 2];
+                const double r = (lstretch == nullptr)
+                                     ? sqrt(SquaredDistanceToVertex(xyz, v, p[0], p[1], p[2]))
+                                     : 0.0;
                 for (int q = 0; q < cap; ++q) {
                     const int seed = lseed[cap * v + q];
                     if (seed >= 0) {
-                        consider(seed, ldist[cap * v + q] + r);
+                        const double rs = (lstretch == nullptr) ? r : length(seed, dx, dy, dz);
+                        consider(seed, ldist[cap * v + q] + rs);
                     }
                 }
             }
@@ -1677,7 +1708,7 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
                 const double dx = p[0] - src_data[4 * k + 0];
                 const double dy = p[1] - src_data[4 * k + 1];
                 const double dz = p[2] - src_data[4 * k + 2];
-                consider(src_seeds[k], sqrt(dx * dx + dy * dy + dz * dz));
+                consider(src_seeds[k], length(src_seeds[k], dx, dy, dz));
             }
             out_label[i] = best_seed;
             if (out_dist != nullptr) {

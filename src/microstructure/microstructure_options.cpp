@@ -2035,8 +2035,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         }
     }
     // Geodesic Quadric measures paths with the tensor (labeling/geodesic_metric.hpp); columnar
-    // and lamellar use a regularized tensor (geodesic.elongation). Laguerre keeps several seeds
-    // per node (FIM only); per-seed tensors are not available yet.
+    // and lamellar use a regularized tensor (geodesic.elongation). Laguerre and per-seed tensors
+    // keep several seeds per node (FIM only).
     const bool stretched_kind = tessellation.anisotropy_kind == "columnar" ||
                                 tessellation.anisotropy_kind == "lamellar";
     if (geodesic) {
@@ -2050,9 +2050,10 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             report_error(valid, "Tessellation.distance = \"geodesic\" with an anisotropy needs "
                                 "metric = \"quadric\"");
         }
-        if (tessellation.anisotropy_kind == "per_seed") {
-            report_error(valid, "Tessellation.distance = \"geodesic\" does not support "
-                                "anisotropy kind \"per_seed\" yet");
+        if (tessellation.anisotropy_kind == "per_seed" &&
+            tessellation.geodesic_solver == "graph") {
+            report_error(valid, "Tessellation.distance = \"geodesic\" with anisotropy kind "
+                                "\"per_seed\" needs geodesic.solver = \"fim\"");
         }
     }
     if (tessellation.geodesic_max_seeds_per_node < 1 ||

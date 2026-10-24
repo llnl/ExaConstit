@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 /**
  * @file geodesic_common.hpp
@@ -56,6 +57,13 @@ struct GeodesicParameters {
      * GeodesicReport::overflow_nodes.
      */
     int max_seeds_per_node = 16;
+    /**
+     * @brief Weighted solver only: one stretch per seed (9 entries per seed, row-major S_i, the
+     * Quadric tensor A_i = S_i^T S_i of anisotropy kind "per_seed"), or empty. When given, seed
+     * i's path lengths are measured with S_i (stretch must then be the identity), and seed j may
+     * drop seed i only where A_j <= A_i (geodesic_weighted.hpp, "Per-seed tensors").
+     */
+    std::vector<double> seed_stretch;
     /**
      * @brief Which points carry the distance field (labeling/vertex_field.hpp): AUTO (default)
      * uses the element corners on straight-sided meshes, exactly as before curved support, and

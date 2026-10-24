@@ -11,7 +11,7 @@
 # nearest-seed labels (Voronoi, tensor, columnar, lamellar) and columns that do not cross the slot
 # of the U-shaped part; and the weighted multi-seed solver (labeling/geodesic_weighted): a heavy
 # Laguerre seed that owns points another front reaches first (analytic boundary on a strut),
-# convex boxes against the exact Laguerre and weighted Quadric labels, Laguerre
+# convex boxes against the exact Laguerre, weighted Quadric and per-seed tensor labels, Laguerre
 # grains that do not cross the slot of the U-shaped part, and the overflow report. Every
 # labeler run compares the distributed result (and the round counts) with a single-rank reference
 # computed in the same run, so np = 2, 3, 4 are compared bitwise against np = 1.

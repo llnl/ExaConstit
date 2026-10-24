@@ -45,6 +45,7 @@
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/geometry/anisotropy_tensors.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
 #include "microstructure/labeling/geodesic_metric.hpp"
 #include "microstructure/labeling/geodesic_weighted.hpp"
@@ -831,7 +832,8 @@ TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const
  * GeodesicNeedsSeedLists: true for the metrics whose value is not a path length plus a constant
  * per seed, which need the weighted solver (labeling/geodesic_weighted.hpp): Laguerre always (its
  * weights may all be zero, the solver then keeps one seed per node), Quadric when any seed weight
- * is non-zero. Replicated inputs, same answer on every rank.
+ * is non-zero or every seed has its own tensor (anisotropy kind "per_seed"). Replicated inputs,
+ * same answer on every rank.
  */
 bool GeodesicNeedsSeedLists(const TessellationOptions& tess, const SeedSet& seeds) {
     if (tess.metric == MetricType::LAGUERRE) {
@@ -839,6 +841,9 @@ bool GeodesicNeedsSeedLists(const TessellationOptions& tess, const SeedSet& seed
     }
     if (tess.metric != MetricType::QUADRIC) {
         return false;
+    }
+    if (tess.anisotropy_kind == "per_seed") {
+        return true; // every seed measures paths with its own tensor
     }
     for (const double w : seeds.weight) {
         if (w != 0.0) {
@@ -875,6 +880,32 @@ GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pme
                                         "\"geodesic\" with seed weights (metric laguerre, or "
                                         "quadric with a weight column) needs geodesic.solver = "
                                         "\"fim\"");
+        }
+        if (tess.anisotropy_kind == "per_seed") {
+            // Seed i's tensor A_i (SeedSet::shape) as its stretch S_i, A_i = S_i^T S_i
+            const std::size_t n = seeds.Size();
+            if (seeds.shape.size() != 6 * n) {
+                throw std::invalid_argument("GenerateMicrostructure: anisotropy kind "
+                                            "\"per_seed\" needs a tensor for every seed");
+            }
+            params.seed_stretch.resize(9 * n);
+            for (std::size_t i = 0; i < n; ++i) {
+                std::array<double, 6> tensor;
+                std::copy(&seeds.shape[6 * i], &seeds.shape[6 * i] + 6, tensor.begin());
+                std::array<double, 9> stretch;
+                try {
+                    stretch = MetricStretchFromTensor(tensor);
+                } catch (const std::invalid_argument&) {
+                    throw std::invalid_argument(
+                        "GenerateMicrostructure: Tessellation.distance = \"geodesic\" with "
+                        "anisotropy kind \"per_seed\" needs every seed's tensor to be positive "
+                        "definite (finite grain sizes along every direction); seed " +
+                        std::to_string(seeds.source_id.empty() ? static_cast<std::int64_t>(i)
+                                                               : seeds.source_id[i]) +
+                        " has a degenerate shape");
+                }
+                std::copy(stretch.begin(), stretch.end(), &params.seed_stretch[9 * i]);
+            }
         }
         return LabelGeodesicWeighted(pmesh, comm, seeds, seeds.weight, params);
     }

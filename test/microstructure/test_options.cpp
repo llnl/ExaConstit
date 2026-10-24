@@ -1528,15 +1528,20 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
         geodesic(o);
         o.tessellation.anisotropy_kind = "tensor"; // ignored by Voronoi, but refused here
     }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
-        geodesic(o);
-        o.seeds.num_seeds = 0;
-        o.seeds.source = "file";
-        o.seeds.placement = ms::SeedPlacement::FILE;
-        o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
-        o.tessellation.metric = ms::MetricType::QUADRIC;
-        o.tessellation.anisotropy_kind = "per_seed";
-    }));
+    // Per-seed tensors: seed lists, FIM only
+    for (const char* solver : {"fim", "graph"}) {
+        EXPECT_EQ(check(ValidAutoOptions(), [&](O& o) {
+                      geodesic(o);
+                      o.seeds.num_seeds = 0;
+                      o.seeds.source = "file";
+                      o.seeds.placement = ms::SeedPlacement::FILE;
+                      o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+                      o.tessellation.metric = ms::MetricType::QUADRIC;
+                      o.tessellation.anisotropy_kind = "per_seed";
+                      o.tessellation.geodesic_solver = solver;
+                  }),
+                  std::string(solver) == "fim");
+    }
 
     // Connected: any metric, including a per-seed Quadric seed table
     EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {

@@ -864,13 +864,16 @@ public:
      * seeds whose source cell is c, d_i = |p - s_i|, and returns the seed with the smallest
      * d_i^2 - weights[i] (ties: lowest index), i.e. the Laguerre / weighted Quadric rule with path
      * lengths; its distance output is d_i of the winner. The field's own T and label are not
-     * used then. The arrays are copied. Not collective. Host.
+     * used then. With seed_stretch (9 entries per seed, per-seed Quadric tensors; the field
+     * itself must then have no metric) the lengths |p - v| and |p - s_i| of seed i are measured
+     * with its own stretch, |S_i (p - v)|. The arrays are copied. Not collective. Host.
      * @throws std::invalid_argument for capacity < 1 or arrays of the wrong size (seeds and dist:
      *         capacity * NV; weights: one per seed of the seed set, so every seed index stored in
      *         the lists or in the source cells is a valid index into it).
      */
     void SetSeedLists(int capacity, const mfem::Array<int>& seeds, const mfem::Vector& dist,
-                      const std::vector<double>& weights);
+                      const std::vector<double>& weights,
+                      const std::vector<double>& seed_stretch = {});
     /** @brief True after SetSeedLists (point labeling uses the lists). */
     bool HasSeedLists() const {
         return m_list_capacity > 0;
@@ -1023,6 +1026,7 @@ private:
     mfem::Array<int> m_list_seed;                    ///< seed lists: seed per slot (-1 empty)
     mfem::Vector m_list_dist;                        ///< seed lists: T_i per slot
     mfem::Vector m_list_weight;                      ///< seed lists: w_i per seed
+    mfem::Vector m_list_stretch;                     ///< seed lists: S_i per seed (or empty)
     // Nodal field lookup tables (FieldCellView); empty for the corner field
     int m_tet = 0;                                   ///< 1 = tet lattice
     mfem::Array<int> m_lattice_to_local;             ///< (p+1)^3, -1 = not a lattice point

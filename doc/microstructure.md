@@ -114,10 +114,14 @@ default 16) bounds the memory; if more seeds remain, the worst are cut and the l
 then can the result depend on the number of ranks. Weighted quadric runs the same solver in the
 mapped coordinates y = L^T x.
 
-Not covered yet:
-- **per-seed tensors**: every seed measures paths with its own A_i, so the exact drop rule no
-  longer holds (a seed that is behind at a vertex can catch up along its long direction). Planned
-  with a capped list of candidate seeds per vertex.
+**Per-seed tensors** (`anisotropy = { kind = "per_seed" }`). Every seed measures paths with its own
+tensor A_i, through its own map y = L_i^T x inside the same solver. The drop rule above needs the
+remaining path to be no longer for seed j than for seed i, which holds when A_j <= A_i (A_i - A_j
+positive semidefinite): then j may drop i as before. Otherwise a seed that is behind at a vertex
+can catch up along its long direction, and it must be kept. Seeds with really different shapes are
+rarely ordered, so the lists fill up to the cap; the log reports how often the cap cut a seed. With
+at most `max_seeds_per_node` seeds in total nothing can be cut and the result is exact. Every
+tensor must be positive definite here (finite grain sizes along every direction).
 
 ---
 

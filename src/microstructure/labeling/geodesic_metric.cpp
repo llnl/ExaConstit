@@ -148,8 +148,11 @@ GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,
         metric.stretch = columnar ? ColumnarStretch(direction, k) : LamellarStretch(direction, k);
         return metric;
     }
-    throw std::invalid_argument("ResolveGeodesicMetric: distance = \"geodesic\" does not support "
-                                "anisotropy kind \"" + kind + "\"");
+    if (kind == "per_seed") {
+        return metric; // one tensor per seed: the weighted solver maps per seed, the field not
+    }
+    throw std::invalid_argument("ResolveGeodesicMetric: unknown anisotropy kind \"" + kind +
+                                "\"");
 }
 
 } // namespace exaconstit::microstructure

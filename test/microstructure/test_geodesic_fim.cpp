@@ -664,9 +664,9 @@ std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial, const std::vect
         double best_arrival = INF;
         for (const int u : support) {
             if (T[static_cast<std::size_t>(u)] < tv) {
-                best_arrival = std::min(
-                    best_arrival,
-                    ms::EikonalVertexValue(xv, serial.GetVertex(u), T[static_cast<std::size_t>(u)]));
+                const double tu = T[static_cast<std::size_t>(u)];
+                best_arrival =
+                    std::min(best_arrival, ms::EikonalVertexValue(xv, serial.GetVertex(u), tu));
             }
         }
         for (const int u : support) {
@@ -1362,12 +1362,16 @@ TEST(GeodesicMetric, AutoElongationFromPartExtents) {
             ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
         EXPECT_FALSE(given.automatic);
         EXPECT_EQ(given.elongation, 30.0);
-        tess.anisotropy_kind = "per_seed";
+        tess.anisotropy_kind = "per_seed"; // one tensor per seed: the field keeps no metric
+        EXPECT_EQ(ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr).stretch,
+                  ms::GeodesicParameters{}.stretch);
+        tess.anisotropy_kind = "spiral";
         EXPECT_THROW(ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr),
                      std::invalid_argument);
         // Voronoi: the identity
         tess.metric = ms::MetricType::VORONOI;
-        const ms::GeodesicMetric plain = ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
+        const ms::GeodesicMetric plain =
+            ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
         EXPECT_EQ(plain.stretch, ms::GeodesicParameters{}.stretch);
         EXPECT_EQ(plain.elongation, 0.0);
     }
@@ -1662,6 +1666,91 @@ TEST(GeodesicWeighted, OverflowIsReportedAndInputsChecked) {
     const std::vector<double> short_w = {0.1};
     EXPECT_THROW(ms::LabelGeodesicWeighted(*d.pmesh, MPI_COMM_WORLD, seeds, short_w, params),
                  std::invalid_argument);
+}
+
+// Per-seed tensors (anisotropy kind "per_seed"): 6 random seeds on the convex 12^3 box, each with
+// its own tensor (grains 3x longer along a random direction, scaled per seed) and a weight. With
+// at most max_seeds_per_node seeds in total no list can overflow, so the result is exact for the
+// discretization and rank independent (RunAndCompare); the labels must match the exact
+// straight-line per-seed labels f_i = r^T A_i r - w_i up to near-ties. All seeds with the same
+// tensor give the same labels as the weighted solver with that tensor as the common stretch, up to
+// near-ties (the arithmetic of the two mappings differs in the last bits).
+TEST(GeodesicWeighted, PerSeedTensorsMatchExactLabels) {
+    constexpr double h = 1.0 / 12;
+    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) { return true; });
+    std::mt19937_64 rng(777);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    ms::SeedSet seeds;
+    std::vector<double> w;
+    std::vector<std::array<double, 6>> tensors;
+    ms::GeodesicParameters params;
+    for (int i = 0; i < 6; ++i) {
+        const auto p = RandomPoint(rng);
+        AddSeed(seeds, p[0], p[1], p[2]);
+        std::array<double, 3> a = {u(rng), u(rng), u(rng)};
+        const double len = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+        a = {a[0] / len, a[1] / len, a[2] / len};
+        const double scale = 0.75 + 0.5 * (u(rng) + 1.0) / 2.0;
+        std::array<double, 6> t = ElongatedTensor(a, 3.0);
+        for (double& x : t) {
+            x *= scale;
+        }
+        tensors.push_back(t);
+        const std::array<double, 9> st = ms::MetricStretchFromTensor(t);
+        params.seed_stretch.insert(params.seed_stretch.end(), st.begin(), st.end());
+        w.push_back(0.01 * (i % 3));
+    }
+    ms::GeodesicReport world_report;
+    const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params, &world_report, &w);
+    // Exact per-seed labels at the centroids, and the shift measure of CompareWithExactWeighted
+    int mismatched = 0;
+    double max_shift = 0.0;
+    for (int e = 0; e < grid.mesh.GetNE(); ++e) {
+        const auto c = Centroid(grid.mesh, e);
+        int best = -1;
+        std::vector<double> f(seeds.Size());
+        std::vector<double> d(seeds.Size());
+        for (std::size_t i = 0; i < seeds.Size(); ++i) {
+            d[i] = TensorLength(tensors[i], c[0] - seeds.x[i], c[1] - seeds.y[i],
+                                c[2] - seeds.z[i]);
+            f[i] = d[i] * d[i] - w[i];
+            if (best < 0 || f[i] < f[static_cast<std::size_t>(best)]) {
+                best = static_cast<int>(i);
+            }
+        }
+        const int label = run.element_seed[static_cast<std::size_t>(e)];
+        if (label != best) {
+            ++mismatched;
+            const auto l = static_cast<std::size_t>(label);
+            max_shift = std::max(max_shift, (f[l] - f[static_cast<std::size_t>(best)]) /
+                                                (2.0 * d[l]));
+        }
+    }
+    if (WorldRank() == 0) {
+        std::cout << "[ weighted ] per-seed tensors box: " << mismatched << " of "
+                  << grid.mesh.GetNE() << " elements differ from the exact labels, largest shift "
+                  << max_shift / h << " h (" << world_report.distance_rounds
+                  << " rounds, longest list " << world_report.max_list_length << ")" << std::endl;
+    }
+    EXPECT_LT(static_cast<double>(mismatched) / grid.mesh.GetNE(), 0.12);
+    EXPECT_LT(max_shift, 1.1 * h);
+
+    // Identical tensors: per-seed path = common-stretch path (up to near-ties)
+    ms::GeodesicParameters same;
+    const std::array<double, 9> st = ms::MetricStretchFromTensor(tensors[0]);
+    for (std::size_t i = 0; i < seeds.Size(); ++i) {
+        same.seed_stretch.insert(same.seed_stretch.end(), st.begin(), st.end());
+    }
+    ms::GeodesicParameters common;
+    common.stretch = st;
+    const GeodesicRun a = RunGeodesic(grid.mesh, Layout::SELF, seeds, false, same, &w);
+    const GeodesicRun b = RunGeodesic(grid.mesh, Layout::SELF, seeds, false, common, &w);
+    int differ = 0;
+    for (std::size_t e = 0; e < a.element_seed.size(); ++e) {
+        differ += (a.element_seed[e] != b.element_seed[e]) ? 1 : 0;
+    }
+    EXPECT_LE(differ, grid.mesh.GetNE() / 200);
+    EXPECT_EQ(a.report.max_list_length, b.report.max_list_length);
 }
 
 int main(int argc, char** argv) {

@@ -288,6 +288,11 @@ void WriteFixtures() {
             WriteText("one_seed.csv",
                       "id,x,y,z\n"
                       "7,0.3,0.4,0.5\n");
+            WriteText("shapes.csv",
+                      "id,x,y,z,m11,m22,m33,m23,m13,m12\n"
+                      "1,0.25,0.3,0.5,0.04,0.01,0.01,0,0,0\n"
+                      "2,0.75,0.6,0.4,0.01,0.04,0.01,0,0,0\n"
+                      "3,0.5,0.8,0.7,0.01,0.01,0.04,0,0,0\n");
             WriteText("weighted.csv",
                       "id,x,y,z,weight\n"
                       "1,0.3,0.3,0.3,0.01\n"
@@ -967,6 +972,35 @@ TEST(DriverStage1e, GeodesicLaguerreUShape) {
     const RunPair quadric = RunAndCompare(serial, weighted);
     EXPECT_TRUE(quadric.alone.report.geodesic_seed_lists);
     EXPECT_EQ(quadric.alone.report.geodesic.overflow_nodes, 0);
+}
+
+// Per-seed tensors through the driver: shapes.csv gives three seeds in the unit box (4^3 cells
+// of the auto mesh refined to 12^3) grains elongated along x, y and z (M = diag of squared
+// half-axes). The weighted solver runs with one stretch per seed; with only three seeds no list can
+// overflow, so the distributed run equals the single-rank one, and on this convex part the labels
+// stay close to the straight-line per-seed labels. The graph solver is refused.
+TEST(DriverStage1e, GeodesicPerSeedTensors) {
+    WriteFixtures();
+    mfem::Mesh serial = exaconstit::MakeAutoHexMesh({12, 12, 12}, {1.0, 1.0, 1.0});
+    ms::MicrostructureOptions options = TableOptions("shapes.csv");
+    options.tessellation.metric = ms::MetricType::QUADRIC;
+    options.tessellation.anisotropy_kind = "per_seed";
+    options.tessellation.distance = ms::DistanceMode::GEODESIC;
+    const RunPair geodesic = RunAndCompare(serial, options);
+    EXPECT_TRUE(geodesic.alone.report.geodesic_seed_lists);
+    EXPECT_EQ(geodesic.alone.report.geodesic.overflow_nodes, 0);
+    options.tessellation.distance = ms::DistanceMode::EUCLIDEAN;
+    const DriverRun euclidean = RunDriver(serial, options, MPI_COMM_SELF);
+    int differ = 0;
+    for (std::size_t e = 0; e < euclidean.labels.size(); ++e) {
+        differ += (euclidean.labels[e] != geodesic.alone.labels[e]) ? 1 : 0;
+    }
+    EXPECT_LT(static_cast<double>(differ) / serial.GetNE(), 0.10);
+
+    Distributed d = Distribute(serial, MPI_COMM_WORLD);
+    options.tessellation.distance = ms::DistanceMode::GEODESIC;
+    options.tessellation.geodesic_solver = "graph";
+    EXPECT_TRUE(Refused(*d.pmesh, options));
 }
 
 // ---------------------------------------------------------------------------------------------

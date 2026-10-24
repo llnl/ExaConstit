@@ -33,7 +33,9 @@
  *    LamellarStretch). k is Tessellation.geodesic_elongation, or chosen from the part when that is
  *    "auto" (AutoGeodesicElongation).
  *  - Voronoi, Additive, Laguerre: the identity (no mapping; bitwise the behavior without metrics).
- *  - "per_seed" has one tensor per seed and is not a single metric (refused here).
+ *  - "per_seed" has one tensor per seed and is not a single metric: the identity here, and the
+ *    weighted solver (labeling/geodesic_weighted.hpp) maps each seed's lengths with its own
+ *    stretch (GeodesicParameters::seed_stretch).
  *
  * **What finite k changes.** With the exact semidefinite tensor a column never ends; with finite
  * k, the boundary between two neighboring columns i and j at a point whose height differs from
@@ -86,7 +88,7 @@ double AutoGeodesicElongation(bool columnar, const std::array<double, 3>& direct
  *
  * **Collective** over comm when the elongation is automatic (columnar / lamellar with
  * geodesic_elongation = 0); every rank must call it in any case. Host.
- * @throws std::invalid_argument for "per_seed", a non positive definite tensor, a zero
+ * @throws std::invalid_argument for an unknown kind, a non positive definite tensor, a zero
  *         direction, or an elongation outside [1, GEODESIC_MAX_ELONGATION].
  */
 GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,

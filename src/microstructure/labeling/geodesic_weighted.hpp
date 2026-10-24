@@ -12,10 +12,11 @@
 
 /**
  * @file geodesic_weighted.hpp
- * @brief Geodesic grain labels for metrics with seed weights whose value is not a path length plus
- * a constant: Laguerre, f_i = d_i^2 - w_i, and Quadric with weights (d_i measured with the tensor,
- * GeodesicParameters::stretch). d_i is the length of the shortest path from seed i inside the
- * material (the eikonal distance of labeling/geodesic_fim.hpp, seed by seed).
+ * @brief Geodesic grain labels for metrics whose value is not a path length plus a constant:
+ * Laguerre, f_i = d_i^2 - w_i, Quadric with weights (d_i measured with the tensor,
+ * GeodesicParameters::stretch) and Quadric with one tensor per seed (seed_stretch). d_i is the
+ * length of the shortest path from seed i inside the material (the eikonal distance of
+ * labeling/geodesic_fim.hpp, seed by seed).
  *
  * **Why one front is not enough.** The single-front solver keeps per node only the first arrival
  * and its seed, which is right when every seed's value is its path length plus a constant
@@ -49,6 +50,15 @@
  * win further on, and since ranks cut their partial lists before the exchange, a cut can also
  * make the result depend on the partition. With no overflow the labels and distances are exact
  * (for this discretization) and bitwise partition independent, as for the single-front solver.
+ *
+ * **Per-seed tensors** (anisotropy kind "per_seed", GeodesicParameters::seed_stretch). Seed i
+ * measures paths with its own tensor A_i = S_i^T S_i: its local updates map the cell corners with
+ * S_i, and its source values are |S_i (v - s_i)|. The pruning rule above needs the remaining path
+ * to be no longer for j than for i, so j may drop i only where in addition A_j <= A_i (A_i - A_j
+ * positive semidefinite, checked conservatively; always true for identical tensors). Seeds with
+ * really different shapes are rarely ordered that way and stay in the lists until the capacity
+ * cut, so overflows are expected when more than max_seeds_per_node seeds compete; with at most
+ * max_seeds_per_node seeds in total no list can overflow and the result is exact.
  *
  * **Labels.** label(v) = the entry with the smallest (f, seed); element labels from the lists
  * (VertexField::SetSeedLists: d_i through the corners of the point's cell, or directly from a seed

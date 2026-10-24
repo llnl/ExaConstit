@@ -863,10 +863,10 @@ exec = "cpu"
     #                 it gives the same grains as "connected" with slightly noisier boundaries,
     #                 so use "connected" then.
     #                 Works with every metric: "voronoi", "additive", "laguerre" and "quadric"
-    #                 (stretched grains, including columnar and lamellar; see `geodesic` below).
-    #                 Not yet with anisotropy kind "per_seed" (planned). With weights
-    #                 ("laguerre", or "quadric" with a weight column) it needs solver "fim"
-    #                 (why: see doc/microstructure.md, section 2).
+    #                 (stretched grains, including columnar, lamellar and per_seed; see
+    #                 `geodesic` below). With weights ("laguerre", or "quadric" with a weight
+    #                 column) or per_seed shapes it needs solver "fim" (why: see
+    #                 doc/microstructure.md, section 2).
     # "connected" and "geodesic" cannot be combined with periodic, fit_volumes, lloyd_iterations
     # or voxel maps.
     distance = "euclidean"
@@ -893,12 +893,14 @@ exec = "cpu"
     #               inside the part (k = typical column length / width), or when "auto" was
     #               limited to 10000 (the log says so).
     #             Very large k makes the solver's work harder; k = 10000 is the upper limit.
-    # max_seeds_per_node: only with weights ("laguerre", or "quadric" with a weight column).
-    #             A heavy seed can own a spot that a lighter seed reaches first, so each mesh
-    #             node remembers several seeds that might still win further on; seeds that
-    #             provably cannot win are forgotten. 16 (default) is plenty in practice (the
-    #             log prints the longest list used, usually 2-5). If the log says the lists
-    #             "overflowed", raise it (up to 64); memory grows by 24 bytes per node per seed.
+    # max_seeds_per_node: only with weights ("laguerre", or "quadric" with a weight column)
+    #             or anisotropy kind "per_seed". A heavy seed can own a spot that a lighter
+    #             seed reaches first, so each mesh node remembers several seeds that might
+    #             still win further on; seeds that provably cannot win are forgotten. 16
+    #             (default) is plenty for weights (the log prints the longest list used,
+    #             usually 2-5). With per_seed shapes far fewer seeds can be ruled out, so the
+    #             lists fill up: if the log says the lists "overflowed", some grains may be
+    #             cut short; raise it (up to 64). Memory grows by 24 bytes per node per seed.
     geodesic = { solver = "fim", elongation = "auto", max_seeds_per_node = 16 }
 
     # ===== Matching grain volumes to target sizes =====

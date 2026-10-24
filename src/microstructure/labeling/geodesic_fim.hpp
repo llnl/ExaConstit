@@ -55,9 +55,9 @@
  *     p^3 straight virtual sub-cells spanned by each element's nodal lattice, with the nodal
  *     points of the mesh's own Nodes space as field nodes, so a path follows chords of length about
  *     h/p on the true geometry (a sub-hex uses its 12 far-face triangles, a sub-tet its opposite
- *     face, as above). The candidates of node v in element e are those of every sub-cell of e having v as a
- *     corner, combined exactly like the candidates of one scan (smallest value; on exact ties the
- *     union of the supports), and stored per (v, e) incidence as before; the supports are stored
+ *     face, as above). The candidates of node v in element e are those of every sub-cell of e
+ *     having v as a corner, combined exactly like the candidates of one scan (smallest value; on
+ *     exact ties the union of the supports), and stored per (v, e) incidence as before; the supports are stored
  *     as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is built. With
  *     field_nodes = CORNERS a curved element is replaced by the convex hull of its corners (paths
  *     on chords of length h, which may cut through a concave curved wall by the chord sag).
@@ -177,10 +177,10 @@
  * plain length.
  *
  * **Scope.** Voronoi (a_i = 0), Additive (distance - a_i) and, through the stretch, Quadric with
- * one global tensor and no weights (Laguerre and weighted Quadric use the weighted solver,
- * labeling/geodesic_weighted.hpp; per-seed tensors are not supported yet); no periodic axes;
- * passthrough parts are excluded with an element mask (GeodesicParameters::context), so paths
- * stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
+ * one global tensor and no weights (Laguerre, weighted Quadric and per-seed tensors use the
+ * weighted solver, labeling/geodesic_weighted.hpp); no periodic axes; passthrough parts are
+ * excluded with an element mask (GeodesicParameters::context), so paths stay inside the active
+ * material. A body of the mesh with no seed keeps T = +infinity and label
  * -1, and its elements get element_seed = -1 (the driver decides what to do with them). Elements
  * must have at most 8 vertices (all linear 3D MFEM elements); the nodal field for curved meshes
  * needs all hexes or all tets.
