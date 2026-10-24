@@ -16,6 +16,7 @@
 
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
 #include "microstructure/util/fixed_point.hpp"
 
 #include "mfem.hpp"
@@ -25,6 +26,7 @@
 #include <climits>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <mpi.h>
 #include <stdexcept>
 #include <string>
@@ -67,11 +69,14 @@ double CrossNorm(const Point3& a, const Point3& b) {
  * whichever rank (and whichever stored orientation of the face) computes it.
  *
  * Steps:
- *  1. The face's corner points: the point matrix of StraightFaceTransformation
- *     (mesh/straight_sided.hpp), i.e. the face vertices in MFEM's cyclic order around the face,
- *     read from the Nodes vertex dofs when the mesh has Nodes (so Nodes moved after the mesh was
- *     read are followed) and from the vertex array otherwise; for a mesh without Nodes this is
- *     exactly the point matrix of Mesh::GetFaceTransformation (mesh.cpp:539-561).
+ *  1. The face's corner points: the point matrix of StraightFaceTransformation with the
+ *     owner-broadcast vertex positions (mesh/straight_sided.hpp, mesh/vertex_coordinates.hpp),
+ *     i.e. the face vertices in MFEM's cyclic order around the face, from the Nodes vertex dofs
+ *     when the mesh has Nodes (so Nodes moved after the mesh was read are followed) and from the
+ *     vertex array otherwise, with every copy of a shared vertex holding the owner's bits (after
+ *     a parallel refinement the two ranks of a shared face would otherwise read slightly
+ *     different corners); for a mesh without Nodes distributed from a serial mesh this is exactly
+ *     the point matrix of Mesh::GetFaceTransformation (mesh.cpp:539-561).
  *  2. Canonical order: start at the lexicographically smallest corner (compare x, then y, then
  *     z) and walk around the face toward the smaller of its two neighbors. Any rotation or
  *     reversal of the cyclic list gives the same canonical list, and a triangle or a bilinear
@@ -82,10 +87,10 @@ double CrossNorm(const Point3& a, const Point3& b) {
  *     q2 (1,1), q3 (0,1); area = integral of |dx/ds x dx/dt| with mfem::IntRules' order-3 square
  *     rule (2 x 2 Gauss points), the order MeshAdjacency uses for linear meshes.
  */
-double CanonicalFaceArea(const mfem::Mesh& mesh, int f) {
+double CanonicalFaceArea(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f) {
     // Step 1: corner points in cyclic order (column k of the point matrix is corner k)
     mfem::IsoparametricTransformation transformation;
-    StraightFaceTransformation(mesh, f, transformation);
+    StraightFaceTransformation(mesh, coords, f, transformation);
     const mfem::DenseMatrix& corners = transformation.GetPointMat();
     const int n = corners.Width();
     if ((n != 3 && n != 4) || corners.Height() != 3) {
@@ -214,6 +219,12 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
     // collective) uses the canonical corner formula; curved meshes use the adjacency's
     // curved-face quadrature.
     const bool curved = !IsStraightSided(pmesh, comm);
+    // Owner-broadcast vertex positions for the canonical areas (collective; `curved` is the same
+    // on every rank, so every rank builds it or none does)
+    std::unique_ptr<VertexCoordinates> coords;
+    if (!curved) {
+        coords = std::make_unique<VertexCoordinates>(pmesh);
+    }
     const int* grain = element_grain.HostRead();
     const int* offsets = adjacency.Offsets().HostRead();
     const int* neighbors = adjacency.Neighbors().HostRead();
@@ -228,7 +239,8 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
             if (grain[e] >= other) {
                 continue; // same grain, or counted from the other side
             }
-            const double area = curved ? face_area[k] : CanonicalFaceArea(pmesh, face_index[k]);
+            const double area =
+                curved ? face_area[k] : CanonicalFaceArea(pmesh, *coords, face_index[k]);
             faces.push_back({grain[e], other, area});
             local_max_area = std::max(local_max_area, area);
         }

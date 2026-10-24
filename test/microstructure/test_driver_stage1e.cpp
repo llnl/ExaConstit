@@ -688,7 +688,7 @@ TEST(DriverStage1e, PassthroughNotchKeepsPathsInActivePart) {
         options.mesh.passthrough_attributes = {{2, 2}};
         const RunPair with_plate = RunAndCompare(box, options);
         const ms::GenerationReport& report = with_plate.alone.report;
-        EXPECT_TRUE(report.used_submesh);
+        EXPECT_TRUE(report.used_attribute_domain);
         EXPECT_EQ(report.num_active_elements, ushape.GetNE());
         EXPECT_EQ(with_plate.alone.result.num_grains, alone_u.alone.result.num_grains + 1);
         const int notch_grain = with_plate.alone.result.num_grains;

@@ -1432,18 +1432,12 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     for (const bool p : tessellation.periodic) {
         any_periodic_axis = any_periodic_axis || p;
     }
-    // The active part is a sub-mesh whose interface with the passthrough part is a free surface
-    // of that sub-mesh (mesh/attribute_domain.hpp): a boundary clearance would push seeds away
-    // from a bonded interface, and periodic-plane detection would take the interface faces for
-    // periodic faces. Both are refused until they are handled explicitly.
-    // (With a voxel map there are no seeds: the clearance is only warned about as ignored.)
+    // Passthrough elements are masked out of generation (mesh/attribute_domain.hpp). The boundary
+    // clearance measures only true mesh boundary faces of active elements, so the bonded
+    // interface with a passthrough part does not repel seeds. Periodic axes are refused: the
+    // periodic box and plane faces would have to be measured on the active part only, which is
+    // not implemented.
     const bool voxel_source = (source.type == "voxel_map");
-    if (passthrough && seeds.boundary_clearance > 0.0 && !voxel_source) {
-        report_error(valid,
-                     "Seeds.boundary_clearance > 0 cannot be combined with "
-                     "Mesh.passthrough_attributes (the interface with the passthrough part would "
-                     "count as an outer boundary)");
-    }
     if (passthrough && any_periodic_axis) {
         report_error(valid,
                      "Tessellation.periodic cannot be combined with Mesh.passthrough_attributes");

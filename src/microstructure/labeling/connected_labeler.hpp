@@ -4,6 +4,7 @@
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -120,8 +121,8 @@
  * largest total weight w_q detJ_q (ties: lowest seed index), as in the quadrature vote.
  *
  * **Scope** (the driver refuses other combinations): no periodic axes (an adjacency with periodic
- * face pairing is refused), no Lloyd/weight fitting, no voxel maps; the mesh is the active
- * material (AttributeDomain::ActiveMesh()).
+ * face pairing is refused), no Lloyd/weight fitting, no voxel maps; passthrough parts of the
+ * mesh are excluded with an element mask (MaterialContext; a face to them is a free surface).
  *
  * **Where it runs.** Component search and the round bookkeeping are host loops (the component
  * search uses union-find, a forest in which every element points to a parent element and two
@@ -209,6 +210,8 @@ struct ConnectedLabelReport {
  * @param element_key size NE: ComputeElementKeys(pmesh).
  * @param centroid_x, centroid_y, centroid_z size NE: element volume centroids
  *                    (ElementSamples::cx/cy/cz from ComputeElementSamples), read with HostRead().
+ * @param context     optional active-element mask and shared locator (MaterialContext): only
+ *                    active elements can be anchors. nullptr = every element.
  * @return size N, identical on every rank: the anchor key of each seed. UINT64_MAX only when the
  *         whole mesh has no element.
  * @throws std::invalid_argument on every rank if an input size is wrong on any rank.
@@ -219,7 +222,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
                                                  const std::vector<std::uint64_t>& element_key,
                                                  const mfem::Vector& centroid_x,
                                                  const mfem::Vector& centroid_y,
-                                                 const mfem::Vector& centroid_z);
+                                                 const mfem::Vector& centroid_z,
+                                                 const MaterialContext* context = nullptr);
 
 /**
  * @brief The anchor element of every seed as used by ConstrainToConnectedCells (see "Anchors" in
@@ -241,6 +245,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
  * @param element_seed size NE: 0-based seed label of every local element (HostRead).
  * @param element_key  size NE: ComputeElementKeys(pmesh).
  * @param centroid_x, centroid_y, centroid_z size NE: element volume centroids (HostRead).
+ * @param context      optional active-element mask and shared locator: inactive elements (label
+ *                     ignored, e.g. -1) are never anchors. nullptr = every element.
  * @return size N, identical on every rank.
  * @throws std::invalid_argument on every rank if an input size is wrong or a label is outside
  *         [0, N) on any rank.
@@ -252,7 +258,8 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
                                                const std::vector<std::uint64_t>& element_key,
                                                const mfem::Vector& centroid_x,
                                                const mfem::Vector& centroid_y,
-                                               const mfem::Vector& centroid_z);
+                                               const mfem::Vector& centroid_z,
+                                               const MaterialContext* context = nullptr);
 
 /**
  * @brief Restricts every seed's elements to those connected through material to its anchor
@@ -277,6 +284,10 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
  *                     with the same metric). Out: the constrained labels, still 0-based seed
  *                     indices (compact them with CompactSeedLabels). Read and written on the host.
  * @param params       rounds cap and sampling.
+ * @param context      optional active-element mask and shared locator (MaterialContext):
+ *                     inactive elements keep their label (the placeholder -1), are never
+ *                     relabeled, and a face to one is a free surface, so material connectivity
+ *                     runs through active elements only. nullptr = every element.
  * @return the report (global counts).
  * @throws std::invalid_argument on every rank for: an empty seed set, max_rounds outside
  *         0..CONNECTED_MAX_ROUNDS_LIMIT, vote_levels outside 0..3, an adjacency of another mesh
@@ -289,6 +300,7 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
                                                const SeedSet& seeds,
                                                const TessellationOptions& tessellation,
                                                mfem::Array<int>& element_seed,
-                                               const ConnectedLabelParameters& params);
+                                               const ConnectedLabelParameters& params,
+                                               const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

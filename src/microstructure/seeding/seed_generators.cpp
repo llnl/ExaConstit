@@ -172,7 +172,9 @@ struct MeshSummary {
  *     (reach_lo, reach_hi). A rank without elements contributes +inf / -inf, which leaves the
  *     result unchanged.
  *  2. Global element count and count of elements with non-positive volume (MPI_SUM), and the
- *     largest element volume (MPI_MAX), which sets the scale of the fixed-point sum.
+ *     largest element volume (MPI_MAX), which sets the scale of the fixed-point sum. Only the
+ *     locator's active elements count (all elements without a mask), here and in step 3; the
+ *     locator's bounds already cover only them.
  *  3. Material volume as a fixed-point sum: each element volume is rounded to an integer number
  *     of tiny "quanta" (util/fixed_point.hpp) and the integers are added. Integer addition does not
  *     depend on the order, unlike floating-point addition, so V (and everything derived from it:
@@ -183,6 +185,7 @@ MeshSummary SummarizeMesh(const MaterialPointLocator& locator, const ElementSamp
                           MPI_Comm comm) {
     MeshSummary summary;
     const int ne = locator.NumElements();
+    const int num_active = locator.NumActiveElements();
 
     // Step 1: global bounding boxes; entries 0-2 are the point box, 3-5 the padded box
     double lo[6];
@@ -191,7 +194,7 @@ MeshSummary SummarizeMesh(const MaterialPointLocator& locator, const ElementSamp
         lo[d] = std::numeric_limits<double>::infinity();
         hi[d] = -std::numeric_limits<double>::infinity();
     }
-    if (ne > 0) {
+    if (num_active > 0) {
         const auto& points = locator.LocalPointBounds();
         const auto& padded = locator.LocalBounds();
         for (int d = 0; d < 3; d++) {
@@ -212,9 +215,12 @@ MeshSummary SummarizeMesh(const MaterialPointLocator& locator, const ElementSamp
 
     // Step 2: element counts and largest element volume
     const double* volume = (ne > 0) ? samples.volume.HostRead() : nullptr;
-    std::int64_t local_counts[2] = {ne, 0}; // [elements, elements with volume <= 0]
+    std::int64_t local_counts[2] = {num_active, 0}; // [elements, elements with volume <= 0]
     double max_volume = 0.0;
     for (int e = 0; e < ne; e++) {
+        if (!locator.ElementActive(e)) {
+            continue;
+        }
         if (!(volume[e] > 0.0)) {
             local_counts[1]++;
         }
@@ -233,7 +239,9 @@ MeshSummary SummarizeMesh(const MaterialPointLocator& locator, const ElementSamp
     const FixedPointScale scale = FixedPointScale::ForRange(0.0, max_volume, summary.num_elements);
     std::int64_t local_sum = 0;
     for (int e = 0; e < ne; e++) {
-        local_sum += scale.Encode(volume[e]);
+        if (locator.ElementActive(e)) {
+            local_sum += scale.Encode(volume[e]);
+        }
     }
     std::int64_t global_sum = 0;
     MPI_Allreduce(&local_sum, &global_sum, 1, MPI_INT64_T, MPI_SUM, comm);
@@ -818,8 +826,9 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
  *     they never coincide with a rejection candidate's (SEED_POSITION, k) stream.
  *  2. Arrival times of element e: t_{j+1} = t_j + E_j / V_e with E_j = -ln(1 - U_j) an
  *     exponential random number (the waiting time between events of a Poisson process).
- *     Elements that cannot contribute (box outside a user sampling box, or volume <= 0, which
- *     GenerateSeeds already rejects) get t = +infinity and never emit.
+ *     Elements that cannot contribute (inactive under the element mask, box outside a user
+ *     sampling box, or volume <= 0, which GenerateSeeds already rejects) get t = +infinity and
+ *     never emit.
  *  3. Time windows [T, T + W): each rank emits the arrivals of its elements in the window,
  *     MPI_Allgatherv collects them on every rank, and all ranks sort them by
  *     (time, key, j). The window width W = (expected points needed) / V_active, so a window holds
@@ -848,6 +857,10 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
     std::vector<char> active(static_cast<std::size_t>(ne), 1);
     for (int e = 0; e < ne; e++) {
         const auto ue = static_cast<std::size_t>(e);
+        if (!ctx.locator->ElementActive(e)) {
+            active[ue] = 0; // masked out: never emits (its volume does not count either)
+            continue;
+        }
         key[ue] = ElementKey(mesh, e);
         quantum[ue] = ElementKeyQuantum(mesh, e);
         if (!(volume[e] > 0.0)) {
@@ -1158,9 +1171,11 @@ std::string SeedingReport::Summary() const {
  *
  * Steps:
  *  1. Validate the parameters (identical on every rank, so all ranks throw together).
- *  2. Local setup: element boxes + BVH (MaterialPointLocator), element volumes and centroids
- *     (ComputeElementSamples). A failure on any rank (e.g. an unsupported geometry in one
- *     partition) is turned into the same exception on every rank by ThrowIfAnyRankFailed.
+ *  2. Local setup: element boxes + BVH (MaterialPointLocator, the context's shared one when given,
+ *     else built here over the context's mask), element volumes and centroids
+ *     (ComputeElementSamples). Everything below sees only the locator's active elements. A failure
+ *     on any rank (e.g. an unsupported geometry in one partition) is turned into the same exception
+ *     on every rank by ThrowIfAnyRankFailed.
  *  3. Global mesh facts (SummarizeMesh): bounding boxes, element counts, material volume. Elements
  *     with volume <= 0 (inverted or degenerate) are an error on all ranks: they have no meaningful
  *     inside, and element-weighted sampling needs positive volumes.
@@ -1180,26 +1195,33 @@ std::string SeedingReport::Summary() const {
  *     ClassifyBatch and SeedAcceptor::Offer).
  */
 SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParameters& params,
-                      SeedingReport* report_out) {
+                      SeedingReport* report_out, const MaterialContext* context) {
     // Step 1
     ValidateSeedingParameters(params);
     SeedingReport report;
     report.requested = params.num_seeds;
 
-    // Step 2: local setup, failures combined over ranks. Whether the elements are straight-sided
-    // is decided over all ranks first (collective), so every rank builds the same kind of boxes.
-    const bool straight_sided = IsStraightSided(local_mesh, comm);
+    // Step 2: local setup, failures combined over ranks. Without a shared locator, whether the
+    // (active) elements are straight-sided is decided over all ranks first (collective), so
+    // every rank builds the same kind of boxes.
+    const bool shared_locator = context != nullptr && context->locator != nullptr;
+    const bool straight_sided = shared_locator
+                                    ? context->locator->StraightSided()
+                                    : IsStraightSided(local_mesh, comm, ContextMask(context));
     std::unique_ptr<MaterialPointLocator> locator_ptr;
     ElementSamples samples;
     std::string setup_error;
     try {
-        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided);
+        if (!shared_locator) {
+            locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided,
+                                                                 ContextMask(context));
+        }
         ComputeElementSamples(local_mesh, -1, samples);
     } catch (const std::exception& error) {
         setup_error = std::string("GenerateSeeds: mesh setup failed: ") + error.what();
     }
     ThrowIfAnyRankFailed(comm, setup_error);
-    const MaterialPointLocator& locator = *locator_ptr;
+    const MaterialPointLocator& locator = shared_locator ? *context->locator : *locator_ptr;
 
     // Step 3: global facts
     const MeshSummary summary = SummarizeMesh(locator, samples, comm);
@@ -1309,7 +1331,7 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         std::string clearance_error;
         try {
             clearance = std::make_unique<BoundaryClearance>(local_mesh, params.boundary_clearance,
-                                                            straight_sided);
+                                                            straight_sided, ContextMask(context));
         } catch (const std::exception& error) {
             clearance_error =
                 std::string("GenerateSeeds: surface clearance setup failed: ") + error.what();
@@ -1448,8 +1470,9 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
 
 /* ParMesh overload: the mesh's own communicator. */
 SeedSet GenerateSeeds(mfem::ParMesh& pmesh, const SeedingParameters& params,
-                      SeedingReport* report) {
-    return GenerateSeeds(static_cast<mfem::Mesh&>(pmesh), pmesh.GetComm(), params, report);
+                      SeedingReport* report, const MaterialContext* context) {
+    return GenerateSeeds(static_cast<mfem::Mesh&>(pmesh), pmesh.GetComm(), params, report,
+                         context);
 }
 
 } // namespace exaconstit::microstructure

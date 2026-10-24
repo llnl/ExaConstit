@@ -241,7 +241,8 @@ void ValidateLloydParameters(const LloydParameters& params) {
  */
 SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamples& samples,
                  const SeedSet& seeds, const LloydParameters& params,
-                 const std::vector<double>& target_volume, LloydReport* report) {
+                 const std::vector<double>& target_volume, LloydReport* report,
+                 const MaterialContext* context) {
     // Step 1: checks and setup
     ValidateLloydParameters(params);
     const std::size_t num_seeds = seeds.Size();
@@ -258,11 +259,13 @@ SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamp
         metric = MetricType::LAGUERRE;
         fit_params.metric = MetricType::LAGUERRE;
     }
-    std::unique_ptr<MaterialPointLocator> locator;
+    // The clamp's locator: the context's shared one, or one built here over the context's mask
+    // (params and context are identical on every rank, so every rank enters the collective
+    // decision inside ContextLocator together)
+    std::unique_ptr<MaterialPointLocator> owned_locator;
+    const MaterialPointLocator* locator = nullptr;
     if (params.clamp_to_material) {
-        // params are identical on every rank, so every rank enters the collective decision
-        locator = std::make_unique<MaterialPointLocator>(local_mesh,
-                                                         IsStraightSided(local_mesh, comm));
+        locator = &ContextLocator(local_mesh, comm, context, owned_locator);
     }
     const CellMeasureAccumulator accumulator(comm, samples, static_cast<int>(num_seeds));
     LloydReport local_report;

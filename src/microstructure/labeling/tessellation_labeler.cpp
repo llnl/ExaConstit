@@ -136,13 +136,14 @@ std::array<double, 6> EffectiveGlobalTensor(const TessellationOptions& tessellat
 void ThrowIfAnyElementUnlabeled(MPI_Comm comm,
                                 const mfem::Array<int>& element_seed,
                                 const std::string& what,
-                                const std::string& hint) {
-    // First local element without a seed, if any
+                                const std::string& hint,
+                                const ElementMask* mask) {
+    // First local active element without a seed, if any (inactive elements carry -1 by design)
     const int num_elements = element_seed.Size();
     const int* seed_host = (num_elements > 0) ? element_seed.HostRead() : nullptr;
     int first_bad = -1;
     for (int e = 0; e < num_elements; ++e) {
-        if (seed_host[e] < 0) {
+        if (seed_host[e] < 0 && ElementIsActive(mask, e)) {
             first_bad = e;
             break;
         }
@@ -257,11 +258,14 @@ void LabelElementsWithSeeds(mfem::Mesh& local_mesh,
  *     (seed_grain, grain_seed). Every rank does this with the same mask, so all ranks agree.
  *  5. element_grain[e] = seed_grain[element_seed[e]] in an mfem::forall kernel (the table is
  *     copied to an mfem::Array so the kernel can read it on the device).
+ * With an element mask, inactive elements are skipped in steps 1-2 (their seed entry is not
+ * looked at) and get grain 0 in step 5.
  */
 void CompactSeedLabels(MPI_Comm comm,
                        const mfem::Array<int>& element_seed,
                        int num_seeds,
-                       TessellationLabels& labels) {
+                       TessellationLabels& labels,
+                       const ElementMask* mask) {
     if (num_seeds < 1) {
         throw std::invalid_argument("CompactSeedLabels: num_seeds must be >= 1");
     }
@@ -271,7 +275,7 @@ void CompactSeedLabels(MPI_Comm comm,
     const int* seed_host = (num_elements > 0) ? element_seed.HostRead() : nullptr;
     int local_bad = 0;
     for (int e = 0; e < num_elements; ++e) {
-        if (seed_host[e] < 0 || seed_host[e] >= num_seeds) {
+        if (ElementIsActive(mask, e) && (seed_host[e] < 0 || seed_host[e] >= num_seeds)) {
             local_bad = 1;
             break;
         }
@@ -287,6 +291,9 @@ void CompactSeedLabels(MPI_Comm comm,
     const std::size_t num_words = (static_cast<std::size_t>(num_seeds) + 63) / 64;
     std::vector<std::uint64_t> used(num_words, 0);
     for (int e = 0; e < num_elements; ++e) {
+        if (!ElementIsActive(mask, e)) {
+            continue;
+        }
         const auto seed = static_cast<std::size_t>(seed_host[e]);
         used[seed / 64] |= std::uint64_t(1) << (seed % 64);
     }
@@ -323,9 +330,12 @@ void CompactSeedLabels(MPI_Comm comm,
     }
     const int* table = seed_grain_table.Read();
     const int* seed_of_element = element_seed.Read();
+    const int* active = ElementMaskData(mask, mfem::Device::IsEnabled());
     int* grain_of_element = labels.element_grain.Write();
     mfem::forall(num_elements, [=] MFEM_HOST_DEVICE(int e) {
-        grain_of_element[e] = table[seed_of_element[e]];
+        // Inactive elements get the placeholder grain 0
+        grain_of_element[e] =
+            (active == nullptr || active[e] != 0) ? table[seed_of_element[e]] : 0;
     });
 }
 
@@ -343,11 +353,14 @@ void CompactSeedLabels(MPI_Comm comm,
  *     seed owners (votes of a seed and its images count for the same grain).
  *  4. Collective check for elements without a seed.
  *  5. Compaction to grain ids over the original seeds (collective).
+ * With an element mask, inactive elements get seed -1 after step 3 and grain 0 in step 5, and
+ * steps 4-5 skip them. (They are still searched in step 3; the result is simply discarded.)
  */
 TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
                                      MPI_Comm comm,
                                      const SeedSet& seeds,
-                                     const TessellationOptions& tessellation) {
+                                     const TessellationOptions& tessellation,
+                                     const ElementMask* mask) {
     // Step 1: checks
     CheckSupportedTessellation(tessellation);
     RequireEuclidean(tessellation, "LabelTessellation");
@@ -364,6 +377,11 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
     for (int d = 0; d < 3; ++d) {
         periodic = periodic || tessellation.periodic[d];
     }
+    // Reduced: a rank without elements has no mask while the others have one
+    ThrowIfAnyRank<std::invalid_argument>(
+        comm, periodic && mask != nullptr && mask->active.Size() > 0,
+        "Tessellation labeler: periodic axes cannot be combined with an element mask "
+        "(passthrough attributes)");
     PeriodicImages images;
     const SeedSet* search_seeds = &seeds;
     int layers = 0;
@@ -389,7 +407,7 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
         vote.levels = tessellation.vote_levels;
         QuadratureVoteReport vote_report;
         LabelElementsByQuadratureVote(local_mesh, *search_seeds, vote, element_seed,
-                                      images.original, &vote_report);
+                                      images.original, &vote_report, mask);
         num_coincident = vote_report.num_coincident_seeds;
         num_split = vote_report.num_split_elements;
     } else {
@@ -398,6 +416,7 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
         if (periodic) {
             MapImageLabelsToOriginal(images, element_seed);
         }
+        SetInactiveValues(mask, element_seed, -1);
     }
 
     // Step 4: elements without a seed (id1 = -1: non-finite centroid or voting points)
@@ -405,17 +424,18 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
         ThrowIfAnyElementUnlabeled(comm, element_seed,
                                    "Tessellation labeler: no voting point of an element has a "
                                    "finite position",
-                                   "; the element has non-finite node coordinates");
+                                   "; the element has non-finite node coordinates", mask);
     } else {
         ThrowIfAnyElementUnlabeled(comm, element_seed,
                                    "Tessellation labeler: non-finite element centroid",
                                    "; the element is degenerate (zero volume) or has non-finite "
-                                   "node coordinates");
+                                   "node coordinates",
+                                   mask);
     }
 
     // Step 5: compact grain ids over the original seeds (collective)
     TessellationLabels labels;
-    CompactSeedLabels(comm, element_seed, num_seeds, labels);
+    CompactSeedLabels(comm, element_seed, num_seeds, labels, mask);
     labels.num_coincident_seeds = num_coincident;
     labels.periodic_layers = layers;
     labels.num_periodic_images = images.num_images;

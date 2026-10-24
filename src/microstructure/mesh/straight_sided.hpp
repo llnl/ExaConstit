@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include <mpi.h>
@@ -31,6 +33,9 @@
  *    nodes (linear precision), so the same test applies;
  *  - discontinuous (L2) Nodes, used by MFEM for periodic meshes: never straight-sided (they
  *    keep the general, curved treatment, as before; preflight rejects them anyway).
+ * With an element mask (mesh/element_mask.hpp) only the active elements are tested: a curved
+ * passthrough part (say a warped build plate) does not make the generated material curved, so
+ * the material draws the same seeds as a mesh of the material alone.
  *
  * Corner points: for a straight-sided mesh with Nodes, the corners are read from the Nodes (the
  * vertex dofs, which every H1 element numbers first, in the element's vertex order), not from
@@ -62,12 +67,15 @@ constexpr double STRAIGHT_SIDED_REL_TOL = 1.0e-12;
 
 /**
  * @brief Whether this rank's local elements are straight-sided (rules in the file comment).
- * Not collective; host only. A rank with no elements answers true.
+ * Not collective; host only. A rank with no (active) elements answers true.
  * @param mesh this rank's mesh partition (any dimension; only 3D meshes are used by the
  *        generator).
+ * @param mask active elements (nullptr or empty = every element); only these are tested. When
+ *        not empty its size must be mesh.GetNE() (std::invalid_argument otherwise).
  * @param rel_tol relative tolerance of the higher-order test (default STRAIGHT_SIDED_REL_TOL).
  */
-bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol = STRAIGHT_SIDED_REL_TOL);
+bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask = nullptr,
+                        double rel_tol = STRAIGHT_SIDED_REL_TOL);
 
 /**
  * @brief Whether the whole distributed mesh is straight-sided: StraightSidedLocal on every rank,
@@ -75,8 +83,10 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol = STRAIGHT_SIDED_
  * one rank makes the whole mesh curved). Use this, not StraightSidedLocal, for decisions that
  * must not depend on the partition (element boxes, the seed sampling box).
  * Collective over `comm`: every rank must call it. Host only.
+ * @param mask active elements of this rank (nullptr or empty = every element); a mask of the
+ *        wrong size on any rank makes every rank throw std::invalid_argument.
  */
-bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm,
+bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, const ElementMask* mask = nullptr,
                      double rel_tol = STRAIGHT_SIDED_REL_TOL);
 
 /**

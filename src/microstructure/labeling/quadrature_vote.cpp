@@ -312,6 +312,8 @@ void ComputeVotePoints(mfem::Mesh& mesh,
  *       c. the vote (VoteChunk).
  *     The index is built once and reused across chunks, so only the points are chunked.
  *  4. Report the statistics (split elements are counted on the host).
+ * With an element mask, inactive elements are voted like the others and then get seed -1 and do
+ * not count as split.
  *
  * Why the result is partition independent: an element's voting points depend only on its own
  * nodes, the search result per point only on the point and the replicated seeds, and the vote
@@ -322,7 +324,8 @@ void LabelElementsByQuadratureVote(mfem::Mesh& local_mesh,
                                    const QuadratureVoteParameters& params,
                                    mfem::Array<int>& element_seed,
                                    const std::vector<int>& seed_owner,
-                                   QuadratureVoteReport* report) {
+                                   QuadratureVoteReport* report,
+                                   const ElementMask* mask) {
     // Step 1: parameter checks and the owner table
     const std::size_t num_seeds = seeds.Size();
     if (num_seeds == 0) {
@@ -410,6 +413,10 @@ void LabelElementsByQuadratureVote(mfem::Mesh& local_mesh,
             }
         });
     });
+
+    // Inactive elements: placeholder seed -1, and they are not split elements
+    SetInactiveValues(mask, element_seed, -1);
+    SetInactiveValues(mask, element_split, 0);
 
     // Step 4: statistics
     if (report != nullptr) {

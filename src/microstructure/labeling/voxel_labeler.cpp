@@ -43,6 +43,9 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** Placeholder feature id of inactive elements (element mask): never a grain, never a donor. */
+constexpr int INACTIVE_FEATURE = -1;
+
 /**
  * @brief Point label codes of the lookup (positive values are feature ids).
  *
@@ -152,7 +155,8 @@ void LabelPoints(const TileLookup& lookup, const mfem::Vector& x, const mfem::Ve
  * equal total goes to the lower feature id. This is the same scheme as VoteChunk in
  * labeling/quadrature_vote.cpp, with feature ids as labels.
  *
- * Also counts, per element, the points outside the grid and flags points on tiles that were not read.
+ * Also counts, per element, the points outside the grid and flags points on tiles that were not
+ * read.
  *
  * @param element_feature output at chunk_begin + e: winning feature id, or 0 without a vote.
  * @param element_outside output: points of the element outside the grid.
@@ -469,7 +473,7 @@ std::int64_t GlobalSum(std::int64_t value, MPI_Comm comm) {
 void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
                  const VoxelLabelParameters& params, const VoxelGridInfo& grid,
                  mfem::Array<int>& element_feature, VoxelLabels& result,
-                 std::int64_t& num_outside, bool& any_bad) {
+                 std::int64_t& num_outside, bool& any_bad, const ElementMask* mask) {
     const int ne = pmesh.GetNE();
     element_feature.SetSize(ne);
     num_outside = 0;
@@ -518,10 +522,14 @@ void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
                   element_bad);
     });
 
-    // Local statistics (host)
+    // Local statistics (host); inactive elements get the placeholder feature and do not count
+    SetInactiveValues(mask, element_feature, INACTIVE_FEATURE);
     const int* outside = element_outside.HostRead();
     const int* bad = element_bad.HostRead();
     for (int e = 0; e < ne; ++e) {
+        if (!ElementIsActive(mask, e)) {
+            continue;
+        }
         num_outside += outside[e];
         any_bad = any_bad || (bad[e] != 0);
     }
@@ -539,14 +547,14 @@ void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
  * The adjacency is built only if some rank has an unvoted element.
  */
 void FillFromNeighbors(mfem::ParMesh& pmesh, MPI_Comm comm, mfem::Array<int>& element_feature,
-                       VoxelLabels& result) {
+                       VoxelLabels& result, const ElementMask* mask) {
     const int ne = element_feature.Size();
     int* current = element_feature.HostReadWrite();
 
     // Global count of unvoted elements; nothing to do (and no adjacency to build) if zero
     std::int64_t local_unassigned = 0;
     for (int e = 0; e < ne; ++e) {
-        if (current[e] <= 0) {
+        if (current[e] <= 0 && ElementIsActive(mask, e)) {
             ++local_unassigned;
         }
     }
@@ -571,8 +579,8 @@ void FillFromNeighbors(mfem::ParMesh& pmesh, MPI_Comm comm, mfem::Array<int>& el
         std::int64_t local_assigned = 0;
         for (int e = 0; e < ne; ++e) {
             next[static_cast<std::size_t>(e)] = current[e];
-            if (current[e] > 0) {
-                continue;
+            if (current[e] > 0 || !ElementIsActive(mask, e)) {
+                continue; // assigned, or inactive (keeps its placeholder; never a donor either)
             }
             int best = 0;
             int best_faces = 0;
@@ -641,7 +649,8 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
                                     MPI_Comm comm,
                                     const VoxelMapParameters& map,
                                     const VoxelGridInfo& grid,
-                                    const VoxelLabelParameters& params) {
+                                    const VoxelLabelParameters& params,
+                                    const ElementMask* mask) {
     // Step 0: parameters and grid
     if (params.sampling != SamplingMode::CENTROID &&
         params.sampling != SamplingMode::QUADRATURE_VOTE) {
@@ -672,7 +681,7 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
     std::string error;
     try {
         VoteLocally(pmesh, map, params, grid, result.element_feature, result, local_outside,
-                    any_bad);
+                    any_bad, mask);
     } catch (const std::exception& e) {
         error = e.what();
         if (error.empty()) {
@@ -688,7 +697,7 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
 
     // Step 4: statistics and fill
     result.num_outside_points = GlobalSum(local_outside, comm);
-    FillFromNeighbors(pmesh, comm, result.element_feature, result);
+    FillFromNeighbors(pmesh, comm, result.element_feature, result, mask);
     return result;
 }
 
@@ -709,21 +718,27 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
 void CompactFeatureLabels(MPI_Comm comm,
                           const mfem::Array<int>& element_feature,
                           mfem::Array<int>& element_grain,
-                          std::vector<std::int64_t>& grain_feature) {
+                          std::vector<std::int64_t>& grain_feature,
+                          const ElementMask* mask) {
     const int ne = element_feature.Size();
     const int* feature = (ne > 0) ? element_feature.HostRead() : nullptr;
 
-    // Step 1: validity
+    // Step 1: validity (active elements only)
     bool local_bad = false;
     for (int e = 0; e < ne; ++e) {
-        local_bad = local_bad || feature[e] < 1;
+        local_bad = local_bad || (ElementIsActive(mask, e) && feature[e] < 1);
     }
     ThrowIfAnyRank<std::invalid_argument>(comm, local_bad,
                                           "CompactFeatureLabels: a feature id < 1 on at least "
                                           "one rank (every element must have a grain)");
 
-    // Step 2: sorted distinct local ids
-    std::vector<int> local_ids(feature, feature + ne);
+    // Step 2: sorted distinct local ids of the active elements
+    std::vector<int> local_ids;
+    for (int e = 0; e < ne; ++e) {
+        if (ElementIsActive(mask, e)) {
+            local_ids.push_back(feature[e]);
+        }
+    }
     std::sort(local_ids.begin(), local_ids.end());
     local_ids.erase(std::unique(local_ids.begin(), local_ids.end()), local_ids.end());
 
@@ -763,8 +778,13 @@ void CompactFeatureLabels(MPI_Comm comm,
     }
     const int* sorted = table.Read();
     const int* in = element_feature.Read();
+    const int* active = ElementMaskData(mask, mfem::Device::IsEnabled());
     int* out = element_grain.Write();
     mfem::forall(ne, [=] MFEM_HOST_DEVICE(int e) {
+        if (active != nullptr && active[e] == 0) {
+            out[e] = 0; // inactive: placeholder grain
+            return;
+        }
         // The id is in the table (it came from this rank's own list): find its position
         int low = 0;
         int high = num_grains - 1;

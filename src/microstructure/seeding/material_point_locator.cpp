@@ -49,12 +49,13 @@ constexpr double PROJECTED_MISMATCH_TOL = 1.0e-10;
 
 /**
  * Early reject of the curved-element retries (PointInCurvedElement): attempts 3 and 4 are skipped
- * when attempts 1 and 2 converged to the same root of x(xi) = p, at most this distance outside
- * the reference element (reference units, element size 1), with the map clearly unfolded there. Box candidates
- * that are really outside (points of neighboring elements) converge to such roots. Interior
- * points of distorted elements can also have spurious roots this close (0.04 - 0.5 measured on
- * randomly perturbed order 2-4 meshes), but in those cases the root had a small or negative detJ
- * or the two starts disagreed (see the stress test CurvedGeometry.PerturbedElementsKeepInteriorPoints).
+ * when attempts 1 and 2 converged to the same root of x(xi) = p, at most this distance outside the
+ * reference element (reference units, element size 1), with the map clearly unfolded there. Box
+ * candidates that are really outside (points of neighboring elements) converge to such roots.
+ * Interior points of distorted elements can also have spurious roots this close (0.04 - 0.5
+ * measured on randomly perturbed order 2-4 meshes), but in those cases the root had a small or
+ * negative detJ or the two starts disagreed (see the stress test
+ * CurvedGeometry.PerturbedElementsKeepInteriorPoints).
  */
 constexpr double RETRY_REFERENCE_DISTANCE = 0.5;
 
@@ -95,6 +96,9 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  * MaterialPointLocator constructor
  *
  * Steps:
+ *  0. Active elements: every local element without a mask, else those whose mask flag is set (in
+ *     increasing order). Only they get boxes and enter the BVH, so MarkInside never reports a
+ *     point inside an inactive element.
  *  1. Element-box method from the caller's straight-sided flag (IsStraightSided,
  *     mesh/straight_sided.hpp, decided over all ranks): corner boxes for straight-sided meshes
  *     (corners from the Nodes when present, else the mesh vertices, ElementCornerPoints),
@@ -113,11 +117,29 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  * (the same points as the refined grid used before the bulge margin, so the global mesh box of a
  * curved mesh did not change; only the element boxes did).
  */
-MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided)
+MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided,
+                                           const ElementMask* mask)
     : m_mesh(mesh) {
     m_num_elements = mesh.GetNE();
     if (m_num_elements > 0 && (mesh.Dimension() != 3 || mesh.SpaceDimension() != 3)) {
         throw std::runtime_error("MaterialPointLocator: the mesh must be 3D");
+    }
+
+    // Step 0: the active elements (all of them without a mask)
+    if (mask != nullptr && mask->active.Size() > 0) {
+        if (mask->active.Size() != m_num_elements) {
+            throw std::invalid_argument(
+                "MaterialPointLocator: the element mask needs one entry per local element");
+        }
+        m_active_flags.resize(static_cast<std::size_t>(m_num_elements));
+        for (int e = 0; e < m_num_elements; e++) {
+            m_active_flags[static_cast<std::size_t>(e)] = mask->active[e] != 0 ? 1 : 0;
+        }
+    }
+    for (int e = 0; e < m_num_elements; e++) {
+        if (ElementActive(e)) {
+            m_active_elements.push_back(e);
+        }
     }
 
     // Step 1: the caller's collective decision. A mesh without Nodes is always straight-sided,
@@ -127,7 +149,7 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
     if (!m_straight_sided) {
         node_order = std::max(1, mesh.GetNodes()->FESpace()->GetMaxElementOrder());
         // Reference lattices (n = 2p) of the geometries present on this rank
-        for (int e = 0; e < m_num_elements; e++) {
+        for (const int e : m_active_elements) {
             const mfem::Geometry::Type geom = mesh.GetElementGeometry(e);
             if (!m_lattices[geom].valid) {
                 BuildLattice(geom, 2 * node_order);
@@ -135,14 +157,15 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
         }
     }
 
-    // Step 2: per-element boxes and their union
+    // Step 2: per-element boxes of the active elements and their union (inactive elements keep
+    // an empty box)
     m_element_boxes.resize(m_num_elements);
     mfem::DenseMatrix corners;
     mfem::Array<int> vdofs;
     mfem::Vector nodal_values;
     mfem::IsoparametricTransformation trans;
     mfem::Vector x(3);
-    for (int e = 0; e < m_num_elements; e++) {
+    for (const int e : m_active_elements) {
         BoxType box;
         if (m_straight_sided) {
             // Corner box: exact for straight-sided elements (a linear tet or trilinear hex lies
@@ -191,9 +214,19 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
         m_local_bounds.addBox(box);
     }
 
-    // Step 3: the BVH (only when there is at least one element; BVH::initialize needs > 0)
-    if (m_num_elements > 0) {
-        m_bvh.initialize(m_element_boxes.data(), m_num_elements);
+    // Step 3: the BVH over the active boxes, in increasing element order (only when there is at
+    // least one; BVH::initialize needs > 0). When every element is active these are all boxes in
+    // element order (the BVH built before masks existed), taken without a copy.
+    const BoxType* bvh_boxes = m_element_boxes.data();
+    if (m_active_elements.size() != m_element_boxes.size()) {
+        m_active_boxes.reserve(m_active_elements.size());
+        for (const int e : m_active_elements) {
+            m_active_boxes.push_back(m_element_boxes[static_cast<std::size_t>(e)]);
+        }
+        bvh_boxes = m_active_boxes.data();
+    }
+    if (!m_active_elements.empty()) {
+        m_bvh.initialize(bvh_boxes, static_cast<axom::IndexType>(m_active_elements.size()));
     }
 }
 
@@ -391,7 +424,7 @@ void MaterialPointLocator::CurvedElementBox(int e, BoxType& box, BoxType& point_
  */
 void MaterialPointLocator::MarkInside(std::int64_t n, const double* x, const double* y,
                                       const double* z, std::uint64_t* inside_mask) const {
-    if (m_num_elements == 0 || n == 0) {
+    if (m_active_elements.empty() || n == 0) {
         return;
     }
 
@@ -422,7 +455,7 @@ void MaterialPointLocator::MarkInside(std::int64_t n, const double* x, const dou
     for (axom::IndexType j = 0; j < num_points; j++) {
         const std::array<double, 3> p = {points[j][0], points[j][1], points[j][2]};
         for (axom::IndexType c = 0; c < counts[j]; c++) {
-            const int e = static_cast<int>(candidates[offsets[j] + c]);
+            const int e = m_active_elements[static_cast<std::size_t>(candidates[offsets[j] + c])];
             if (PointInElement(e, p)) {
                 const std::int64_t i = point_index[j];
                 inside_mask[i / 64] |= std::uint64_t(1) << (i % 64);
@@ -709,6 +742,19 @@ bool MaterialPointLocator::PointInCurvedElement(int e, const std::array<double, 
     const double mismatch = std::max({std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]),
                                       std::fabs(mapped(2) - p[2])});
     return mismatch <= PROJECTED_MISMATCH_TOL * element_size;
+}
+
+/* ContextLocator: the shared locator when given; otherwise IsStraightSided over the context's
+ * mask (collective) and a locator over that mask. */
+const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh, MPI_Comm comm,
+                                           const MaterialContext* context,
+                                           std::unique_ptr<MaterialPointLocator>& owned) {
+    if (context != nullptr && context->locator != nullptr) {
+        return *context->locator;
+    }
+    const bool straight_sided = IsStraightSided(mesh, comm, ContextMask(context));
+    owned = std::make_unique<MaterialPointLocator>(mesh, straight_sided, ContextMask(context));
+    return *owned;
 }
 
 } // namespace exaconstit::microstructure

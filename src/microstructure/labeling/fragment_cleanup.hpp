@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 
 #include "mfem.hpp"
@@ -221,6 +222,10 @@ struct FragmentCleanupResult {
  * @param element_key    size NE, ComputeElementKeys(adjacency.GetParMesh()).
  * @param component      output, resized to NE: fragment id of each local element.
  * @param ghost_component optional output, resized to NG: fragment id of each ghost element.
+ * @param mask           optional active elements (mesh/element_mask.hpp): an inactive element
+ *                       joins nothing (it is a fragment of its own, named by its own key), so a
+ *                       face between an active and an inactive element is a free surface.
+ *                       nullptr = every element.
  * @return the number of exchange rounds used (>= 1).
  * @throws std::invalid_argument on every rank if an input size is wrong on any rank.
  */
@@ -228,7 +233,8 @@ int LabelComponents(const MeshAdjacency& adjacency,
                     const mfem::Array<int>& element_label,
                     const std::vector<std::uint64_t>& element_key,
                     std::vector<std::uint64_t>& component,
-                    std::vector<std::uint64_t>* ghost_component = nullptr);
+                    std::vector<std::uint64_t>* ghost_component = nullptr,
+                    const ElementMask* mask = nullptr);
 
 /**
  * @brief Source id of the k-th fragment split off a grain whose source id is `source_id`.
@@ -262,6 +268,11 @@ std::int64_t DeriveFragmentSourceId(std::int64_t source_id, std::int64_t ordinal
  *                        MicrostructureResult::grain_source_id. May be empty when the caller
  *                        does not track source ids; grain g then uses source id g-1.
  * @param params          policy, keep rule, anchors, min_grain_elements.
+ * @param mask            optional active elements (mesh/element_mask.hpp). Inactive elements
+ *                        are ignored (their element_grain entry is not read; e.g. the placeholder
+ *                        0), never join or receive a grain, and a face to one is a free surface:
+ *                        it does not connect fragments and does not count for merge decisions.
+ *                        They come out with grain 0. nullptr = every element (unchanged).
  * @return relabeled elements, new grain count, per-grain parent and source ids, report.
  * @throws std::invalid_argument on every rank for invalid parameters (sizes, negative
  *         min_grain_elements or min_fragment_elements, min_fragment_fraction outside [0, 1]) or
@@ -272,6 +283,7 @@ FragmentCleanupResult CleanupFragments(const MeshAdjacency& adjacency,
                                        const mfem::Array<int>& element_grain,
                                        int num_grains,
                                        const std::vector<std::int64_t>& grain_source_id,
-                                       const FragmentCleanupParameters& params);
+                                       const FragmentCleanupParameters& params,
+                                       const ElementMask* mask = nullptr);
 
 } // namespace exaconstit::microstructure

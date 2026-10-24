@@ -92,9 +92,10 @@ int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
  *     distributed from a serial mesh the values are unchanged, bit for bit.
  *  1. Mark the faces shared with other ranks (ParMesh only): ParMesh::GetSharedFace(i) returns the
  *     local face index of shared face i (pmesh.hpp:688).
- *  2. A local face f is a surface face if GetFaceElements gives no second element (e2 < 0) and f
- *     is not shared. (Before ParMesh::ExchangeFaceNbrData, shared faces also have e2 < 0, hence
- *     step 1.)
+ *  2. A local face f is a surface face if GetFaceElements gives no second element (e2 < 0), f
+ *     is not shared, and its element is active under the mask. (Before
+ *     ParMesh::ExchangeFaceNbrData, shared faces also have e2 < 0, hence step 1.) A face between
+ *     an active and an inactive element has two elements, so it is never a surface face.
  *  3. Triangulate each surface face: map the points of an n-times subdivided reference face
  *     (mfem::GlobGeometryRefiner.Refine(face_geom, n)) through the face transformation and emit
  *     one triangle per sub-triangle, or two per sub-quadrilateral (corners 0-1-2 and 0-2-3).
@@ -109,10 +110,14 @@ int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
  *  4. Build the BVH over the triangle boxes (axom::spin::BVH::initialize, BVH.hpp:427).
  */
 BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
-                                     bool straight_sided)
+                                     bool straight_sided, const ElementMask* mask)
     : m_clearance(clearance) {
     if (!(clearance > 0.0)) {
         throw std::invalid_argument("BoundaryClearance: the clearance must be positive");
+    }
+    if (mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != mesh.GetNE()) {
+        throw std::invalid_argument("BoundaryClearance: the element mask needs one entry per "
+                                    "local element");
     }
 
     // Step 1: faces shared with other ranks are not surface faces
@@ -148,7 +153,7 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
         int e1 = -1;
         int e2 = -1;
         mesh.GetFaceElements(f, &e1, &e2);
-        if (e2 >= 0 || is_shared[static_cast<std::size_t>(f)]) {
+        if (e2 >= 0 || is_shared[static_cast<std::size_t>(f)] || !ElementIsActive(mask, e1)) {
             continue;
         }
 

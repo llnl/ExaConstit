@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include "axom/primal/geometry/BoundingBox.hpp"
@@ -94,8 +96,13 @@ public:
      *        exactly as for a mesh without Nodes, with warped quadrilaterals subdivided (see the
      *        file comment); curved faces are subdivided 2 * order times.
      *        Ignored (treated as true) for a mesh without Nodes.
+     * @param mask optional active elements (mesh/element_mask.hpp): only true boundary faces of
+     *        active elements (faces with no neighbor element at all) are surface faces. A face
+     *        between an active and an inactive element is a bonded interface (e.g. the top of a
+     *        build plate), not a surface, so it is never used. nullptr = every element.
      */
-    BoundaryClearance(const mfem::Mesh& mesh, double clearance, bool straight_sided);
+    BoundaryClearance(const mfem::Mesh& mesh, double clearance, bool straight_sided,
+                      const ElementMask* mask = nullptr);
 
     /** @brief Number of local surface triangles. */
     std::size_t NumTriangles() const {

@@ -325,28 +325,39 @@ struct NearestNodeResult {
  * NearestVertex's. A rank holds a copy of the winner exactly when its own local best has the
  * global (d^2, key): copies carry the same (owner-broadcast) coordinates, hence the same d^2 and
  * key, and nothing on this rank can beat the global minimum; so no lookup by position (and no
- * mesh-sized search table) is needed. Collective (two MPI_Allreduce calls). Host only.
+ * mesh-sized search table) is needed. With `node_used` (element mask) only nodes flagged 1 are
+ * candidates; the flag is identical on all copies, so copies still agree. Collective (two
+ * MPI_Allreduce calls). Host only.
  */
 NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, int num_nodes,
                                     const std::vector<double>& qx, const std::vector<double>& qy,
-                                    const std::vector<double>& qz) {
+                                    const std::vector<double>& qz, const int* node_used) {
     const std::size_t nq = qx.size();
     const double* xyz = coords.HostRead();
     std::vector<double> best_d2(nq, DBL_MAX);
     std::vector<std::uint64_t> best_key(nq, NO_KEY);
     std::vector<int> best_node(nq, -1);
 
-    // Local search over this rank's nodes
-    if (num_nodes > 0 && nq > 0) {
+    // Local search over this rank's (used) nodes; candidate c is node candidate_node[c]
+    std::vector<int> candidate_node;
+    for (int v = 0; v < num_nodes; ++v) {
+        if (node_used == nullptr || node_used[v] != 0) {
+            candidate_node.push_back(v);
+        }
+    }
+    const int num_candidates = static_cast<int>(candidate_node.size());
+    if (num_candidates > 0 && nq > 0) {
         std::vector<std::uint64_t> keys(static_cast<std::size_t>(num_nodes));
-        std::vector<BvhBox> boxes(static_cast<std::size_t>(num_nodes));
-        for (int v = 0; v < num_nodes; ++v) {
-            const auto uv = static_cast<std::size_t>(v);
-            keys[uv] = VertexKey(xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]);
-            boxes[uv] = BvhBox(BvhPoint {xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]});
+        std::vector<BvhBox> boxes(static_cast<std::size_t>(num_candidates));
+        for (int c = 0; c < num_candidates; ++c) {
+            const int v = candidate_node[static_cast<std::size_t>(c)];
+            keys[static_cast<std::size_t>(v)] =
+                VertexKey(xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]);
+            boxes[static_cast<std::size_t>(c)] =
+                BvhBox(BvhPoint {xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]});
         }
         HostBVH bvh;
-        bvh.initialize(boxes.data(), static_cast<axom::IndexType>(num_nodes));
+        bvh.initialize(boxes.data(), static_cast<axom::IndexType>(num_candidates));
         const auto traverser = bvh.getTraverser();
         for (std::size_t q = 0; q < nq; ++q) {
             double d2_best = DBL_MAX;
@@ -354,7 +365,7 @@ NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, i
             int node_best = -1;
             // Leaf: exact squared distance, then the (d^2, key) order
             auto leaf_action = [&](std::int32_t leaf, const std::int32_t* leaf_nodes) {
-                const int v = leaf_nodes[leaf];
+                const int v = candidate_node[static_cast<std::size_t>(leaf_nodes[leaf])];
                 const double dx = xyz[3 * v + 0] - qx[q];
                 const double dy = xyz[3 * v + 1] - qy[q];
                 const double dz = xyz[3 * v + 2] - qz[q];
@@ -415,10 +426,14 @@ NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, i
  *     mesh has Nodes; AUTO -> nodal field if the mesh has Nodes and IsStraightSided
  *     (mesh/straight_sided.hpp, collective, the same answer on every rank) says it is curved.
  *     Every straight-sided mesh therefore takes the corner path, unchanged bit for bit.
- *  3. BuildCornerField or BuildNodalField (numbering, tables, coordinates, markers).
+ *  3. BuildCornerField or BuildNodalField (numbering, tables, coordinates, markers). With an
+ *     element mask the node -> element table lists active elements only (BuildNodeToElementTable).
+ *  3b. NodeUsed: 1 for nodes with an active element on some rank (collective minimum over the
+ *     copies); all 1 without a mask, since every node belongs to an element.
  *  4. Field arrays at "not reached".
  */
-VertexField::VertexField(mfem::ParMesh& pmesh, FieldNodes field_nodes) : m_pmesh(pmesh) {
+VertexField::VertexField(mfem::ParMesh& pmesh, FieldNodes field_nodes, const ElementMask* mask)
+    : m_pmesh(pmesh) {
     // Step 1: checks that are the same on every rank or reduced
     const MPI_Comm comm = pmesh.GetComm();
     const bool not_3d = pmesh.Dimension() != 3 || pmesh.SpaceDimension() != 3;
@@ -436,21 +451,48 @@ VertexField::VertexField(mfem::ParMesh& pmesh, FieldNodes field_nodes) : m_pmesh
     ThrowIfAnyRank<std::runtime_error>(comm, has_nodes && nodes == nullptr,
                    "VertexField: the mesh has Nodes on some ranks only");
 
-    // Step 2: which field
+    // Step 2: which field (the straightness of the active elements only), after the mask check
+    m_num_elements = pmesh.GetNE();
+    const bool bad_mask = mask != nullptr && mask->active.Size() != 0 &&
+                          mask->active.Size() != m_num_elements;
+    ThrowIfAnyRank<std::invalid_argument>(comm, bad_mask,
+                                          "VertexField: the element mask needs one entry per "
+                                          "local element");
+    if (mask != nullptr) {
+        m_mask.active = mask->active;
+    }
     bool curved = false;
     if (field_nodes == FieldNodes::MESH_NODES) {
         curved = has_nodes;
     } else if (field_nodes == FieldNodes::AUTO && has_nodes) {
-        curved = !IsStraightSided(pmesh, comm);
+        curved = !IsStraightSided(pmesh, comm, &m_mask);
     }
     m_curved = curved;
-    m_num_elements = pmesh.GetNE();
 
     // Step 3: numbering, tables, coordinates and markers
     if (m_curved) {
         BuildNodalField(*nodes);
     } else {
         BuildCornerField(nodes);
+    }
+
+    // Step 3b: nodes in use (of an active element on some rank): 1 on a copy with a local active
+    // element, then the maximum over the copies (as the minimum of 1 - used). Without a mask on
+    // any rank every node belongs to an element and the exchange is skipped (a rank without
+    // elements has no mask even when the others have one, hence the reduction)
+    m_node_used.SetSize(m_num_vertices);
+    if (!AnyRank(HasMask(), comm)) {
+        m_node_used = 1;
+    } else {
+        const int* offsets = m_vert_elem_offsets.HostRead();
+        mfem::Vector unused(m_num_vertices);
+        for (int v = 0; v < m_num_vertices; ++v) {
+            unused(v) = (offsets[v + 1] > offsets[v]) ? 0.0 : 1.0;
+        }
+        ReduceSharedMinimum(unused);
+        for (int v = 0; v < m_num_vertices; ++v) {
+            m_node_used[v] = (unused(v) == 0.0) ? 1 : 0;
+        }
     }
 
     // Step 4: field arrays, all "not reached"
@@ -575,8 +617,11 @@ void VertexField::BuildCornerField(const mfem::GridFunction* nodes) {
  *
  * Steps:
  *  1. Checks (collective): the Nodes space is a fixed-order ParFiniteElementSpace (so it has a
- *     group topology for the exchange), and every element on every rank has the same geometry,
- *     hex or tet (MPI_Allreduce MIN/MAX of the geometry code over ranks with elements).
+ *     group topology for the exchange), and every active element on every rank has the same
+ *     geometry, hex or tet (MPI_Allreduce MIN/MAX of the geometry code over ranks with active
+ *     elements). Inactive elements may have another geometry: their rows of the element -> node
+ *     table are not checked, they are absent from the node -> element table, and the labeling
+ *     kernels skip them.
  *  2. Lattice tables from the order-p finite element of that geometry (identical on every rank,
  *     so their checks throw on every rank together):
  *       lattice_to_local[Pack(i,j,k)] = lex[o], o = position of (i,j,k) in lexicographic order;
@@ -608,6 +653,9 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
                    "VertexField: variable-order mesh Nodes are not supported");
     int geom_range[2] = {INT_MAX, INT_MAX}; // {min, -max} so one MIN reduction gives both
     for (int e = 0; e < m_num_elements; ++e) {
+        if (!ElementActive(e)) {
+            continue; // inactive parts may have any geometry: they are never labeled
+        }
         const int g = static_cast<int>(m_pmesh.GetElementGeometry(e));
         geom_range[0] = std::min(geom_range[0], g);
         geom_range[1] = std::min(geom_range[1], -g);
@@ -621,8 +669,8 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
                              geom_code == mfem::Geometry::TETRAHEDRON));
     if (!supported) {
         // Same reduced values on every rank: every rank throws
-        throw std::runtime_error("VertexField: the nodal (curved) field needs a mesh of only "
-                                 "hexes or only tets");
+        throw std::runtime_error("VertexField: the nodal (curved) field needs active elements "
+                                 "of only hexes or only tets");
     }
     const auto geom = static_cast<mfem::Geometry::Type>(geom_code);
     m_tet = (geom == mfem::Geometry::TETRAHEDRON) ? 1 : 0;
@@ -740,6 +788,9 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
             const int* offsets = m_elem_vert_offsets.HostRead();
             const int* items = m_elem_verts.HostRead();
             for (int e = 0; e < m_num_elements && !bad_table; ++e) {
+                if (!ElementActive(e)) {
+                    continue;
+                }
                 bad_table = offsets[e + 1] - offsets[e] != ndof_el;
                 for (int k = offsets[e]; k < offsets[e + 1] && !bad_table; ++k) {
                     bad_table = items[k] < 0 || items[k] >= m_num_vertices;
@@ -836,9 +887,14 @@ void VertexField::BuildNodeToElementTable() {
     m_vert_elem_offsets.SetSize(m_num_vertices + 1);
     m_vert_elem_offsets = 0;
     int* offsets = m_vert_elem_offsets.HostReadWrite();
-    const int num_items = ev_offsets[m_num_elements];
-    for (int k = 0; k < num_items; ++k) {
-        offsets[ev_items[k] + 1] += 1;
+    // Only active elements are listed (every element without a mask)
+    for (int e = 0; e < m_num_elements; ++e) {
+        if (!ElementActive(e)) {
+            continue;
+        }
+        for (int k = ev_offsets[e]; k < ev_offsets[e + 1]; ++k) {
+            offsets[ev_items[k] + 1] += 1;
+        }
     }
     for (int v = 0; v < m_num_vertices; ++v) {
         offsets[v + 1] += offsets[v];
@@ -847,6 +903,9 @@ void VertexField::BuildNodeToElementTable() {
     int* items = m_vert_elems.HostWrite();
     std::vector<int> fill(static_cast<std::size_t>(m_num_vertices), 0);
     for (int e = 0; e < m_num_elements; ++e) {
+        if (!ElementActive(e)) {
+            continue;
+        }
         for (int k = ev_offsets[e]; k < ev_offsets[e + 1]; ++k) {
             const int v = ev_items[k];
             items[offsets[v] + fill[static_cast<std::size_t>(v)]++] = e;
@@ -981,11 +1040,15 @@ void VertexField::Reset() {
  * inversion per seed for the nodal field.
  */
 SourceReport VertexField::InitializeSources(const SeedSet& seeds,
-                                            const std::vector<double>& additive_weights) {
-    // Step 1: inputs and an element somewhere
+                                            const std::vector<double>& additive_weights,
+                                            const MaterialContext* context) {
+    // Step 1: inputs and an active element somewhere
     ValidateSeeds(seeds, additive_weights);
     const MPI_Comm comm = Comm();
-    long long global_elements = m_num_elements;
+    long long global_elements = 0;
+    for (int e = 0; e < m_num_elements; ++e) {
+        global_elements += ElementActive(e) ? 1 : 0;
+    }
     MPI_Allreduce(MPI_IN_PLACE, &global_elements, 1, MPI_LONG_LONG, MPI_SUM, comm);
     if (global_elements == 0) {
         throw std::runtime_error("VertexField::InitializeSources: the mesh has no elements");
@@ -1001,7 +1064,14 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
     report.seed_outside.assign(static_cast<std::size_t>(n), 0);
 
     // Step 2: smallest key of an element containing each seed (collective)
-    report.source_element_key = ContainingElementKeys(m_pmesh, comm, seeds, &keys);
+    // (only active elements: the shared locator of the context, or one built over the field's
+    // mask)
+    MaterialContext own_context;
+    own_context.mask = MaskOrNull();
+    if (context != nullptr) {
+        own_context.locator = context->locator;
+    }
+    report.source_element_key = ContainingElementKeys(m_pmesh, comm, seeds, &keys, &own_context);
 
     // Step 3: seeds in no element snap to an element around the nearest field node
     std::vector<int> outside;
@@ -1026,7 +1096,8 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             qz[static_cast<std::size_t>(j)] = seeds.z[s];
         }
         const NearestNodeResult nearest =
-            NearestFieldNodes(comm, m_coords, m_num_vertices, qx, qy, qz);
+            NearestFieldNodes(comm, m_coords, m_num_vertices, qx, qy, qz,
+                              HasMask() ? m_node_used.HostRead() : nullptr);
         // Step 3b: this rank's copy of that node (if any), then its elements' keys
         std::vector<std::uint64_t> snap_key(static_cast<std::size_t>(num_out), none);
         for (int j = 0; j < num_out; ++j) {
@@ -1275,6 +1346,10 @@ void VertexField::PointCells(int elem_begin, int elem_end, int points_per_elemen
     const FieldCellView view = HostCellView();
     for (int i = 0; i < num_points; ++i) {
         const int e = elem_begin + i / points_per_element;
+        if (!ElementActive(e)) {
+            out[i] = 0; // not labeled (LabelPointsImpl skips inactive elements)
+            continue;
+        }
         const mfem::IntegrationPoint ip = ReferencePoint(m_pmesh, e, px[i], py[i], pz[i]);
         out[i] = view.LocateCell(ip.x, ip.y, ip.z);
     }
@@ -1365,9 +1440,18 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
     double* out_dist = (distance != nullptr) ? distance->Write() : nullptr;
     const int npe = points_per_element;
     const double inf = INF;
+    const int* active = ElementMaskData(MaskOrNull(), true);
 
     mfem::forall(num_points, [=] MFEM_HOST_DEVICE(int i) {
         const int e = elem_begin + i / npe;
+        // Inactive elements: label -1 (the cell tables need not fit their geometry)
+        if (active != nullptr && active[e] == 0) {
+            out_label[i] = -1;
+            if (out_dist != nullptr) {
+                out_dist[i] = inf;
+            }
+            return;
+        }
         // The cell holding the point (0 = the element for the corner field)
         const int cell = (cl != nullptr) ? cl[repeats ? i % npe : i] : 0;
         int corners[FieldCellView::MAX_CELL_NODES];
@@ -1424,6 +1508,8 @@ void VertexField::LabelElementCentroids(mfem::Array<int>& element_label,
     ComputeElementSamples(m_pmesh, -1, samples);
     LabelPoints(0, m_num_elements, 1, samples.cx, samples.cy, samples.cz, element_label,
                 element_distance);
+    // Inactive elements: placeholder -1 (not material)
+    SetInactiveValues(MaskOrNull(), element_label, -1);
 }
 
 /*
@@ -1484,6 +1570,10 @@ int VertexField::LabelElementsByVote(int levels, int max_points_per_chunk,
         VoteOnPointLabels(begin, end - begin, nq, point_label, points.weight, element_label,
                           element_split);
     }
+
+    // Inactive elements: placeholder -1, never split
+    SetInactiveValues(MaskOrNull(), element_label, -1);
+    SetInactiveValues(MaskOrNull(), element_split, 0);
 
     // Split count on the host
     int num_split = 0;

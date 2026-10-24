@@ -1,6 +1,7 @@
 #pragma once
 
 #include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/microstructure_types.hpp"
 
@@ -195,6 +196,8 @@ void ComputeVotePoints(mfem::Mesh& mesh,
  *                     (PeriodicImages::original); votes are collected per owner and ties go to
  *                     the lowest owner index. Empty = every seed is its own owner.
  * @param report       optional statistics.
+ * @param mask         optional active elements: inactive ones get seed -1 and are not counted
+ *                     as split. nullptr = every element.
  * @throws std::invalid_argument for an empty seed set, num_bins < 1, max_points_per_chunk < 1,
  *         levels outside 0..3, an element geometry other than hex/tet, a seed_owner of the wrong
  *         size or with negative entries, or invalid seed data (see SeedIndex::Build);
@@ -205,7 +208,8 @@ void LabelElementsByQuadratureVote(mfem::Mesh& local_mesh,
                                    const QuadratureVoteParameters& params,
                                    mfem::Array<int>& element_seed,
                                    const std::vector<int>& seed_owner = {},
-                                   QuadratureVoteReport* report = nullptr);
+                                   QuadratureVoteReport* report = nullptr,
+                                   const ElementMask* mask = nullptr);
 
 /**
  * @brief The vote followed by compaction to grain ids 1..N (CompactSeedLabels), i.e. the

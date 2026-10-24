@@ -87,11 +87,8 @@ struct GenerationReport {
      * successful call. Per-rank data (with `voxel_tiles_read` and `voxel_voxels_read`, the only
      * members that differ between ranks).
      *
-     * Normally this is the adjacency the fragment cleanup used. With passthrough attributes the
-     * cleanup ran on the sub-mesh of the active elements, which is destroyed before
-     * GenerateMicrostructure returns, so the driver builds a separate adjacency of the whole mesh
-     * for this field (one extra face-neighbor exchange); nothing that refers to the sub-mesh
-     * leaves the driver.
+     * It is the adjacency the fragment cleanup used (with passthrough attributes the cleanup
+     * masks the passthrough elements but the adjacency still covers the whole mesh).
      */
     std::shared_ptr<const MeshAdjacency> adjacency;
     /** @brief Quadrature vote: elements cut by a grain boundary (global; 0 for centroids). */
@@ -189,8 +186,6 @@ struct GenerationReport {
 
     /** @brief True when [Mesh] listed active or passthrough attributes (an AttributeDomain). */
     bool used_attribute_domain = false;
-    /** @brief True when the active elements formed a sub-mesh (some passthrough attribute). */
-    bool used_submesh = false;
     /** @brief Active and passthrough attributes (ascending), the region of each passthrough
      * attribute and its global element count; same order. */
     std::vector<int> active_attributes;
@@ -263,8 +258,9 @@ struct GenerationReport {
  *     the Nodes and may differ from the no-Nodes mesh in the last bits, so labels agree up to
  *     round-off (ties). Genuinely curved meshes keep the curved treatment.
  *  2b. Active part ([Mesh] active_attributes / passthrough_attributes): an AttributeDomain
- *     (mesh/attribute_domain.hpp); seeding, labeling and cleanup run on its ActiveMesh() (a
- *     sub-mesh of the active elements when there are passthrough attributes).
+ *     (mesh/attribute_domain.hpp) builds an element mask; seeding, labeling and cleanup skip the
+ *     passthrough elements. No sub-mesh or mesh copy is made. One point locator over the active
+ *     elements is built once and shared by the seeding stages.
  *  Voxel maps ([Source] type = "voxel_map") replace steps 3-8: ReadVoxelGridInfo,
  *     LabelElementsFromVoxels (centroid or vote sampling, fill of unassigned elements) and
  *     CompactFeatureLabels (labeling/voxel_labeler.hpp), then the cleanup of step 9.
@@ -312,8 +308,9 @@ struct GenerationReport {
  *       placement the nucleation step still discards a candidate covered by an earlier grain's
  *       straight-line growth sphere, even across a void; only the labels use path lengths, and a
  *       warning is recorded in GenerationReport::warnings.
- *     Both non-Euclidean modes run on the active mesh, so paths and connections never pass
- *     through passthrough parts; they refuse periodic axes, fit_volumes, Lloyd and voxel maps.
+ *     Both non-Euclidean modes run on the active elements only (a face to a passthrough element
+ *     is a free surface), so paths and connections never pass through passthrough parts; they
+ *     refuse periodic axes, fit_volumes, Lloyd and voxel maps.
  *  9. Fragment cleanup (labeling/fragment_cleanup.hpp) over the face adjacency of the mesh; with
  *     periodic axes the adjacency pairs matching faces on opposite periodic planes, so a grain
  *     that wraps around the box is one grain. Policy from [Cleanup] (auto = split large pieces

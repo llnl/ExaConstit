@@ -875,6 +875,67 @@ TEST(DriverStage1d, VoxelMapRefusals) {
     EXPECT_TRUE(Refused(*d.pmesh, laguerre));
 }
 
+
+// A voxel map with the two bottom element layers kept as a passthrough build plate (region 2).
+// The active elements are labeled exactly as on a mesh of the active layers alone (the voxels
+// are read by position, the fill does not cross the plate, and compaction, cleanup and the
+// per-grain tables see the same features); every plate element carries the extra last grain.
+TEST(DriverStage1d, VoxelMapWithPassthroughPlate) {
+    WriteFixtures();
+    using voxel_fixture::H;
+    using voxel_fixture::NX;
+    using voxel_fixture::NY;
+    using voxel_fixture::NZ;
+    constexpr int PLATE_LAYERS = 2;
+    mfem::Mesh masked =
+        mfem::Mesh::MakeCartesian3D(NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H,
+                                    false);
+    for (int e = 0; e < masked.GetNE(); ++e) {
+        masked.SetAttribute(e, e / (NX * NY) < PLATE_LAYERS ? 2 : 1); // x fastest, then y, z
+    }
+    masked.SetAttributes();
+    mfem::Mesh reference =
+        mfem::Mesh::MakeCartesian3D(NX, NY, NZ - PLATE_LAYERS, mfem::Element::HEXAHEDRON, NX * H,
+                                    NY * H, (NZ - PLATE_LAYERS) * H, false);
+    reference.Transform([](const mfem::Vector& x, mfem::Vector& y) {
+        y = x;
+        y(2) += PLATE_LAYERS * H;
+    });
+    for (const bool vote : {false, true}) {
+        SCOPED_TRACE(vote ? "vote" : "centroid");
+        ms::MicrostructureOptions options;
+        options.source.type = "voxel_map";
+        options.voxel_map.format = "exaconstit";
+        options.voxel_map.file = DataDir() / "canonical.h5";
+        if (vote) {
+            options.voxel_map.sampling = ms::SamplingMode::QUADRATURE_VOTE;
+        }
+        options.orientations.source = "from_source";
+        ms::MicrostructureOptions plate = options;
+        plate.mesh.passthrough_attributes = {{2, 2}};
+        const RunPair m = RunAndCompare(masked, plate);
+        const RunPair r = RunAndCompare(reference, options);
+        const int n = r.alone.result.num_grains;
+        ASSERT_EQ(m.alone.result.num_grains, n + 1);
+        EXPECT_EQ(m.alone.report.used_voxel_map, true);
+        const std::size_t offset = static_cast<std::size_t>(PLATE_LAYERS * NX * NY);
+        int mismatches = 0;
+        for (std::size_t e = 0; e < m.alone.labels.size(); ++e) {
+            const int expected = (e < offset) ? n + 1 : r.alone.labels[e - offset];
+            mismatches += (m.alone.labels[e] != expected) ? 1 : 0;
+        }
+        EXPECT_EQ(mismatches, 0);
+        const auto nn = static_cast<std::size_t>(n);
+        EXPECT_EQ(std::vector<std::int64_t>(m.alone.result.grain_source_id.begin(),
+                                            m.alone.result.grain_source_id.begin() + nn),
+                  r.alone.result.grain_source_id);
+        EXPECT_EQ(std::vector<double>(m.alone.result.grain_quat.begin(),
+                                      m.alone.result.grain_quat.begin() + 4 * nn),
+                  r.alone.result.grain_quat);
+        EXPECT_EQ(m.alone.result.grain_region[nn], 2);
+    }
+}
+
 #endif // AXOM_USE_HDF5
 
 // ---------------------------------------------------------------------------------------------
@@ -959,7 +1020,7 @@ TEST(DriverStage1d, BuildPlatePassthrough) {
     const RunPair runs = RunAndCompare(serial, options);
     const ms::MicrostructureResult& result = runs.alone.result;
     const ms::GenerationReport& report = runs.alone.report;
-    EXPECT_TRUE(report.used_submesh);
+    EXPECT_TRUE(report.used_attribute_domain);
     EXPECT_EQ(report.num_active_elements, 216);
     EXPECT_EQ(report.num_elements, 288);
     EXPECT_EQ(report.passthrough_attributes, (std::vector<int>{2}));
@@ -1011,8 +1072,8 @@ TEST(DriverStage1d, BuildPlatePassthrough) {
 // ---------------------------------------------------------------------------------------------
 
 // Each combination is refused by the driver with std::invalid_argument on every rank, before
-// any long work: a boundary clearance or periodic axes with passthrough attributes (the
-// interface would count as an outer boundary), Lloyd relaxation or Johnson-Mehl nucleation with
+// any long work: periodic axes with passthrough attributes (the periodic box would have to be
+// measured on the active part), Lloyd relaxation or Johnson-Mehl nucleation with
 // a seed table (measured positions would move / be replaced), filler without an ROI, sizes from
 // the source without a table, and data the options need but the table lacks (quaternions,
 // phases, shape tensors, a size column).
@@ -1026,9 +1087,11 @@ TEST(DriverStage1d, RefusedCombinations) {
     O pass;
     pass.seeds.num_seeds = 5;
     pass.mesh.passthrough_attributes = {{2, 2}};
+    // A boundary clearance with passthrough attributes is accepted (it ignores the bonded
+    // interface with the passthrough part)
     O clearance = pass;
     clearance.seeds.boundary_clearance = 0.05;
-    EXPECT_TRUE(refused(clearance));
+    EXPECT_FALSE(refused(clearance));
     O periodic = pass;
     periodic.tessellation.periodic = {true, false, false};
     EXPECT_TRUE(refused(periodic));
@@ -1233,9 +1296,11 @@ TEST(DriverStage1d, PassthroughWithPhaseRegions) {
 }
 
 // A partition in which the last rank owns only build-plate elements, so it has zero active
-// elements (np >= 2; at np = 1 rank 0 owns everything): the sub-mesh is empty on that rank, yet
-// seeding, labeling, cleanup, the passthrough mapping and the whole-mesh adjacency complete, and
-// the labels equal the single-rank reference.
+// elements and no element mask (np >= 2; at np = 1 rank 0 owns everything). Every pipeline
+// (Euclidean centroid and vote labels, connected and geodesic FIM / graph distances, Johnson-Mehl
+// nucleation, Laguerre sizes with Lloyd relaxation and the volume fit) completes, with seeding,
+// labeling, cleanup, the passthrough mapping and the whole-mesh adjacency, and the labels equal
+// the single-rank reference.
 TEST(DriverStage1d, RankWithoutActiveElements) {
     mfem::Mesh serial = PlateMesh();
     const int nranks = NumRanks();
@@ -1245,19 +1310,57 @@ TEST(DriverStage1d, RankWithoutActiveElements) {
         owner[static_cast<std::size_t>(e)] =
             (nranks == 1) ? 0 : (plate ? nranks - 1 : e % (nranks - 1));
     }
-    ms::MicrostructureOptions options;
-    options.seeds.num_seeds = 10;
-    options.seeds.rng_seed = 4u;
-    options.mesh.passthrough_attributes = {{2, 2}};
+    ms::MicrostructureOptions base;
+    base.seeds.num_seeds = 10;
+    base.seeds.rng_seed = 4u;
+    base.mesh.passthrough_attributes = {{2, 2}};
+    std::vector<std::pair<std::string, ms::MicrostructureOptions>> pipelines;
+    pipelines.emplace_back("euclidean", base);
+    ms::MicrostructureOptions vote = base;
+    vote.tessellation.sampling = ms::SamplingMode::QUADRATURE_VOTE;
+    vote.tessellation.vote_levels = 1;
+    pipelines.emplace_back("vote", vote);
+    ms::MicrostructureOptions connected = base;
+    connected.tessellation.distance = ms::DistanceMode::CONNECTED;
+    pipelines.emplace_back("connected", connected);
+    ms::MicrostructureOptions fim = base;
+    fim.tessellation.distance = ms::DistanceMode::GEODESIC;
+    fim.tessellation.geodesic_solver = "fim";
+    pipelines.emplace_back("geodesic fim", fim);
+    ms::MicrostructureOptions graph = fim;
+    graph.tessellation.geodesic_solver = "graph";
+    pipelines.emplace_back("geodesic graph", graph);
+    ms::MicrostructureOptions jm = base;
+    jm.seeds.num_seeds = 0;
+    jm.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
+    jm.tessellation.metric = ms::MetricType::ADDITIVE;
+    jm.seeds.johnson_mehl.rate = 40.0;
+    jm.seeds.johnson_mehl.growth_speed = 1.0;
+    jm.seeds.johnson_mehl.num_nuclei = 12;
+    pipelines.emplace_back("johnson-mehl", jm);
+    ms::MicrostructureOptions fit = base;
+    fit.tessellation.metric = ms::MetricType::LAGUERRE;
+    fit.seeds.size.distribution = "lognormal";
+    fit.seeds.size.sigma = 0.3;
+    fit.tessellation.lloyd_iterations = 2;
+    fit.tessellation.fit_volumes.enabled = true;
+    fit.tessellation.fit_volumes.tolerance = 0.1;
+    fit.tessellation.fit_volumes.max_iterations = 30;
+    pipelines.emplace_back("lloyd + fit", fit);
     Distributed d = DistributeWithOwners(serial, owner);
-    const DriverRun world = RunDriverOn(d, options, MPI_COMM_WORLD);
-    const DriverRun alone = RunDriver(serial, options, MPI_COMM_SELF);
-    EXPECT_EQ(world.labels, alone.labels);
-    EXPECT_EQ(world.result.grain_quat, alone.result.grain_quat);
-    EXPECT_EQ(world.result.grain_region, alone.result.grain_region);
-    EXPECT_EQ(world.stats_elements, alone.stats_elements);
-    EXPECT_EQ(world.report.num_active_elements, 216);
-    ExpectUnitQuaternions(world.result);
+    for (const auto& [name, options] : pipelines) {
+        SCOPED_TRACE(name);
+        const DriverRun world = RunDriverOn(d, options, MPI_COMM_WORLD);
+        const DriverRun alone = RunDriver(serial, options, MPI_COMM_SELF);
+        EXPECT_EQ(world.labels, alone.labels);
+        EXPECT_EQ(world.result.num_grains, alone.result.num_grains);
+        EXPECT_EQ(world.result.grain_quat, alone.result.grain_quat);
+        EXPECT_EQ(world.result.grain_region, alone.result.grain_region);
+        EXPECT_EQ(world.stats_elements, alone.stats_elements);
+        EXPECT_EQ(world.report.num_active_elements, 216);
+        EXPECT_GT(alone.result.num_grains, 2);
+        ExpectUnitQuaternions(world.result);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

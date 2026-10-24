@@ -78,8 +78,8 @@ struct MeshInput {
     /**
      * @brief Element attributes (> 0) of the parts of the mesh that receive grains (TOML
      * `active_attributes = [1, 4]`). Empty (default) means every attribute not listed in
-     * passthrough_attributes. Seeding, labeling and cleanup then run on the sub-mesh of these
-     * elements only (mesh/attribute_domain.hpp).
+     * passthrough_attributes. Seeding, labeling and cleanup then skip every other element (an
+     * element mask over the mesh, mesh/attribute_domain.hpp; the mesh is not copied).
      */
     std::vector<int> active_attributes;
     /**
@@ -733,7 +733,7 @@ struct MicrostructureOptions {
      *
      * Stage 1d checks: attribute and region ids (> 0 / >= 1, no attribute both active and
      * passthrough; with Regions.mode = "single" the passthrough regions must make the region
-     * ids 1..R); passthrough attributes refuse boundary_clearance > 0 and periodic axes; the ROI
+     * ids 1..R); passthrough attributes refuse periodic axes; the ROI
      * (seed tables only, hi > lo) and filler keys (fill_outside_roi = "random" needs the ROI);
      * seed tables refuse Lloyd / centroidal power and Johnson-Mehl; anisotropy "per_seed" needs
      * the quadric metric and a seed table; [VoxelMap] parameters (format, existing file, the

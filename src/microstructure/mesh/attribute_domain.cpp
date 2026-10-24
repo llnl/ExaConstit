@@ -11,23 +11,6 @@
 
 namespace exaconstit::microstructure {
 
-/*
- * SubMeshHolder
- *
- * `mfem::ParSubMesh::CreateFromDomain` returns the sub-mesh by value. Initializing a member
- * directly from that returned temporary constructs it in place (C++17 guaranteed copy elision),
- * so no copy or move of the ParSubMesh ever happens. This matters because a mesh object owns
- * internal tables and a Nodes grid function that point back at the mesh; relying on MFEM's move
- * constructor for a derived ParSubMesh is avoided altogether. The holder is then kept behind a
- * unique_ptr (std::unique_ptr: a pointer that owns the object it points to and deletes it
- * automatically when the owner is destroyed), so its address never changes.
- */
-struct AttributeDomain::SubMeshHolder {
-    mfem::ParSubMesh mesh;
-    SubMeshHolder(const mfem::ParMesh& parent, const mfem::Array<int>& attributes)
-        : mesh(mfem::ParSubMesh::CreateFromDomain(parent, attributes)) {}
-};
-
 namespace {
 
 /*
@@ -113,15 +96,10 @@ std::map<int, std::int64_t> GlobalAttributeCounts(const mfem::ParMesh& mesh) {
  *  2. Validate the user lists against those counts (see the header for the rules). Every check
  *     uses only the user lists and globally gathered data, so all ranks reach the same verdict
  *     and throw together; no rank is left waiting in a later collective call.
- *  3. Before building a sub-mesh, two collective checks for conditions under which MFEM's
- *     ParSubMesh would abort or read an empty array (see the header): the parent must have
- *     boundary elements (ParMesh::HasBoundaryElements, an MPI_Allreduce MAX of the local counts,
- *     pmesh.cpp:1617-1624), and no communication group may have more than 32 ranks (largest
- *     GroupTopology::GetGroupSize over the parent's groups, reduced with MPI_Allreduce MAX). A
- *     "communication group" is the set of ranks that share one vertex, edge or face.
- *  4. Build the ParSubMesh of the active attributes when some attribute is passthrough
- *     (collective; see the header for the verified ParSubMesh facts), and the local
- *     active -> parent element map.
+ *  3. With passthrough attributes, the element mask: 1 for every local element whose attribute
+ *     is active, 0 otherwise (local, no communication). Without passthrough attributes every
+ *     element is active (step 2c makes sure every attribute is classified) and the mask stays
+ *     empty, which every stage reads as "all active".
  */
 AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
                                  const std::vector<int>& active_attributes,
@@ -212,86 +190,48 @@ AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
     m_active_attributes.assign(active.begin(), active.end());
     m_passthrough_attributes.assign(passthrough.begin(), passthrough.end());
 
-    // The active mesh. With no passthrough attribute every element is active (step 2c
-    // guarantees it), so the parent itself is used and the element map is the identity.
+    // Step 3: the element mask. With no passthrough attribute every element is active (step 2c
+    // guarantees it) and the mask stays empty ("all active").
     if (m_passthrough_attributes.empty()) {
-        m_active_to_parent.SetSize(parent.GetNE());
-        for (int e = 0; e < parent.GetNE(); e++) {
-            m_active_to_parent[e] = e;
-        }
         return;
     }
-
-    // Step 3: guards against MFEM aborts inside the ParSubMesh construction
-    if (!parent.HasBoundaryElements()) {
-        throw std::invalid_argument(
-            "AttributeDomain: the mesh has no boundary elements; mfem::ParSubMesh needs them "
-            "(it numbers the new interface faces after the largest boundary attribute)");
+    m_mask.active.SetSize(parent.GetNE());
+    for (int e = 0; e < parent.GetNE(); e++) {
+        m_mask.active[e] = active.count(parent.GetAttribute(e)) != 0 ? 1 : 0;
     }
-    int largest_group = 1;
-    for (int g = 0; g < parent.GetNGroups(); g++) {
-        largest_group = std::max(largest_group, parent.gtopo.GetGroupSize(g));
-    }
-    int global_largest_group = 1;
-    MPI_Allreduce(&largest_group, &global_largest_group, 1, MPI_INT, MPI_MAX, parent.GetComm());
-    constexpr int MAX_GROUP_SIZE = 32; // psubmesh.cpp:332: group_sz <= 8 * sizeof(int)
-    if (global_largest_group > MAX_GROUP_SIZE) {
-        throw std::invalid_argument(
-            "AttributeDomain: " + std::to_string(global_largest_group) +
-            " ranks share one vertex, edge or face of the mesh; mfem::ParSubMesh supports at "
-            "most " +
-            std::to_string(MAX_GROUP_SIZE) +
-            ". Use fewer ranks for the generator, or no passthrough attributes");
-    }
-
-    // Step 4: the sub-mesh of the active attributes
-    mfem::Array<int> attribute_list(static_cast<int>(m_active_attributes.size()));
-    for (int i = 0; i < attribute_list.Size(); i++) {
-        attribute_list[i] = m_active_attributes[static_cast<std::size_t>(i)];
-    }
-    m_submesh = std::make_unique<SubMeshHolder>(parent, attribute_list);
-    m_active_to_parent = m_submesh->mesh.GetParentElementIDMap();
 }
 
-AttributeDomain::~AttributeDomain() = default;
-
-mfem::ParMesh& AttributeDomain::ActiveMesh() {
-    if (m_submesh) {
-        return m_submesh->mesh;
-    }
-    return m_parent;
-}
-
-bool AttributeDomain::UsesSubMesh() const {
-    return static_cast<bool>(m_submesh);
+const ElementMask* AttributeDomain::Mask() const {
+    return m_mask.active.Size() > 0 ? &m_mask : nullptr;
 }
 
 /*
  * ToParent
  *
  * Steps:
- *  1. Check the input on this rank (size, grain id range) and reduce the verdict over the
- *     communicator (MPI_Allreduce with MPI_MAX of a 0/1 flag), so that all ranks throw together.
+ *  1. Check the input on this rank (size, grain id range of the active elements) and reduce the
+ *     verdict over the communicator (MPI_Allreduce with MPI_MAX of a 0/1 flag), so that all ranks
+ *     throw together.
  *  2. Passthrough elements: look up the position k of the element's attribute in the sorted
  *     passthrough list by binary search (std::lower_bound: repeatedly halving the sorted list
  *     until the entry is found, log2(size) comparisons) and store num_grains + 1 + k.
- *  3. Active elements: copy the grain of active element i to parent element
- *     ActiveToParentElement()[i]. Every parent element is either active or passthrough (checked
+ *  3. Active elements keep their grain. Every element is either active or passthrough (checked
  *     in the constructor), so every entry is written exactly once.
  *
  * Host loops: the attributes live on the host and the work is one pass over the elements.
  */
-mfem::Array<int> AttributeDomain::ToParent(const mfem::Array<int>& active_element_grain,
+mfem::Array<int> AttributeDomain::ToParent(const mfem::Array<int>& element_grain,
                                            int num_grains) const {
-    // Step 1: local check, then a global verdict
-    const int num_active = m_active_to_parent.Size();
+    // Step 1: local check of the active entries, then a global verdict
+    const int parent_ne = m_parent.GetNE();
+    const ElementMask* mask = Mask();
     int bad = 0;
-    if (active_element_grain.Size() != num_active || num_grains < 0) {
+    if (element_grain.Size() != parent_ne || num_grains < 0) {
         bad = 1;
     } else {
-        const int* grain = active_element_grain.HostRead();
-        for (int i = 0; i < num_active; i++) {
-            if (grain[i] < 1 || grain[i] > num_grains) {
+        const int* grain = element_grain.HostRead();
+        for (int e = 0; e < parent_ne; e++) {
+            if (ElementIsActive(mask, e) && (grain[e] < 1 || grain[e] > num_grains)) {
                 bad = 1;
                 break;
             }
@@ -302,27 +242,22 @@ mfem::Array<int> AttributeDomain::ToParent(const mfem::Array<int>& active_elemen
     if (any_bad) {
         throw std::invalid_argument(
             "AttributeDomain::ToParent: on some rank the grain array does not have one entry per "
-            "active element, or a grain id lies outside [1, num_grains]");
+            "element, or an active element's grain id lies outside [1, num_grains]");
     }
 
-    // Step 2: passthrough elements get num_grains + 1 + (index of their attribute)
-    const int parent_ne = m_parent.GetNE();
+    // Steps 2-3: passthrough elements get num_grains + 1 + (index of their attribute), active
+    // elements keep their grain
+    const int* grain = element_grain.HostRead();
     mfem::Array<int> parent_grain(parent_ne);
-    parent_grain = 0;
     for (int e = 0; e < parent_ne; e++) {
+        if (ElementIsActive(mask, e)) {
+            parent_grain[e] = grain[e];
+            continue;
+        }
         const int attribute = m_parent.GetAttribute(e);
         const auto it = std::lower_bound(m_passthrough_attributes.begin(),
                                          m_passthrough_attributes.end(), attribute);
-        if (it != m_passthrough_attributes.end() && *it == attribute) {
-            parent_grain[e] =
-                num_grains + 1 + static_cast<int>(it - m_passthrough_attributes.begin());
-        }
-    }
-
-    // Step 3: active elements keep their grain
-    const int* grain = active_element_grain.HostRead();
-    for (int i = 0; i < num_active; i++) {
-        parent_grain[m_active_to_parent[i]] = grain[i];
+        parent_grain[e] = num_grains + 1 + static_cast<int>(it - m_passthrough_attributes.begin());
     }
     return parent_grain;
 }

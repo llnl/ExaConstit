@@ -301,7 +301,8 @@ struct RoundContext {
     std::vector<std::uint64_t> keys;      ///< element keys, size NE
     std::vector<int> anchor_local;        ///< size N: local element holding seed s's anchor, or -1
     std::vector<std::uint64_t> anchor_key;///< size N: anchor key of every seed (replicated)
-    std::vector<char> exempt;             ///< size NE: 1 for elements of unanchored bodies
+    std::vector<char> exempt;             ///< size NE: 1 for unanchored bodies, inactive elements
+    const ElementMask* mask = nullptr;    ///< active elements (nullptr = every element)
     const ElementSamples* centroids = nullptr; ///< element centroids (any memory space)
     QuadraturePointSampler* sampler = nullptr; ///< vote sampling only, null on empty ranks
 };
@@ -438,7 +439,7 @@ ConnectedLabelReport RunRounds(const Index& index, const RoundContext& ctx, int*
 
     for (;;) {
         // Step 1: components of the current labels (ids = smallest element key)
-        LabelComponents(*ctx.adjacency, label_view, ctx.keys, component);
+        LabelComponents(*ctx.adjacency, label_view, ctx.keys, component, nullptr, ctx.mask);
 
         // Step 2: component of each seed's anchor, if the anchor still carries that seed
         std::fill(seed_component.begin(), seed_component.end(), NO_KEY);
@@ -521,7 +522,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
                                                  const std::vector<std::uint64_t>& element_key,
                                                  const mfem::Vector& centroid_x,
                                                  const mfem::Vector& centroid_y,
-                                                 const mfem::Vector& centroid_z) {
+                                                 const mfem::Vector& centroid_z,
+                                                 const MaterialContext* context) {
     // Step 1: checks
     const int ne = pmesh.GetNE();
     const bool bad_size = static_cast<int>(element_key.size()) != ne || centroid_x.Size() != ne ||
@@ -532,7 +534,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
     const int n = static_cast<int>(seeds.Size());
 
     // Step 2: containing element
-    std::vector<std::uint64_t> anchor = ContainingElementKeys(pmesh, comm, seeds, &element_key);
+    std::vector<std::uint64_t> anchor =
+        ContainingElementKeys(pmesh, comm, seeds, &element_key, context);
 
     // Step 3: seeds outside the material go to the nearest element centroid
     std::vector<int> outside;
@@ -548,8 +551,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
     centroids.cx = centroid_x;
     centroids.cy = centroid_y;
     centroids.cz = centroid_z;
-    const NearestKeys nearest =
-        NearestElementCentroidKeys(pmesh, comm, seeds, outside, &centroids, &element_key);
+    const NearestKeys nearest = NearestElementCentroidKeys(pmesh, comm, seeds, outside, &centroids,
+                                                           &element_key, ContextMask(context));
     for (std::size_t k = 0; k < outside.size(); ++k) {
         anchor[static_cast<std::size_t>(outside[k])] = nearest.key[k];
     }
@@ -578,15 +581,17 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
                                                const std::vector<std::uint64_t>& element_key,
                                                const mfem::Vector& centroid_x,
                                                const mfem::Vector& centroid_y,
-                                               const mfem::Vector& centroid_z) {
-    // Step 1: checks
+                                               const mfem::Vector& centroid_z,
+                                               const MaterialContext* context) {
+    // Step 1: checks (inactive elements carry -1 and are skipped everywhere below)
+    const ElementMask* mask = ContextMask(context);
     const int ne = pmesh.GetNE();
     const int n = static_cast<int>(seeds.Size());
     bool bad = static_cast<int>(element_key.size()) != ne || element_seed.Size() != ne ||
                centroid_x.Size() != ne || centroid_y.Size() != ne || centroid_z.Size() != ne;
     const int* label = (!bad && ne > 0) ? element_seed.HostRead() : nullptr;
     for (int e = 0; !bad && e < ne; ++e) {
-        bad = label[e] < 0 || label[e] >= n;
+        bad = ElementIsActive(mask, e) && (label[e] < 0 || label[e] >= n);
     }
     ThrowIfAnyRank(comm, bad,
                    "ConnectedAnchorKeys: element_seed, element_key and the centroids must have one "
@@ -594,9 +599,12 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
 
     // Step 2: the containing element, if it carries the seed's own label
     const std::vector<std::uint64_t> containing =
-        ContainingElementKeys(pmesh, comm, seeds, &element_key);
+        ContainingElementKeys(pmesh, comm, seeds, &element_key, context);
     std::vector<std::uint64_t> anchor(static_cast<std::size_t>(n), NO_KEY);
     for (int e = 0; e < ne; ++e) {
+        if (!ElementIsActive(mask, e)) {
+            continue;
+        }
         const auto s = static_cast<std::size_t>(label[e]);
         if (element_key[static_cast<std::size_t>(e)] == containing[s]) {
             anchor[s] = containing[s];
@@ -620,6 +628,9 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
     const double* cy = (ne > 0) ? centroid_y.HostRead() : nullptr;
     const double* cz = (ne > 0) ? centroid_z.HostRead() : nullptr;
     for (int e = 0; e < ne; ++e) {
+        if (!ElementIsActive(mask, e)) {
+            continue;
+        }
         const auto s = static_cast<std::size_t>(label[e]);
         if (anchor[s] != NO_KEY) {
             continue;
@@ -669,6 +680,9 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
  *     seeds carry them), the vote sampler when needed, and the rounds (RunRounds).
  *  5. Relabeled count (final vs input label), reduced with MPI_Allreduce(SUM). The anchor keys
  *     of step 2 are returned in the report (ConnectedLabelReport::anchor_key).
+ * With an element mask (context), inactive elements keep their placeholder label -1: they are
+ * exempt from the rounds, cannot hold an anchor or contain a seed, and a face to one is a free
+ * surface for every component search (bodies and per-label components).
  */
 ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
                                                MPI_Comm comm,
@@ -676,7 +690,8 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
                                                const SeedSet& seeds,
                                                const TessellationOptions& tessellation,
                                                mfem::Array<int>& element_seed,
-                                               const ConnectedLabelParameters& params) {
+                                               const ConnectedLabelParameters& params,
+                                               const MaterialContext* context) {
     // Step 1a: parameters (the same on every rank)
     if (seeds.Size() == 0) {
         throw std::invalid_argument("ConstrainToConnectedCells: the seed set is empty");
@@ -706,7 +721,8 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     if (!bad_labels && ne > 0) {
         const int* in = element_seed.HostRead();
         for (int e = 0; e < ne; ++e) {
-            bad_labels = bad_labels || in[e] < 0 || in[e] >= n;
+            const bool active = ElementIsActive(ContextMask(context), e);
+            bad_labels = bad_labels || (active && (in[e] < 0 || in[e] >= n));
         }
     }
     ThrowIfAnyRank(comm, bad_labels,
@@ -720,12 +736,13 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     ctx.num_elements = ne;
     ctx.num_seeds = n;
     ctx.params = params;
+    ctx.mask = ContextMask(context);
     ctx.keys = ComputeElementKeys(pmesh);
     ElementSamples centroids;
     ComputeElementSamples(pmesh, -1, centroids);
     ctx.centroids = &centroids;
     ctx.anchor_key = ConnectedAnchorKeys(pmesh, comm, seeds, element_seed, ctx.keys, centroids.cx,
-                                         centroids.cy, centroids.cz);
+                                         centroids.cy, centroids.cz, context);
 
     std::vector<std::pair<std::uint64_t, int>> key_to_element(static_cast<std::size_t>(ne));
     for (int e = 0; e < ne; ++e) {
@@ -746,7 +763,7 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     mfem::Array<int> zeros(ne);
     zeros = 0;
     std::vector<std::uint64_t> body;
-    LabelComponents(adjacency, zeros, ctx.keys, body);
+    LabelComponents(adjacency, zeros, ctx.keys, body, nullptr, ctx.mask);
     std::vector<std::uint64_t> anchored_body(static_cast<std::size_t>(n), NO_KEY);
     for (int s = 0; s < n; ++s) {
         const int a = ctx.anchor_local[static_cast<std::size_t>(s)];
@@ -759,6 +776,10 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     ctx.exempt.assign(static_cast<std::size_t>(ne), 0);
     std::int64_t num_exempt = 0;
     for (int e = 0; e < ne; ++e) {
+        if (!ElementIsActive(ctx.mask, e)) {
+            ctx.exempt[static_cast<std::size_t>(e)] = 1; // not material: never an orphan
+            continue;
+        }
         const std::uint64_t b = body[static_cast<std::size_t>(e)];
         if (!std::binary_search(anchored_body.begin(), anchored_body.end(), b)) {
             ctx.exempt[static_cast<std::size_t>(e)] = 1;

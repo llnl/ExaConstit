@@ -127,6 +127,43 @@ void RequirePositiveSampleRule(mfem::Geometry::Type geometry, int order) {
     }
 }
 
+/*
+ * KeepActiveSamples: drops the samples of inactive elements, keeping the others in order. The
+ * samples of local element e are entries e * per_element .. (e + 1) * per_element - 1 (the
+ * sampler's layout). Nothing happens without a mask (nullptr or empty), so unmasked samples stay
+ * exactly as the sampler wrote them (no host round trip). With a mask this is a host pass that
+ * copies the kept entries into new Vectors (memory proportional to the samples, no mesh data).
+ */
+void KeepActiveSamples(const ElementMask* mask, int per_element, WeightedSamples& samples) {
+    if (mask == nullptr || mask->active.Size() == 0 || per_element <= 0) {
+        return;
+    }
+    const int ne = samples.Size() / per_element;
+    if (mask->active.Size() != ne) {
+        throw std::invalid_argument("weighted samples: the element mask needs one entry per "
+                                    "local element");
+    }
+    int kept = 0;
+    for (int e = 0; e < ne; ++e) {
+        kept += (mask->active[e] != 0) ? per_element : 0;
+    }
+    mfem::Vector* fields[4] = {&samples.x, &samples.y, &samples.z, &samples.weight};
+    for (mfem::Vector* field : fields) {
+        const double* in = field->HostRead();
+        mfem::Vector compact(kept);
+        int next = 0;
+        for (int e = 0; e < ne; ++e) {
+            if (mask->active[e] == 0) {
+                continue;
+            }
+            for (int q = 0; q < per_element; ++q) {
+                compact(next++) = in[e * per_element + q];
+            }
+        }
+        field->Swap(compact);
+    }
+}
+
 } // namespace
 
 /*
@@ -134,16 +171,18 @@ void RequirePositiveSampleRule(mfem::Geometry::Type geometry, int order) {
  *
  * Thin wrappers around the mesh sampler (mesh/mesh_sampler.hpp). The sampler's Vectors are moved
  * into the WeightedSamples with Vector::Swap (no copy); the data stays wherever the sampler wrote
- * it (device memory on a GPU run).
+ * it (device memory on a GPU run). With an element mask the samples of inactive elements are then
+ * dropped (KeepActiveSamples).
  */
 
-void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out) {
+void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out, const ElementMask* mask) {
     ElementSamples element;
     ComputeElementSamples(mesh, -1, element);
     out.x.Swap(element.cx);
     out.y.Swap(element.cy);
     out.z.Swap(element.cz);
     out.weight.Swap(element.volume);
+    KeepActiveSamples(mask, 1, out);
 }
 
 /*
@@ -157,7 +196,8 @@ void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out) {
  *     result, are independent of the partition, and the check in step 3 is rank-identical.
  *  3. Check that the rule has only positive weights (RequirePositiveSampleRule), then sample.
  */
-void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out) {
+void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out,
+                                   const ElementMask* mask) {
     // Step 1: local order and geometry
     int resolved[2] = {quad_order, -1};
     if (quad_order < 0) {
@@ -184,6 +224,9 @@ void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSam
     out.y.Swap(qp.y);
     out.z.Swap(qp.z);
     out.weight.Swap(qp.weight);
+    if (mesh.GetNE() > 0) {
+        KeepActiveSamples(mask, out.Size() / mesh.GetNE(), out);
+    }
 }
 
 /*

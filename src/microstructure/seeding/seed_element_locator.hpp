@@ -2,6 +2,7 @@
 
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -73,6 +74,9 @@ std::uint64_t VertexKey(double x, double y, double z);
  * @param comm        communicator of the mesh.
  * @param seeds       replicated seed positions, N >= 0.
  * @param element_key optional size NE: ComputeElementKeys(pmesh); computed here when null.
+ * @param context     optional active-element mask and shared locator (MaterialContext): only
+ *                    active elements can contain a seed. nullptr = every element, a locator
+ *                    built here.
  * @return size N, identical on every rank.
  * @throws std::invalid_argument on every rank if element_key has the wrong size on any rank.
  */
@@ -80,7 +84,8 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
                                                  MPI_Comm comm,
                                                  const SeedSet& seeds,
                                                  const std::vector<std::uint64_t>* element_key =
-                                                     nullptr);
+                                                     nullptr,
+                                                 const MaterialContext* context = nullptr);
 
 /** @brief Result of a nearest-element or nearest-vertex search for a list of seeds. */
 struct NearestKeys {
@@ -120,6 +125,7 @@ struct NearestVertexResult : NearestKeys {
  * @param centroids   optional: ComputeElementSamples(pmesh, -1, ...) of this mesh (computed here
  *                    when null); its cx/cy/cz are read with HostRead().
  * @param element_key optional size NE: ComputeElementKeys(pmesh); computed here when null.
+ * @param mask        optional active elements: only their centroids are candidates.
  * @return per listed seed (index k), identical on every rank.
  * @throws std::invalid_argument on every rank for a wrong input size or a seed id outside
  *         [0, N) on any rank.
@@ -129,7 +135,8 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
                                        const SeedSet& seeds,
                                        const std::vector<int>& seed_ids,
                                        const ElementSamples* centroids = nullptr,
-                                       const std::vector<std::uint64_t>* element_key = nullptr);
+                                       const std::vector<std::uint64_t>* element_key = nullptr,
+                                       const ElementMask* mask = nullptr);
 
 /**
  * @brief For the seeds seed_ids[k], the mesh vertex nearest to the seed (smallest squared
@@ -143,18 +150,23 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
  * winner are reported in NearestVertexResult::local_vertex.
  *
  * **Collective** over `comm` (the owner broadcast of VertexCoordinates, then three
- * MPI_Allreduce calls). Host only.
+ * MPI_Allreduce calls; with a mask on some rank, one more reduction and a neighbor exchange of
+ * the candidate flags over the shared vertices). Host only.
  *
  * @param pmesh    this rank's part of the 3D mesh (may have no local vertices).
  * @param comm     communicator of the mesh.
  * @param seeds    replicated seed positions.
  * @param seed_ids 0-based indices into `seeds`, the same list on every rank.
+ * @param mask     optional active elements: only vertices of an active element (on any rank)
+ *                 are candidates. A rank holding a copy of such a vertex only through inactive
+ *                 elements still reports its local index in local_vertex.
  * @return per listed seed: vertex key, squared distance and coordinates; identical on every rank.
  * @throws std::invalid_argument on every rank for a seed id outside [0, N) on any rank.
  */
 NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
                                   MPI_Comm comm,
                                   const SeedSet& seeds,
-                                  const std::vector<int>& seed_ids);
+                                  const std::vector<int>& seed_ids,
+                                  const ElementMask* mask = nullptr);
 
 } // namespace exaconstit::microstructure

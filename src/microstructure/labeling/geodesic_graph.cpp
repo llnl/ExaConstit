@@ -218,10 +218,12 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field = std::make_unique<VertexField>(pmesh, params.field_nodes);
+    result.field =
+        std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
     const std::vector<double> no_weights;
-    result.sources = field.InitializeSources(seeds, additive ? seeds.weight : no_weights);
+    result.sources =
+        field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
     result.report.seeds_outside_material = result.sources.num_seeds_outside;
 
     const int nv = field.NumVertices();
@@ -301,8 +303,9 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
                 lab[v] = -1;
                 unlabeled += owned[v];
             }
-            // Count only vertices of at least one element (an unused mesh vertex is no material)
-            const bool in_element = g.vert_elem_offsets[v + 1] > g.vert_elem_offsets[v];
+            // Count only vertices of at least one (active) element on some rank (an unused mesh
+            // vertex, or one of inactive elements only, is no material)
+            const bool in_element = field.NodeUsed()[v] != 0;
             if (t[v] == INF && in_element) {
                 unreached += owned[v];
             }
@@ -327,8 +330,8 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
         const int* ev_offsets = field.ElementVertexOffsets().HostRead();
         const int* ev_items = field.ElementVertices().HostRead();
         for (int e = 0; e < result.element_seed.Size(); ++e) {
-            if (es[e] >= 0) {
-                continue;
+            if (es[e] >= 0 || !field.ElementActive(e)) {
+                continue; // labeled, or inactive (placeholder -1, not material)
             }
             bool any_reached = false;
             for (int j = ev_offsets[e]; j < ev_offsets[e + 1]; ++j) {

@@ -2,6 +2,7 @@
 
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -272,6 +273,11 @@ struct SeedingReport {
  * @param comm   communicator over which the mesh is distributed.
  * @param params seeding parameters (validated here).
  * @param report optional; filled on every rank.
+ * @param context optional active-element mask and shared locator (MaterialContext,
+ *        seeding/material_point_locator.hpp). Seeds are placed in active elements only, the
+ *        material volume and boxes count only them, and the surface clearance uses only true
+ *        boundary faces of active elements. nullptr = every element, a locator built here (the
+ *        result is then bit for bit the one from before masks existed).
  * @return the seeds, in increasing source_id (candidate) order.
  * @throws std::invalid_argument for invalid parameters (checked on identical data on every
  *         rank); std::runtime_error for an empty mesh, elements with volume <= 0, an infeasible
@@ -281,10 +287,10 @@ struct SeedingReport {
  *         globally reduced data, so all ranks throw together with the same message.
  */
 SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParameters& params,
-                      SeedingReport* report = nullptr);
+                      SeedingReport* report = nullptr, const MaterialContext* context = nullptr);
 
 /** @brief GenerateSeeds over the ParMesh's own communicator. Collective. */
 SeedSet GenerateSeeds(mfem::ParMesh& pmesh, const SeedingParameters& params,
-                      SeedingReport* report = nullptr);
+                      SeedingReport* report = nullptr, const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

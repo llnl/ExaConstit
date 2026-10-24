@@ -4,6 +4,7 @@
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
 #include "microstructure/morphology/weight_fit.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -115,6 +116,11 @@ void ValidateLloydParameters(const LloydParameters& params);
  * @param target_volume one target per seed for centroidal power mode (see FitWeights); ignored
  *                      otherwise (may be empty).
  * @param report        optional; receives the history.
+ * @param context       optional active-element mask and shared locator (MaterialContext,
+ *                      seeding/material_point_locator.hpp) for the clamp's inside test; the
+ *                      samples must come from the same active elements
+ *                      (MakeElementWeightedSamples / MakeQuadratureWeightedSamples with the
+ *                      mask). nullptr = every element, a locator built here.
  * @return the relaxed seeds (same order, same source ids).
  * @throws std::invalid_argument (on all ranks) for invalid parameters, missing targets in
  *         centroidal power mode, and the errors of LabelSamples / CellMeasureAccumulator /
@@ -122,6 +128,7 @@ void ValidateLloydParameters(const LloydParameters& params);
  */
 SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamples& samples,
                  const SeedSet& seeds, const LloydParameters& params,
-                 const std::vector<double>& target_volume, LloydReport* report = nullptr);
+                 const std::vector<double>& target_volume, LloydReport* report = nullptr,
+                 const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

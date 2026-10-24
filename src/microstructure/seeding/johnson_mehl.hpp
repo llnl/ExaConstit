@@ -1,6 +1,7 @@
 #pragma once
 
 #include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -228,6 +229,9 @@ struct JohnsonMehlReport {
  * @param comm   communicator over which the mesh is distributed.
  * @param params parameters (validated here).
  * @param report optional; filled on every rank.
+ * @param context optional active-element mask and shared locator (MaterialContext): only active
+ *        elements count as material (candidates, the mesh box and the completion bound).
+ *        nullptr = every element.
  * @return the accepted nuclei in birth order: x, y, z (mesh length units), nucleation_time t_i,
  *         weight a_i = -v t_i (Additive metric, length units), and source_id = candidate index k
  *         (strictly increasing, with gaps). The other SeedSet arrays are empty.
@@ -238,11 +242,13 @@ struct JohnsonMehlReport {
  */
 SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
                                  const JohnsonMehlParameters& params,
-                                 JohnsonMehlReport* report = nullptr);
+                                 JohnsonMehlReport* report = nullptr,
+                                 const MaterialContext* context = nullptr);
 
 /** @brief GenerateJohnsonMehlSeeds over the ParMesh's own communicator. Collective. */
 SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh, const JohnsonMehlParameters& params,
-                                 JohnsonMehlReport* report = nullptr);
+                                 JohnsonMehlReport* report = nullptr,
+                                 const MaterialContext* context = nullptr);
 
 /**
  * @brief Classical prediction of the number of grains per unit volume of a fully transformed

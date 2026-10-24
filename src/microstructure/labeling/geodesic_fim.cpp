@@ -481,10 +481,12 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field = std::make_unique<VertexField>(pmesh, params.field_nodes);
+    result.field =
+        std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
     const std::vector<double> no_weights;
-    result.sources = field.InitializeSources(seeds, additive ? seeds.weight : no_weights);
+    result.sources =
+        field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
     result.report.seeds_outside_material = result.sources.num_seeds_outside;
     const int nv = field.NumVertices();
 
@@ -591,12 +593,17 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
         const double* t = field.Distance().HostRead();
         int* lab = field.Label().HostReadWrite();
         const int* owned = field.OwnedVertexMarker().HostRead();
+        // Without a mask every node counts (as before masks existed); with one, only nodes of
+        // an active element (NodeUsed)
+        const int* used = field.NodeUsed().HostRead();
+        const bool masked = ContextMask(params.context) != nullptr &&
+                            ContextMask(params.context)->active.Size() != 0;
         for (int v = 0; v < nv; ++v) {
             if (lab[v] == UNSET_LABEL) {
                 lab[v] = -1;
                 unlabeled += owned[v];
             }
-            if (!(t[v] < INF)) {
+            if (!(t[v] < INF) && (!masked || used[v] != 0)) {
                 unreached += owned[v];
             }
         }
@@ -620,8 +627,8 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
         const int* ev_offsets = field.ElementVertexOffsets().HostRead();
         const int* ev_items = field.ElementVertices().HostRead();
         for (int e = 0; e < result.element_seed.Size(); ++e) {
-            if (es[e] >= 0) {
-                continue;
+            if (es[e] >= 0 || !field.ElementActive(e)) {
+                continue; // labeled, or inactive (placeholder -1, not material)
             }
             bool any_reached = false;
             for (int j = ev_offsets[e]; j < ev_offsets[e + 1]; ++j) {

@@ -24,9 +24,13 @@
  *   seeds (random, lattice, Johnson-Mehl).
  * - ROI: the region of interest of a seed table, an axis-aligned box; filler seeds are random
  *   seeds placed outside it.
- * - Active mesh: the elements that receive grains. With passthrough attributes it is a sub-mesh
- *   (mfem::ParSubMesh) of the whole mesh, owned by an AttributeDomain that lives only inside
- *   GenerateMicrostructure.
+ * - Active elements: the elements that receive grains. With passthrough attributes they are
+ *   marked by an element mask (mesh/element_mask.hpp) built by an AttributeDomain; every stage
+ *   skips the other elements. No sub-mesh or copy of the mesh is made. The helpers below take
+ *   the whole mesh plus `const MaterialContext& material` (seeding/material_point_locator.hpp:
+ *   the mask, null without passthrough parts or on a rank without elements, and the shared point
+ *   locator over the active elements, null for voxel maps); arrays over the local elements
+ *   cover the whole local mesh, with placeholders (seed -1, grain 0) on inactive elements.
  * - Distance mode (Tessellation.distance): "euclidean" (nearest seed in straight lines),
  *   "connected" (straight-line labels, but a grain keeps only the elements connected through
  *   material to its seed's anchor element) or "geodesic" (nearest seed along paths inside the
@@ -182,12 +186,9 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
         refuse("Cleanup.min_grain_elements < 0");
     }
 
-    // Passthrough parts: the interface with the active part is a free surface of the sub-mesh
-    // (mesh/attribute_domain.hpp), so the boundary clearance and periodic-plane detection would
-    // treat it as an outer boundary
-    if (passthrough && seeds.boundary_clearance > 0.0 && !voxel) {
-        refuse("Seeds.boundary_clearance > 0 cannot be combined with Mesh.passthrough_attributes");
-    }
+    // Passthrough parts: the periodic box and plane faces would have to be measured on the
+    // active elements only, which is not implemented (the boundary clearance is fine: it ignores
+    // the bonded interface, seeding/boundary_clearance.hpp)
     if (passthrough && AnyPeriodic(tess)) {
         refuse("Tessellation.periodic cannot be combined with Mesh.passthrough_attributes");
     }
@@ -276,15 +277,15 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
 }
 
 /*
- * MaterialVolume (collective): the volume of the whole (active) mesh, as a reproducible
+ * MaterialVolume (collective): the volume of the active elements, as a reproducible
  * fixed-point sum of the element volumes (CellMeasureAccumulator with every element labeled 0:
  * its single cell is the whole material). Bitwise the same on every rank and for every rank
  * count, so decisions based on it (the seed count, the polydisperse radii) are identical
  * everywhere.
  */
-double MaterialVolume(mfem::ParMesh& pmesh, MPI_Comm comm) {
+double MaterialVolume(mfem::ParMesh& pmesh, MPI_Comm comm, const MaterialContext& material) {
     WeightedSamples samples;
-    MakeElementWeightedSamples(pmesh, samples);
+    MakeElementWeightedSamples(pmesh, samples, material.mask);
     const CellMeasureAccumulator accumulator(comm, samples, 1);
     mfem::Array<int> all_zero(samples.Size());
     all_zero = 0;
@@ -298,16 +299,19 @@ double MaterialVolume(mfem::ParMesh& pmesh, MPI_Comm comm) {
  * would otherwise depend on the summation order of a plain floating-point MPI sum.
  */
 std::vector<double> GrainVolumes(mfem::ParMesh& pmesh, MPI_Comm comm,
-                                 const mfem::Array<int>& element_grain, int num_grains) {
+                                 const mfem::Array<int>& element_grain, int num_grains,
+                                 const MaterialContext& material) {
     WeightedSamples samples;
-    MakeElementWeightedSamples(pmesh, samples);
+    MakeElementWeightedSamples(pmesh, samples, material.mask);
     const CellMeasureAccumulator accumulator(comm, samples, num_grains);
-    // 0-based cell index of every element (one sample per element, in element order)
-    const int ne = element_grain.Size();
-    mfem::Array<int> cell(ne);
+    // 0-based cell index of every sample: one sample per active element, in element order
+    mfem::Array<int> cell(samples.Size());
     const int* grain = element_grain.HostRead();
-    for (int e = 0; e < ne; ++e) {
-        cell[e] = grain[e] - 1;
+    int next = 0;
+    for (int e = 0; e < element_grain.Size(); ++e) {
+        if (ElementIsActive(material.mask, e)) {
+            cell[next++] = grain[e] - 1;
+        }
     }
     return accumulator.Measure(cell).volume;
 }
@@ -346,7 +350,7 @@ bool NeedsSizeTargets(const MicrostructureOptions& options) {
  * nucleation run, and the parts of the seeding report the tool prints for every placement.
  */
 SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            GenerationReport& report) {
+                            GenerationReport& report, const MaterialContext& material) {
     const JohnsonMehlOptions& jm = options.seeds.johnson_mehl;
     JohnsonMehlParameters params;
     params.nucleation_rate = jm.rate;
@@ -359,7 +363,7 @@ SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options, mfem::ParMesh&
     params.sampling_box_hi = options.seeds.sampling_box_hi;
     params.allow_stall = options.seeds.allow_fewer_seeds;
 
-    SeedSet seeds = GenerateJohnsonMehlSeeds(pmesh, params, &report.johnson_mehl);
+    SeedSet seeds = GenerateJohnsonMehlSeeds(pmesh, params, &report.johnson_mehl, &material);
     report.used_johnson_mehl = true;
     report.seeding.requested = jm.num_nuclei;
     report.seeding.achieved = static_cast<std::int64_t>(seeds.Size());
@@ -385,7 +389,8 @@ SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options, mfem::ParMesh&
  */
 SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
                             MPI_Comm comm, double material_volume,
-                            std::vector<double>& slot_volume, GenerationReport& report) {
+                            std::vector<double>& slot_volume, GenerationReport& report,
+                            const MaterialContext& material) {
     SeedingParameters params = MakeSeedingParameters(options);
     const SeedSizeOptions& size = options.seeds.size;
 
@@ -413,7 +418,7 @@ SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options, mfem::ParMesh&
         report.used_polydisperse_placement = true;
     }
 
-    SeedSet seeds = GenerateSeeds(pmesh, comm, params, &report.seeding);
+    SeedSet seeds = GenerateSeeds(pmesh, comm, params, &report.seeding, &material);
     // With allow_fewer_seeds fewer slots may have been filled: keep the targets of those (the
     // largest slots, since they are filled first); MakeSeedTargets rescales them to fill the
     // material
@@ -463,7 +468,8 @@ struct TableSeeds {
  *  6. The combined SeedSet: table rows first (seed indices 0..num_table-1), then the filler.
  */
 TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                          MPI_Comm comm, GenerationReport& report) {
+                          MPI_Comm comm, GenerationReport& report,
+                          const MaterialContext& material) {
     const SeedOptions& opts = options.seeds;
     const TessellationOptions& tess = options.tessellation;
 
@@ -555,7 +561,8 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
         filler_params.rng_seed = opts.rng_seed;
         filler_params.source_id_offset = max_id + 1;
         filler_params.min_distance_factor = opts.filler_min_distance_factor;
-        RoiFillerResult filled = FillOutsideRoi(pmesh, comm, filler_params, num_table);
+        RoiFillerResult filled =
+            FillOutsideRoi(pmesh, comm, filler_params, num_table, &material);
         filler = std::move(filled.filler);
         out.roi_volume = filled.roi_material_volume;
         out.outside_volume = filled.outside_material_volume;
@@ -693,7 +700,7 @@ SizeTargets MakeSeedTargets(const MicrostructureOptions& options, const SeedSet&
  */
 void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI_Comm comm,
                  const std::vector<double>& target_volume, SeedSet& seeds,
-                 GenerationReport& report) {
+                 GenerationReport& report, const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const bool lloyd = tess.lloyd_iterations > 0;
     const bool fit = tess.fit_volumes.enabled && !tess.centroidal_power;
@@ -704,9 +711,9 @@ void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI
     // Sample points of the material (shared by Lloyd and the fit)
     WeightedSamples samples;
     if (tess.fit_volumes.samples == "element") {
-        MakeElementWeightedSamples(pmesh, samples);
+        MakeElementWeightedSamples(pmesh, samples, material.mask);
     } else {
-        MakeQuadratureWeightedSamples(pmesh, -1, samples);
+        MakeQuadratureWeightedSamples(pmesh, -1, samples, material.mask);
     }
 
     // Solver controls of the fit (also used by the refits of centroidal power mode)
@@ -725,7 +732,8 @@ void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI
         lloyd_params.centroidal_power = tess.centroidal_power;
         lloyd_params.weight_fit = fit_params;
         lloyd_params.weight_fit.metric = MetricType::LAGUERRE;
-        seeds = RunLloyd(pmesh, comm, samples, seeds, lloyd_params, target_volume, &report.lloyd);
+        seeds = RunLloyd(pmesh, comm, samples, seeds, lloyd_params, target_volume, &report.lloyd,
+                         &material);
         report.ran_lloyd = true;
     }
     if (fit) {
@@ -750,16 +758,20 @@ void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI
  * elements whose box contains their grain's seed).
  */
 std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh, MPI_Comm comm,
-                                          const SeedSet& seeds, const TessellationLabels& labels) {
+                                          const SeedSet& seeds, const TessellationLabels& labels,
+                                          const MaterialContext& material) {
     const std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
     std::vector<std::uint64_t> anchor(static_cast<std::size_t>(labels.num_grains), none);
     const int ne = pmesh.GetNE();
-    // Straight-sided or curved, decided on every rank together before the empty-rank branch
-    const bool straight_sided = IsStraightSided(pmesh, comm);
+    // The shared locator (or one built here: collective, so before the empty-rank branch)
+    std::unique_ptr<MaterialPointLocator> owned_locator;
+    const MaterialPointLocator& locator = ContextLocator(pmesh, comm, &material, owned_locator);
     if (ne > 0) {
-        const MaterialPointLocator locator(pmesh, straight_sided);
         const int* grain = labels.element_grain.HostRead();
         for (int e = 0; e < ne; ++e) {
+            if (!locator.ElementActive(e)) {
+                continue; // inactive: grain 0, not material
+            }
             const auto g = static_cast<std::size_t>(grain[e] - 1);
             const auto s = static_cast<std::size_t>(labels.grain_seed[g]);
             const std::array<double, 3> p = {seeds.x[s], seeds.y[s], seeds.z[s]};
@@ -806,10 +818,11 @@ int CountCoincidentSeeds(const SeedSet& seeds) {
  * starting labels of the connected mode and as the fallback for unreached geodesic elements.
  */
 TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
-                                      const TessellationOptions& tess) {
+                                      const TessellationOptions& tess,
+                                      const MaterialContext& material) {
     TessellationOptions euclidean = tess;
     euclidean.distance = DistanceMode::EUCLIDEAN;
-    return LabelTessellation(pmesh, comm, seeds, euclidean);
+    return LabelTessellation(pmesh, comm, seeds, euclidean, material.mask);
 }
 
 /*
@@ -823,8 +836,9 @@ TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const
  * straight-line labels.
  */
 GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pmesh, MPI_Comm comm,
-                             const SeedSet& seeds) {
+                             const SeedSet& seeds, const MaterialContext& material) {
     GeodesicParameters params;
+    params.context = &material;
     params.sampling = tess.sampling;
     params.vote_levels = tess.vote_levels;
     const bool additive = (tess.metric == MetricType::ADDITIVE);
@@ -885,7 +899,8 @@ struct DistanceModeLabels {
  */
 DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
                                        MPI_Comm comm, const SeedSet& seeds,
-                                       const MeshAdjacency& adjacency, GenerationReport& report) {
+                                       const MeshAdjacency& adjacency, GenerationReport& report,
+                                       const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const int num_seeds = static_cast<int>(seeds.Size());
     report.distance = tess.distance;
@@ -893,14 +908,14 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
 
     // Plain straight-line labels: unchanged Stage 1a-1d path
     if (tess.distance == DistanceMode::EUCLIDEAN) {
-        out.labels = LabelTessellation(pmesh, comm, seeds, tess);
+        out.labels = LabelTessellation(pmesh, comm, seeds, tess, material.mask);
         out.local_split_elements = out.labels.num_split_elements;
         return out;
     }
 
     if (tess.distance == DistanceMode::CONNECTED) {
         // Step 1: straight-line labels as the starting point (0-based seed index per element)
-        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess);
+        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess, material);
         mfem::Array<int> element_seed;
         element_seed = straight.element_seed; // deep copy (mfem::Array::operator=, array.hpp:121)
 
@@ -909,12 +924,12 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
         params.max_rounds = tess.connected_max_rounds;
         params.sampling = tess.sampling;
         params.vote_levels = tess.vote_levels;
-        report.connected =
-            ConstrainToConnectedCells(pmesh, comm, adjacency, seeds, tess, element_seed, params);
+        report.connected = ConstrainToConnectedCells(pmesh, comm, adjacency, seeds, tess,
+                                                     element_seed, params, &material);
         report.used_connected = true;
 
         // Step 3: compact grain ids over the seeds that still own elements
-        CompactSeedLabels(comm, element_seed, num_seeds, out.labels);
+        CompactSeedLabels(comm, element_seed, num_seeds, out.labels, material.mask);
         out.labels.num_coincident_seeds = straight.num_coincident_seeds;
         out.labels.num_split_elements = straight.num_split_elements;
         out.local_split_elements = straight.num_split_elements;
@@ -941,7 +956,7 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // Step 1: path-length labels (the VertexField inside `geodesic` refers to pmesh and dies at
     // the end of this function). Paths connect elements through shared vertices, edges and faces;
     // the face-based cleanup (step 9) handles pieces attached only through an edge or vertex.
-    GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds);
+    GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds, material);
     report.used_geodesic = true;
     report.geodesic_solver = tess.geodesic_solver;
     report.geodesic = geodesic.report;
@@ -955,7 +970,7 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // called by all or none)
     int num_coincident = 0;
     if (geodesic.report.unreached_elements + geodesic.report.unlabeled_elements > 0) {
-        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess);
+        const TessellationLabels straight = StraightLineLabels(pmesh, comm, seeds, tess, material);
         num_coincident = straight.num_coincident_seeds;
         const int ne = element_seed.Size();
         const int* fallback = straight.element_seed.HostRead();
@@ -969,8 +984,9 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
         num_coincident = CountCoincidentSeeds(seeds);
     }
 
-    // Step 3: compact grain ids
-    CompactSeedLabels(comm, element_seed, num_seeds, out.labels);
+    // Step 3: compact grain ids (inactive elements keep -1 through the fallback: their
+    // straight-line label is -1 too, and the compaction skips them)
+    CompactSeedLabels(comm, element_seed, num_seeds, out.labels, material.mask);
     out.labels.num_coincident_seeds = num_coincident;
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
@@ -1010,12 +1026,14 @@ FragmentCleanupParameters CleanupParameters(const MicrostructureOptions& options
 }
 
 /*
- * ActiveGrains: the grains of the active mesh after cleanup, with everything the orientation,
- * phase and region steps need per grain. Per-grain vectors have num_grains entries (index g-1);
- * element_grain describes the local elements of the active mesh.
+ * ActiveGrains: the grains of the active elements after cleanup, with everything the
+ * orientation, phase and region steps need per grain. Per-grain vectors have num_grains entries
+ * (index g-1); element_grain has one entry per local element of the whole mesh: the grain
+ * (1..num_grains) of an active element, 0 for an inactive one (AttributeDomain::ToParent then
+ * writes the passthrough grains there).
  */
 struct ActiveGrains {
-    mfem::Array<int> element_grain;            ///< local active elements, grain 1..num_grains
+    mfem::Array<int> element_grain;            ///< every local element: grain, 0 when inactive
     int num_grains = 0;
     std::vector<std::int64_t> source_id;       ///< stable id (seed, feature or derived)
     std::vector<double> source_quat;           ///< 4 per grain: measured orientation (or 0)
@@ -1024,13 +1042,14 @@ struct ActiveGrains {
     std::vector<char> filler;                  ///< 1 for filler grains
     std::vector<int> seed;                     ///< parent seed index, -1 for voxel grains
     std::vector<std::int64_t> feature;         ///< voxel feature id, -1 for seed grains
-    std::shared_ptr<MeshAdjacency> adjacency;  ///< face adjacency of the active mesh
+    std::shared_ptr<MeshAdjacency> adjacency;  ///< face adjacency of the whole mesh
     /** Quadrature vote: local elements cut by a grain boundary (summed by the caller). */
     long long local_split_elements = 0;
 };
 
 /*
- * LabelFromSeeds (collective): steps 3-9 for a tessellation on the active mesh `pmesh`.
+ * LabelFromSeeds (collective): steps 3-9 for a tessellation on the active elements of `pmesh`
+ * (material.mask).
  *
  *  3. Material volume when needed, then the seeds: a seed table (+ ROI + filler), Johnson-Mehl
  *     nucleation, or generated seeds; then the per-seed size targets. Laguerre seeds start from
@@ -1046,7 +1065,8 @@ struct ActiveGrains {
  * parent seed (seed tables), and the filler flag (parent seed index >= number of table rows).
  */
 ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            MPI_Comm comm, GenerationReport& report) {
+                            MPI_Comm comm, GenerationReport& report,
+                            const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const bool table_source = (options.seeds.source == "file");
 
@@ -1058,7 +1078,7 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
                                   options.seeds.size.mean_volume > 0.0);
     double material_volume = 0.0;
     if (size_targets || count_from_size || johnson_mehl) {
-        material_volume = MaterialVolume(pmesh, comm);
+        material_volume = MaterialVolume(pmesh, comm, material);
     }
     report.material_volume = material_volume;
 
@@ -1067,13 +1087,15 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     std::vector<double> slot_volume;
     std::unique_ptr<TableSeeds> table;
     if (table_source) {
-        table = std::make_unique<TableSeeds>(ReadTableSeeds(options, pmesh, comm, report));
+        table =
+            std::make_unique<TableSeeds>(ReadTableSeeds(options, pmesh, comm, report, material));
         seeds = table->seeds;
     } else if (johnson_mehl) {
-        seeds = GenerateJohnsonMehl(options, pmesh, report);
+        seeds = GenerateJohnsonMehl(options, pmesh, report, material);
         report.seeding.material_volume = material_volume;
     } else {
-        seeds = GeneratePlacedSeeds(options, pmesh, comm, material_volume, slot_volume, report);
+        seeds = GeneratePlacedSeeds(options, pmesh, comm, material_volume, slot_volume, report,
+                                    material);
     }
     if (seeds.Size() == 0) {
         // Only possible when stalls are allowed (or a nucleation run ends before its first
@@ -1116,12 +1138,12 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     }
 
     // Step 5: Lloyd relaxation and/or the volume fit (validated: not with periodic axes)
-    RelaxAndFit(options, pmesh, comm, target_volume, seeds, report);
+    RelaxAndFit(options, pmesh, comm, target_volume, seeds, report, material);
 
-    // Face adjacency of the active mesh, used by the connected mode (step 7) and the fragment
-    // cleanup (step 9); with periodic axes it pairs matching faces on opposite planes of the
-    // mesh box, so wrapped grains stay one grain (periodic axes are refused with the connected
-    // and geodesic modes)
+    // Face adjacency of the mesh (the stages skip inactive neighbors), used by the connected mode
+    // (step 7) and the fragment cleanup (step 9); with periodic axes it pairs matching faces on
+    // opposite planes of the mesh box, so wrapped grains stay one grain (periodic axes are
+    // refused with the connected and geodesic modes)
     ActiveGrains out;
     if (AnyPeriodic(tess)) {
         const PeriodicBox box = PeriodicBoxFromMesh(pmesh, comm, tess.periodic);
@@ -1140,7 +1162,7 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     // the labeler builds the periodic images itself and maps their labels back to the original
     // seeds.
     const DistanceModeLabels mode =
-        LabelByDistanceMode(options, pmesh, comm, seeds, *out.adjacency, report);
+        LabelByDistanceMode(options, pmesh, comm, seeds, *out.adjacency, report, material);
     const TessellationLabels& labels = mode.labels;
     report.periodic_layers = labels.periodic_layers;
     report.num_periodic_images = labels.num_periodic_images;
@@ -1181,15 +1203,16 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
                 cleanup_params.grain_anchor_key[g] = mode.seed_anchor_key[s];
             }
         } else {
-            cleanup_params.grain_anchor_key = SeedAnchorKeys(pmesh, comm, seeds, labels);
+            cleanup_params.grain_anchor_key = SeedAnchorKeys(pmesh, comm, seeds, labels, material);
         }
     }
     std::vector<std::int64_t> labeled_source_id(labels.grain_seed.size());
     for (std::size_t g = 0; g < labels.grain_seed.size(); ++g) {
         labeled_source_id[g] = seeds.source_id[static_cast<std::size_t>(labels.grain_seed[g])];
     }
-    FragmentCleanupResult cleaned = CleanupFragments(
-        *out.adjacency, labels.element_grain, labels.num_grains, labeled_source_id, cleanup_params);
+    FragmentCleanupResult cleaned =
+        CleanupFragments(*out.adjacency, labels.element_grain, labels.num_grains, labeled_source_id,
+                         cleanup_params, material.mask);
     report.cleanup = cleaned.report;
 
     // Per-grain tables. Grain g descends from input grain grain_parent[g-1], whose seed is
@@ -1255,7 +1278,7 @@ VoxelMapParameters MakeVoxelMapParameters(const MicrostructureOptions& options) 
 }
 
 /*
- * LabelFromVoxels (collective): the voxel-map replacement of steps 3-9 on the active mesh.
+ * LabelFromVoxels (collective): the voxel-map replacement of steps 3-9 on the active elements.
  *
  * Steps: ReadVoxelGridInfo (metadata, read once); LabelElementsFromVoxels (each rank reads only
  * the voxel tiles under its own sample points; elements without a vote are filled from their
@@ -1267,7 +1290,8 @@ VoxelMapParameters MakeVoxelMapParameters(const MicrostructureOptions& options) 
  * (a piece split off a feature keeps the feature's orientation and phase).
  */
 ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                             MPI_Comm comm, GenerationReport& report) {
+                             MPI_Comm comm, GenerationReport& report,
+                             const MaterialContext& material) {
     const VoxelMapParameters map = MakeVoxelMapParameters(options);
     VoxelLabelParameters label_params;
     label_params.sampling = options.voxel_map.sampling;
@@ -1276,10 +1300,12 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
 
     // Labels from the voxels, then compact grain ids in ascending feature id
     const VoxelGridInfo grid = ReadVoxelGridInfo(map, comm);
-    const VoxelLabels labels = LabelElementsFromVoxels(pmesh, comm, map, grid, label_params);
+    const VoxelLabels labels =
+        LabelElementsFromVoxels(pmesh, comm, map, grid, label_params, material.mask);
     mfem::Array<int> element_grain;
     std::vector<std::int64_t> grain_feature;
-    CompactFeatureLabels(comm, labels.element_feature, element_grain, grain_feature);
+    CompactFeatureLabels(comm, labels.element_feature, element_grain, grain_feature,
+                         material.mask);
     const int num_labeled = static_cast<int>(grain_feature.size());
 
     // Report: grid and fill statistics; the read volume is per rank, so also give global sums
@@ -1302,7 +1328,7 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
     out.adjacency = std::make_shared<MeshAdjacency>(pmesh);
     const FragmentCleanupParameters cleanup_params = CleanupParameters(options);
     FragmentCleanupResult cleaned = CleanupFragments(*out.adjacency, element_grain, num_labeled,
-                                                     grain_feature, cleanup_params);
+                                                     grain_feature, cleanup_params, material.mask);
     report.cleanup = cleaned.report;
 
     // The features the final grains descend from (a grain merged away entirely by the cleanup
@@ -1386,7 +1412,7 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
  */
 void AssignRegions(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI_Comm comm,
                    const ActiveGrains& active, MicrostructureResult& result,
-                   GenerationReport& report) {
+                   GenerationReport& report, const MaterialContext& material) {
     const RegionOptions& regions = options.regions;
     const auto num_grains = static_cast<std::size_t>(active.num_grains);
     result.grain_phase = active.phase;
@@ -1409,7 +1435,7 @@ void AssignRegions(const MicrostructureOptions& options, mfem::ParMesh& pmesh, M
     // their source ids (regions/region_assigner.hpp)
     if (regions.mode == "phase_fractions") {
         const std::vector<double> volume =
-            GrainVolumes(pmesh, comm, active.element_grain, active.num_grains);
+            GrainVolumes(pmesh, comm, active.element_grain, active.num_grains, material);
         PhaseFractionParameters params;
         params.phase_id = regions.phase_ids;
         params.fraction = regions.phase_fractions;
@@ -1528,14 +1554,16 @@ void CheckUnitQuaternions(const MicrostructureResult& result) {
  *     CheckMesh reduces every check over the communicator, so ThrowOnPreflightFailure throws on
  *     all ranks or none.
  *  2b. Active part: an AttributeDomain when [Mesh] lists active or passthrough attributes
- *     (collective; its sub-mesh lives only inside this function).
- *  3-9. Grains of the active mesh: LabelFromSeeds (seeds, size targets, Lloyd / fit, labels in
+ *     (collective): an element mask over the mesh itself, no sub-mesh.
+ *  2c. One MaterialPointLocator over the active elements (seed sources only), shared with every
+ *     stage through a MaterialContext, so it is built once per generation.
+ *  3-9. Grains of the active elements: LabelFromSeeds (seeds, size targets, Lloyd / fit, labels in
  *     the chosen distance mode, cleanup) or LabelFromVoxels (voxel labels, compaction, cleanup).
  * 10. Orientations: measured ones normalized to unit length (from_source), random ones keyed by
  *     source id otherwise (AssignMixedGrainOrientations).
  * 11-12. Phases and regions (AssignRegions); identity quaternions for non-crystalline regions.
- * 13. Passthrough: ToParent and one grain per passthrough attribute (AppendPassthroughGrains);
- *     the report's adjacency is rebuilt on the whole mesh when a sub-mesh was used. Then
+ * 13. Passthrough: ToParent and one grain per passthrough attribute (AppendPassthroughGrains).
+ *     The report's adjacency is the whole-mesh adjacency of the cleanup. Then
  *     CheckUnitQuaternions confirms every orientation row has norm 1.
  * Then the report (the global reductions always run, so ranks that differ in passing a report
  * cannot deadlock).
@@ -1552,8 +1580,7 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     // Step 2 (before the active part is built): mesh preflight of the whole mesh (collective;
     // global verdict), so inverted or unsupported elements are caught in passthrough parts too.
     // CheckMesh reduces over the ParMesh's own communicator, which must be `comm`. The active
-    // elements are a subset of these elements (a sub-mesh copies them unchanged,
-    // mesh/attribute_domain.hpp), so a second preflight of the active mesh would add nothing.
+    // elements are a subset of these elements, so passthrough parts are checked too.
     const PreflightReport preflight = CheckMesh(pmesh, comm);
     ThrowOnPreflightFailure(preflight);
 
@@ -1561,8 +1588,7 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     // meshes are large). Straight-sided Nodes are recognized where it matters for the seeds
     // (MaterialPointLocator: exact corner boxes, no sampling-box padding; mesh/straight_sided.hpp).
 
-    // Step 2b: the active part of the mesh. Declared before everything that refers to the active
-    // mesh, so those objects (adjacency, labels) are destroyed first.
+    // Step 2b: the active part of the mesh, as an element mask (no sub-mesh)
     std::unique_ptr<AttributeDomain> domain;
     std::vector<int> passthrough_attributes;
     if (!options.mesh.active_attributes.empty() || !options.mesh.passthrough_attributes.empty()) {
@@ -1572,7 +1598,6 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
         domain = std::make_unique<AttributeDomain>(pmesh, options.mesh.active_attributes,
                                                    passthrough_attributes);
         report.used_attribute_domain = true;
-        report.used_submesh = domain->UsesSubMesh();
         report.active_attributes = domain->ActiveAttributes();
         report.passthrough_attributes = domain->PassthroughAttributes();
         report.passthrough_element_counts = domain->PassthroughElementCounts();
@@ -1580,12 +1605,24 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
             report.passthrough_regions.push_back(options.mesh.passthrough_attributes.at(attribute));
         }
     }
-    mfem::ParMesh& active_mesh = domain ? domain->ActiveMesh() : pmesh;
+    MaterialContext material;
+    material.mask = domain ? domain->Mask() : nullptr;
 
-    // Steps 3-9: grains of the active mesh
+    // Step 2c: one point locator over the active elements, shared by every seeding and labeling
+    // stage (its element boxes are the expensive part for curved meshes). Voxel maps place no
+    // seeds and do not need it. The decision is the same on every rank (replicated options), and
+    // the straight-sided test inside is collective.
+    std::unique_ptr<MaterialPointLocator> locator;
+    if (!UsesVoxelMap(options)) {
+        const bool straight_sided = IsStraightSided(pmesh, comm, material.mask);
+        locator = std::make_unique<MaterialPointLocator>(pmesh, straight_sided, material.mask);
+        material.locator = locator.get();
+    }
+
+    // Steps 3-9: grains of the active elements
     ActiveGrains active = UsesVoxelMap(options)
-                              ? LabelFromVoxels(options, active_mesh, comm, report)
-                              : LabelFromSeeds(options, active_mesh, comm, report);
+                              ? LabelFromVoxels(options, pmesh, comm, report, material)
+                              : LabelFromSeeds(options, pmesh, comm, report, material);
 
     // Step 10: orientations, one per active grain; measured ones only when asked for
     MicrostructureResult result;
@@ -1598,23 +1635,21 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     result.grain_filler = active.filler;
 
     // Steps 11-12: phases and regions of the active grains
-    AssignRegions(options, active_mesh, comm, active, result, report);
+    AssignRegions(options, pmesh, comm, active, result, report, material);
 
     // Step 13: back to the whole mesh, plus one grain per passthrough attribute
     std::vector<int> grain_seed = active.seed;
     std::vector<std::int64_t> grain_feature = active.feature;
     std::shared_ptr<const MeshAdjacency> adjacency = active.adjacency;
-    long long local_counts[3] = {pmesh.GetNE(), active_mesh.GetNE(), active.local_split_elements};
+    long long num_active_local = 0;
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        num_active_local += ElementIsActive(material.mask, e) ? 1 : 0;
+    }
+    long long local_counts[3] = {pmesh.GetNE(), num_active_local, active.local_split_elements};
     if (domain) {
         result.element_grain = domain->ToParent(active.element_grain, active.num_grains);
         AppendPassthroughGrains(options, passthrough_attributes, result, grain_seed,
                                 grain_feature);
-        if (domain->UsesSubMesh()) {
-            // The cleanup adjacency belongs to the sub-mesh, which dies with `domain`: give the
-            // caller an adjacency of the whole mesh instead (collective on every rank, whether or
-            // not it passed a report). Periodic axes are refused with passthrough attributes.
-            adjacency = std::make_shared<MeshAdjacency>(pmesh);
-        }
     } else {
         result.element_grain = active.element_grain;
     }

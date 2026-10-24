@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/microstructure_types.hpp"
 
@@ -105,11 +106,14 @@ std::array<double, 6> EffectiveGlobalTensor(const TessellationOptions& tessellat
  * @param element_seed this rank's per-element seed indices (HostRead).
  * @param what         start of the message (names the caller and the problem).
  * @param hint         end of the message (likely cause), may be empty.
+ * @param mask         optional active elements: inactive ones are not checked (their -1 is the
+ *                     documented placeholder). nullptr = every element.
  */
 void ThrowIfAnyElementUnlabeled(MPI_Comm comm,
                                 const mfem::Array<int>& element_seed,
                                 const std::string& what,
-                                const std::string& hint = "");
+                                const std::string& hint = "",
+                                const ElementMask* mask = nullptr);
 
 /**
  * @brief Element labels of one labeling run.
@@ -221,13 +225,16 @@ void LabelElementsWithSeeds(mfem::Mesh& local_mesh,
  * @param num_seeds     number of seeds N (same on every rank).
  * @param labels        output: element_grain, num_grains, seed_grain and grain_seed are filled;
  *                      element_seed is copied in.
+ * @param mask          optional active elements: inactive ones are ignored (any seed entry) and
+ *                      get grain 0; grains are numbered over the active elements only.
  * @throws std::invalid_argument on every rank if num_seeds < 1 or if any rank has a seed index
  *         outside [0, num_seeds) (the check is reduced over `comm`, so all ranks throw together).
  */
 void CompactSeedLabels(MPI_Comm comm,
                        const mfem::Array<int>& element_seed,
                        int num_seeds,
-                       TessellationLabels& labels);
+                       TessellationLabels& labels,
+                       const ElementMask* mask = nullptr);
 
 /**
  * @brief The complete labeling: nearest seed per element (centroid or quadrature vote), periodic
@@ -260,6 +267,10 @@ void CompactSeedLabels(MPI_Comm comm,
  *                     periodic); distance must be EUCLIDEAN (pass a copy with
  *                     distance = EUCLIDEAN for the straight-line labels of a connected or
  *                     geodesic run).
+ * @param mask         optional active elements (mesh/element_mask.hpp): inactive elements get the
+ *                     placeholder seed -1 and grain 0 and do not count for the grains or the
+ *                     split statistics. Cannot be combined with periodic axes. nullptr = every
+ *                     element (unchanged results).
  * @return the labels of the local elements (seed indices into `seeds`) and the replicated
  *         seed/grain tables, plus the periodic and vote statistics.
  * @throws std::invalid_argument for unsupported options, an empty seed set or invalid seed data;
@@ -269,6 +280,7 @@ void CompactSeedLabels(MPI_Comm comm,
 TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
                                      MPI_Comm comm,
                                      const SeedSet& seeds,
-                                     const TessellationOptions& tessellation);
+                                     const TessellationOptions& tessellation,
+                                     const ElementMask* mask = nullptr);
 
 } // namespace exaconstit::microstructure

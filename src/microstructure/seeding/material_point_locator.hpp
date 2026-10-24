@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include "axom/core.hpp"
@@ -9,6 +11,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <mpi.h>
 #include <vector>
 
 /**
@@ -106,13 +110,30 @@ public:
      * @param straight_sided the result of IsStraightSided(mesh, comm) (collective, so every rank
      *        uses the same box method and the global sampling box does not depend on the
      *        partition). Ignored (treated as true) for a mesh without Nodes.
-     * @throws std::runtime_error if the mesh is not 3D.
+     * @param mask active elements (mesh/element_mask.hpp); nullptr = every element. Inactive
+     *        elements get no box (ElementBox returns an empty box), are left out of the BVH and
+     *        of LocalBounds / LocalPointBounds, so no point is ever found inside them. The flags
+     *        are copied; the mask need not outlive the locator. With nullptr (or an empty mask)
+     *        the locator is bit for bit the one built before masks existed.
+     * @throws std::runtime_error if the mesh is not 3D; std::invalid_argument if a non-empty
+     *         mask does not have one entry per local element.
      */
-    MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided);
+    MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided,
+                         const ElementMask* mask = nullptr);
 
-    /** @brief Number of local elements. */
+    /** @brief Number of local elements (active or not; element ids run over all of them). */
     int NumElements() const {
         return m_num_elements;
+    }
+
+    /** @brief True when local element e takes part (always true without a mask). */
+    bool ElementActive(int e) const {
+        return m_active_flags.empty() || m_active_flags[static_cast<std::size_t>(e)] != 0;
+    }
+
+    /** @brief Number of local active elements (NumElements() without a mask). */
+    int NumActiveElements() const {
+        return static_cast<int>(m_active_elements.size());
     }
 
     /**
@@ -135,7 +156,8 @@ public:
         return m_local_point_bounds;
     }
 
-    /** @brief Bounding box of local element e (0-based local index), as built above. */
+    /** @brief Bounding box of local element e (0-based local index), as built above; an empty
+     * (invalid) box for an inactive element. */
     const BoxType& ElementBox(int e) const {
         return m_element_boxes[e];
     }
@@ -205,12 +227,59 @@ private:
     const mfem::Mesh& m_mesh;                 ///< the local mesh (not owned)
     int m_num_elements = 0;                   ///< local element count
     bool m_straight_sided = true;             ///< element = convex hull of its corners
-    std::vector<BoxType> m_element_boxes;     ///< one box per local element
+    std::vector<BoxType> m_element_boxes;     ///< one box per local element (empty if inactive)
+    std::vector<char> m_active_flags;         ///< per local element, empty = all active
+    std::vector<int> m_active_elements;       ///< local ids of the active elements, increasing
+    std::vector<BoxType> m_active_boxes;      ///< BVH input with a mask (empty: all active)
     BoxType m_local_bounds;                   ///< union of the element boxes
     BoxType m_local_point_bounds;             ///< box of the evaluated points (no padding)
     /** @brief Reference lattices of the curved path, indexed by mfem::Geometry::Type. */
     std::array<ReferenceLattice, mfem::Geometry::NumGeom> m_lattices;
-    axom::spin::BVH<3, ExecSpace> m_bvh;      ///< BVH over m_element_boxes (if any elements)
+    axom::spin::BVH<3, ExecSpace> m_bvh;      ///< BVH over m_active_boxes (if any)
 };
+
+/**
+ * @brief The active material of one generation run, shared by the stages that place or move
+ * seeds: which elements take part (`mask`) and a point locator built once over them (`locator`).
+ *
+ * Both are optional. Functions taking a `const MaterialContext*` treat nullptr, or a null member,
+ * as "every element is active" and "build a locator locally". When `locator` is given it must
+ * have been built on the same mesh with the same mask (the driver builds it once,
+ * microstructure_driver.cpp). Building the locator of a curved mesh is the expensive part (its
+ * element boxes map a reference lattice per element), which is why it is shared.
+ *
+ * Whether `locator` is set must be the same on every rank, since building a missing locator is
+ * collective. `mask` may be null on some ranks only: the driver's mask
+ * (AttributeDomain::Mask()) is null on a rank without local elements, so functions that change
+ * their communication pattern with a mask reduce the decision over the ranks.
+ */
+struct MaterialContext {
+    /** @brief Active elements; nullptr = every element. */
+    const ElementMask* mask = nullptr;
+    /** @brief Locator over the active elements; nullptr = build one where needed. */
+    const MaterialPointLocator* locator = nullptr;
+};
+
+/** @brief The mask of a context (nullptr for a null context). */
+inline const ElementMask* ContextMask(const MaterialContext* context) {
+    return context != nullptr ? context->mask : nullptr;
+}
+
+/**
+ * @brief The context's locator, or one built into `owned` (IsStraightSided over `comm`, then
+ * MaterialPointLocator(mesh, straight_sided, ContextMask(context))).
+ *
+ * **Collective over `comm`** when no locator is given (IsStraightSided reduces over the ranks);
+ * otherwise local. Host only.
+ *
+ * @param mesh    this rank's mesh partition (the one the context belongs to).
+ * @param comm    communicator over which the mesh is distributed.
+ * @param context optional shared mask and locator.
+ * @param owned   receives the locator when one has to be built; kept alive by the caller.
+ * @return the locator to use.
+ */
+const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh, MPI_Comm comm,
+                                           const MaterialContext* context,
+                                           std::unique_ptr<MaterialPointLocator>& owned);
 
 } // namespace exaconstit::microstructure

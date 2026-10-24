@@ -34,6 +34,40 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/*
+ * ReduceSharedVertexMax: values[v] becomes the maximum over every copy of local vertex v (one
+ * entry per local vertex). A GroupCommunicator over the mesh's group topology lists, per shared
+ * group g >= 1, its vertices in ParMesh::GroupVertex order (as VertexCoordinates does);
+ * Reduce(Max) gathers each group's copies on the master and Bcast sends the result back.
+ * Collective over the mesh communicator (neighbor messages only). Host only.
+ */
+void ReduceSharedVertexMax(const mfem::ParMesh& pmesh, std::vector<int>& values) {
+    mfem::GroupCommunicator gcomm(pmesh.gtopo);
+    mfem::Table& group_entries = gcomm.GroupLDofTable();
+    const int num_groups = pmesh.GetNGroups();
+    int num_entries = 0;
+    for (int g = 1; g < num_groups; ++g) {
+        num_entries += pmesh.GroupNVertices(g);
+    }
+    group_entries.SetDims(num_groups, num_entries);
+    int* row_start = group_entries.GetI();
+    int* entry = group_entries.GetJ();
+    row_start[0] = 0;
+    int next = 0;
+    if (num_groups > 1) {
+        row_start[1] = 0; // group 0 (this rank alone) has no shared entries
+    }
+    for (int g = 1; g < num_groups; ++g) {
+        for (int j = 0; j < pmesh.GroupNVertices(g); ++j) {
+            entry[next++] = pmesh.GroupVertex(g, j);
+        }
+        row_start[g + 1] = next;
+    }
+    gcomm.Finalize();
+    gcomm.Reduce<int>(values.data(), mfem::GroupCommunicator::Max<int>);
+    gcomm.Bcast(values.data());
+}
+
 constexpr std::uint64_t NO_KEY = std::numeric_limits<std::uint64_t>::max();
 
 using Point = MaterialPointLocator::PointType;
@@ -178,8 +212,9 @@ std::uint64_t VertexKey(double x, double y, double z) {
 /*
  * ContainingElementKeys
  *
- * Steps: element keys (given or computed); a host BVH over MaterialPointLocator's element boxes;
- * one batched findPoints (spin/BVH.hpp:343; candidates of point j are
+ * Steps: element keys (given or computed); a host BVH over the boxes of MaterialPointLocator's
+ * active elements (the context's shared locator, or one built here over its mask); one batched
+ * findPoints (spin/BVH.hpp:343; candidates of point j are
  * candidates[offsets[j] .. offsets[j] + counts[j]), local element ids); the exact
  * PointInElement test on every candidate, keeping the smallest key (all candidates are tested, not
  * just the first hit, so a seed on a shared face gets the same answer on every partition); one
@@ -188,7 +223,8 @@ std::uint64_t VertexKey(double x, double y, double z) {
 std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
                                                  MPI_Comm comm,
                                                  const SeedSet& seeds,
-                                                 const std::vector<std::uint64_t>* element_key) {
+                                                 const std::vector<std::uint64_t>* element_key,
+                                                 const MaterialContext* context) {
     const int ne = pmesh.GetNE();
     ThrowIfAnyRank(comm, element_key != nullptr && static_cast<int>(element_key->size()) != ne,
                    "ContainingElementKeys: element_key must have one entry per local element");
@@ -198,21 +234,27 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
         return result;
     }
 
-    // Straight-sided or curved, decided on every rank together before the empty-rank branch
-    const bool straight_sided = IsStraightSided(pmesh, comm);
-    if (ne > 0) {
+    // The locator (shared, or built here: straight-sided or curved is then decided on every rank
+    // together, so this comes before the empty-rank branch)
+    std::unique_ptr<MaterialPointLocator> owned_locator;
+    const MaterialPointLocator& locator = ContextLocator(pmesh, comm, context, owned_locator);
+    if (locator.NumActiveElements() > 0) {
         const std::vector<std::uint64_t> computed =
             (element_key == nullptr) ? ComputeElementKeys(pmesh) : std::vector<std::uint64_t>{};
         const std::vector<std::uint64_t>& keys = (element_key == nullptr) ? computed : *element_key;
 
-        // Candidate elements per seed from the element boxes
-        const MaterialPointLocator locator(pmesh, straight_sided);
-        std::vector<Box> boxes(static_cast<std::size_t>(ne));
+        // Candidate elements per seed from the boxes of the active elements (BVH index i is
+        // active element active[i])
+        std::vector<int> active;
+        std::vector<Box> boxes;
         for (int e = 0; e < ne; ++e) {
-            boxes[static_cast<std::size_t>(e)] = locator.ElementBox(e);
+            if (locator.ElementActive(e)) {
+                active.push_back(e);
+                boxes.push_back(locator.ElementBox(e));
+            }
         }
         HostBVH bvh;
-        bvh.initialize(boxes.data(), ne);
+        bvh.initialize(boxes.data(), static_cast<axom::IndexType>(boxes.size()));
         std::vector<Point> points(static_cast<std::size_t>(n));
         for (int s = 0; s < n; ++s) {
             const auto us = static_cast<std::size_t>(s);
@@ -228,7 +270,7 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
             const auto us = static_cast<std::size_t>(s);
             const std::array<double, 3> p = {seeds.x[us], seeds.y[us], seeds.z[us]};
             for (axom::IndexType c = 0; c < counts[s]; ++c) {
-                const int e = static_cast<int>(candidates[offsets[s] + c]);
+                const int e = active[static_cast<std::size_t>(candidates[offsets[s] + c])];
                 if (locator.PointInElement(e, p)) {
                     result[us] = std::min(result[us], keys[static_cast<std::size_t>(e)]);
                 }
@@ -241,14 +283,16 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
 
 /*
  * NearestElementCentroidKeys: local nearest centroid per listed seed (LocalNearest over the
- * element centroids with the element keys), then the global (d^2, key) minimum (ReduceNearest).
+ * centroids of the active elements with their keys), then the global (d^2, key) minimum
+ * (ReduceNearest).
  */
 NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
                                        MPI_Comm comm,
                                        const SeedSet& seeds,
                                        const std::vector<int>& seed_ids,
                                        const ElementSamples* centroids,
-                                       const std::vector<std::uint64_t>* element_key) {
+                                       const std::vector<std::uint64_t>* element_key,
+                                       const ElementMask* mask) {
     const int ne = pmesh.GetNE();
     const bool bad_size =
         (element_key != nullptr && static_cast<int>(element_key->size()) != ne) ||
@@ -264,20 +308,25 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
         ComputeElementSamples(pmesh, -1, computed_centroids);
     }
     const ElementSamples& c = (centroids != nullptr) ? *centroids : computed_centroids;
-    std::vector<std::uint64_t> keys =
+    const std::vector<std::uint64_t> all_keys =
         (element_key != nullptr) ? *element_key : ComputeElementKeys(pmesh);
-    std::vector<double> px(static_cast<std::size_t>(ne));
-    std::vector<double> py(static_cast<std::size_t>(ne));
-    std::vector<double> pz(static_cast<std::size_t>(ne));
+    // Candidates: the active elements only (all of them without a mask)
+    std::vector<std::uint64_t> keys;
+    std::vector<double> px;
+    std::vector<double> py;
+    std::vector<double> pz;
     if (ne > 0) {
         const double* cx = c.cx.HostRead();
         const double* cy = c.cy.HostRead();
         const double* cz = c.cz.HostRead();
         for (int e = 0; e < ne; ++e) {
-            const auto ue = static_cast<std::size_t>(e);
-            px[ue] = cx[e];
-            py[ue] = cy[e];
-            pz[ue] = cz[e];
+            if (!ElementIsActive(mask, e)) {
+                continue;
+            }
+            keys.push_back(all_keys[static_cast<std::size_t>(e)]);
+            px.push_back(cx[e]);
+            py.push_back(cy[e]);
+            pz.push_back(cz[e]);
         }
     }
 
@@ -306,7 +355,11 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
  *     vertex. Mesh::GetVertex is not used: for a mesh with Nodes it is an average over the local
  *     elements (partition dependent) or stale after node motion (mesh/vertex_coordinates.hpp).
  *     Keys are VertexKey of those positions.
- *  2. LocalNearest over the local vertices, then the global (d^2, key) minimum (ReduceNearest).
+ *  2. LocalNearest over the local vertices of active elements (all vertices without a mask), then
+ *     the global (d^2, key) minimum (ReduceNearest). With a mask the candidate flags are first
+ *     made the same on every copy of a shared vertex (maximum over the copies,
+ *     ReduceSharedVertexMax): a vertex of an active element on one rank is a candidate on every
+ *     rank holding it, so step 3 finds all copies. The candidate set over all ranks is unchanged.
  *  3. Local copies: every rank that holds the winning vertex finds it as its own local best
  *     (it is the global minimum of (d^2, key), so it is also the minimum over any subset that
  *     contains it, and its copies have identical coordinates and key); ReduceNearest flags
@@ -317,23 +370,46 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
 NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
                                   MPI_Comm comm,
                                   const SeedSet& seeds,
-                                  const std::vector<int>& seed_ids) {
+                                  const std::vector<int>& seed_ids,
+                                  const ElementMask* mask) {
     CheckSeedIds(comm, seed_ids, static_cast<int>(seeds.Size()), "NearestVertex");
 
     // Step 1: local vertices (owner-broadcast positions, collective) and their keys
     const VertexCoordinates coordinates(pmesh);
     const int nv = coordinates.NumVertices();
-    std::vector<double> px(static_cast<std::size_t>(nv));
-    std::vector<double> py(static_cast<std::size_t>(nv));
-    std::vector<double> pz(static_cast<std::size_t>(nv));
-    std::vector<std::uint64_t> keys(static_cast<std::size_t>(nv));
+    // Candidate vertices: those of at least one local active element (every vertex without a
+    // mask). Candidate i is local vertex candidate_vertex[i].
+    // A rank without elements has no mask while others may have one: the decision to exchange
+    // the flags is reduced so that every rank takes part
+    const bool masked = AnyRank(mask != nullptr && mask->active.Size() != 0, comm);
+    std::vector<int> usable(static_cast<std::size_t>(nv), masked ? 0 : 1);
+    if (masked) {
+        mfem::Array<int> element_vertices;
+        for (int e = 0; e < pmesh.GetNE(); ++e) {
+            if (ElementIsActive(mask, e)) {
+                pmesh.GetElementVertices(e, element_vertices);
+                for (const int v : element_vertices) {
+                    usable[static_cast<std::size_t>(v)] = 1;
+                }
+            }
+        }
+        ReduceSharedVertexMax(pmesh, usable);
+    }
+    std::vector<int> candidate_vertex;
+    std::vector<double> px;
+    std::vector<double> py;
+    std::vector<double> pz;
+    std::vector<std::uint64_t> keys;
     for (int v = 0; v < nv; ++v) {
+        if (usable[static_cast<std::size_t>(v)] == 0) {
+            continue;
+        }
         const double* x = coordinates.Vertex(v);
-        const auto uv = static_cast<std::size_t>(v);
-        px[uv] = x[0];
-        py[uv] = x[1];
-        pz[uv] = x[2];
-        keys[uv] = VertexKey(x[0], x[1], x[2]);
+        candidate_vertex.push_back(v);
+        px.push_back(x[0]);
+        py.push_back(x[1]);
+        pz.push_back(x[2]);
+        keys.push_back(VertexKey(x[0], x[1], x[2]));
     }
 
     // Queries: the listed seeds
@@ -354,7 +430,7 @@ NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
     out.local_vertex.assign(nq, -1);
     for (std::size_t k = 0; k < nq; ++k) {
         if (mine[k] != 0) {
-            out.local_vertex[k] = winner[k];
+            out.local_vertex[k] = candidate_vertex[static_cast<std::size_t>(winner[k])];
         }
     }
 

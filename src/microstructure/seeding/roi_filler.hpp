@@ -94,6 +94,9 @@ struct RoiFillerResult {
  * @param params        ROI box, count, RNG key, id offset, spacing; identical on every rank.
  * @param num_roi_seeds number of measured seeds in the ROI (>= 0; > 0 in automatic mode when the
  *                      outside volume is positive).
+ * @param context       optional active-element mask and shared locator (MaterialContext): the
+ *                      volumes count active elements only and filler seeds land in active
+ *                      elements only. nullptr = every element.
  * @return the filler seeds and the measured volumes.
  * @throws std::invalid_argument on every rank for invalid parameters (including a
  *         source_id_offset above 2^63 - 1 - 2^40, which leaves no room for the generator's
@@ -105,6 +108,7 @@ struct RoiFillerResult {
 RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
                                MPI_Comm comm,
                                const RoiFillerParameters& params,
-                               std::int64_t num_roi_seeds);
+                               std::int64_t num_roi_seeds,
+                               const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

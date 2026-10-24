@@ -70,8 +70,10 @@ struct RoiVolumes {
  *     must have only positive weights (RequirePositiveRule).
  *  2. Walk the local elements in chunks with a QuadraturePointSampler (mesh/mesh_sampler.hpp):
  *     each point q gives its weight W_q = w_q detJ_q (length^3) and whether it lies strictly inside
- *     the box. This is a one-time host pass over HostRead() data. Local setup errors (e.g. mixed
- *     element geometries) are combined over the ranks so all ranks throw together.
+ *     the box. Points of elements that are inactive under the mask are skipped (the sampler lists
+ *     the points of element begin + i at i * (points per element) ...). This is a one-time host
+ *     pass over HostRead() data. Local setup errors (e.g. mixed element geometries) are combined
+ *     over the ranks so all ranks throw together.
  *  3. MPI_Allreduce: total point count (SUM) and largest |W_q| (MAX); these set the fixed-point
  *     scale (FixedPointScale::ForRange), the same on every rank.
  *  4. Encode every W_q, add the integers into an "inside" and an "outside" sum, MPI_SUM them, and
@@ -79,7 +81,7 @@ struct RoiVolumes {
  *     identical for any number of ranks.
  */
 RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<double, 3>& lo,
-                             const std::array<double, 3>& hi) {
+                             const std::array<double, 3>& hi, const ElementMask* mask) {
     // Step 1: one rule for every rank
     const int ne = mesh.GetNE();
     int rule_info[2] = {-1, -1}; // [order, geometry]
@@ -91,6 +93,9 @@ RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<d
     if (rule_info[1] < 0) {
         throw std::runtime_error("FillOutsideRoi: the mesh has no elements");
     }
+    ThrowIfAnyRank<std::invalid_argument>(
+        comm, mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne,
+        "FillOutsideRoi: the element mask needs one entry per local element");
     RequirePositiveRule(static_cast<mfem::Geometry::Type>(rule_info[1]), rule_info[0]);
 
     // Step 2: per-point weights and inside flags of the local elements
@@ -107,11 +112,15 @@ RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<d
                 const int end = std::min(ne, begin + ELEMENT_CHUNK);
                 sampler.Sample(begin, end, samples);
                 const int count = samples.weight.Size();
+                const int per_element = count / (end - begin); // the sampler's layout
                 const double* x = samples.x.HostRead();
                 const double* y = samples.y.HostRead();
                 const double* z = samples.z.HostRead();
                 const double* w = samples.weight.HostRead();
                 for (int q = 0; q < count; q++) {
+                    if (!ElementIsActive(mask, begin + q / per_element)) {
+                        continue; // not material of this generation
+                    }
                     // Strictly inside, the same test as the seed generator's exclusion box
                     const bool in_box = x[q] > lo[0] && x[q] < hi[0] && y[q] > lo[1] &&
                                         y[q] < hi[1] && z[q] > lo[2] && z[q] < hi[2];
@@ -169,7 +178,8 @@ RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<d
 RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
                                MPI_Comm comm,
                                const RoiFillerParameters& params,
-                               std::int64_t num_roi_seeds) {
+                               std::int64_t num_roi_seeds,
+                               const MaterialContext* context) {
     // Step 1
     for (int d = 0; d < 3; d++) {
         if (!(params.hi[d] > params.lo[d]) || !std::isfinite(params.lo[d]) ||
@@ -196,7 +206,8 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
 
     // Step 2
     RoiFillerResult result;
-    const RoiVolumes volumes = MeasureRoiVolumes(local_mesh, comm, params.lo, params.hi);
+    const RoiVolumes volumes =
+        MeasureRoiVolumes(local_mesh, comm, params.lo, params.hi, ContextMask(context));
     result.roi_material_volume = volumes.inside;
     result.outside_material_volume = volumes.outside;
 
@@ -245,7 +256,7 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
         seeding.min_distance = params.min_distance_factor *
                                std::cbrt(volumes.outside / static_cast<double>(requested));
     }
-    result.filler = GenerateSeeds(local_mesh, comm, seeding, &result.report);
+    result.filler = GenerateSeeds(local_mesh, comm, seeding, &result.report, context);
     return result;
 }
 

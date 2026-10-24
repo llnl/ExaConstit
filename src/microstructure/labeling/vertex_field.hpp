@@ -1,6 +1,8 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -85,8 +87,10 @@
  * **Which field (FieldNodes::AUTO).** Straight-sided meshes (mesh/straight_sided.hpp:
  * IsStraightSided, which accepts Nodes that describe straight elements, e.g. after
  * Mesh::SetCurvature) use the corner field, bit for bit as before Wave 8. Curved meshes use the
- * nodal field. CORNERS / MESH_NODES force a choice (MESH_NODES on a mesh without Nodes is the
- * corner field). The nodal field supports a single element geometry, hex or tet, and a
+ * nodal field. With an element mask only the active elements decide (a curved passthrough part
+ * does not switch the material to the nodal field). CORNERS / MESH_NODES force a choice
+ * (MESH_NODES on a mesh without Nodes is the corner field). The nodal field supports a single
+ * geometry of the active elements, hex or tet (inactive elements may differ), and a
  * fixed-order continuous Nodes space that is an mfem::ParFiniteElementSpace (what ParMesh and
  * ParMesh::SetCurvature create, pmesh.cpp:278-288, 2049-2051).
  *
@@ -97,12 +101,13 @@
  * build for its vertex dofs (ParFiniteElementSpace::GetGroupComm, pfespace.cpp:392-415), so the
  * reductions are bit for bit those of the Stage 1e version; the owner of a vertex is the master
  * of its group (GroupTopology::IAmMaster), as GetLocalTDofNumber decides for that space
- * (pfespace.cpp:1720-1739, 2236-2257). Nodal field: no space is built; the field nodes are the scalar dofs of the
- * mesh's Nodes space, and the exchange uses ParFiniteElementSpace::ScalarGroupComm of that space
- * (pfespace.cpp:1129-1141: a new GroupCommunicator on scalar dofs over the same group topology;
- * its memory is proportional to the shared dofs only). The space's own GroupComm() works on the
- * 3 vector components (pfespace.hpp:419-423, ConstructTrueDofs pfespace.cpp:2229-2232 builds it
- * with ldof_type = 1), so using it would need 3x larger exchange buffers in every round. A
+ * (pfespace.cpp:1720-1739, 2236-2257). Nodal field: no space is built; the field nodes are the
+ * scalar dofs of the mesh's Nodes space, and the exchange uses
+ * ParFiniteElementSpace::ScalarGroupComm of that space (pfespace.cpp:1129-1141: a new
+ * GroupCommunicator on scalar dofs over the same group topology; its memory is proportional to the
+ * shared dofs only). The space's own GroupComm() works on the 3 vector components
+ * (pfespace.hpp:419-423, ConstructTrueDofs pfespace.cpp:2229-2232 builds it with ldof_type = 1), so
+ * using it would need 3x larger exchange buffers in every round. A
  * GroupCommunicator is MFEM's object that knows which local dofs are copies of the same node on
  * other ranks ("shared" nodes) and can combine and redistribute their values.
  *
@@ -557,12 +562,20 @@ public:
      *        a continuous (H1) space.
      * @param nodes which field (default AUTO: corners for straight-sided meshes, nodal field
      *        for curved ones).
+     * @param mask optional active elements (mesh/element_mask.hpp; copied): only active elements
+     *        enter the node -> element table, so the solvers walk the cells of active elements
+     *        only and a face to an inactive element is a free surface; nodes of inactive elements
+     *        only are never reached (NodeUsed() = 0) and are ignored by the statistics and by the
+     *        snapping of outside seeds; inactive elements get label -1 in LabelElementCentroids /
+     *        LabelElementsByVote. The element -> node table stays complete. nullptr = every
+     *        element (unchanged).
      * @throws std::runtime_error on every rank if the mesh is nonconforming (hanging vertices
      *         from local refinement: their values are not plain copies of one node), not 3D, or
      *         has discontinuous Nodes, or, for the nodal field, if the Nodes space is not a
      *         fixed-order ParFiniteElementSpace or the mesh is not all hexes or all tets.
      */
-    explicit VertexField(mfem::ParMesh& pmesh, FieldNodes nodes = FieldNodes::AUTO);
+    explicit VertexField(mfem::ParMesh& pmesh, FieldNodes nodes = FieldNodes::AUTO,
+                         const ElementMask* mask = nullptr);
     ~VertexField();
     VertexField(const VertexField&) = delete;
     VertexField& operator=(const VertexField&) = delete;
@@ -588,6 +601,21 @@ public:
     /** @brief Number of local elements NE. */
     int NumElements() const {
         return m_num_elements;
+    }
+    /** @brief True when local element e is active (always without a mask). */
+    bool ElementActive(int e) const {
+        return m_mask.IsActive(e);
+    }
+    /** @brief True when this rank holds a non-empty element mask. */
+    bool HasMask() const {
+        return m_mask.active.Size() != 0;
+    }
+    /**
+     * @brief 1 for a node of at least one active element on some rank, 0 for a node of inactive
+     * elements only (identical on every copy; all 1 without a mask). Size NV.
+     */
+    const mfem::Array<int>& NodeUsed() const {
+        return m_node_used;
     }
 
     /** @brief Element -> node CSR offsets, size NE+1 (see the file comment). */
@@ -700,13 +728,17 @@ public:
      *
      * @param seeds            replicated seed set, N >= 1, finite positions (mesh length units).
      * @param additive_weights a_i per seed (length units), size N, or empty for all zero.
+     * @param context          optional shared locator (MaterialContext) built with the same mask
+     *                         as the field, for the containment test; nullptr = build one over
+     *                         the field's mask.
      * @return the source elements and cells (see SourceReport).
      * @throws std::invalid_argument (on every rank, the inputs being replicated) for an empty seed
      *         set, a non-finite position or weight, or a weight array of the wrong size;
      *         std::runtime_error on every rank if the mesh has no element on any rank.
      */
     SourceReport InitializeSources(const SeedSet& seeds,
-                                   const std::vector<double>& additive_weights);
+                                   const std::vector<double>& additive_weights,
+                                   const MaterialContext* context = nullptr);
 
     /**
      * @brief Makes all copies of every shared node equal to the lexicographic minimum of
@@ -889,6 +921,13 @@ private:
     mfem::Vector m_coords;                           ///< xyz[3*v + d]
     mfem::Array<int> m_shared;                       ///< 1 = node also on another rank
     mfem::Array<int> m_owned;                        ///< 1 = this rank is the node's master
+    ElementMask m_mask;                              ///< copy of the mask (empty = all active)
+
+    /** The stored mask, or nullptr without one (the convention of mesh/element_mask.hpp). */
+    const ElementMask* MaskOrNull() const {
+        return HasMask() ? &m_mask : nullptr;
+    }
+    mfem::Array<int> m_node_used;                    ///< 1 = node of an active element (global)
     mfem::Vector m_T;                                ///< T(v)
     mfem::Array<int> m_label;                        ///< label(v)
     mfem::Vector m_source_T;                         ///< T0(v)

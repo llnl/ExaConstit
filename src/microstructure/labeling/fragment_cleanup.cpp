@@ -206,6 +206,7 @@ void CheckAllRanks(bool bad, const std::string& message, MPI_Comm comm) {
  *   c. for every shared face whose ghost element has the same label and a smaller id, the local
  *      group takes that id;
  *   d. stop when no rank changed anything (AnyRank, collective).
+ *  An optional void label (inactive elements) never joins anything, in either pass.
  *  The ids only decrease and always name an element of the same fragment, and a smaller id
  *  crosses at least one more rank boundary per round, so at the end every element holds the
  *  smallest key of its whole fragment; the number of rounds is one more than the largest number
@@ -214,14 +215,21 @@ void CheckAllRanks(bool bad, const std::string& message, MPI_Comm comm) {
  */
 int ComponentsImpl(const MeshAdjacency& adjacency, const int* label, const int* ghost_label,
                    const std::vector<std::uint64_t>& key, std::vector<std::uint64_t>& component,
-                   std::vector<std::uint64_t>& ghost_component) {
+                   std::vector<std::uint64_t>& ghost_component, const int* void_label) {
     const int ne = adjacency.NumElements();
     const int* offsets = adjacency.Offsets().HostRead();
     const int* neighbors = adjacency.Neighbors().HostRead();
 
+    // Elements carrying the void label (inactive under an element mask) join nothing: each stays
+    // a group of its own, so a face to them is a free surface
+    auto is_void = [&](int l) { return void_label != nullptr && l == *void_label; };
+
     // Pass 1: local groups of equally labeled, face-connected elements
     UnionFind groups(ne);
     for (int e = 0; e < ne; e++) {
+        if (is_void(label[e])) {
+            continue;
+        }
         for (int k = offsets[e]; k < offsets[e + 1]; k++) {
             const int n = neighbors[k];
             if (n < ne && label[n] == label[e]) {
@@ -258,7 +266,7 @@ int ComponentsImpl(const MeshAdjacency& adjacency, const int* label, const int* 
                 }
                 const int g = n - ne;
                 const std::size_t root = static_cast<std::size_t>(groups.Find(e));
-                if (ghost_label[g] == label[e] &&
+                if (!is_void(label[e]) && ghost_label[g] == label[e] &&
                     ghost_component[static_cast<std::size_t>(g)] < root_id[root]) {
                     root_id[root] = ghost_component[static_cast<std::size_t>(g)];
                     changed = true;
@@ -272,6 +280,9 @@ int ComponentsImpl(const MeshAdjacency& adjacency, const int* label, const int* 
     }
     return rounds;
 }
+
+/** Working label of inactive elements (element mask): grain labels start at 1. */
+constexpr int VOID_LABEL = 0;
 
 /** One fragment in the replicated fragment table. */
 struct Fragment {
@@ -290,7 +301,7 @@ struct CleanupState {
     const int* offsets = nullptr;
     const int* neighbors = nullptr;
     std::vector<std::uint64_t> key;    ///< size NE, element keys
-    mfem::Array<int> label;            ///< size NE, working labels 1..num_labels
+    mfem::Array<int> label;            ///< size NE, working labels 1..num_labels; 0 = inactive
     mfem::Array<int> ghost_label;      ///< size NG, refreshed by RefreshGhostLabels
     int num_labels = 0;                ///< working labels in use are 1..num_labels
     int num_input_grains = 0;
@@ -326,7 +337,9 @@ int NeighborLabel(const CleanupState& state, int n) {
 std::vector<std::int64_t> GlobalLabelCounts(const CleanupState& state) {
     std::vector<std::int64_t> local(static_cast<std::size_t>(state.num_labels), 0);
     for (int e = 0; e < state.ne; e++) {
-        local[static_cast<std::size_t>(state.label[e] - 1)] += 1;
+        if (state.label[e] != VOID_LABEL) {
+            local[static_cast<std::size_t>(state.label[e] - 1)] += 1;
+        }
     }
     std::vector<std::int64_t> global(local.size(), 0);
     MPI_Allreduce(local.data(), global.data(), state.num_labels, MPI_INT64_T, MPI_SUM,
@@ -356,6 +369,9 @@ std::vector<Fragment> FragmentTable(const CleanupState& state,
     std::vector<std::uint64_t> lo(num_labels, std::numeric_limits<std::uint64_t>::max());
     std::vector<std::uint64_t> hi(num_labels, 0);
     for (int e = 0; e < state.ne; e++) {
+        if (state.label[e] == VOID_LABEL) {
+            continue;
+        }
         const std::size_t l = static_cast<std::size_t>(state.label[e] - 1);
         lo[l] = std::min(lo[l], component[static_cast<std::size_t>(e)]);
         hi[l] = std::max(hi[l], component[static_cast<std::size_t>(e)]);
@@ -371,6 +387,9 @@ std::vector<Fragment> FragmentTable(const CleanupState& state,
     std::map<std::pair<int, std::uint64_t>, std::array<std::int64_t, 3>> local;
     for (int e = 0; e < state.ne; e++) {
         const int l = state.label[e];
+        if (l == VOID_LABEL) {
+            continue;
+        }
         const std::size_t li = static_cast<std::size_t>(l - 1);
         if (global_hi[li] == global_lo[li]) {
             continue; // one fragment (or no element): nothing to decide
@@ -554,8 +573,8 @@ GatherFaceCounts(const CleanupState& state, const std::vector<std::int64_t>& pie
         for (int k = state.offsets[e]; k < state.offsets[e + 1]; k++) {
             const int n = state.neighbors[k];
             const int nlabel = NeighborLabel(state, n);
-            if (nlabel == state.label[e]) {
-                continue; // same grain: not a boundary face of the piece
+            if (nlabel == state.label[e] || nlabel == VOID_LABEL) {
+                continue; // same grain, or an inactive element (a free surface): not counted
             }
             const int stable = moving_neighbor(n) ? 0 : 1;
             local[{piece, nlabel, stable}] += 1;
@@ -700,9 +719,10 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
     while (true) {
         // Step 1: fragments of the current labels
         RefreshGhostLabels(state);
+        const int void_label = VOID_LABEL;
         const int propagation_rounds =
-            ComponentsImpl(*state.adjacency, state.label.HostRead(),
-                           state.ghost_label.HostRead(), state.key, component, ghost_component);
+            ComponentsImpl(*state.adjacency, state.label.HostRead(), state.ghost_label.HostRead(),
+                           state.key, component, ghost_component, &void_label);
         report.max_propagation_rounds = std::max(report.max_propagation_rounds, propagation_rounds);
         std::vector<Fragment> table = FragmentTable(state, component);
         if (first_search && split_large) {
@@ -860,7 +880,8 @@ void SmallGrainPhase(CleanupState& state, const FragmentCleanupParameters& param
         RefreshGhostLabels(state);
         std::vector<std::int64_t> piece(static_cast<std::size_t>(state.ne), -1);
         for (int e = 0; e < state.ne; e++) {
-            if (candidate[static_cast<std::size_t>(state.label[e] - 1)] != 0) {
+            if (state.label[e] != VOID_LABEL &&
+                candidate[static_cast<std::size_t>(state.label[e] - 1)] != 0) {
                 piece[static_cast<std::size_t>(e)] = state.label[e];
             }
         }
@@ -947,16 +968,29 @@ int LabelComponents(const MeshAdjacency& adjacency,
                     const mfem::Array<int>& element_label,
                     const std::vector<std::uint64_t>& element_key,
                     std::vector<std::uint64_t>& component,
-                    std::vector<std::uint64_t>* ghost_component) {
+                    std::vector<std::uint64_t>* ghost_component,
+                    const ElementMask* mask) {
     const int ne = adjacency.NumElements();
-    const bool bad = element_label.Size() != ne || static_cast<int>(element_key.size()) != ne;
+    const bool bad = element_label.Size() != ne || static_cast<int>(element_key.size()) != ne ||
+                     (mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne);
     CheckAllRanks(bad, "LabelComponents: inputs must have one entry per local element",
                   adjacency.GetComm());
+    // With a mask, inactive elements carry the void label (also on their ghost copies, through
+    // the exchange) and join nothing
+    const bool masked = mask != nullptr && mask->active.Size() != 0;
+    const int void_label = std::numeric_limits<int>::min();
+    mfem::Array<int> labels;
+    if (masked) {
+        labels = element_label;
+        SetInactiveValues(mask, labels, void_label);
+    }
+    const mfem::Array<int>& used = masked ? labels : element_label;
     mfem::Array<int> ghost_label;
-    adjacency.ExchangeLabels(element_label, ghost_label);
+    adjacency.ExchangeLabels(used, ghost_label);
     std::vector<std::uint64_t> ghost;
-    const int rounds = ComponentsImpl(adjacency, element_label.HostRead(),
-                                      ghost_label.HostRead(), element_key, component, ghost);
+    const int rounds =
+        ComponentsImpl(adjacency, used.HostRead(), ghost_label.HostRead(), element_key, component,
+                       ghost, masked ? &void_label : nullptr);
     if (ghost_component != nullptr) {
         *ghost_component = std::move(ghost);
     }
@@ -969,18 +1003,20 @@ int LabelComponents(const MeshAdjacency& adjacency,
  * Steps:
  *  1. Validate the parameters (identical on every rank, so every rank throws together) and the
  *     grain ids (checked collectively).
- *  2. Working state: element keys (ElementKey), labels = input grain ids, per-label parent and
- *     source ids.
+ *  2. Working state: element keys (ElementKey), labels = input grain ids (VOID_LABEL = 0 for
+ *     inactive elements: they never join, count or receive anything, and a face to one is a
+ *     free surface), per-label parent and source ids.
  *  3. Fragment phase (policy), then small-grain phase (min_grain_elements).
  *  4. Compact renumbering: global element count per working label (MPI_Allreduce SUM); labels
  *     with elements, in increasing order, become 1..N'; elements, parents and source ids are
- *     mapped accordingly.
+ *     mapped accordingly. Inactive elements keep grain 0.
  */
 FragmentCleanupResult CleanupFragments(const MeshAdjacency& adjacency,
                                        const mfem::Array<int>& element_grain,
                                        int num_grains,
                                        const std::vector<std::int64_t>& grain_source_id,
-                                       const FragmentCleanupParameters& params) {
+                                       const FragmentCleanupParameters& params,
+                                       const ElementMask* mask) {
     const MPI_Comm comm = adjacency.GetComm();
     const int ne = adjacency.NumElements();
 
@@ -1009,11 +1045,12 @@ FragmentCleanupResult CleanupFragments(const MeshAdjacency& adjacency,
     if (!(params.min_fragment_fraction >= 0.0 && params.min_fragment_fraction <= 1.0)) {
         throw std::invalid_argument("CleanupFragments: min_fragment_fraction must be in [0, 1]");
     }
-    bool bad_ids = element_grain.Size() != ne;
+    bool bad_ids = element_grain.Size() != ne ||
+                   (mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne);
     if (!bad_ids) {
         const int* grain = element_grain.HostRead();
         for (int e = 0; e < ne; e++) {
-            if (grain[e] < 1 || grain[e] > num_grains) {
+            if (ElementIsActive(mask, e) && (grain[e] < 1 || grain[e] > num_grains)) {
                 bad_ids = true;
                 break;
             }
@@ -1036,7 +1073,7 @@ FragmentCleanupResult CleanupFragments(const MeshAdjacency& adjacency,
     {
         const int* grain = element_grain.HostRead();
         for (int e = 0; e < ne; e++) {
-            state.label[e] = grain[e];
+            state.label[e] = ElementIsActive(mask, e) ? grain[e] : VOID_LABEL;
         }
     }
     state.num_labels = num_grains;

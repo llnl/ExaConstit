@@ -1,10 +1,12 @@
 #include "microstructure/mesh/straight_sided.hpp"
 
 #include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <stdexcept>
 
 namespace exaconstit::microstructure {
 
@@ -154,7 +156,7 @@ void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates&
 /*
  * StraightSidedLocal
  *
- * Steps (rules in the header):
+ * Steps (rules in the header; with a mask, "element" means active element throughout):
  *  1. No Nodes -> true; discontinuous Nodes -> false.
  *  2. Continuous Nodes of order 1 in every local element -> true (nothing to test).
  *  3. Otherwise, per element: the corner points (ElementCornerPoints) and the element's nodal
@@ -164,7 +166,11 @@ void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates&
  *     for meshes without Nodes) and compare with the nodal point, component by component. The
  *     first point outside the tolerance makes the answer false.
  */
-bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol) {
+bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask, double rel_tol) {
+    if (mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != mesh.GetNE()) {
+        throw std::invalid_argument("StraightSidedLocal: the element mask needs one entry per "
+                                    "local element");
+    }
     // Step 1
     if (mesh.GetNodes() == nullptr) {
         return true;
@@ -180,7 +186,7 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol) {
     bool all_order_one = true;
     if (fes->IsVariableOrder()) {
         for (int e = 0; e < ne && all_order_one; ++e) {
-            all_order_one = (fes->GetElementOrder(e) == 1);
+            all_order_one = !ElementIsActive(mask, e) || fes->GetElementOrder(e) == 1;
         }
     } else {
         all_order_one = (fes->FEColl()->GetOrder() == 1);
@@ -196,6 +202,9 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol) {
     mfem::Vector shape;
     mfem::Array<int> vdofs;
     for (int e = 0; e < ne; ++e) {
+        if (!ElementIsActive(mask, e)) {
+            continue;
+        }
         ElementCornerPoints(mesh, e, corners);
         const int num_corners = corners.Width();
 
@@ -241,11 +250,18 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, double rel_tol) {
 }
 
 /*
- * IsStraightSided: StraightSidedLocal, then MPI_Allreduce(MIN) over 0/1 so that one curved
- * element anywhere makes every rank answer false.
+ * IsStraightSided: the mask size check reduced over the ranks, StraightSidedLocal, then
+ * MPI_Allreduce(MIN) over 0/1 so that one curved (active) element anywhere makes every rank
+ * answer false.
  */
-bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, double rel_tol) {
-    const int local = StraightSidedLocal(mesh, rel_tol) ? 1 : 0;
+bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, const ElementMask* mask,
+                     double rel_tol) {
+    const bool bad_mask =
+        mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != mesh.GetNE();
+    ThrowIfAnyRank<std::invalid_argument>(comm, bad_mask,
+                                          "IsStraightSided: the element mask needs one entry "
+                                          "per local element");
+    const int local = StraightSidedLocal(mesh, mask, rel_tol) ? 1 : 0;
     int global = 0;
     MPI_Allreduce(&local, &global, 1, MPI_INT, MPI_MIN, comm);
     return global == 1;

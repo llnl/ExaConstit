@@ -134,11 +134,11 @@
  * exchanges and source placement run on the host.
  *
  * **Scope (Stage 1e).** Voronoi (a_i = 0) and Additive (distance - a_i) metrics only; no periodic
- * axes; the caller passes the active material mesh (AttributeDomain::ActiveMesh) so paths stay
- * inside it. A body of the mesh with no seed keeps T = +infinity and label -1, and its elements get
- * element_seed = -1 (the driver decides what to do with them). Elements must have at most 8
- * vertices (all linear 3D MFEM elements); the nodal field for curved meshes needs all hexes or
- * all tets.
+ * axes; passthrough parts are excluded with an element mask (GeodesicParameters::context), so paths
+ * stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
+ * -1, and its elements get element_seed = -1 (the driver decides what to do with them). Elements
+ * must have at most 8 vertices (all linear 3D MFEM elements); the nodal field for curved meshes
+ * needs all hexes or all tets.
  */
 
 namespace exaconstit::microstructure {

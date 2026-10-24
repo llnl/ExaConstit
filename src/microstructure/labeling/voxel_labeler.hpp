@@ -1,6 +1,7 @@
 #pragma once
 
 #include "microstructure/io/voxel_map_io.hpp"
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/microstructure_types.hpp"
 
 #include "mfem.hpp"
@@ -137,6 +138,10 @@ struct VoxelLabels {
  * @param map    voxel map parameters (file, format, transforms).
  * @param grid   ReadVoxelGridInfo(map, comm) (identical on every rank).
  * @param params sampling mode, vote parameters and tile size.
+ * @param mask   optional active elements (mesh/element_mask.hpp): inactive elements get the
+ *               placeholder feature -1, do not count as outside the grid or unassigned, and never
+ *               pass a feature to a neighbor in the fill (so the fill does not cross them).
+ *               nullptr = every element.
  * @return per-element feature ids and fill statistics.
  * @throws std::invalid_argument on every rank for bad parameters (sampling mode, vote_levels,
  *         max_points_per_chunk, tile_size, a grid with non-positive dims or spacing);
@@ -149,7 +154,8 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
                                     MPI_Comm comm,
                                     const VoxelMapParameters& map,
                                     const VoxelGridInfo& grid,
-                                    const VoxelLabelParameters& params);
+                                    const VoxelLabelParameters& params,
+                                    const ElementMask* mask = nullptr);
 
 /**
  * @brief Renumbers feature ids as compact grain ids 1..N in ascending feature id, over the ids
@@ -170,11 +176,13 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
  *                        mfem::Device runs kernels; HostRead() for the host).
  * @param grain_feature   size N on every rank: grain_feature[g - 1] = feature id of grain g
  *                        (strictly increasing).
+ * @param mask            optional active elements: inactive ones are not read and get grain 0.
  * @throws std::invalid_argument on every rank if any rank has a feature id < 1.
  */
 void CompactFeatureLabels(MPI_Comm comm,
                           const mfem::Array<int>& element_feature,
                           mfem::Array<int>& element_grain,
-                          std::vector<std::int64_t>& grain_feature);
+                          std::vector<std::int64_t>& grain_feature,
+                          const ElementMask* mask = nullptr);
 
 } // namespace exaconstit::microstructure

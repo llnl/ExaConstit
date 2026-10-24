@@ -361,9 +361,9 @@ struct PlateResult {
 
 /**
  * The full pipeline on the active part: AttributeDomain (active {1}, passthrough {2}, or
- * {3, 2} for a mesh with a grip, listed unsorted on purpose), GenerateSeeds and
- * LabelTessellation on ActiveMesh(), MeshAdjacency and CleanupFragments on the sub-mesh,
- * ToParent, gathered into serial order on every rank. Collective over comm.
+ * {3, 2} for a mesh with a grip, listed unsorted on purpose) builds the element mask, and
+ * GenerateSeeds, LabelTessellation, MeshAdjacency and CleanupFragments run on the whole mesh with
+ * that mask, then ToParent, gathered into serial order on every rank. Collective over comm.
  */
 PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
                      bool grip = false) {
@@ -372,26 +372,27 @@ PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
                                              ? std::vector<int>{GRIP_ATTRIBUTE, PLATE_ATTRIBUTE}
                                              : std::vector<int>{PLATE_ATTRIBUTE};
     ms::AttributeDomain domain(*d.pmesh, {PART_ATTRIBUTE}, passthrough);
-    EXPECT_TRUE(domain.UsesSubMesh());
+    const ms::ElementMask* mask = domain.Mask();
+    EXPECT_NE(mask, nullptr);
     // Passthrough attributes sorted ascending: plate (2) first, then grip (3)
     EXPECT_EQ(domain.PassthroughElementCounts(),
               grip ? (std::vector<std::int64_t>{72, 36}) : (std::vector<std::int64_t>{72}));
     EXPECT_EQ(domain.GlobalActiveElements(), grip ? 180 : 216);
-    mfem::ParMesh& active = domain.ActiveMesh();
 
-    // In the skewed partition the last rank (with >= 2 ranks) owns plate elements only, so its
-    // part of the sub-mesh is empty: the rest of the pipeline must still work there
+    // The mask marks exactly the elements of attribute 1. In the skewed partition the last rank
+    // (with >= 2 ranks) owns plate elements only, so it has no active element: the rest of the
+    // pipeline must still work there
     int rank = 0;
     int nranks = 1;
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &nranks);
-    if (plate_on_last_rank && nranks > 1 && rank == nranks - 1) {
-        EXPECT_EQ(active.GetNE(), 0);
+    int num_active = 0;
+    for (int e = 0; e < d.pmesh->GetNE(); e++) {
+        EXPECT_EQ(ms::ElementIsActive(mask, e), d.pmesh->GetAttribute(e) == PART_ATTRIBUTE);
+        num_active += ms::ElementIsActive(mask, e) ? 1 : 0;
     }
-
-    // The sub-mesh keeps the parent attributes: every active element still has attribute 1
-    for (int e = 0; e < active.GetNE(); e++) {
-        EXPECT_EQ(active.GetAttribute(e), PART_ATTRIBUTE);
+    if (plate_on_last_rank && nranks > 1 && rank == nranks - 1) {
+        EXPECT_EQ(num_active, 0);
     }
 
     // Seeds inside the active material only: z >= 2 (the top of the plate), and z <= 7 (the
@@ -399,7 +400,9 @@ PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
     ms::SeedingParameters seeding;
     seeding.num_seeds = 20;
     seeding.rng_seed = 31415;
-    const ms::SeedSet seeds = ms::GenerateSeeds(active, seeding);
+    ms::MaterialContext context;
+    context.mask = mask;
+    const ms::SeedSet seeds = ms::GenerateSeeds(*d.pmesh, seeding, nullptr, &context);
     PlateResult out;
     for (std::size_t i = 0; i < seeds.Size(); i++) {
         const double z_max = grip ? 7.0 : 8.0;
@@ -407,17 +410,17 @@ PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
             out.all_seeds_above_plate && (seeds.z[i] >= 2.0) && (seeds.z[i] <= z_max);
     }
 
-    // Labeling, then adjacency and fragment cleanup on the sub-mesh
+    // Labeling, then adjacency and fragment cleanup with the mask
     const ms::TessellationOptions tessellation;
     const ms::TessellationLabels labels =
-        ms::LabelTessellation(active, active.GetComm(), seeds, tessellation);
-    const ms::MeshAdjacency adjacency(active);
+        ms::LabelTessellation(*d.pmesh, comm, seeds, tessellation, mask);
+    const ms::MeshAdjacency adjacency(*d.pmesh);
     ms::FragmentCleanupParameters cleanup;
     cleanup.min_grain_elements = 2;
-    const ms::FragmentCleanupResult cleaned =
-        ms::CleanupFragments(adjacency, labels.element_grain, labels.num_grains, {}, cleanup);
+    const ms::FragmentCleanupResult cleaned = ms::CleanupFragments(
+        adjacency, labels.element_grain, labels.num_grains, {}, cleanup, mask);
 
-    // Back to the parent and into serial order
+    // Back to the parent numbering (passthrough ids) and into serial order
     const mfem::Array<int> parent = domain.ToParent(cleaned.element_grain, cleaned.num_grains);
     out.parent_grain = ms::GatherToSerial(comm, d.order, parent, 0);
     out.parent_grain.resize(static_cast<std::size_t>(serial.GetNE()));
@@ -486,79 +489,73 @@ TEST(AttributeDomain, PlateAndGrip) {
 }
 
 /*
- * Shared faces and face-neighbor data on the sub-mesh: the active 6 x 6 x 6 block has
- * 3 * 6 * 6 * 5 = 540 interior faces of area 1. MeshAdjacency lists every interior face twice
- * over all ranks (once from each side, whether local or shared), so the global entry count is
- * 1080 and the global face-area sum 1080, for every partition (including a rank without active
- * elements).
+ * Curved passthrough with a basis that is not Gauss-Lobatto (the case the earlier ParSubMesh copy
+ * distorted: it rebuilt the sub-mesh Nodes as Gauss-Lobatto and copied the values index by index).
+ * The parent gets order-3 Nodes in a closed-uniform H1 basis, bent smoothly
+ * (x += 0.05 sin(z), y += 0.03 sin(x z)), and the mask works on the parent itself: the material
+ * volume the seed generator measures equals the volume of the active elements integrated
+ * directly on the parent (to round-off), every seed lies above the plate (z >= 2 up to the bend,
+ * which leaves z unchanged), and the labels are complete (every active element has a grain,
+ * plate elements get N + 1).
  */
-TEST(AttributeDomain, SubMeshAdjacency) {
-    mfem::Mesh serial = PlateBox();
-    for (const bool skewed : {false, true}) {
-        Distributed d = Distribute(serial, MPI_COMM_WORLD, skewed);
-        ms::AttributeDomain domain(*d.pmesh, {PART_ATTRIBUTE}, {PLATE_ATTRIBUTE});
-        const ms::MeshAdjacency adjacency(domain.ActiveMesh());
-        long long entries = adjacency.Neighbors().Size();
-        double area = 0.0;
-        const double* a = adjacency.FaceAreas().HostRead();
-        for (int k = 0; k < adjacency.FaceAreas().Size(); k++) {
-            area += a[k];
-        }
-        long long global_entries = 0;
-        double global_area = 0.0;
-        MPI_Allreduce(&entries, &global_entries, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(&area, &global_area, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        EXPECT_EQ(global_entries, 1080);
-        EXPECT_NEAR(global_area, 1080.0, 1.0e-9);
-    }
-}
-
-/*
- * Curved meshes: after SetCurvature(2) on the parent and a smooth bending of its nodes
- * (x += 0.05 sin(z), so the geometry is no longer given by the vertices), the sub-mesh has
- * second-order Nodes too, and every sub-mesh element maps reference points to exactly the same
- * physical points as its parent element (ActiveToParentElement): the curved geometry was
- * transferred, not rebuilt from the vertices.
- */
-TEST(AttributeDomain, KeepsCurvedNodes) {
+TEST(AttributeDomain, CurvedNonGaussLobattoPassthrough) {
     mfem::Mesh serial = PlateBox();
     Distributed d = Distribute(serial, MPI_COMM_WORLD, false);
-    d.pmesh->SetCurvature(2);
-    mfem::GridFunction* parent_nodes = d.pmesh->GetNodes();
+    mfem::H1_FECollection fec(3, 3, mfem::BasisType::ClosedUniform);
+    mfem::ParFiniteElementSpace fes(d.pmesh.get(), &fec, 3);
+    d.pmesh->SetNodalFESpace(&fes);
+    mfem::GridFunction* nodes = d.pmesh->GetNodes();
     {
-        // Bend the parent: node (x, y, z) -> (x + 0.05 sin(z), y, z). Nodes are stored by the
-        // FE space's DofToVDof(i, component) map.
-        const mfem::FiniteElementSpace* fes = parent_nodes->FESpace();
-        for (int i = 0; i < fes->GetNDofs(); i++) {
-            const double z = (*parent_nodes)(fes->DofToVDof(i, 2));
-            (*parent_nodes)(fes->DofToVDof(i, 0)) += 0.05 * std::sin(z);
+        const mfem::FiniteElementSpace* nfes = nodes->FESpace();
+        for (int i = 0; i < nfes->GetNDofs(); i++) {
+            const double x = (*nodes)(nfes->DofToVDof(i, 0));
+            const double z = (*nodes)(nfes->DofToVDof(i, 2));
+            (*nodes)(nfes->DofToVDof(i, 0)) += 0.05 * std::sin(z);
+            (*nodes)(nfes->DofToVDof(i, 1)) += 0.03 * std::sin(x * z);
         }
     }
+    EXPECT_STREQ(d.pmesh->GetNodes()->FESpace()->FEColl()->Name(), fec.Name());
+
     ms::AttributeDomain domain(*d.pmesh, {PART_ATTRIBUTE}, {PLATE_ATTRIBUTE});
-    mfem::ParMesh& active = domain.ActiveMesh();
-    const mfem::GridFunction* nodes = active.GetNodes();
-    EXPECT_NE(nodes, nullptr);
-    if (nodes != nullptr) {
-        EXPECT_EQ(nodes->FESpace()->GetMaxElementOrder(), 2);
-        // Compare physical points of a few reference points in every element pair
-        const double ref_points[3][3] = {{0.5, 0.5, 0.5}, {0.1, 0.7, 0.3}, {0.9, 0.2, 0.95}};
-        const mfem::Array<int>& to_parent = domain.ActiveToParentElement();
-        double max_diff = 0.0;
-        for (int i = 0; i < active.GetNE(); i++) {
-            mfem::Vector x_sub(3);
-            mfem::Vector x_par(3);
-            for (const auto& p : ref_points) {
-                mfem::IntegrationPoint ip;
-                ip.Set3(p[0], p[1], p[2]);
-                active.GetElementTransformation(i)->Transform(ip, x_sub);
-                d.pmesh->GetElementTransformation(to_parent[i])->Transform(ip, x_par);
-                for (int k = 0; k < 3; k++) {
-                    max_diff = std::max(max_diff, std::fabs(x_sub(k) - x_par(k)));
-                }
-                EXPECT_GE(x_sub(2), 2.0 - 1.0e-12);
-            }
+    ms::MaterialContext context;
+    context.mask = domain.Mask();
+
+    // Volume of the active elements on the parent (plain sum over quadrature points)
+    double active_volume = 0.0;
+    for (int e = 0; e < d.pmesh->GetNE(); e++) {
+        if (!ms::ElementIsActive(context.mask, e)) {
+            continue;
         }
-        EXPECT_LE(max_diff, 1.0e-13);
+        mfem::ElementTransformation* trans = d.pmesh->GetElementTransformation(e);
+        const mfem::IntegrationRule& ir = mfem::IntRules.Get(d.pmesh->GetElementGeometry(e), 12);
+        for (int q = 0; q < ir.GetNPoints(); q++) {
+            trans->SetIntPoint(&ir.IntPoint(q));
+            active_volume += ir.IntPoint(q).weight * trans->Weight();
+        }
+    }
+    double global_volume = 0.0;
+    MPI_Allreduce(&active_volume, &global_volume, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    ms::SeedingParameters seeding;
+    seeding.num_seeds = 15;
+    seeding.rng_seed = 8;
+    ms::SeedingReport report;
+    const ms::SeedSet seeds = ms::GenerateSeeds(*d.pmesh, seeding, &report, &context);
+    EXPECT_NEAR(report.material_volume, global_volume, 1.0e-10 * global_volume);
+    for (const double z : seeds.z) {
+        EXPECT_GE(z, 2.0);
+    }
+    const ms::TessellationLabels labels =
+        ms::LabelTessellation(*d.pmesh, MPI_COMM_WORLD, seeds, ms::TessellationOptions{},
+                              context.mask);
+    const mfem::Array<int> parent = domain.ToParent(labels.element_grain, labels.num_grains);
+    for (int e = 0; e < d.pmesh->GetNE(); e++) {
+        if (d.pmesh->GetAttribute(e) == PLATE_ATTRIBUTE) {
+            EXPECT_EQ(parent[e], labels.num_grains + 1);
+        } else {
+            EXPECT_GE(parent[e], 1);
+            EXPECT_LE(parent[e], labels.num_grains);
+        }
     }
 }
 
@@ -578,17 +575,16 @@ TEST(AttributeDomain, InvalidClassificationThrows) {
 }
 
 /*
- * All active (empty lists, or both attributes listed active): no sub-mesh, ActiveMesh is the
- * parent, and ToParent returns the labels unchanged. An empty active list with passthrough {2}
- * means "every other attribute", i.e. {1}.
+ * All active (empty lists, or both attributes listed active): no mask, and ToParent returns the
+ * labels unchanged. An empty active list with passthrough {2} means "every other attribute",
+ * i.e. {1}.
  */
-TEST(AttributeDomain, AllActiveUsesParent) {
+TEST(AttributeDomain, AllActiveHasNoMask) {
     mfem::Mesh serial = PlateBox();
     Distributed d = Distribute(serial, MPI_COMM_WORLD, false);
     for (const std::vector<int>& active : {std::vector<int>{}, std::vector<int>{1, 2}}) {
         ms::AttributeDomain domain(*d.pmesh, active, {});
-        EXPECT_FALSE(domain.UsesSubMesh());
-        EXPECT_EQ(&domain.ActiveMesh(), d.pmesh.get());
+        EXPECT_EQ(domain.Mask(), nullptr);
         mfem::Array<int> grain(d.pmesh->GetNE());
         for (int e = 0; e < grain.Size(); e++) {
             grain[e] = 1 + (e % 3);
@@ -600,23 +596,28 @@ TEST(AttributeDomain, AllActiveUsesParent) {
         }
     }
     ms::AttributeDomain implicit(*d.pmesh, {}, {PLATE_ATTRIBUTE});
-    EXPECT_TRUE(implicit.UsesSubMesh());
+    EXPECT_NE(implicit.Mask(), nullptr);
     EXPECT_EQ(implicit.ActiveAttributes(), (std::vector<int>{PART_ATTRIBUTE}));
 }
 
-/* ToParent rejects a grain id outside [1, num_grains] on every rank. */
+/* ToParent rejects an active element's grain id outside [1, num_grains] on every rank. */
 TEST(AttributeDomain, ToParentRejectsBadGrains) {
     mfem::Mesh serial = PlateBox();
     Distributed d = Distribute(serial, MPI_COMM_WORLD, false);
     ms::AttributeDomain domain(*d.pmesh, {PART_ATTRIBUTE}, {PLATE_ATTRIBUTE});
-    mfem::Array<int> grain(domain.ActiveMesh().GetNE());
+    mfem::Array<int> grain(d.pmesh->GetNE());
     grain = 1;
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    if (rank == 0 && grain.Size() > 0) {
-        grain[0] = 5;
+    // A bad id on rank 0's first active element (inactive entries are not read)
+    int first_active = -1;
+    for (int e = 0; e < grain.Size() && first_active < 0; e++) {
+        first_active = ms::ElementIsActive(domain.Mask(), e) ? e : -1;
     }
-    int any = grain.Size() > 0 && rank == 0 ? 1 : 0;
+    if (rank == 0 && first_active >= 0) {
+        grain[first_active] = 5;
+    }
+    int any = (rank == 0 && first_active >= 0) ? 1 : 0;
     int global_any = 0;
     MPI_Allreduce(&any, &global_any, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     if (global_any) {

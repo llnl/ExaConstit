@@ -305,6 +305,9 @@ double CompletionTimeBound(const MaterialPointLocator& locator, const NucleusGri
                            double speed, MPI_Comm comm) {
     double local_max = -std::numeric_limits<double>::infinity();
     for (int e = 0; e < locator.NumElements(); e++) {
+        if (!locator.ElementActive(e)) {
+            continue; // masked out: no material to transform
+        }
         const auto& box = locator.ElementBox(e);
         std::array<double, 3> center;
         double half_diag_sq = 0.0;
@@ -422,7 +425,8 @@ double JohnsonMehlGrainDensity(double nucleation_rate, double growth_speed) {
  *     call together.
  */
 SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
-                                 const JohnsonMehlParameters& params, JohnsonMehlReport* report) {
+                                 const JohnsonMehlParameters& params, JohnsonMehlReport* report,
+                                 const MaterialContext* context) {
     // ---- Step 1: parameters ----
     ValidateJohnsonMehlParameters(params);
     JohnsonMehlReport local_report;
@@ -435,21 +439,28 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
         (params.max_candidates > 0) ? params.max_candidates : DEFAULT_MAX_CANDIDATES;
 
     // ---- Step 2: local setup (may fail on some ranks only) ----
-    // Straight-sided or curved is decided over all ranks (collective), so every rank builds the
-    // same kind of element boxes and the mesh box below does not depend on the partition
-    const bool straight_sided = IsStraightSided(local_mesh, comm);
+    // Straight-sided or curved (active elements) is decided over all ranks (collective), so
+    // every rank builds the same kind of element boxes and the mesh box below does not depend on
+    // the partition; a shared locator carries its own decision
+    const bool shared_locator = context != nullptr && context->locator != nullptr;
+    const bool straight_sided = shared_locator
+                                    ? context->locator->StraightSided()
+                                    : IsStraightSided(local_mesh, comm, ContextMask(context));
     std::unique_ptr<MaterialPointLocator> locator_ptr;
     std::string setup_error;
     try {
-        locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided);
+        if (!shared_locator) {
+            locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided,
+                                                                 ContextMask(context));
+        }
     } catch (const std::exception& error) {
         setup_error = std::string("GenerateJohnsonMehlSeeds: mesh setup failed: ") + error.what();
     }
     ThrowIfAnyRankFailed(comm, setup_error, false);
-    const MaterialPointLocator& locator = *locator_ptr;
+    const MaterialPointLocator& locator = shared_locator ? *context->locator : *locator_ptr;
 
-    // ---- Step 3: global element count and mesh box (union of the element boxes) ----
-    std::int64_t local_elements = locator.NumElements();
+    // ---- Step 3: global element count and mesh box (union of the active element boxes) ----
+    std::int64_t local_elements = locator.NumActiveElements();
     std::int64_t global_elements = 0;
     MPI_Allreduce(&local_elements, &global_elements, 1, MPI_INT64_T, MPI_SUM, comm);
     if (global_elements == 0) {
@@ -463,7 +474,7 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
         for (int d = 0; d < 3; d++) {
             lo[d] = std::numeric_limits<double>::infinity();
             hi[d] = -std::numeric_limits<double>::infinity();
-            if (locator.NumElements() > 0) {
+            if (locator.NumActiveElements() > 0) {
                 lo[d] = locator.LocalBounds().getMin()[d];
                 hi[d] = locator.LocalBounds().getMax()[d];
             }
@@ -661,9 +672,9 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
  * mesh is distributed over.
  */
 SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh, const JohnsonMehlParameters& params,
-                                 JohnsonMehlReport* report) {
+                                 JohnsonMehlReport* report, const MaterialContext* context) {
     return GenerateJohnsonMehlSeeds(static_cast<const mfem::Mesh&>(pmesh), pmesh.GetComm(),
-                                    params, report);
+                                    params, report, context);
 }
 
 } // namespace exaconstit::microstructure

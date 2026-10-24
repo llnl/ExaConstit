@@ -44,6 +44,14 @@ struct GeodesicParameters {
      * curved meshes; CORNERS / MESH_NODES force one of the two.
      */
     FieldNodes field_nodes = FieldNodes::AUTO;
+    /**
+     * @brief Optional active-element mask and shared locator (MaterialContext,
+     * seeding/material_point_locator.hpp; not owned, must outlive the call). Paths run through
+     * active elements only (a face to an inactive element is a free surface), seeds are located
+     * in active elements, and inactive elements get element_seed = -1 without counting as
+     * unreached. nullptr = every element.
+     */
+    const MaterialContext* context = nullptr;
 };
 
 /**

@@ -1224,7 +1224,9 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.mesh.active_attributes = {1, 2};
         o.mesh.passthrough_attributes = {{2, 2}};
     }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+    // A boundary clearance with passthrough parts is fine: it ignores the bonded interface
+    // (seeding/boundary_clearance.hpp); periodic axes stay refused
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.mesh.passthrough_attributes = {{2, 2}};
         o.seeds.boundary_clearance = 0.1;
     }));

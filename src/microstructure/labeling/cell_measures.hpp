@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/util/fixed_point.hpp"
 
 #include "mfem.hpp"
@@ -78,14 +79,18 @@ struct WeightedSamples {
  * @brief One sample per local element: its volume centroid, weighted by its volume
  * (ComputeElementSamples, mesh/mesh_sampler.hpp, with the exact default quadrature order).
  *
- * Sample q is local element q, so labels of these samples are element labels. Not collective.
- * Host function launching mfem::forall kernels.
+ * Sample q is local element q, so labels of these samples are element labels. With an element
+ * mask, sample q is the q-th *active* local element (in increasing element order) and inactive
+ * elements have no sample. Not collective. Host function launching mfem::forall kernels.
  *
  * @param mesh this rank's 3D mesh (a ParMesh binds here). Not modified.
- * @param out  overwritten; size = local element count.
- * @throws std::runtime_error from the element sampler for a mixed-geometry or non-3D mesh.
+ * @param out  overwritten; size = local (active) element count.
+ * @param mask optional active elements (mesh/element_mask.hpp); nullptr = every element.
+ * @throws std::runtime_error from the element sampler for a mixed-geometry or non-3D mesh;
+ *         std::invalid_argument for a mask of the wrong size.
  */
-void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out);
+void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out,
+                                const ElementMask* mask = nullptr);
 
 /**
  * @brief Highest tetrahedron quadrature order whose MFEM v4.10 rule has only positive weights
@@ -112,7 +117,9 @@ inline constexpr int MAX_POSITIVE_TET_QUAD_ORDER = 20;
  * @param quad_order order of mfem::IntRules.Get(geometry, order); a negative value selects
  *                   DefaultSampleQuadOrder (exact volumes and centroids). Higher orders give more,
  *                   smaller samples (a smoother volume response for weight fitting).
- * @param out        overwritten; size = local element count x points per element.
+ * @param out        overwritten; size = local element count x points per element, or only the
+ *                   points of active elements (in element order) with a mask.
+ * @param mask       optional active elements; nullptr = every element.
  * @throws std::runtime_error (on every rank for a ParMesh) if the element geometry's rule of the
  *         resolved order has a non-positive weight, i.e. a sample of negative volume. With MFEM
  *         v4.10 (ExaConstit's required version) hexahedron rules are always positive and
@@ -121,7 +128,8 @@ inline constexpr int MAX_POSITIVE_TET_QUAD_ORDER = 20;
  *         order 4p - 1 for node order p >= 6). Also from the sampler for a mixed-geometry or
  *         non-3D mesh.
  */
-void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out);
+void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out,
+                                   const ElementMask* mask = nullptr);
 
 /**
  * @brief Measures of every seed's cell. Host data, identical on every rank.
