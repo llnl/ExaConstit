@@ -37,7 +37,8 @@
  * **Label sets.** The label set of node v is the union of the labels of all elements that contain
  * v, over all ranks: each rank collects the labels of its own elements, the copies of every
  * shared node are exchanged (VertexField::ExchangeSharedLists) and each copy keeps the sorted
- * union of all copies. A union of sets does not depend on the order in which they arrive, so all
+ * union of all copies, with the number of elements of each label (summed over the copies). A
+ * union of sets and a sum of counts do not depend on the order in which they arrive, so all
  * copies end up identical and the result does not depend on the rank count or the partition.
  * There is no fixed limit on the size of a set.
  *
@@ -138,6 +139,13 @@ public:
     NodeLabels(const NodeLabels&) = delete;
     NodeLabels& operator=(const NodeLabels&) = delete;
 
+    /**
+     * @brief Recomputes the label sets and the summary for new element labels on the same mesh
+     * (label repair, label_repair.hpp). The node numbering and the boundary surfaces are kept.
+     * **Collective**. Same requirements and errors as the constructor's element_label.
+     */
+    void SetElementLabels(const mfem::Array<int>& element_label);
+
     /** @brief Node numbering, coordinates, owned / shared markers and the rank exchange. */
     const VertexField& Field() const {
         return *m_field;
@@ -155,6 +163,13 @@ public:
      * [LabelOffsets()[v], LabelOffsets()[v + 1]). */
     const mfem::Array<int>& Labels() const {
         return m_labels;
+    }
+    /**
+     * @brief Per entry of Labels(): how many elements (over all ranks) that contain the node have
+     * that label. Label repair uses it to see whether a flip removes a label from a node.
+     */
+    const mfem::Array<int>& LabelCounts() const {
+        return m_label_counts;
     }
     /** @brief Number of distinct labels at node v (>= 1). */
     int NumLabels(int v) const {
@@ -215,6 +230,7 @@ private:
     std::unique_ptr<VertexField> m_field;
     mfem::Array<int> m_label_offsets;
     mfem::Array<int> m_labels;
+    mfem::Array<int> m_label_counts;
     mfem::Array<int> m_boundary_surfaces;
     mfem::Array<int> m_surface_offsets;
     mfem::Vector m_surface_normals;

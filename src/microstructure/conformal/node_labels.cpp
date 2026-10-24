@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <numeric>
+#include <utility>
 #include <stdexcept>
 #include <vector>
 
@@ -121,8 +122,10 @@ void AddDistinctNormal(std::vector<double>& list, const double n[3]) {
  * Constructor: input checks (collective, before the collective VertexField constructor), the
  * node numbering, then label sets, boundary surfaces and the summary.
  */
-NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_label,
-                       const NodeLabelOptions& options) {
+namespace {
+
+/** @brief Collective check of the element labels: one per local element, all >= 1. */
+void CheckElementLabels(const mfem::ParMesh& pmesh, const mfem::Array<int>& element_label) {
     const MPI_Comm comm = pmesh.GetComm();
     ThrowIfAnyRank(comm, element_label.Size() != pmesh.GetNE(),
                    "NodeLabels: element_label needs one entry per local element");
@@ -131,6 +134,14 @@ NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_lab
         bad_label = bad_label || element_label[e] < 1;
     }
     ThrowIfAnyRank(comm, bad_label, "NodeLabels: element labels must be >= 1");
+}
+
+} // namespace
+
+NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_label,
+                       const NodeLabelOptions& options) {
+    const MPI_Comm comm = pmesh.GetComm();
+    CheckElementLabels(pmesh, element_label);
     const double angle = options.feature_angle_degrees;
     ThrowIfAnyRank(comm, !(angle > 0.0 && angle < 90.0),
                    "NodeLabels: feature_angle_degrees must be in (0, 90)");
@@ -143,6 +154,16 @@ NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_lab
 
 NodeLabels::~NodeLabels() = default;
 
+/*
+ * SetElementLabels: the boundary surfaces do not depend on the labels, so only the label sets and
+ * the summary are rebuilt.
+ */
+void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
+    CheckElementLabels(m_field->Mesh(), element_label);
+    BuildLabelSets(element_label);
+    BuildSummary();
+}
+
 JunctionKind NodeLabels::Kind(int v) const {
     const int n = NumLabels(v);
     return static_cast<JunctionKind>(std::min(n, NUM_JUNCTION_KINDS) - 1);
@@ -150,10 +171,11 @@ JunctionKind NodeLabels::Kind(int v) const {
 
 /*
  * BuildLabelSets
- *  1. Local sets: the labels of the elements in the node -> element table (complete: the field
- *     has no element mask), sorted and made distinct.
- *  2. The sets go to the other copies (VertexField::ExchangeSharedLists).
- *  3. Each copy merges its own and the received sets (sorted union) into the CSR arrays.
+ *  1. Local counts: per node, (label, number of local elements with that label) over the node ->
+ *     element table (complete: the field has no element mask), sorted by label.
+ *  2. The (label, count) pairs go to the other copies (VertexField::ExchangeSharedLists).
+ *  3. Each copy adds its own and the received counts per label (a sum of integers does not
+ *     depend on the order) into the CSR arrays.
  */
 void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     const VertexField& field = *m_field;
@@ -163,17 +185,26 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     const int* labels = element_label.HostRead();
 
     // Step 1
-    std::vector<std::vector<int>> sets(static_cast<std::size_t>(nv));
+    std::vector<std::vector<std::pair<int, int>>> counts(static_cast<std::size_t>(nv));
+    const auto add = [](std::vector<std::pair<int, int>>& list, int label, int count) {
+        auto it = std::lower_bound(list.begin(), list.end(), std::make_pair(label, 0));
+        if (it != list.end() && it->first == label) {
+            it->second += count;
+        } else {
+            list.insert(it, {label, count});
+        }
+    };
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
     std::vector<double> send;
     for (int v = 0; v < nv; ++v) {
-        auto& set = sets[static_cast<std::size_t>(v)];
+        auto& list = counts[static_cast<std::size_t>(v)];
         for (int k = ve_off[v]; k < ve_off[v + 1]; ++k) {
-            set.push_back(labels[ve[k]]);
+            add(list, labels[ve[k]], 1);
         }
-        std::sort(set.begin(), set.end());
-        set.erase(std::unique(set.begin(), set.end()), set.end());
-        send.insert(send.end(), set.begin(), set.end());
+        for (const auto& [label, count] : list) {
+            send.push_back(static_cast<double>(label));
+            send.push_back(static_cast<double>(count));
+        }
         send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
     }
 
@@ -186,19 +217,24 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     m_label_offsets.SetSize(nv + 1);
     m_label_offsets[0] = 0;
     std::vector<int> items;
+    std::vector<int> item_counts;
     for (int v = 0; v < nv; ++v) {
-        auto& set = sets[static_cast<std::size_t>(v)];
+        auto& list = counts[static_cast<std::size_t>(v)];
         for (int k = recv_off[static_cast<std::size_t>(v)];
-             k < recv_off[static_cast<std::size_t>(v) + 1]; ++k) {
-            set.push_back(static_cast<int>(recv[static_cast<std::size_t>(k)]));
+             k < recv_off[static_cast<std::size_t>(v) + 1]; k += 2) {
+            add(list, static_cast<int>(recv[static_cast<std::size_t>(k)]),
+                static_cast<int>(recv[static_cast<std::size_t>(k) + 1]));
         }
-        std::sort(set.begin(), set.end());
-        set.erase(std::unique(set.begin(), set.end()), set.end());
-        items.insert(items.end(), set.begin(), set.end());
+        for (const auto& [label, count] : list) {
+            items.push_back(label);
+            item_counts.push_back(count);
+        }
         m_label_offsets[v + 1] = static_cast<int>(items.size());
     }
     m_labels.SetSize(static_cast<int>(items.size()));
     std::copy(items.begin(), items.end(), m_labels.begin());
+    m_label_counts.SetSize(static_cast<int>(item_counts.size()));
+    std::copy(item_counts.begin(), item_counts.end(), m_label_counts.begin());
 }
 
 /*

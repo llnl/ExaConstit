@@ -7,6 +7,7 @@
 #include "mfem.hpp"
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <vector>
 
@@ -50,6 +51,9 @@
  * (element size = the edge length of the regular cube or tetrahedron with the element's volume,
  * mfem::Mesh::GetElementSize(e, 0); p = order of the Nodes, 1 without Nodes), the same on every
  * copy (minimum over the copies).
+ *
+ * Nodes on exactly one curved surface get their triangle patch whatever their labels, so
+ * Evaluate can also answer for label sets the node does not have yet.
  *
  * **Status of every node** (TargetStatus; the target of every node that is not FIT is x itself):
  *   - NONE: one label (inside a grain, or on the outer boundary only);
@@ -115,6 +119,28 @@ struct NodeTargetSummary {
     double max_move_ratio = 0.0;
 };
 
+/**
+ * @brief A label set to evaluate at a node: the node's own set (the constructor) or a
+ * hypothetical one (label repair previews a flip, label_repair.hpp). Labels ascending and
+ * distinct; only the first NODE_QUERY_LABELS are stored (a larger set is over-constrained
+ * anyway, and num_labels keeps its size).
+ */
+inline constexpr int NODE_QUERY_LABELS = 4;
+struct NodeLabelQuery {
+    int node = -1;
+    int num_labels = 0;
+    int labels[NODE_QUERY_LABELS] = {};
+};
+
+/** @brief The evaluation of a NodeLabelQuery. */
+struct NodeTargetResult {
+    TargetStatus status = TargetStatus::NONE;
+    TargetReason reason = TargetReason::NONE;
+    double target[3] = {0.0, 0.0, 0.0}; ///< the target when FIT, else the node's position
+};
+
+class SurfacePatches;
+
 /** @brief Targets, statuses and mesh sizes of every node (see the file comment). */
 class NodeTargets {
 public:
@@ -135,6 +161,16 @@ public:
     NodeTargets(const NodeLabels& labels, MetricType metric, const SeedSet& seeds,
                 const MetricSetup& setup, const std::vector<int>& grain_seed,
                 const NodeTargetOptions& options = {});
+    ~NodeTargets();
+    NodeTargets(const NodeTargets&) = delete;
+    NodeTargets& operator=(const NodeTargets&) = delete;
+
+    /**
+     * @brief Status, reason and target of each query, with exactly the rules the constructor
+     * applies to the nodes' own label sets (same mesh size, surfaces and patches). Every label
+     * must be a grain of grain_seed. Not collective (local nodes only); host.
+     */
+    std::vector<NodeTargetResult> Evaluate(const std::vector<NodeLabelQuery>& queries) const;
 
     /** @brief Target positions, 3 per node (node v at 3 v); x itself unless FIT. */
     const mfem::Vector& Targets() const {
@@ -161,11 +197,16 @@ public:
         return m_labels;
     }
 
+    /** @brief Per-metric evaluator (seed search and projection), defined in node_targets.cpp. */
+    class Evaluator;
+
 private:
     void ComputeMeshSize();
     void BuildSummary();
 
     const NodeLabels& m_labels;
+    std::unique_ptr<SurfacePatches> m_patches;
+    std::unique_ptr<Evaluator> m_evaluator;
     mfem::Vector m_targets;
     mfem::Array<int> m_status;
     mfem::Array<int> m_reason;

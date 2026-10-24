@@ -33,12 +33,261 @@ int AxisOf(const double n[3]) {
     return (zeros == 2) ? axis : -1;
 }
 
-/** @brief Per-node work of the target computation before the foreign-seed check. */
+/** @brief A query that passed the projection checks and waits for the foreign-seed check. */
 struct Candidate {
-    int node;
+    int query;
     int first_seed; ///< offset of the node's seeds in the exclusion CSR
     int num_seeds;
 };
+
+} // namespace
+
+/** @brief Type-erased evaluator: one instantiation per metric functor. */
+class NodeTargets::Evaluator {
+public:
+    virtual ~Evaluator() = default;
+    virtual void Evaluate(const std::vector<NodeLabelQuery>& queries,
+                          std::vector<NodeTargetResult>& out) const = 0;
+};
+
+namespace {
+
+/**
+ * @brief The rules of the file comment for a batch of queries: classification, equations,
+ * projection (with the patch alternation on curved surfaces), axis coordinates, residual and
+ * distance checks, then one batched foreign-seed search. Holds the seed index (built once).
+ */
+template <typename Metric>
+class EvaluatorImpl final : public NodeTargets::Evaluator {
+public:
+    EvaluatorImpl(const NodeLabels& labels, const SurfacePatches& patches, const mfem::Vector& h,
+                  const SeedSet& seeds, const MetricSetup& setup,
+                  const std::vector<int>& grain_seed, const NodeTargetOptions& options)
+        : m_labels(labels), m_patches(patches), m_h(h), m_grain_seed(grain_seed),
+          m_options(options) {
+        m_index.Build(seeds, setup, options.num_bins,
+                      axom::execution_space<axom::SEQ_EXEC>::allocatorID());
+    }
+
+    void Evaluate(const std::vector<NodeLabelQuery>& queries,
+                  std::vector<NodeTargetResult>& out) const override;
+
+private:
+    /** @brief Steps before the foreign check for one query; true = candidate (FIT so far). */
+    bool Project(const NodeLabelQuery& q, int* node_seeds, NodeTargetResult& r) const;
+
+    const NodeLabels& m_labels;
+    const SurfacePatches& m_patches;
+    const mfem::Vector& m_h;
+    const std::vector<int>& m_grain_seed;
+    NodeTargetOptions m_options;
+    SeedIndex<axom::SEQ_EXEC, Metric> m_index;
+};
+
+template <typename Metric>
+bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
+                                    NodeTargetResult& r) const {
+    const int v = q.node;
+    const int n = q.num_labels;
+    const double* x = m_labels.Field().Coordinates().HostRead() + 3 * v;
+    std::copy(x, x + 3, r.target);
+    const auto set = [&](TargetStatus s, TargetReason why) {
+        r.status = s;
+        r.reason = why;
+        return false;
+    };
+    if (n <= 1) {
+        return set(TargetStatus::NONE, TargetReason::NONE);
+    }
+    if (n - 1 + m_labels.BoundaryConstraints(v) > 3) {
+        return set(TargetStatus::OVER_CONSTRAINED, TargetReason::NONE);
+    }
+    for (int k = 0; k < n; ++k) {
+        node_seeds[k] = m_grain_seed[static_cast<std::size_t>(q.labels[k] - 1)];
+        if (node_seeds[k] < 0) {
+            return set(TargetStatus::HELD, TargetReason::NON_ANALYTIC);
+        }
+    }
+    const int* surf_off = m_labels.SurfaceOffsets().HostRead();
+    const double* surf_normal = m_labels.SurfaceNormals().HostRead();
+    const int* surf_planar = m_labels.SurfacePlanar().HostRead();
+    bool curved = false;
+    for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+        curved = curved || surf_planar[s] == 0;
+    }
+    if (curved && (m_labels.BoundarySurfaces(v) != 1 || m_patches.NumTriangles(v) == 0)) {
+        return set(TargetStatus::HELD, TargetReason::CURVED_FEATURE);
+    }
+    for (int a = 0; a < n; ++a) {
+        for (int b = a + 1; b < n; ++b) {
+            if (node_seeds[a] == node_seeds[b]) {
+                return set(TargetStatus::FAKE_JUNCTION, TargetReason::SAME_SEED);
+            }
+        }
+    }
+
+    // Equations: grain boundaries, then the boundary planes through x
+    ManifoldRow rows[MANIFOLD_MAX_ROWS];
+    int num_rows = 0;
+    for (int k = 1; k < n; ++k) {
+        rows[num_rows].kind = ManifoldRow::GRAIN_BOUNDARY;
+        rows[num_rows].seed_a = node_seeds[0];
+        rows[num_rows].seed_b = node_seeds[k];
+        ++num_rows;
+    }
+    for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+        ManifoldRow& row = rows[num_rows++];
+        row.kind = ManifoldRow::PLANE;
+        const double* nrm = surf_normal + 3 * s;
+        std::copy(nrm, nrm + 3, row.normal);
+        row.offset = nrm[0] * x[0] + nrm[1] * x[1] + nrm[2] * x[2];
+    }
+
+    const Metric& f = m_index.GetMetric();
+    const double h = m_h(v);
+    const double tol = m_options.tolerance * h;
+    double y[3];
+    ProjectionResult result = ProjectionResult::NOT_CONVERGED;
+    if (!curved) {
+        result = ProjectOntoManifold(f, rows, num_rows, x, tol, m_options.max_iterations, y);
+    } else {
+        // Curved surface (the last row): alternate between the closest point p of the current
+        // iterate on the patch, the plane through p (the triangle's plane, or the plane normal to
+        // y - p when p is on an edge or corner of the patch and y is off the surface), and the
+        // projection of x on the grain boundaries and that plane
+        std::copy(x, x + 3, y);
+        ManifoldRow& plane = rows[num_rows - 1];
+        for (int it = 0; it < m_options.max_iterations; ++it) {
+            double p[3];
+            double nrm[3];
+            bool interior = false;
+            const double dist = m_patches.ClosestPoint(v, y, p, nrm, interior);
+            if (!interior && dist > tol) {
+                for (int d = 0; d < 3; ++d) {
+                    nrm[d] = (y[d] - p[d]) / dist;
+                }
+            }
+            std::copy(nrm, nrm + 3, plane.normal);
+            plane.offset = nrm[0] * p[0] + nrm[1] * p[1] + nrm[2] * p[2];
+            double y_new[3];
+            result =
+                ProjectOntoManifold(f, rows, num_rows, x, tol, m_options.max_iterations, y_new);
+            if (result != ProjectionResult::CONVERGED) {
+                break;
+            }
+            const double step2 = (y_new[0] - y[0]) * (y_new[0] - y[0]) +
+                                 (y_new[1] - y[1]) * (y_new[1] - y[1]) +
+                                 (y_new[2] - y[2]) * (y_new[2] - y[2]);
+            std::copy(y_new, y_new + 3, y);
+            result = ProjectionResult::NOT_CONVERGED;
+            if (step2 <= tol * tol && dist <= tol) {
+                result = ProjectionResult::CONVERGED;
+                break;
+            }
+        }
+        if (result == ProjectionResult::CONVERGED) {
+            double p[3];
+            double nrm[3];
+            bool interior = false;
+            if (m_patches.ClosestPoint(v, y, p, nrm, interior) > tol) {
+                result = ProjectionResult::NOT_CONVERGED;
+            }
+        }
+    }
+    if (result == ProjectionResult::SINGULAR) {
+        return set(TargetStatus::FAKE_JUNCTION, TargetReason::SINGULAR);
+    }
+    if (result == ProjectionResult::NOT_CONVERGED) {
+        return set(TargetStatus::FAKE_JUNCTION, TargetReason::NOT_CONVERGED);
+    }
+    // Axis planes keep the coordinate bit for bit
+    for (int k = n - 1; k < num_rows; ++k) {
+        const int axis = AxisOf(rows[k].normal);
+        if (axis >= 0) {
+            y[axis] = x[axis];
+        }
+    }
+    for (int k = 0; k < num_rows; ++k) {
+        double g[3];
+        const double phi = EvalManifoldRow(f, rows[k], y, g);
+        const double glen = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+        if (!(std::fabs(phi) <= tol * glen)) {
+            return set(TargetStatus::FAKE_JUNCTION, TargetReason::RESIDUAL);
+        }
+    }
+    const double move = std::sqrt((y[0] - x[0]) * (y[0] - x[0]) + (y[1] - x[1]) * (y[1] - x[1]) +
+                                  (y[2] - x[2]) * (y[2] - x[2]));
+    if (move > m_options.max_move * h) {
+        return set(TargetStatus::FAKE_JUNCTION, TargetReason::TOO_FAR);
+    }
+    std::copy(y, y + 3, r.target);
+    r.status = TargetStatus::FIT;
+    r.reason = TargetReason::NONE;
+    return true;
+}
+
+template <typename Metric>
+void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
+                                     std::vector<NodeTargetResult>& out) const {
+    const int nq = static_cast<int>(queries.size());
+    out.assign(queries.size(), NodeTargetResult{});
+    std::vector<Candidate> candidates;
+    std::vector<int> own_seeds;
+    for (int i = 0; i < nq; ++i) {
+        int node_seeds[NODE_QUERY_LABELS];
+        if (Project(queries[static_cast<std::size_t>(i)], node_seeds,
+                    out[static_cast<std::size_t>(i)])) {
+            const int n = queries[static_cast<std::size_t>(i)].num_labels;
+            candidates.push_back({i, static_cast<int>(own_seeds.size()), n});
+            own_seeds.insert(own_seeds.end(), node_seeds, node_seeds + n);
+        }
+    }
+
+    // Best seed outside each candidate's own seeds, at its target
+    const int nc = static_cast<int>(candidates.size());
+    if (nc == 0) {
+        return;
+    }
+    mfem::Vector qx(nc), qy(nc), qz(nc);
+    mfem::Array<int> ex_off(nc + 1);
+    mfem::Array<int> ex_ids(static_cast<int>(own_seeds.size()));
+    ex_off[0] = 0;
+    for (int c = 0; c < nc; ++c) {
+        const auto query = static_cast<std::size_t>(candidates[static_cast<std::size_t>(c)].query);
+        const double* y = out[query].target;
+        qx(c) = y[0];
+        qy(c) = y[1];
+        qz(c) = y[2];
+        ex_off[c + 1] = ex_off[c] + candidates[static_cast<std::size_t>(c)].num_seeds;
+    }
+    std::copy(own_seeds.begin(), own_seeds.end(), ex_ids.begin());
+    mfem::Array<BestPair> best;
+    m_index.FindBestExcluding(qx, qy, qz, ex_off, ex_ids, best);
+    const BestPair* best_host = best.HostRead();
+    const Metric& f = m_index.GetMetric();
+    for (int c = 0; c < nc; ++c) {
+        const Candidate& cand = candidates[static_cast<std::size_t>(c)];
+        NodeTargetResult& r = out[static_cast<std::size_t>(cand.query)];
+        const int v = queries[static_cast<std::size_t>(cand.query)].node;
+        const double* y = r.target;
+        double largest = -HUGE_VAL;
+        double grad_max = 0.0;
+        for (int k = 0; k < cand.num_seeds; ++k) {
+            const int s = own_seeds[static_cast<std::size_t>(cand.first_seed + k)];
+            largest = std::max(largest, f.Eval(s, y[0], y[1], y[2]));
+            double g[3];
+            f.Grad(s, y[0], y[1], y[2], g);
+            grad_max = std::max(grad_max, std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
+        }
+        const double delta = m_options.tolerance * m_h(v) * grad_max;
+        if (best_host[c].id1 >= 0 && best_host[c].f1 < largest - delta) {
+            const double* x = m_labels.Field().Coordinates().HostRead() + 3 * v;
+            std::copy(x, x + 3, r.target);
+            r.status = TargetStatus::FAKE_JUNCTION;
+            r.reason = TargetReason::FOREIGN_SEED;
+        }
+    }
+}
 
 } // namespace
 
@@ -46,13 +295,8 @@ struct Candidate {
  * Constructor
  *  1. Collective input checks.
  *  2. Mesh size h per node (ComputeMeshSize).
- *  3. Per node: status from the label set and surfaces; for the others the equations
- *     (grain boundaries to the first label's seed, flat boundary planes), the projection (for a
- *     node on one curved surface alternated with closest points on its patch,
- *     boundary_projector.hpp), the axis-plane coordinates restored bit for bit, the residual and
- *     distance checks.
- *  4. Foreign-seed check of the remaining candidates in one batched exact seed search that
- *     excludes each node's own seeds.
+ *  3. Patches of the nodes on exactly one curved surface (SurfacePatches, collective).
+ *  4. The evaluator of the metric (seed index), then Evaluate on every node's own label set.
  *  5. Summary.
  */
 NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const SeedSet& seeds,
@@ -86,244 +330,55 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
     // Step 2
     ComputeMeshSize();
 
-    m_targets.SetSize(3 * nv);
-    m_status.SetSize(nv);
-    m_reason.SetSize(nv);
-    const double* xyz = field.Coordinates().HostRead();
-    double* target = m_targets.HostWrite();
-    std::copy(xyz, xyz + 3 * nv, target);
-    m_status = static_cast<int>(TargetStatus::NONE);
-    m_reason = static_cast<int>(TargetReason::NONE);
-    const auto set_status = [&](int v, TargetStatus s, TargetReason r) {
-        m_status[v] = static_cast<int>(s);
-        m_reason[v] = static_cast<int>(r);
-    };
-
-    const int* off = labels.LabelOffsets().HostRead();
+    // Step 3 (the selection depends only on the surfaces, identical on every copy)
     const int* surf_off = labels.SurfaceOffsets().HostRead();
-    const double* surf_normal = labels.SurfaceNormals().HostRead();
     const int* surf_planar = labels.SurfacePlanar().HostRead();
-
-    // Nodes on one curved boundary surface get the triangle patch of their one-ring (the same
-    // selection on every copy: it depends only on the labels, surfaces and grain_seed)
-    const auto analytic_node = [&](int v) {
-        for (int k = off[v]; k < off[v + 1]; ++k) {
-            if (grain_seed[static_cast<std::size_t>(items[k] - 1)] < 0) {
-                return false;
-            }
-        }
-        return true;
-    };
     std::vector<char> on_curved(static_cast<std::size_t>(nv), 0);
     for (int v = 0; v < nv; ++v) {
         on_curved[static_cast<std::size_t>(v)] =
-            (labels.NumLabels(v) > 1 && !labels.OverConstrained(v) &&
-             labels.BoundarySurfaces(v) == 1 && surf_planar[surf_off[v]] == 0 && analytic_node(v))
-                ? 1
-                : 0;
+            (labels.BoundarySurfaces(v) == 1 && surf_planar[surf_off[v]] == 0) ? 1 : 0;
     }
-    const SurfacePatches patches(field, on_curved);
+    m_patches = std::make_unique<SurfacePatches>(field, on_curved);
 
+    // Step 4
     DispatchMetric(metric, [&](auto metric_tag) {
         using Metric = decltype(metric_tag);
-        SeedIndex<axom::SEQ_EXEC, Metric> index;
-        index.Build(seeds, setup, options.num_bins,
-                    axom::execution_space<axom::SEQ_EXEC>::allocatorID());
-        const Metric& f = index.GetMetric();
-
-        // Step 3
-        std::vector<Candidate> candidates;
-        std::vector<int> own_seeds;
-        for (int v = 0; v < nv; ++v) {
-            const int n = labels.NumLabels(v);
-            if (n == 1) {
-                continue;
-            }
-            if (labels.OverConstrained(v)) {
-                set_status(v, TargetStatus::OVER_CONSTRAINED, TargetReason::NONE);
-                continue;
-            }
-            int node_seeds[MANIFOLD_MAX_ROWS + 1];
-            bool analytic = true;
-            for (int k = 0; k < n; ++k) {
-                node_seeds[k] = grain_seed[static_cast<std::size_t>(items[off[v] + k] - 1)];
-                analytic = analytic && node_seeds[k] >= 0;
-            }
-            if (!analytic) {
-                set_status(v, TargetStatus::HELD, TargetReason::NON_ANALYTIC);
-                continue;
-            }
-            bool curved = false;
-            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
-                curved = curved || surf_planar[s] == 0;
-            }
-            if (curved && on_curved[static_cast<std::size_t>(v)] == 0) {
-                set_status(v, TargetStatus::HELD, TargetReason::CURVED_FEATURE);
-                continue;
-            }
-            bool same = false;
-            for (int a = 0; a < n; ++a) {
-                for (int b = a + 1; b < n; ++b) {
-                    same = same || node_seeds[a] == node_seeds[b];
-                }
-            }
-            if (same) {
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::SAME_SEED);
-                continue;
-            }
-
-            // Equations: grain boundaries, then the boundary planes through x
-            const double* x = xyz + 3 * v;
-            ManifoldRow rows[MANIFOLD_MAX_ROWS];
-            int num_rows = 0;
-            for (int k = 1; k < n; ++k) {
-                rows[num_rows].kind = ManifoldRow::GRAIN_BOUNDARY;
-                rows[num_rows].seed_a = node_seeds[0];
-                rows[num_rows].seed_b = node_seeds[k];
-                ++num_rows;
-            }
-            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
-                ManifoldRow& r = rows[num_rows++];
-                r.kind = ManifoldRow::PLANE;
-                const double* nrm = surf_normal + 3 * s;
-                r.normal[0] = nrm[0];
-                r.normal[1] = nrm[1];
-                r.normal[2] = nrm[2];
-                r.offset = nrm[0] * x[0] + nrm[1] * x[1] + nrm[2] * x[2];
-            }
-
-            const double h = m_h(v);
-            const double tol = options.tolerance * h;
-            double y[3];
-            ProjectionResult result = ProjectionResult::NOT_CONVERGED;
-            if (!curved) {
-                result = ProjectOntoManifold(f, rows, num_rows, x, tol, options.max_iterations, y);
-            } else {
-                // Curved surface (the last row): alternate between the closest point p of the
-                // current iterate on the patch, the plane through p (the triangle's plane, or the
-                // plane normal to y - p when p is on an edge or corner of the patch and y is off
-                // the surface), and the projection of x on the grain boundaries and that plane
-                std::copy(x, x + 3, y);
-                ManifoldRow& plane = rows[num_rows - 1];
-                for (int it = 0; it < options.max_iterations; ++it) {
-                    double p[3];
-                    double nrm[3];
-                    bool interior = false;
-                    const double dist = patches.ClosestPoint(v, y, p, nrm, interior);
-                    if (!interior && dist > tol) {
-                        for (int d = 0; d < 3; ++d) {
-                            nrm[d] = (y[d] - p[d]) / dist;
-                        }
-                    }
-                    std::copy(nrm, nrm + 3, plane.normal);
-                    plane.offset = nrm[0] * p[0] + nrm[1] * p[1] + nrm[2] * p[2];
-                    double y_new[3];
-                    result = ProjectOntoManifold(f, rows, num_rows, x, tol,
-                                                 options.max_iterations, y_new);
-                    if (result != ProjectionResult::CONVERGED) {
-                        break;
-                    }
-                    const double step2 = (y_new[0] - y[0]) * (y_new[0] - y[0]) +
-                                         (y_new[1] - y[1]) * (y_new[1] - y[1]) +
-                                         (y_new[2] - y[2]) * (y_new[2] - y[2]);
-                    std::copy(y_new, y_new + 3, y);
-                    result = ProjectionResult::NOT_CONVERGED;
-                    if (step2 <= tol * tol && dist <= tol) {
-                        result = ProjectionResult::CONVERGED;
-                        break;
-                    }
-                }
-                if (result == ProjectionResult::CONVERGED) {
-                    double p[3];
-                    double nrm[3];
-                    bool interior = false;
-                    if (patches.ClosestPoint(v, y, p, nrm, interior) > tol) {
-                        result = ProjectionResult::NOT_CONVERGED;
-                    }
-                }
-            }
-            if (result == ProjectionResult::SINGULAR) {
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::SINGULAR);
-                continue;
-            }
-            if (result == ProjectionResult::NOT_CONVERGED) {
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::NOT_CONVERGED);
-                continue;
-            }
-            // Axis planes keep the coordinate bit for bit
-            for (int k = n - 1; k < num_rows; ++k) {
-                const int axis = AxisOf(rows[k].normal);
-                if (axis >= 0) {
-                    y[axis] = x[axis];
-                }
-            }
-            bool residual_ok = true;
-            for (int k = 0; k < num_rows; ++k) {
-                double g[3];
-                const double phi = EvalManifoldRow(f, rows[k], y, g);
-                const double glen = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-                residual_ok = residual_ok && std::fabs(phi) <= options.tolerance * h * glen;
-            }
-            if (!residual_ok) {
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::RESIDUAL);
-                continue;
-            }
-            const double move = std::sqrt((y[0] - x[0]) * (y[0] - x[0]) +
-                                          (y[1] - x[1]) * (y[1] - x[1]) +
-                                          (y[2] - x[2]) * (y[2] - x[2]));
-            if (move > options.max_move * h) {
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::TOO_FAR);
-                continue;
-            }
-            std::copy(y, y + 3, target + 3 * v);
-            candidates.push_back({v, static_cast<int>(own_seeds.size()), n});
-            own_seeds.insert(own_seeds.end(), node_seeds, node_seeds + n);
-        }
-
-        // Step 4: best seed outside each node's own seeds, at its target
-        const int nc = static_cast<int>(candidates.size());
-        mfem::Vector qx(nc), qy(nc), qz(nc);
-        mfem::Array<int> ex_off(nc + 1);
-        mfem::Array<int> ex_ids(static_cast<int>(own_seeds.size()));
-        ex_off[0] = 0;
-        for (int c = 0; c < nc; ++c) {
-            const int v = candidates[static_cast<std::size_t>(c)].node;
-            qx(c) = target[3 * v];
-            qy(c) = target[3 * v + 1];
-            qz(c) = target[3 * v + 2];
-            ex_off[c + 1] = ex_off[c] + candidates[static_cast<std::size_t>(c)].num_seeds;
-        }
-        std::copy(own_seeds.begin(), own_seeds.end(), ex_ids.begin());
-        mfem::Array<BestPair> best;
-        if (nc > 0) {
-            index.FindBestExcluding(qx, qy, qz, ex_off, ex_ids, best);
-        }
-        const BestPair* best_host = (nc > 0) ? best.HostRead() : nullptr;
-        for (int c = 0; c < nc; ++c) {
-            const Candidate& cand = candidates[static_cast<std::size_t>(c)];
-            const int v = cand.node;
-            const double* y = target + 3 * v;
-            double largest = -HUGE_VAL;
-            double grad_max = 0.0;
-            for (int k = 0; k < cand.num_seeds; ++k) {
-                const int s = own_seeds[static_cast<std::size_t>(cand.first_seed + k)];
-                largest = std::max(largest, f.Eval(s, y[0], y[1], y[2]));
-                double g[3];
-                f.Grad(s, y[0], y[1], y[2], g);
-                grad_max = std::max(grad_max, std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
-            }
-            const double delta = options.tolerance * m_h(v) * grad_max;
-            if (best_host[c].id1 >= 0 && best_host[c].f1 < largest - delta) {
-                std::copy(xyz + 3 * v, xyz + 3 * v + 3, target + 3 * v);
-                set_status(v, TargetStatus::FAKE_JUNCTION, TargetReason::FOREIGN_SEED);
-            } else {
-                set_status(v, TargetStatus::FIT, TargetReason::NONE);
-            }
-        }
+        m_evaluator = std::make_unique<EvaluatorImpl<Metric>>(labels, *m_patches, m_h, seeds,
+                                                              setup, grain_seed, options);
     });
+    const int* off = labels.LabelOffsets().HostRead();
+    std::vector<NodeLabelQuery> queries(static_cast<std::size_t>(nv));
+    for (int v = 0; v < nv; ++v) {
+        NodeLabelQuery& q = queries[static_cast<std::size_t>(v)];
+        q.node = v;
+        q.num_labels = labels.NumLabels(v);
+        for (int k = 0; k < std::min(q.num_labels, NODE_QUERY_LABELS); ++k) {
+            q.labels[k] = items[off[v] + k];
+        }
+    }
+    const std::vector<NodeTargetResult> results = Evaluate(queries);
+    m_targets.SetSize(3 * nv);
+    m_status.SetSize(nv);
+    m_reason.SetSize(nv);
+    double* target = m_targets.HostWrite();
+    for (int v = 0; v < nv; ++v) {
+        const NodeTargetResult& r = results[static_cast<std::size_t>(v)];
+        std::copy(r.target, r.target + 3, target + 3 * v);
+        m_status[v] = static_cast<int>(r.status);
+        m_reason[v] = static_cast<int>(r.reason);
+    }
 
     // Step 5
     BuildSummary();
+}
+
+NodeTargets::~NodeTargets() = default;
+
+std::vector<NodeTargetResult> NodeTargets::Evaluate(
+    const std::vector<NodeLabelQuery>& queries) const {
+    std::vector<NodeTargetResult> out;
+    m_evaluator->Evaluate(queries, out);
+    return out;
 }
 
 /*
