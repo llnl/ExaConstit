@@ -47,6 +47,7 @@
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
 #include "microstructure/labeling/geodesic_metric.hpp"
+#include "microstructure/labeling/geodesic_weighted.hpp"
 #include "microstructure/labeling/geodesic_graph.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/labeling/voxel_labeler.hpp"
@@ -827,6 +828,27 @@ TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const
 }
 
 /*
+ * GeodesicNeedsSeedLists: true for the metrics whose value is not a path length plus a constant
+ * per seed, which need the weighted solver (labeling/geodesic_weighted.hpp): Laguerre always (its
+ * weights may all be zero, the solver then keeps one seed per node), Quadric when any seed weight
+ * is non-zero. Replicated inputs, same answer on every rank.
+ */
+bool GeodesicNeedsSeedLists(const TessellationOptions& tess, const SeedSet& seeds) {
+    if (tess.metric == MetricType::LAGUERRE) {
+        return true;
+    }
+    if (tess.metric != MetricType::QUADRIC) {
+        return false;
+    }
+    for (const double w : seeds.weight) {
+        if (w != 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
  * LabelGeodesic (collective): the geodesic solver selected by Tessellation.geodesic_solver:
  * "fim" -> LabelGeodesicFim (labeling/geodesic_fim.hpp, Fast Iterative Method eikonal solver, the
  * default), "graph" -> LabelGeodesicGraph (labeling/geodesic_graph.hpp, shortest paths along the
@@ -845,6 +867,17 @@ GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pme
     params.sampling = tess.sampling;
     params.vote_levels = tess.vote_levels;
     params.stretch = metric.stretch;
+    params.max_seeds_per_node = tess.geodesic_max_seeds_per_node;
+    // Laguerre, and Quadric with seed weights: several candidate seeds per node
+    if (GeodesicNeedsSeedLists(tess, seeds)) {
+        if (tess.geodesic_solver != "fim") {
+            throw std::invalid_argument("GenerateMicrostructure: Tessellation.distance = "
+                                        "\"geodesic\" with seed weights (metric laguerre, or "
+                                        "quadric with a weight column) needs geodesic.solver = "
+                                        "\"fim\"");
+        }
+        return LabelGeodesicWeighted(pmesh, comm, seeds, seeds.weight, params);
+    }
     const bool additive = (tess.metric == MetricType::ADDITIVE);
     if (tess.geodesic_solver == "graph") {
         return LabelGeodesicGraph(pmesh, comm, seeds, additive, params);
@@ -961,21 +994,8 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // the end of this function). Paths connect elements through shared vertices, edges and faces;
     // the face-based cleanup (step 9) handles pieces attached only through an edge or vertex.
     // Quadric: paths are measured with the tensor (columnar / lamellar regularized, automatic
-    // elongation from the part's extents; collective). Seed weights would need several seeds per
-    // node, which the solvers do not support yet (seed tables are the only source of Quadric
-    // weights here: fit_volumes is refused with geodesic in validate()).
-    if (tess.metric == MetricType::QUADRIC) {
-        bool weighted = false;
-        for (const double w : seeds.weight) {
-            weighted = weighted || w != 0.0;
-        }
-        if (weighted) {
-            throw std::invalid_argument("GenerateMicrostructure: Tessellation.distance = "
-                                        "\"geodesic\" with metric = \"quadric\" does not "
-                                        "support seed weights yet (the seed table has non-zero "
-                                        "weights)");
-        }
-    }
+    // elongation from the part's extents; collective). Laguerre and weighted Quadric go to the
+    // weighted solver inside LabelGeodesic.
     const GeodesicMetric metric = ResolveGeodesicMetric(tess, pmesh, comm,
                                                         static_cast<int>(seeds.Size()),
                                                         material.mask);
@@ -990,6 +1010,16 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     report.used_geodesic = true;
     report.geodesic_solver = tess.geodesic_solver;
     report.geodesic = geodesic.report;
+    report.geodesic_seed_lists = GeodesicNeedsSeedLists(tess, seeds);
+    if (geodesic.report.overflow_nodes > 0) {
+        Warn(comm, report, "geodesic seed lists overflowed at " +
+                               std::to_string(geodesic.report.overflow_nodes) +
+                               " node(s): more than Tessellation.geodesic.max_seeds_per_node = " +
+                               std::to_string(tess.geodesic_max_seeds_per_node) +
+                               " seeds could still win there and the worst were dropped, so some "
+                               "grains may be cut short and the result may depend on the rank "
+                               "count; raise max_seeds_per_node");
+    }
     report.num_unreached_elements = geodesic.report.unreached_elements;
     report.num_unlabeled_elements = geodesic.report.unlabeled_elements;
     mfem::Array<int> element_seed;

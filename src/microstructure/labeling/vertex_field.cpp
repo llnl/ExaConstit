@@ -968,6 +968,138 @@ void VertexField::SetMetricStretch(const std::array<double, 9>& stretch) {
 }
 
 /*
+ * ExchangeSharedPayload
+ *
+ * Neighbor exchange over the communicator's group topology (lproc = local index of a rank in the
+ * topology, 0 = this rank): for every neighbor lproc p, the groups containing p, sorted by
+ * (master rank, group number on the master), which both ranks compute identically for the groups
+ * they share; the message holds the payloads of the group's nodes in GroupLDofTable row order
+ * (the order GroupCommunicator relies on, identical on every rank of the group). Nonblocking
+ * sends and receives with one tag, then a wait for all. Each shared node belongs to one group, so
+ * it receives exactly (group size - 1) payloads.
+ */
+void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& send,
+                                        std::vector<double>& recv,
+                                        std::vector<int>& offsets) const {
+    if (width < 1) {
+        throw std::invalid_argument("VertexField::ExchangeSharedPayload: width must be >= 1");
+    }
+    if (send.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(m_num_vertices)) {
+        throw std::invalid_argument("VertexField::ExchangeSharedPayload: send must have width * NV "
+                                    "entries");
+    }
+    const mfem::GroupTopology& gt = m_gcomm->GetGroupTopology();
+    const mfem::Table& group_ldof = m_gcomm->GroupLDofTable();
+    const int num_groups = gt.NGroups();
+    const int num_lprocs = gt.GetNumNeighbors();
+
+    // Receive layout: (group size - 1) payloads per shared node
+    offsets.assign(static_cast<std::size_t>(m_num_vertices) + 1, 0);
+    for (int g = 1; g < num_groups && g < group_ldof.Size(); ++g) {
+        const int copies = gt.GetGroupSize(g) - 1;
+        const int* row = group_ldof.GetRow(g);
+        for (int j = 0; j < group_ldof.RowSize(g); ++j) {
+            offsets[static_cast<std::size_t>(row[j]) + 1] += copies;
+        }
+    }
+    for (int v = 0; v < m_num_vertices; ++v) {
+        offsets[static_cast<std::size_t>(v) + 1] += offsets[static_cast<std::size_t>(v)];
+    }
+    recv.assign(static_cast<std::size_t>(offsets.back()) * static_cast<std::size_t>(width), 0.0);
+    std::vector<int> fill(static_cast<std::size_t>(m_num_vertices), 0);
+
+    // Groups shared with each neighbor, in the canonical order
+    std::vector<std::vector<int>> groups_of(static_cast<std::size_t>(num_lprocs));
+    for (int g = 1; g < num_groups && g < group_ldof.Size(); ++g) {
+        const int* members = gt.GetGroup(g);
+        for (int q = 0; q < gt.GetGroupSize(g); ++q) {
+            if (members[q] != 0) {
+                groups_of[static_cast<std::size_t>(members[q])].push_back(g);
+            }
+        }
+    }
+    const auto key = [&](int g) {
+        return std::make_pair(gt.GetGroupMasterRank(g), gt.GetGroupMasterGroup(g));
+    };
+    std::vector<std::vector<double>> out(static_cast<std::size_t>(num_lprocs));
+    std::vector<std::vector<double>> in(static_cast<std::size_t>(num_lprocs));
+    std::vector<MPI_Request> requests;
+    const MPI_Comm comm = Comm();
+    constexpr int tag = 4711;
+    for (int p = 1; p < num_lprocs; ++p) {
+        auto& groups = groups_of[static_cast<std::size_t>(p)];
+        std::sort(groups.begin(), groups.end(), [&](int a, int b) { return key(a) < key(b); });
+        std::size_t count = 0;
+        for (const int g : groups) {
+            count += static_cast<std::size_t>(group_ldof.RowSize(g));
+        }
+        auto& buf = out[static_cast<std::size_t>(p)];
+        buf.reserve(count * static_cast<std::size_t>(width));
+        for (const int g : groups) {
+            const int* row = group_ldof.GetRow(g);
+            for (int j = 0; j < group_ldof.RowSize(g); ++j) {
+                const double* src = &send[static_cast<std::size_t>(row[j]) * width];
+                buf.insert(buf.end(), src, src + width);
+            }
+        }
+        in[static_cast<std::size_t>(p)].resize(buf.size());
+        const int rank = gt.GetNeighborRank(p);
+        requests.emplace_back();
+        MPI_Irecv(in[static_cast<std::size_t>(p)].data(), static_cast<int>(buf.size()),
+                  MPI_DOUBLE, rank, tag, comm, &requests.back());
+        requests.emplace_back();
+        MPI_Isend(buf.data(), static_cast<int>(buf.size()), MPI_DOUBLE, rank, tag, comm,
+                  &requests.back());
+    }
+    if (!requests.empty()) {
+        MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+    }
+    // Unpack in the same order (neighbors in increasing lproc)
+    for (int p = 1; p < num_lprocs; ++p) {
+        const auto& buf = in[static_cast<std::size_t>(p)];
+        std::size_t pos = 0;
+        for (const int g : groups_of[static_cast<std::size_t>(p)]) {
+            const int* row = group_ldof.GetRow(g);
+            for (int j = 0; j < group_ldof.RowSize(g); ++j) {
+                const int v = row[j];
+                const std::size_t slot = static_cast<std::size_t>(offsets[static_cast<std::size_t>(v)] +
+                                                                  fill[static_cast<std::size_t>(v)]++);
+                std::copy(&buf[pos], &buf[pos] + width, &recv[slot * width]);
+                pos += static_cast<std::size_t>(width);
+            }
+        }
+    }
+}
+
+/*
+ * SetSeedLists: copies of the lists and weights (host write, read by the labeling kernels).
+ */
+void VertexField::SetSeedLists(int capacity, const mfem::Array<int>& seeds,
+                               const mfem::Vector& dist, const std::vector<double>& weights) {
+    const std::size_t size =
+        static_cast<std::size_t>(capacity) * static_cast<std::size_t>(m_num_vertices);
+    if (capacity < 1 || static_cast<std::size_t>(seeds.Size()) != size ||
+        static_cast<std::size_t>(dist.Size()) != size || weights.empty()) {
+        throw std::invalid_argument("VertexField::SetSeedLists: capacity must be >= 1, the lists "
+                                    "must have capacity * NV entries and the weights one per "
+                                    "seed");
+    }
+    m_list_capacity = capacity;
+    m_list_seed.SetSize(seeds.Size());
+    m_list_seed.HostWrite();
+    m_list_seed = seeds;
+    m_list_dist.SetSize(dist.Size());
+    m_list_dist.UseDevice(true);
+    m_list_dist = dist;
+    m_list_weight.SetSize(static_cast<int>(weights.size()));
+    m_list_weight.UseDevice(true);
+    double* w = m_list_weight.HostWrite();
+    for (std::size_t i = 0; i < weights.size(); ++i) {
+        w[i] = weights[i];
+    }
+}
+
+/*
  * MarkSharedNodes: the GroupCommunicator's group -> dof table lists, in rows 1.., the dofs shared
  * with other ranks (communication.hpp:291); those nodes are marked 1.
  */
@@ -1482,6 +1614,11 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
     }
     const double* t = m_T.Read();
     const int* lab = m_label.Read();
+    // Seed lists (SetSeedLists): Laguerre / weighted Quadric rule over the corners' entries
+    const int cap = m_list_capacity;
+    const int* lseed = (cap > 0) ? m_list_seed.Read() : nullptr;
+    const double* ldist = (cap > 0) ? m_list_dist.Read() : nullptr;
+    const double* lweight = (cap > 0) ? m_list_weight.Read() : nullptr;
     const int* src_offsets = m_elem_src_offsets.Read();
     const int* src_seeds = m_elem_src_seeds.Read();
     const int* src_cell = m_elem_src_cell.Read();
@@ -1509,6 +1646,44 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
         double p[3] = {px[i], py[i], pz[i]};
         if (has_metric) {
             MapToMetric(stretch, px[i], py[i], pz[i], p);
+        }
+        if (cap > 0) {
+            // Smallest d_i^2 - w_i, then smallest seed; d_i through a corner's entry or directly
+            double best_f = inf;
+            double best_d = inf;
+            int best_seed = -1;
+            const auto consider = [&](int seed, double d) {
+                const double f = d * d - lweight[seed];
+                if (f < best_f || (f == best_f && seed < best_seed)) {
+                    best_f = f;
+                    best_d = d;
+                    best_seed = seed;
+                }
+            };
+            for (int k = 0; k < nc; ++k) {
+                const int v = corners[k];
+                const double r = sqrt(SquaredDistanceToVertex(xyz, v, p[0], p[1], p[2]));
+                for (int q = 0; q < cap; ++q) {
+                    const int seed = lseed[cap * v + q];
+                    if (seed >= 0) {
+                        consider(seed, ldist[cap * v + q] + r);
+                    }
+                }
+            }
+            for (int k = src_offsets[e]; k < src_offsets[e + 1]; ++k) {
+                if (src_cell[k] != cell) {
+                    continue;
+                }
+                const double dx = p[0] - src_data[4 * k + 0];
+                const double dy = p[1] - src_data[4 * k + 1];
+                const double dz = p[2] - src_data[4 * k + 2];
+                consider(src_seeds[k], sqrt(dx * dx + dy * dy + dz * dz));
+            }
+            out_label[i] = best_seed;
+            if (out_dist != nullptr) {
+                out_dist[i] = best_d;
+            }
+            return;
         }
         double best = inf;
         int best_label = -1;

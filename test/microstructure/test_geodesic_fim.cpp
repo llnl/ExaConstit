@@ -27,6 +27,7 @@
 #include "microstructure/geometry/anisotropy_tensors.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
 #include "microstructure/labeling/geodesic_metric.hpp"
+#include "microstructure/labeling/geodesic_weighted.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/labeling/vertex_field.hpp"
 #include "microstructure/mesh/element_key.hpp"
@@ -281,12 +282,19 @@ struct GeodesicRun {
     ms::SourceReport sources;
 };
 
-/** LabelGeodesicFim on `serial` distributed per `layout`, gathered. Collective. */
+/**
+ * LabelGeodesicFim on `serial` distributed per `layout`, gathered; with `weights`, the weighted
+ * solver LabelGeodesicWeighted (labeling/geodesic_weighted.hpp) instead. Collective.
+ */
 GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& seeds,
-                        bool additive, const ms::GeodesicParameters& params) {
+                        bool additive, const ms::GeodesicParameters& params,
+                        const std::vector<double>* weights = nullptr) {
     const MPI_Comm comm = (layout == Layout::SELF) ? MPI_COMM_SELF : MPI_COMM_WORLD;
     Distributed d = Distribute(serial, layout);
-    ms::GeodesicLabels labels = ms::LabelGeodesicFim(*d.pmesh, comm, seeds, additive, params);
+    ms::GeodesicLabels labels =
+        (weights != nullptr)
+            ? ms::LabelGeodesicWeighted(*d.pmesh, comm, seeds, *weights, params)
+            : ms::LabelGeodesicFim(*d.pmesh, comm, seeds, additive, params);
     GeodesicRun run;
     run.element_seed = GatherElements(comm, d.order, labels.element_seed, serial.GetNE());
     run.vertex = GatherVertexValues(serial, *labels.field, comm);
@@ -304,11 +312,13 @@ GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& se
  */
 GeodesicRun RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds, bool additive,
                           const ms::GeodesicParameters& params = {},
-                          ms::GeodesicReport* world_report = nullptr) {
-    const GeodesicRun world = RunGeodesic(serial, Layout::METIS_WORLD, seeds, additive, params);
+                          ms::GeodesicReport* world_report = nullptr,
+                          const std::vector<double>* weights = nullptr) {
+    const GeodesicRun world =
+        RunGeodesic(serial, Layout::METIS_WORLD, seeds, additive, params, weights);
     const GeodesicRun scattered =
-        RunGeodesic(serial, Layout::SCATTERED_WORLD, seeds, additive, params);
-    const GeodesicRun self = RunGeodesic(serial, Layout::SELF, seeds, additive, params);
+        RunGeodesic(serial, Layout::SCATTERED_WORLD, seeds, additive, params, weights);
+    const GeodesicRun self = RunGeodesic(serial, Layout::SELF, seeds, additive, params, weights);
     for (const GeodesicRun* other : {&world, &scattered}) {
         EXPECT_TRUE(other->vertex.copies_agree);
         EXPECT_TRUE(other->vertex.all_found);
@@ -324,6 +334,10 @@ GeodesicRun RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds, bool add
         EXPECT_EQ(other->report.split_elements, self.report.split_elements);
         EXPECT_EQ(other->report.unlabeled_vertices, 0);
         EXPECT_EQ(other->report.unlabeled_elements, 0);
+        // Weighted solver: no seed list was cut (the condition for exactness and rank
+        // independence), and the list lengths agree
+        EXPECT_EQ(other->report.overflow_nodes, 0);
+        EXPECT_EQ(other->report.max_list_length, self.report.max_list_length);
     }
     // FIM rounds are synchronous sweeps, so their number is partition independent too
     for (const GeodesicRun* other : {&world, &scattered}) {
@@ -1445,6 +1459,209 @@ TEST(GeodesicFim, ColumnarUShapeDoesNotCrossTheGap) {
         }
     }
     EXPECT_EQ(wrong, 0);
+}
+
+// ----- Weighted metrics (labeling/geodesic_weighted.hpp): seed lists per node -----
+
+/**
+ * Like CompareWithExact for the Laguerre / weighted Quadric rule f_i = d_i^2 - w_i (d_i the
+ * A-length): the gap of a mismatch is reported as a distance shift, (f_label - f_best) /
+ * (2 d_label), the distance by which the boundary would have to move (first order) to make the
+ * label right.
+ */
+MismatchStats CompareWithExactWeighted(const mfem::Mesh& mesh, const std::vector<int>& labels,
+                                       const ms::SeedSet& seeds, const std::vector<double>& w,
+                                       const std::array<double, 6>& tensor) {
+    MismatchStats stats;
+    const int n = static_cast<int>(seeds.Size());
+    for (int e = 0; e < mesh.GetNE(); ++e) {
+        const auto c = Centroid(mesh, e);
+        std::vector<double> f(static_cast<std::size_t>(n));
+        std::vector<double> d(static_cast<std::size_t>(n));
+        int best = -1;
+        for (int i = 0; i < n; ++i) {
+            const auto si = static_cast<std::size_t>(i);
+            d[si] = TensorLength(tensor, c[0] - seeds.x[si], c[1] - seeds.y[si],
+                                 c[2] - seeds.z[si]);
+            f[si] = d[si] * d[si] - w[si];
+            if (best < 0 || f[si] < f[static_cast<std::size_t>(best)]) {
+                best = i;
+            }
+        }
+        const int label = labels[static_cast<std::size_t>(e)];
+        if (label != best) {
+            ++stats.count;
+            const auto l = static_cast<std::size_t>(label);
+            const double shift = (f[l] - f[static_cast<std::size_t>(best)]) / (2.0 * d[l]);
+            stats.max_gap = std::max(stats.max_gap, shift);
+        }
+    }
+    return stats;
+}
+
+// Heavy seed: seeds at the two end centers of a 1 x 1 x 10 strut (4 x 4 x 40 hexes, h = 1/4),
+// w0 = 0 and w1 = 20. Laguerre with path lengths: z^2 = (10 - z)^2 - 20 gives the boundary z = 4,
+// although seed 0's front reaches the points 4 < z < 5 first (a single front would put the
+// boundary at z = 5). Elements more than h below 4 belong to seed 0, more than h above to seed 1.
+// Hex and tet; RunAndCompare checks rank independence with no list overflow.
+TEST(GeodesicWeighted, HeavySeedOwnsPointsAnotherFrontReachesFirst) {
+    for (const bool tets : {false, true}) {
+        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) { return true; });
+        ms::SeedSet seeds;
+        AddSeed(seeds, 0.5, 0.5, 0.0);
+        AddSeed(seeds, 0.5, 0.5, 10.0);
+        const std::vector<double> w = {0.0, 20.0};
+        ms::GeodesicReport world_report;
+        const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report, &w);
+        int wrong = 0;
+        for (int e = 0; e < grid.mesh.GetNE(); ++e) {
+            const double z = Centroid(grid.mesh, e)[2];
+            const int label = run.element_seed[static_cast<std::size_t>(e)];
+            if (z < 4.0 - 0.25) {
+                wrong += (label != 0) ? 1 : 0;
+            } else if (z > 4.0 + 0.25) {
+                wrong += (label != 1) ? 1 : 0;
+            }
+        }
+        if (WorldRank() == 0) {
+            std::cout << "[ weighted ] heavy seed strut " << (tets ? "tet" : "hex") << ": "
+                      << world_report.distance_rounds << " rounds, longest list "
+                      << world_report.max_list_length << std::endl;
+        }
+        EXPECT_EQ(wrong, 0);
+        EXPECT_EQ(run.report.unreached_elements, 0);
+    }
+}
+
+// Convex box (12^3 hexes, h = 1/12), 8 random seeds with Laguerre weights w = r^2 (r random in
+// [0.05, 0.25]): the geodesic Laguerre labels must be the exact straight-line Laguerre labels
+// except near-ties (the boundary-shift measure of CompareWithExactWeighted), and agree with
+// LabelTessellation's Laguerre labels on the elements where those are exact. Also with the tilted
+// 4x Quadric tensor (weighted Quadric). Equal weights reduce to one seed per node.
+TEST(GeodesicWeighted, ConvexBoxMatchesExactLaguerreLabels) {
+    constexpr double h = 1.0 / 12;
+    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) { return true; });
+    std::mt19937_64 rng(4242);
+    std::uniform_real_distribution<double> radius(0.05, 0.25);
+    ms::SeedSet seeds;
+    std::vector<double> w;
+    for (int i = 0; i < 8; ++i) {
+        const auto p = RandomPoint(rng);
+        AddSeed(seeds, p[0], p[1], p[2]);
+        const double r = radius(rng);
+        w.push_back(r * r);
+    }
+    const double r2 = 1.0 / std::sqrt(2.0);
+    for (const bool stretched : {false, true}) {
+        ms::GeodesicParameters params;
+        std::array<double, 6> tensor = {1.0, 1.0, 1.0, 0.0, 0.0, 0.0};
+        if (stretched) {
+            tensor = ElongatedTensor({r2, 0.0, r2}, 4.0);
+            params.stretch = ms::MetricStretchFromTensor(tensor);
+        }
+        ms::GeodesicReport world_report;
+        const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params, &world_report, &w);
+        const MismatchStats stats =
+            CompareWithExactWeighted(grid.mesh, run.element_seed, seeds, w, tensor);
+        if (WorldRank() == 0) {
+            std::cout << "[ weighted ] " << (stretched ? "quadric" : "laguerre") << " box: "
+                      << stats.count << " of " << grid.mesh.GetNE()
+                      << " elements differ from the exact labels, largest shift "
+                      << stats.max_gap / h << " h (" << world_report.distance_rounds
+                      << " rounds, longest list " << world_report.max_list_length << ")"
+                      << std::endl;
+        }
+        EXPECT_LT(static_cast<double>(stats.count) / grid.mesh.GetNE(), 0.12);
+        EXPECT_LT(stats.max_gap, 1.1 * h);
+    }
+
+    // Equal weights: one seed per node, labels as exact as the Voronoi ones
+    const std::vector<double> equal(seeds.Size(), 0.01);
+    ms::GeodesicReport world_report;
+    const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report, &equal);
+    const MismatchStats stats = CompareWithExactWeighted(grid.mesh, run.element_seed, seeds,
+                                                         equal, {1.0, 1.0, 1.0, 0.0, 0.0, 0.0});
+    if (WorldRank() == 0) {
+        std::cout << "[ weighted ] equal weights box: " << stats.count << " of "
+                  << grid.mesh.GetNE() << " elements differ, largest shift " << stats.max_gap / h
+                  << " h, longest list " << world_report.max_list_length << std::endl;
+    }
+    EXPECT_LE(world_report.max_list_length, 2); // exact ties keep both
+    EXPECT_LT(stats.max_gap, 0.6 * h);
+}
+
+// U-shaped part with Laguerre weights: seed A = (0.9, 1.9, 0.5) at the tip of the left arm with a
+// large weight (w = 1, a "big" grain), seed B = (2.9, 0.5, 0.5) low on the right arm (w = 0).
+// Straight-line Laguerre labels give the whole right arm above the base to A across the slot;
+// along paths A is about 2.9 away from there (f_A ~ 8.4 - 1 = 7.4 vs f_B < 2.3), so the
+// geodesic labels keep the right arm above the base with B, and the left arm with A.
+TEST(GeodesicWeighted, UShapeLaguerreDoesNotCrossTheGap) {
+    mfem::Mesh mesh(std::string(MS_GEODESIC_FIM_DATA_DIR) + "/microstructure/u_shape_hex.mesh");
+    ms::SeedSet seeds;
+    AddSeed(seeds, 0.9, 1.9, 0.5);
+    AddSeed(seeds, 2.9, 0.5, 0.5);
+    seeds.weight = {1.0, 0.0};
+    ms::TessellationOptions tess;
+    tess.metric = ms::MetricType::LAGUERRE;
+    const ms::TessellationLabels euclid = ms::LabelTessellation(mesh, MPI_COMM_SELF, seeds, tess);
+    const int* es = euclid.element_seed.HostRead();
+    int euclid_crossing = 0;
+    for (int e = 0; e < mesh.GetNE(); ++e) {
+        const auto c = Centroid(mesh, e);
+        euclid_crossing += (c[0] > 2.0 && c[1] > 1.0 && es[e] == 0) ? 1 : 0;
+    }
+    EXPECT_GT(euclid_crossing, 0);
+    for (const auto sampling : {ms::SamplingMode::CENTROID, ms::SamplingMode::QUADRATURE_VOTE}) {
+        ms::GeodesicParameters params;
+        params.sampling = sampling;
+        const GeodesicRun run = RunAndCompare(mesh, seeds, false, params, nullptr, &seeds.weight);
+        int wrong = 0;
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            const auto c = Centroid(mesh, e);
+            const int label = run.element_seed[static_cast<std::size_t>(e)];
+            if (c[1] > 1.0 && c[0] > 2.0) {
+                wrong += (label != 1) ? 1 : 0;
+            }
+            if (c[1] > 1.0 && c[0] < 1.0) {
+                wrong += (label != 0) ? 1 : 0;
+            }
+        }
+        EXPECT_EQ(wrong, 0);
+    }
+}
+
+// Capacity: with max_seeds_per_node = 1 on the random-weights box, some node has more than one
+// seed that can still win, so the lists overflow; the run still labels every element and reports
+// the overflow (single rank: with overflow the result may depend on the partition). Invalid
+// capacities and weight arrays are refused on every rank.
+TEST(GeodesicWeighted, OverflowIsReportedAndInputsChecked) {
+    GridMesh grid = BuildGrid(8, 8, 8, 0.125, false, [](int, int, int) { return true; });
+    std::mt19937_64 rng(99);
+    ms::SeedSet seeds;
+    std::vector<double> w;
+    for (int i = 0; i < 6; ++i) {
+        const auto p = RandomPoint(rng);
+        AddSeed(seeds, p[0], p[1], p[2]);
+        w.push_back(0.05 * (i + 1));
+    }
+    ms::GeodesicParameters params;
+    params.max_seeds_per_node = 1;
+    const GeodesicRun run = RunGeodesic(grid.mesh, Layout::SELF, seeds, false, params, &w);
+    EXPECT_GT(run.report.overflow_nodes, 0);
+    EXPECT_EQ(run.report.max_list_length, 1);
+    EXPECT_EQ(run.report.unreached_elements, 0);
+
+    Distributed d = Distribute(grid.mesh, Layout::METIS_WORLD);
+    params.max_seeds_per_node = 0;
+    EXPECT_THROW(ms::LabelGeodesicWeighted(*d.pmesh, MPI_COMM_WORLD, seeds, w, params),
+                 std::invalid_argument);
+    params.max_seeds_per_node = 65;
+    EXPECT_THROW(ms::LabelGeodesicWeighted(*d.pmesh, MPI_COMM_WORLD, seeds, w, params),
+                 std::invalid_argument);
+    params.max_seeds_per_node = 16;
+    const std::vector<double> short_w = {0.1};
+    EXPECT_THROW(ms::LabelGeodesicWeighted(*d.pmesh, MPI_COMM_WORLD, seeds, short_w, params),
+                 std::invalid_argument);
 }
 
 int main(int argc, char** argv) {

@@ -378,10 +378,12 @@ struct TessellationOptions {
      * - "geodesic": the distance is the length of the shortest path inside the material, so
      *   grains grow around corners and voids (labeling/geodesic_fim.hpp or geodesic_graph.hpp;
      *   solver choice in `geodesic`). Voronoi (path length d), Additive (d - a_i, e.g.
-     *   Johnson-Mehl) and Quadric metrics; Quadric measures paths with the tensor A
-     *   (labeling/geodesic_metric.hpp: anisotropy "none" / "tensor" as given, "columnar" /
-     *   "lamellar" regularized with geodesic_elongation), without seed weights. Not yet
-     *   Laguerre, weighted Quadric or per-seed tensors. Two properties to know:
+     *   Johnson-Mehl), Laguerre (d^2 - w_i) and Quadric metrics; Quadric measures paths with
+     *   the tensor A (labeling/geodesic_metric.hpp: anisotropy "none" / "tensor" as given,
+     *   "columnar" / "lamellar" regularized with geodesic_elongation). Laguerre and weighted
+     *   Quadric keep several candidate seeds per node (labeling/geodesic_weighted.hpp,
+     *   geodesic_max_seeds_per_node) and need solver "fim". Not yet per-seed tensors. Two
+     *   properties to know:
      *   - paths connect elements through shared vertices, edges and faces (the solvers work on
      *     the mesh vertices), while the connected mode and the fragment cleanup connect elements
      *     through shared faces only. Elements that share nodes are connected in the conforming FE
@@ -435,6 +437,17 @@ struct TessellationOptions {
      * geodesic mode runs with a columnar or lamellar anisotropy.
      */
     double geodesic_elongation = 0.0;
+    /**
+     * @brief distance = "geodesic" with seed weights (metric "laguerre", or "quadric" with weights
+     * from a seed table) only: how many seeds each node keeps (TOML
+     * `geodesic = { max_seeds_per_node = ... }`, default 16, in 1..64 =
+     * GEODESIC_MAX_SEEDS_PER_NODE_LIMIT of labeling/geodesic_limits.hpp; an error in any mode
+     * outside that range). Weighted metrics need several candidate seeds per node
+     * (labeling/geodesic_weighted.hpp): seeds that can no longer win are dropped exactly, and if
+     * more remain the worst are cut, which the log reports ("seed lists overflowed at N nodes");
+     * raise the value then. Memory: 24 bytes per node per seed kept.
+     */
+    int geodesic_max_seeds_per_node = 16;
     /**
      * @brief Quadrature-vote sampling only: subdivision levels 0..3 of the voting points, 8^levels
      * points per element (labeling/quadrature_vote.hpp; default 2 = 64 points). Level 1 is not

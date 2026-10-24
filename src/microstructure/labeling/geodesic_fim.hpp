@@ -177,9 +177,10 @@
  * plain length.
  *
  * **Scope.** Voronoi (a_i = 0), Additive (distance - a_i) and, through the stretch, Quadric with
- * one global tensor and no weights; not yet Laguerre, weighted Quadric or per-seed tensors; no
- * periodic axes; passthrough parts are excluded with an element mask
- * (GeodesicParameters::context), so paths stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
+ * one global tensor and no weights (Laguerre and weighted Quadric use the weighted solver,
+ * labeling/geodesic_weighted.hpp; per-seed tensors are not supported yet); no periodic axes;
+ * passthrough parts are excluded with an element mask (GeodesicParameters::context), so paths
+ * stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
  * -1, and its elements get element_seed = -1 (the driver decides what to do with them). Elements
  * must have at most 8 vertices (all linear 3D MFEM elements); the nodal field for curved meshes
  * needs all hexes or all tets.

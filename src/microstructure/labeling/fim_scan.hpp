@@ -6,8 +6,9 @@
 
 /**
  * @file fim_scan.hpp
- * @brief The per-cell candidate scan of the Fast Iterative Method (labeling/geodesic_fim.hpp),
- * in a header of its own so other FIM variants can run the same arithmetic. Host and device.
+ * @brief The per-cell candidate scan of the Fast Iterative Method, shared by the single-front
+ * solver (labeling/geodesic_fim.hpp) and the weighted multi-seed solver
+ * (labeling/geodesic_weighted.hpp), so both run the same arithmetic. Host and device.
  */
 
 namespace exaconstit::microstructure {
@@ -33,7 +34,7 @@ namespace exaconstit::microstructure {
  * Single pass: a strictly smaller value replaces the running best and its mask, an exactly equal
  * value adds its vertices to the mask. Each candidate value is computed exactly once, here, and
  * both the distance update and the label pass use the stored result (CandidateSweep in
- * geodesic_fim.cpp).
+ * geodesic_fim.cpp; the weighted solver of geodesic_weighted.cpp calls it once per seed).
  *
  * Host and device (called inside the mfem::forall sweep).
  *

@@ -591,6 +591,7 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     EXPECT_TRUE(throws_with([](O& o) {
         o.tessellation.distance = ms::DistanceMode::GEODESIC;
         o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.geodesic_solver = "graph"; // seed lists need the FIM solver
     }));
     EXPECT_TRUE(throws_with([](O& o) { o.orientations.source = "list"; }));
     EXPECT_TRUE(throws_with([](O& o) { o.tessellation.vote_levels = 4; }));

@@ -830,6 +830,53 @@ public:
     void ReduceSharedMinimum(mfem::Vector& values) const;
 
     /**
+     * @brief Sends every shared node's payload to the other ranks holding a copy and receives
+     * theirs: after the call, recv holds, for each local node v, the payloads of all other copies
+     * of v (width doubles each) in [width * offsets[v], width * offsets[v + 1]) of recv
+     * (offsets has NV + 1 entries; unshared nodes receive nothing). A solver whose per-node state
+     * cannot be combined element by element (the seed lists of labeling/geodesic_weighted.hpp)
+     * merges its own copy with the received ones by an order-independent rule, so every copy
+     * ends up identical.
+     *
+     * Messages: one per neighbor rank, holding the nodes of every group the two ranks share, the
+     * groups in the order (master rank, group number on the master) and the nodes of a group in
+     * the communicator's group order, which MFEM's GroupCommunicator keeps the same on all ranks
+     * of the group. The copies of a node arrive in increasing neighbor order on each rank;
+     * callers must not depend on that order.
+     *
+     * **Collective** (every rank must call it, with the same width). Host.
+     * @param width doubles per node, >= 1.
+     * @param send  per-node payloads, width * NV doubles (node v at width * v).
+     * @param recv  out: the received payloads.
+     * @param offsets out: NV + 1 offsets (in payloads) into recv.
+     * @throws std::invalid_argument for width < 1 or a send array of the wrong size (on the
+     *         calling rank, before any communication).
+     */
+    void ExchangeSharedPayload(int width, const std::vector<double>& send,
+                               std::vector<double>& recv, std::vector<int>& offsets) const;
+
+    /**
+     * @brief Switches point labeling (LabelPoints, LabelElementCentroids, LabelElementsByVote) to
+     * per-node seed lists, the result of the weighted solver (labeling/geodesic_weighted.hpp):
+     * node v carries up to `capacity` entries (seed i, T_i(v)) at seeds[capacity * v + s] /
+     * dist[capacity * v + s] (seed -1 = empty slot). A point p in cell c then takes, over the
+     * entries of c's corners v, d_i = T_i(v) + |p - v| (in the metric coordinates), and over the
+     * seeds whose source cell is c, d_i = |p - s_i|, and returns the seed with the smallest
+     * d_i^2 - weights[i] (ties: lowest index), i.e. the Laguerre / weighted Quadric rule with path
+     * lengths; its distance output is d_i of the winner. The field's own T and label are not
+     * used then. The arrays are copied. Not collective. Host.
+     * @throws std::invalid_argument for capacity < 1 or arrays of the wrong size (seeds and dist:
+     *         capacity * NV; weights: one per seed of the seed set, so every seed index stored in
+     *         the lists or in the source cells is a valid index into it).
+     */
+    void SetSeedLists(int capacity, const mfem::Array<int>& seeds, const mfem::Vector& dist,
+                      const std::vector<double>& weights);
+    /** @brief True after SetSeedLists (point labeling uses the lists). */
+    bool HasSeedLists() const {
+        return m_list_capacity > 0;
+    }
+
+    /**
      * @brief Labels arbitrary points of a range of local elements from the field.
      *
      * Point i belongs to local element e = elem_begin + i / points_per_element and to the cell c
@@ -972,6 +1019,10 @@ private:
     mfem::Array<int> m_elem_src_seeds;               ///< seed index of each entry
     mfem::Array<int> m_elem_src_cell;                ///< source cell id of each entry
     mfem::Vector m_elem_src_data;                    ///< per entry: x, y, z (in the metric), a_j
+    int m_list_capacity = 0;                         ///< seed lists: entries per node (0 = off)
+    mfem::Array<int> m_list_seed;                    ///< seed lists: seed per slot (-1 empty)
+    mfem::Vector m_list_dist;                        ///< seed lists: T_i per slot
+    mfem::Vector m_list_weight;                      ///< seed lists: w_i per seed
     // Nodal field lookup tables (FieldCellView); empty for the corner field
     int m_tet = 0;                                   ///< 1 = tet lattice
     mfem::Array<int> m_lattice_to_local;             ///< (p+1)^3, -1 = not a lattice point

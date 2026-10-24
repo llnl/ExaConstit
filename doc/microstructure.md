@@ -99,14 +99,22 @@ that the solver's triangle update starts to discard as degenerate (near k ~ 1e6)
 come from exact min/max reductions, so k, and with it the labels, do not depend on the number of
 ranks.
 
+**Laguerre and weighted quadric** (closest = d^2 - w_i, `labeling/geodesic_weighted.hpp`). A heavy
+seed can own points that another seed's front reaches first, so one front per mesh is not enough:
+every mesh vertex keeps a short list of (seed, path length) pairs, and the eikonal update runs per
+seed. A seed j *dominates* seed i at a vertex when it is both closer (d_j <= d_i) and has the lower
+value (d_j^2 - w_j <= d_i^2 - w_i). Then j wins at every point reached from seed i through that
+vertex: with L the remaining path length,
+
+    (d_j + L)^2 - w_j - (d_i + L)^2 + w_i = (d_j^2 - w_j) - (d_i^2 - w_i) + 2 L (d_j - d_i) <= 0,
+
+so i is dropped there. This is exact; the lists stay short (the winner plus a few neighbors near
+grain boundaries; with equal weights only the winner). A cap (`geodesic.max_seeds_per_node`,
+default 16) bounds the memory; if more seeds remain, the worst are cut and the log reports it. Only
+then can the result depend on the number of ranks. Weighted quadric runs the same solver in the
+mapped coordinates y = L^T x.
+
 Not covered yet:
-- **laguerre**, closest = d^2 - w_i. A heavy seed can own points that another seed's front reaches
-  first; the single front would discard it there, and its grain would come out too small or empty.
-  The planned solver carries several candidate seeds per vertex and drops a seed only where
-  another seed is both closer and has a lower d^2 - w; such a seed then wins at every point reached
-  through that vertex, so the drop is exact.
-- **quadric with seed weights** (from a seed table): the same planned solver, in the mapped
-  coordinates.
 - **per-seed tensors**: every seed measures paths with its own A_i, so the exact drop rule no
   longer holds (a seed that is behind at a vertex can catch up along its long direction). Planned
   with a capped list of candidate seeds per vertex.

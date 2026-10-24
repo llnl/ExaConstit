@@ -44,8 +44,8 @@ namespace exaconstit::microstructure {
  * checked here is the scope those modes are built for (the Stage 1e limits): no periodic axes
  * for either mode (a
  * path or a connected piece would have to wrap around the box), and for "geodesic" a metric the
- * path-length solvers support: Voronoi (d), Additive (d - a_i) or Quadric with one global tensor
- * (labeling/geodesic_metric.hpp); not Laguerre or per-seed tensors yet. The vote level
+ * path-length solvers support: Voronoi (d), Additive (d - a_i), Laguerre (d^2 - w_i, FIM only) and
+ * Quadric with one global tensor (labeling/geodesic_metric.hpp); not per-seed tensors yet. The vote level
  * range (0..3) and the anisotropy kind are checked too, so a direct caller gets the same messages
  * as the driver. Every rank holds the same options, so every rank throws together. Public so the
  * driver can call it before the collective seeding.
@@ -58,9 +58,10 @@ void CheckSupportedTessellation(const TessellationOptions& tessellation) {
                                     "\"geodesic\" cannot be combined with periodic axes");
     }
     if (tessellation.distance == DistanceMode::GEODESIC) {
-        if (tessellation.metric == MetricType::LAGUERRE) {
-            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" does not "
-                                        "support metric laguerre yet");
+        if (tessellation.metric == MetricType::LAGUERRE &&
+            tessellation.geodesic_solver == "graph") {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" with "
+                                        "metric laguerre needs geodesic solver fim");
         }
         if (tessellation.metric != MetricType::QUADRIC &&
             tessellation.anisotropy_kind != "none") {

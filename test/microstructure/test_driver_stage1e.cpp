@@ -846,9 +846,14 @@ TEST(DriverStage1e, RefusedCombinations) {
 
     O geodesic = base;
     geodesic.tessellation.distance = ms::DistanceMode::GEODESIC;
-    O laguerre = geodesic;
-    laguerre.tessellation.metric = ms::MetricType::LAGUERRE;
-    EXPECT_TRUE(refused(laguerre));
+    O laguerre_graph = geodesic; // Laguerre keeps several seeds per node: FIM only
+    laguerre_graph.tessellation.metric = ms::MetricType::LAGUERRE;
+    laguerre_graph.tessellation.geodesic_solver = "graph";
+    EXPECT_TRUE(refused(laguerre_graph));
+    O seeds_per_node = geodesic;
+    seeds_per_node.tessellation.metric = ms::MetricType::LAGUERRE;
+    seeds_per_node.tessellation.geodesic_max_seeds_per_node = 0;
+    EXPECT_TRUE(refused(seeds_per_node));
     O tensor = geodesic;
     tensor.tessellation.anisotropy_kind = "tensor";
     EXPECT_TRUE(refused(tensor));
@@ -883,8 +888,8 @@ TEST(DriverStage1e, RefusedCombinations) {
 // (8 x 8 x 32 hexes) with 6 random seeds. The regularized metric uses the automatic elongation
 // (L = 4, w = sqrt(1 x 1 / 6) = 0.408, 10 L / w -> 98), reported identically on every rank count;
 // the labels equal the distributed run's and stay close to the Euclidean (exact, endless) columns
-// on this convex part. Seed weights from a seed table are refused under quadric (not supported
-// yet), whereas the same table runs with Voronoi.
+// on this convex part. Seed weights from a seed table under quadric need the FIM solver (the
+// graph solver keeps one seed per node).
 TEST(DriverStage1e, GeodesicQuadricColumnar) {
     WriteFixtures();
     mfem::Mesh serial = exaconstit::MakeAutoHexMesh({8, 8, 32}, {1.0, 1.0, 4.0});
@@ -917,14 +922,51 @@ TEST(DriverStage1e, GeodesicQuadricColumnar) {
     EXPECT_EQ(given.report.geodesic_elongation, 500.0);
     EXPECT_FALSE(given.report.geodesic_elongation_auto);
 
-    // Seed weights: refused under quadric, accepted with Voronoi (weights unused there)
+    // Seed weights under quadric need the FIM solver (seed lists)
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
     ms::MicrostructureOptions weighted = TableOptions("weighted.csv");
     weighted.tessellation.distance = ms::DistanceMode::GEODESIC;
     weighted.tessellation.metric = ms::MetricType::QUADRIC;
+    weighted.tessellation.geodesic_solver = "graph";
     EXPECT_TRUE(Refused(*d.pmesh, weighted));
-    weighted.tessellation.metric = ms::MetricType::VORONOI;
+    weighted.tessellation.geodesic_solver = "fim";
     EXPECT_FALSE(Refused(*d.pmesh, weighted));
+}
+
+// Geodesic Laguerre through the driver on the U-shaped part: 8 random seeds with a log-normal size
+// distribution, so the seeds carry the starting weights w = r^2 of their target volumes
+// (size_targets.hpp). The weighted solver (seed lists) runs, no list overflows, the labels equal
+// the distributed run's, and with fragments = "none" no grain crosses the notch. The same seed
+// table weights under quadric (global tensor) also run through the weighted solver.
+TEST(DriverStage1e, GeodesicLaguerreUShape) {
+    WriteFixtures();
+    mfem::Mesh serial = UShape();
+    ms::MicrostructureOptions options;
+    options.seeds.num_seeds = 8;
+    options.seeds.rng_seed = 11u;
+    options.seeds.size.distribution = "lognormal";
+    options.seeds.size.sigma = 0.4;
+    options.tessellation.metric = ms::MetricType::LAGUERRE;
+    options.tessellation.distance = ms::DistanceMode::GEODESIC;
+    options.cleanup.fragments = "none";
+    const RunPair laguerre = RunAndCompare(serial, options);
+    EXPECT_TRUE(laguerre.alone.report.used_geodesic);
+    EXPECT_TRUE(laguerre.alone.report.geodesic_seed_lists);
+    EXPECT_EQ(laguerre.alone.report.geodesic.overflow_nodes, 0);
+    EXPECT_EQ(laguerre.world.report.geodesic.overflow_nodes, 0);
+    EXPECT_GE(laguerre.alone.report.geodesic.max_list_length, 1);
+    EXPECT_TRUE(GrainsCrossingNotch(serial, laguerre.alone.labels).empty());
+
+    // Weighted quadric (seed table weights): seed lists too
+    Distributed d = Distribute(serial, MPI_COMM_WORLD);
+    ms::MicrostructureOptions weighted = TableOptions("weighted.csv");
+    weighted.tessellation.distance = ms::DistanceMode::GEODESIC;
+    weighted.tessellation.metric = ms::MetricType::QUADRIC;
+    weighted.tessellation.anisotropy_kind = "tensor";
+    weighted.tessellation.global_tensor = {1.0, 1.0, 0.25, 0.0, 0.0, 0.0};
+    const RunPair quadric = RunAndCompare(serial, weighted);
+    EXPECT_TRUE(quadric.alone.report.geodesic_seed_lists);
+    EXPECT_EQ(quadric.alone.report.geodesic.overflow_nodes, 0);
 }
 
 // ---------------------------------------------------------------------------------------------

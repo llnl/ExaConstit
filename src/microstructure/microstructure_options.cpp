@@ -824,7 +824,12 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
     }
     if (toml_input.contains("geodesic")) {
         const auto& geodesic = toml::find(toml_input, "geodesic");
-        warn_unknown_keys(geodesic, "Tessellation.geodesic", {"solver", "elongation"});
+        warn_unknown_keys(geodesic, "Tessellation.geodesic",
+                          {"solver", "elongation", "max_seeds_per_node"});
+        if (geodesic.contains("max_seeds_per_node")) {
+            tess.geodesic_max_seeds_per_node = get_int(geodesic, "max_seeds_per_node",
+                                                       "Tessellation.geodesic.max_seeds_per_node");
+        }
         if (geodesic.contains("solver")) {
             tess.geodesic_solver = toml::find<std::string>(geodesic, "solver");
         }
@@ -2030,14 +2035,16 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         }
     }
     // Geodesic Quadric measures paths with the tensor (labeling/geodesic_metric.hpp); columnar
-    // and lamellar use a regularized tensor (geodesic.elongation). Per-seed tensors and seed
-    // weights (Laguerre, weighted Quadric) need several seeds per node and are not available yet.
+    // and lamellar use a regularized tensor (geodesic.elongation). Laguerre keeps several seeds
+    // per node (FIM only); per-seed tensors are not available yet.
     const bool stretched_kind = tessellation.anisotropy_kind == "columnar" ||
                                 tessellation.anisotropy_kind == "lamellar";
     if (geodesic) {
-        if (tessellation.metric == MetricType::LAGUERRE) {
-            report_error(valid, "Tessellation.distance = \"geodesic\" does not support metric "
-                                "= \"laguerre\" yet (use voronoi, additive or quadric)");
+        if (tessellation.metric == MetricType::LAGUERRE &&
+            tessellation.geodesic_solver == "graph") {
+            report_error(valid, "Tessellation.distance = \"geodesic\" with metric = \"laguerre\" "
+                                "needs geodesic.solver = \"fim\" (the graph solver keeps one seed "
+                                "per node)");
         }
         if (tessellation.metric != MetricType::QUADRIC && tessellation.anisotropy_kind != "none") {
             report_error(valid, "Tessellation.distance = \"geodesic\" with an anisotropy needs "
@@ -2047,6 +2054,17 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             report_error(valid, "Tessellation.distance = \"geodesic\" does not support "
                                 "anisotropy kind \"per_seed\" yet");
         }
+    }
+    if (tessellation.geodesic_max_seeds_per_node < 1 ||
+        tessellation.geodesic_max_seeds_per_node > GEODESIC_MAX_SEEDS_PER_NODE_LIMIT) {
+        report_error(valid, "Tessellation.geodesic.max_seeds_per_node must be in 1.." +
+                                std::to_string(GEODESIC_MAX_SEEDS_PER_NODE_LIMIT));
+    } else if (tessellation.geodesic_max_seeds_per_node !=
+                   TessellationOptions{}.geodesic_max_seeds_per_node &&
+               !(geodesic && (tessellation.metric == MetricType::LAGUERRE ||
+                              tessellation.metric == MetricType::QUADRIC))) {
+        WARNING_0_OPT("Warning: Tessellation.geodesic.max_seeds_per_node is ignored unless "
+                      "distance = \"geodesic\" with metric \"laguerre\" or \"quadric\"");
     }
     if (tessellation.geodesic_elongation != 0.0 &&
         !(tessellation.geodesic_elongation >= 1.0 &&

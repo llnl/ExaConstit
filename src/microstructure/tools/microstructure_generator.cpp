@@ -308,6 +308,11 @@ std::string DistanceText(const ms::GenerationReport& report) {
            << report.num_unlabeled_elements
            << " unlabeled element(s) (reached, but no label; straight-line label), "
            << g.unlabeled_vertices << " unlabeled vertices\n";
+        if (report.geodesic_seed_lists) {
+            os << "geodesic seed lists (weighted metric): longest list " << g.max_list_length
+               << " seed(s), overflow at " << g.overflow_nodes
+               << " node(s) (0 = exact and independent of the rank count)\n";
+        }
     }
     return os.str();
 }

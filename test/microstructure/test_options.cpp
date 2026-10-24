@@ -1397,6 +1397,11 @@ TEST(MicrostructureOptions, Stage1eKeysParse) {
               -1.0); // a hand-written 0 is out of range (validate() refuses it)
     EXPECT_THROW(FromString("[Tessellation]\ngeodesic = {elongation = \"long\"}\n"),
                  std::invalid_argument);
+    // Seeds per node of the weighted solver
+    EXPECT_EQ(defaults.tessellation.geodesic_max_seeds_per_node, 16);
+    EXPECT_EQ(FromString("[Tessellation]\ngeodesic = {max_seeds_per_node = 32}\n")
+                  .tessellation.geodesic_max_seeds_per_node,
+              32);
 
     // Wrong TOML types are rejected by the reader
     EXPECT_ANY_THROW(FromString("[Tessellation]\nconnected_max_rounds = 1.5\n"));
@@ -1465,9 +1470,26 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
         o.seeds.johnson_mehl.rate = 10.0;
         o.tessellation.metric = ms::MetricType::ADDITIVE;
     }));
+    // Laguerre: seed lists, FIM only; max_seeds_per_node in 1..64 (an error in any mode)
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
     EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
         geodesic(o);
         o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.geodesic_solver = "graph";
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+        o.tessellation.geodesic_max_seeds_per_node = 64;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        o.tessellation.geodesic_max_seeds_per_node = 65;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        o.tessellation.geodesic_max_seeds_per_node = 0;
     }));
     // Quadric: one global tensor (paths measured with A), columnar / lamellar regularized
     EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
@@ -1693,6 +1715,7 @@ TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     EXPECT_EQ(pt.connected_max_rounds, et.connected_max_rounds);
     EXPECT_EQ(pt.geodesic_solver, et.geodesic_solver);
     EXPECT_EQ(pt.geodesic_elongation, et.geodesic_elongation);
+    EXPECT_EQ(pt.geodesic_max_seeds_per_node, et.geodesic_max_seeds_per_node);
     EXPECT_EQ(pt.fit_volumes.enabled, et.fit_volumes.enabled);
     EXPECT_EQ(pt.fit_volumes.tolerance, et.fit_volumes.tolerance);
     EXPECT_EQ(pt.fit_volumes.max_iterations, et.fit_volumes.max_iterations);

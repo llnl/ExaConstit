@@ -11,9 +11,10 @@
 
 /**
  * @file geodesic_common.hpp
- * @brief Parameter, statistics and result types shared by the two geodesic labelers: the graph
- * geodesic (labeling/geodesic_graph.hpp, Dijkstra on element edges and diagonals) and the Fast
- * Iterative Method eikonal solver (labeling/geodesic_fim.hpp).
+ * @brief Parameter, statistics and result types shared by the geodesic labelers: the graph
+ * geodesic (labeling/geodesic_graph.hpp, Dijkstra on element edges and diagonals), the Fast
+ * Iterative Method eikonal solver (labeling/geodesic_fim.hpp) and its weighted multi-seed
+ * variant for Laguerre and weighted Quadric metrics (labeling/geodesic_weighted.hpp).
  *
  * Both labelers measure the distance from each seed along paths that stay inside the material,
  * store it on the field nodes (VertexField: T(v) and label(v); the mesh vertices, or every nodal
@@ -48,6 +49,13 @@ struct GeodesicParameters {
      * partition independent (geodesic_fim.hpp). In [0, 1); 0 iterates until no value changes.
      */
     double tolerance = 1.0e-6;
+    /**
+     * @brief Weighted solver only (labeling/geodesic_weighted.hpp): largest number of seeds a
+     * node keeps (1 .. GEODESIC_MAX_SEEDS_PER_NODE_LIMIT = 64). Seeds that can no longer win are
+     * dropped exactly; if more remain, the worst are cut and the node is counted in
+     * GeodesicReport::overflow_nodes.
+     */
+    int max_seeds_per_node = 16;
     /**
      * @brief Which points carry the distance field (labeling/vertex_field.hpp): AUTO (default)
      * uses the element corners on straight-sided meshes, exactly as before curved support, and
@@ -110,6 +118,13 @@ struct GeodesicReport {
      * is degenerate (element edges shorter than the rounding error of T).
      */
     std::int64_t unlabeled_vertices = 0;
+    /**
+     * @brief Weighted solver only: nodes where more than max_seeds_per_node seeds could still win
+     * and the worst were cut, at least once (0 = the result is exact and partition independent).
+     */
+    std::int64_t overflow_nodes = 0;
+    /** @brief Weighted solver only: the longest seed list kept by any node (global maximum). */
+    int max_list_length = 0;
 };
 
 /** @brief Result of LabelGeodesicGraph and LabelGeodesicFim. */
