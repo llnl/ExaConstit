@@ -31,8 +31,10 @@ basename = "ms_geodesic_fim_ushape_np1"
         ori_stride = 4
         ori_type = "quat"
         # Final grain count printed by the generator (measured): 8 seeds grown along
-        # paths inside the material; one small extra piece is merged -> 8 grains
-        num_grains = 8
+        # paths inside the material; the base seed's path around the notch corner wins a
+        # strip of the right arm joined only along the corner edge (a separate piece for the
+        # face-based cleanup, split off as a grain), and one small piece is merged -> 9 grains
+        num_grains = 9
         orientation_file = "e2e_geodesic_fim_ushape.ori"
     [Materials.Model]
         crystal_plasticity = true

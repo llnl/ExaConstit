@@ -7,7 +7,7 @@ files with your own scripts.
 
 Contents:
 1. Johnson-Mehl grain count
-2. Why geodesic distance supports only some metrics
+2. Geodesic distance and the metrics
 3. File formats: inputs (seed table CSV, ExaConstit microstructure file, phase-to-region file) and
    outputs (mesh, grain file, orientation file, region map, grain table, adjacency table,
    microstructure file)
@@ -58,7 +58,7 @@ References:
 
 ---
 
-## 2. Why geodesic distance supports only some metrics
+## 2. Geodesic distance and the metrics
 
 `distance = "geodesic"` measures distance along paths that stay inside the material. The solver
 (`labeling/geodesic_fim.hpp`, `labeling/geodesic_graph.hpp`) grows **one** front outward from all
@@ -73,18 +73,43 @@ equation |grad T| = 1 with those starting values). That covers:
 - voronoi (all a_i = 0),
 - additive (a_i from the seed weights, e.g. Johnson-Mehl birth times).
 
-It does not cover:
-- **laguerre**, closest = d^2 - w_i. A heavy seed can own points that another seed's front reaches
-  first; the single front discards it there, and its grain comes out too small or empty. Exact
-  results need one distance field per seed (or several candidate seeds carried per vertex), so the
-  cost grows with the number of seeds.
-- **quadric**, closest = (x - s)^T A (x - s) - w_i. Distance depends on direction, so the front
-  must move with a direction-dependent speed (an anisotropic eikonal solver). With one global
-  tensor and no weights, a single anisotropic front would suffice; per-seed tensors need per-seed
-  fields as for laguerre. Columnar and lamellar tensors are degenerate (zero speed limit along a
-  direction) and need separate treatment.
+**Quadric with one tensor A** (anisotropy kind "none" or "tensor", no seed weights). Paths are
+measured with the A-length sqrt(r^T A r) instead of the plain length. Write A = L L^T (Cholesky)
+and map the mesh with y = L^T x: the A-length of any path is the plain length of its image, a
+linear map keeps elements as elements and linear interpolation linear, so the same single front
+runs unchanged on the mapped coordinates (`labeling/geodesic_metric.hpp`). On a convex part the
+labels equal the straight-line quadric labels.
 
-Both extensions are Stage 2 action items (`agent_microstructure/PLAN.md`).
+**Columnar and lamellar.** Their tensors I - a a^T (columns along a) and n n^T (layers with normal
+n) give zero length along the column axis (within the layer plane). A path-length solver cannot
+use them: the map y = L^T x would collapse the mesh onto a plane or a line. The geodesic mode
+therefore uses a regularized tensor in which columns are k times longer than wide,
+
+    columnar:  |r|^2 - (1 - 1/k^2) (a . r)^2,      lamellar:  (n . r)^2 + |r - (n . r) n|^2 / k^2,
+
+with k = `geodesic.elongation`. With finite k a column can end: the boundary between neighboring
+columns i and j, at a point whose height differs from seed i's by dz, moves by about
+(dz / k)^2 / (2 d_ij) toward i, with d_ij the distance between the columns. With dz at most the
+part length L along the axis and d_ij about the column width w, the shift is at most about
+w (L / (k w))^2 / 2. The automatic value k = 10 L / w keeps it below w / 200. Here w is
+sqrt(Lu Lv / N), the column width if the N seeds shared the bounding-box cross-section Lu x Lv;
+for layers, the in-plane diameter over the thickness Ln / N is used. k is rounded up to two
+significant digits, at least 10 and at most 1e4. Beyond 1e4 the mapped elements become slivers
+that the solver's triangle update starts to discard as degenerate (near k ~ 1e6). The extents
+come from exact min/max reductions, so k, and with it the labels, do not depend on the number of
+ranks.
+
+Not covered yet:
+- **laguerre**, closest = d^2 - w_i. A heavy seed can own points that another seed's front reaches
+  first; the single front would discard it there, and its grain would come out too small or empty.
+  The planned solver carries several candidate seeds per vertex and drops a seed only where
+  another seed is both closer and has a lower d^2 - w; such a seed then wins at every point reached
+  through that vertex, so the drop is exact.
+- **quadric with seed weights** (from a seed table): the same planned solver, in the mapped
+  coordinates.
+- **per-seed tensors**: every seed measures paths with its own A_i, so the exact drop rule no
+  longer holds (a seed that is behind at a vertex can catch up along its long direction). Planned
+  with a capped list of candidate seeds per vertex.
 
 ---
 

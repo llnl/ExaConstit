@@ -180,11 +180,13 @@ if(TARGET mechanics AND TARGET microstructure_generator
                     GRAINS 8
                     REGEX  "relabeling round\\(s\\), [1-9][0-9]* element\\(s\\) relabeled"
                     HEADER "# distance: connected")
-    # Geodesic, FIM solver with vote sampling: every element reached, 8 grains
+    # Geodesic, FIM solver with vote sampling: every element reached; 8 seeds, plus one grain
+    # split off from the strip of the right arm that the base seed reaches around the notch
+    # corner (joined to its grain only along the corner edge) -> 9 grains (measured)
     ms_stage1e_case(NAME   geodesic_fim_ushape
                     INPUT  ${_s1e_ms}/e2e/geodesic_fim_ushape.toml
                     BASE   e2e_geodesic_fim_ushape
-                    GRAINS 8
+                    GRAINS 9
                     REGEX  "${_s1e_fim_regex}"
                     HEADER "# distance: geodesic \\(solver fim\\)")
     # Johnson-Mehl along paths, graph solver: 18 nuclei, 2 win no element, 16 grains

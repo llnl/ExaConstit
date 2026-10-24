@@ -377,9 +377,11 @@ struct TessellationOptions {
      *   boundary between two seeds of the metric. Works with every metric;
      * - "geodesic": the distance is the length of the shortest path inside the material, so
      *   grains grow around corners and voids (labeling/geodesic_fim.hpp or geodesic_graph.hpp;
-     *   solver choice in `geodesic`). Voronoi (path length d) or Additive (d - a_i, e.g.
-     *   Johnson-Mehl) metric only, without anisotropy: Laguerre and Quadric values are not path
-     *   lengths. Two properties to know:
+     *   solver choice in `geodesic`). Voronoi (path length d), Additive (d - a_i, e.g.
+     *   Johnson-Mehl) and Quadric metrics; Quadric measures paths with the tensor A
+     *   (labeling/geodesic_metric.hpp: anisotropy "none" / "tensor" as given, "columnar" /
+     *   "lamellar" regularized with geodesic_elongation), without seed weights. Not yet
+     *   Laguerre, weighted Quadric or per-seed tensors. Two properties to know:
      *   - paths connect elements through shared vertices, edges and faces (the solvers work on
      *     the mesh vertices), while the connected mode and the fragment cleanup connect elements
      *     through shared faces only. Elements that share nodes are connected in the conforming FE
@@ -417,6 +419,22 @@ struct TessellationOptions {
      * An unknown name is an error even when distance is not "geodesic" (validate()).
      */
     std::string geodesic_solver = "fim";
+    /**
+     * @brief distance = "geodesic" with anisotropy kind "columnar" or "lamellar" only: how many
+     * times longer than wide the columns (or wider than thick the layers) are for the path-length
+     * solver (TOML `geodesic = { elongation = "auto" | k }`; 0 here = "auto").
+     *
+     * The columnar / lamellar tensors give no length along the column axis (within the layer),
+     * which a path-length solver cannot use, so the geodesic mode measures paths with a
+     * regularized tensor whose columns are k times longer than wide (labeling/geodesic_metric.hpp).
+     * "auto" (default) picks k = 10 L / w from the bounding box of the active material (L its
+     * length along the axis, w the column width if the seeds shared its cross-section; layers:
+     * the in-plane diameter over the layer thickness), at least 10, so columns run through the
+     * part. A number must be in [1, GEODESIC_MAX_ELONGATION = 1e4] (labeling/geodesic_limits.hpp);
+     * an invalid value is an error in any mode, a valid one is ignored (with a warning) unless the
+     * geodesic mode runs with a columnar or lamellar anisotropy.
+     */
+    double geodesic_elongation = 0.0;
     /**
      * @brief Quadrature-vote sampling only: subdivision levels 0..3 of the voting points, 8^levels
      * points per element (labeling/quadrature_vote.hpp; default 2 = 64 points). Level 1 is not

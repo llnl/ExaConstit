@@ -40,6 +40,7 @@
 // The compile-time constant CONNECTED_MAX_ROUNDS_LIMIT only (header-only; ms_options does not
 // link ms_labeling)
 #include "microstructure/labeling/connected_limits.hpp"
+#include "microstructure/labeling/geodesic_limits.hpp"
 #include "options/option_util.hpp"
 
 #include "mfem.hpp"
@@ -823,9 +824,25 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
     }
     if (toml_input.contains("geodesic")) {
         const auto& geodesic = toml::find(toml_input, "geodesic");
-        warn_unknown_keys(geodesic, "Tessellation.geodesic", {"solver"});
+        warn_unknown_keys(geodesic, "Tessellation.geodesic", {"solver", "elongation"});
         if (geodesic.contains("solver")) {
             tess.geodesic_solver = toml::find<std::string>(geodesic, "solver");
+        }
+        // elongation = "auto" (stored as 0) or a number (range checked in validate())
+        if (geodesic.contains("elongation")) {
+            const auto& value = toml::find(geodesic, "elongation");
+            if (value.is_string()) {
+                if (value.as_string() != "auto") {
+                    throw std::invalid_argument("Tessellation.geodesic.elongation must be "
+                                                "\"auto\" or a number");
+                }
+                tess.geodesic_elongation = 0.0;
+            } else {
+                tess.geodesic_elongation = get_number(value);
+                if (tess.geodesic_elongation == 0.0) {
+                    tess.geodesic_elongation = -1.0; // 0 written by hand: out of range
+                }
+            }
         }
     }
 
@@ -1992,9 +2009,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // Stage 1e distance modes. Both run on top of a plain (non-periodic) labeling of the active
     // material: periodic images would need paths and components that wrap around the box, and
     // Lloyd relaxation and the volume fit move seeds / weights using straight-line cells, which
-    // the constrained labels would no longer match. The geodesic distance is a path length, so
-    // only metrics whose value is a length qualify: Voronoi (d) and Additive (d - a_i, e.g.
-    // Johnson-Mehl); Laguerre (d^2 - w) and Quadric ((x - s)^T A (x - s)) values are not lengths.
+    // the constrained labels would no longer match. The geodesic distance is a path length: d
+    // for Voronoi, d - a_i for Additive (e.g. Johnson-Mehl), the A-length for Quadric.
     const bool connected = (tessellation.distance == DistanceMode::CONNECTED);
     const bool geodesic = (tessellation.distance == DistanceMode::GEODESIC);
     if (connected || geodesic) {
@@ -2013,17 +2029,34 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                                     "centroidal_power");
         }
     }
+    // Geodesic Quadric measures paths with the tensor (labeling/geodesic_metric.hpp); columnar
+    // and lamellar use a regularized tensor (geodesic.elongation). Per-seed tensors and seed
+    // weights (Laguerre, weighted Quadric) need several seeds per node and are not available yet.
+    const bool stretched_kind = tessellation.anisotropy_kind == "columnar" ||
+                                tessellation.anisotropy_kind == "lamellar";
     if (geodesic) {
-        if (tessellation.metric != MetricType::VORONOI &&
-            tessellation.metric != MetricType::ADDITIVE) {
-            report_error(valid, "Tessellation.distance = \"geodesic\" needs metric = \"voronoi\" "
-                                "or \"additive\" (Laguerre and Quadric values are not path "
-                                "lengths)");
+        if (tessellation.metric == MetricType::LAGUERRE) {
+            report_error(valid, "Tessellation.distance = \"geodesic\" does not support metric "
+                                "= \"laguerre\" yet (use voronoi, additive or quadric)");
         }
-        if (tessellation.anisotropy_kind != "none") {
-            report_error(valid, "Tessellation.distance = \"geodesic\" cannot be combined with "
-                                "Tessellation.anisotropy (kind must be \"none\")");
+        if (tessellation.metric != MetricType::QUADRIC && tessellation.anisotropy_kind != "none") {
+            report_error(valid, "Tessellation.distance = \"geodesic\" with an anisotropy needs "
+                                "metric = \"quadric\"");
         }
+        if (tessellation.anisotropy_kind == "per_seed") {
+            report_error(valid, "Tessellation.distance = \"geodesic\" does not support "
+                                "anisotropy kind \"per_seed\" yet");
+        }
+    }
+    if (tessellation.geodesic_elongation != 0.0 &&
+        !(tessellation.geodesic_elongation >= 1.0 &&
+          tessellation.geodesic_elongation <= GEODESIC_MAX_ELONGATION)) {
+        report_error(valid, "Tessellation.geodesic.elongation must be \"auto\" or a number in "
+                            "[1, 1e4]");
+    } else if (tessellation.geodesic_elongation != 0.0 &&
+               !(geodesic && tessellation.metric == MetricType::QUADRIC && stretched_kind)) {
+        WARNING_0_OPT("Warning: Tessellation.geodesic.elongation is ignored unless distance = "
+                      "\"geodesic\" with a columnar or lamellar anisotropy");
     }
     // Distance-mode settings, one policy for both keys: a value that is invalid in itself (an
     // unknown solver name, a rounds cap outside the labeler's range) is an error whatever the

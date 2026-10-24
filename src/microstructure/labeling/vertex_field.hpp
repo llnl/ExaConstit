@@ -8,6 +8,7 @@
 
 #include <math.h> // HUGE_VAL in device code (C math library)
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
@@ -649,6 +650,38 @@ public:
         return m_coords;
     }
     /**
+     * @brief Sets the metric of the distances: from now on a vector r has length |S r| (S
+     * row-major 3x3, S[3*r + c]), i.e. the field measures paths with the tensor A = S^T S of the
+     * Quadric metric (geometry/anisotropy_tensors.hpp builds S). The node coordinates are mapped
+     * once, y = S x (MetricCoordinates()), and the solvers, the source values and LabelPoints
+     * measure Euclidean lengths between mapped points, so the A-length of a path equals the
+     * Euclidean length of its image. A linear map keeps cells as cells and linear interpolation
+     * linear, so the solvers run unchanged on the mapped coordinates. The identity (the default)
+     * keeps the plain coordinates (no copy, bitwise the unmapped behavior). Source location,
+     * snapping and node keys always use the physical Coordinates().
+     *
+     * Call it before InitializeSources (the source values are computed in the metric). S must be
+     * invertible (not checked here; the builders refuse degenerate tensors). Not collective (the
+     * mapped coordinates are computed from Coordinates() by the same code on every rank, so they
+     * are bitwise identical on all copies). Host.
+     */
+    void SetMetricStretch(const std::array<double, 9>& stretch);
+    /** @brief True when SetMetricStretch set a non-identity stretch. */
+    bool HasMetric() const {
+        return m_has_metric;
+    }
+    /** @brief The stretch S of SetMetricStretch (identity by default), row-major. */
+    const std::array<double, 9>& MetricStretch() const {
+        return m_stretch;
+    }
+    /**
+     * @brief Coordinates in the metric, y = S x per node, same layout as Coordinates() (which it
+     * is, without a metric). The distance kernels of the solvers read these.
+     */
+    const mfem::Vector& MetricCoordinates() const {
+        return m_has_metric ? m_metric_coords : m_coords;
+    }
+    /**
      * @brief 1 for a node that also exists on another rank (it appears in a GroupCommunicator
      * group other than the rank-local group 0), else 0. Size NV.
      */
@@ -919,6 +952,9 @@ private:
     mfem::Array<int> m_vert_elems;                   ///< node -> element CSR items
     mfem::Array<int> m_vert_elem_lattice;            ///< nodal field: lattice point per incidence
     mfem::Vector m_coords;                           ///< xyz[3*v + d]
+    bool m_has_metric = false;                       ///< non-identity stretch set?
+    std::array<double, 9> m_stretch = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}; ///< S
+    mfem::Vector m_metric_coords;                    ///< S x per node (metric only)
     mfem::Array<int> m_shared;                       ///< 1 = node also on another rank
     mfem::Array<int> m_owned;                        ///< 1 = this rank is the node's master
     ElementMask m_mask;                              ///< copy of the mask (empty = all active)
@@ -935,7 +971,7 @@ private:
     mfem::Array<int> m_elem_src_offsets;             ///< element -> own seeds CSR offsets (NE+1)
     mfem::Array<int> m_elem_src_seeds;               ///< seed index of each entry
     mfem::Array<int> m_elem_src_cell;                ///< source cell id of each entry
-    mfem::Vector m_elem_src_data;                    ///< per entry: x, y, z, a_j (4 doubles)
+    mfem::Vector m_elem_src_data;                    ///< per entry: x, y, z (in the metric), a_j
     // Nodal field lookup tables (FieldCellView); empty for the corner field
     int m_tet = 0;                                   ///< 1 = tet lattice
     mfem::Array<int> m_lattice_to_local;             ///< (p+1)^3, -1 = not a lattice point

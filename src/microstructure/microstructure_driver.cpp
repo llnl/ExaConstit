@@ -46,6 +46,7 @@
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_metric.hpp"
 #include "microstructure/labeling/geodesic_graph.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/labeling/voxel_labeler.hpp"
@@ -833,14 +834,17 @@ TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const
  * (labeling/geodesic_common.hpp). Additive offsets a_i (the seed weights, e.g. -v t_i for
  * Johnson-Mehl nuclei) are used when the metric is "additive"; with "voronoi" every a_i = 0.
  * Sampling (centroid or vote) follows Tessellation.sampling / vote_levels, as for the
- * straight-line labels.
+ * straight-line labels. Paths are measured in `metric` (ResolveGeodesicMetric,
+ * labeling/geodesic_metric.hpp: the identity, or the Quadric tensor's stretch).
  */
 GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pmesh, MPI_Comm comm,
-                             const SeedSet& seeds, const MaterialContext& material) {
+                             const SeedSet& seeds, const MaterialContext& material,
+                             const GeodesicMetric& metric) {
     GeodesicParameters params;
     params.context = &material;
     params.sampling = tess.sampling;
     params.vote_levels = tess.vote_levels;
+    params.stretch = metric.stretch;
     const bool additive = (tess.metric == MetricType::ADDITIVE);
     if (tess.geodesic_solver == "graph") {
         return LabelGeodesicGraph(pmesh, comm, seeds, additive, params);
@@ -956,7 +960,33 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // Step 1: path-length labels (the VertexField inside `geodesic` refers to pmesh and dies at
     // the end of this function). Paths connect elements through shared vertices, edges and faces;
     // the face-based cleanup (step 9) handles pieces attached only through an edge or vertex.
-    GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds, material);
+    // Quadric: paths are measured with the tensor (columnar / lamellar regularized, automatic
+    // elongation from the part's extents; collective). Seed weights would need several seeds per
+    // node, which the solvers do not support yet (seed tables are the only source of Quadric
+    // weights here: fit_volumes is refused with geodesic in validate()).
+    if (tess.metric == MetricType::QUADRIC) {
+        bool weighted = false;
+        for (const double w : seeds.weight) {
+            weighted = weighted || w != 0.0;
+        }
+        if (weighted) {
+            throw std::invalid_argument("GenerateMicrostructure: Tessellation.distance = "
+                                        "\"geodesic\" with metric = \"quadric\" does not "
+                                        "support seed weights yet (the seed table has non-zero "
+                                        "weights)");
+        }
+    }
+    const GeodesicMetric metric = ResolveGeodesicMetric(tess, pmesh, comm,
+                                                        static_cast<int>(seeds.Size()),
+                                                        material.mask);
+    report.geodesic_elongation = metric.elongation;
+    report.geodesic_elongation_auto = metric.automatic;
+    if (metric.clamped) {
+        Warn(comm, report, "Tessellation.geodesic.elongation = \"auto\" was limited to 1e4; "
+                           "columns (layers) may end inside the part. Use fewer, wider grains "
+                           "along the axis or the Euclidean distance");
+    }
+    GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds, material, metric);
     report.used_geodesic = true;
     report.geodesic_solver = tess.geodesic_solver;
     report.geodesic = geodesic.report;

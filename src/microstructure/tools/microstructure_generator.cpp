@@ -243,7 +243,8 @@ std::string DistanceName(ms::DistanceMode distance) {
 
 /*
  * DistanceHeaderLine: the distance mode for the mesh header provenance, one line, e.g.
- * "distance: geodesic (solver fim)". Only settings go here, no counts: the header must be
+ * "distance: geodesic (solver fim)", or "distance: geodesic (solver fim, elongation 440 auto)"
+ * for the regularized columnar / lamellar metric (partition independent). Only settings go here, no counts: the header must be
  * byte-identical for every rank count, and the graph solver's round counts depend on how the
  * mesh is split between ranks (GeodesicReport, labeling/geodesic_common.hpp). The other counts
  * are partition independent but are kept in the log with the rounds, so the header stays a
@@ -255,7 +256,13 @@ std::string DistanceHeaderLine(const ms::GenerationReport& report) {
     }
     std::string line = "distance: " + DistanceName(report.distance);
     if (report.used_geodesic) {
-        line += " (solver " + report.geodesic_solver + ")";
+        line += " (solver " + report.geodesic_solver;
+        if (report.geodesic_elongation > 0.0) {
+            std::ostringstream k;
+            k << report.geodesic_elongation;
+            line += ", elongation " + k.str() + (report.geodesic_elongation_auto ? " auto" : "");
+        }
+        line += ")";
     }
     return line + "\n";
 }

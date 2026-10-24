@@ -43,8 +43,9 @@ namespace exaconstit::microstructure {
  * (labeling/geodesic_fim.hpp or geodesic_graph.hpp); the driver composes the steps. What is
  * checked here is the scope those modes are built for (the Stage 1e limits): no periodic axes
  * for either mode (a
- * path or a connected piece would have to wrap around the box), and for "geodesic" a metric whose
- * value is a length, i.e. Voronoi (d) or Additive (d - a_i), without anisotropy. The vote level
+ * path or a connected piece would have to wrap around the box), and for "geodesic" a metric the
+ * path-length solvers support: Voronoi (d), Additive (d - a_i) or Quadric with one global tensor
+ * (labeling/geodesic_metric.hpp); not Laguerre or per-seed tensors yet. The vote level
  * range (0..3) and the anisotropy kind are checked too, so a direct caller gets the same messages
  * as the driver. Every rank holds the same options, so every rank throws together. Public so the
  * driver can call it before the collective seeding.
@@ -57,15 +58,18 @@ void CheckSupportedTessellation(const TessellationOptions& tessellation) {
                                     "\"geodesic\" cannot be combined with periodic axes");
     }
     if (tessellation.distance == DistanceMode::GEODESIC) {
-        if (tessellation.metric != MetricType::VORONOI &&
-            tessellation.metric != MetricType::ADDITIVE) {
-            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" needs "
-                                        "metric voronoi or additive (Laguerre and Quadric values "
-                                        "are not path lengths)");
+        if (tessellation.metric == MetricType::LAGUERRE) {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" does not "
+                                        "support metric laguerre yet");
         }
-        if (tessellation.anisotropy_kind != "none") {
-            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" cannot "
-                                        "be combined with an anisotropy (kind must be \"none\")");
+        if (tessellation.metric != MetricType::QUADRIC &&
+            tessellation.anisotropy_kind != "none") {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" with an "
+                                        "anisotropy needs metric quadric");
+        }
+        if (tessellation.anisotropy_kind == "per_seed") {
+            throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" does not "
+                                        "support anisotropy kind per_seed yet");
         }
     }
     if (tessellation.vote_levels < 0 || tessellation.vote_levels > 3) {

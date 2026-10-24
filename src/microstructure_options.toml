@@ -788,6 +788,8 @@ exec = "cpu"
     #                       directionally solidified or many additively built materials. Here
     #                       num_seeds is the number of COLUMNS. For columns of finite length
     #                       (grains that end inside the part), use global_tensor with k = 4-10.
+    #                       With distance = "geodesic" the columns are very long instead of
+    #                       endless (geodesic.elongation, below).
     #     anisotropy = { kind = "columnar", axis = [0.0, 0.0, 1.0] }
     # - kind = "lamellar" : infinitely wide flat grains perpendicular to `normal`: every grain is
     #                       a slab through the whole part (layered microstructures).
@@ -860,9 +862,11 @@ exec = "cpu"
     #                 grains are large compared with the holes and corners; when grains are small,
     #                 it gives the same grains as "connected" with slightly noisier boundaries,
     #                 so use "connected" then.
-    #                 Only with metric "voronoi" or "additive", without stretching, for now.
-    #                 This is a limit of the current solver, not of the idea (why: see
-    #                 doc/microstructure.md, section 2); laguerre and quadric support is planned.
+    #                 Works with metric "voronoi", "additive" and "quadric" (stretched grains,
+    #                 including columnar and lamellar; see `geodesic` below). Not yet with
+    #                 "laguerre", with seed weights from a seed table under "quadric", or with
+    #                 anisotropy kind "per_seed"; that support is planned (why: see
+    #                 doc/microstructure.md, section 2).
     # "connected" and "geodesic" cannot be combined with periodic, fit_volumes, lloyd_iterations
     # or voxel maps.
     distance = "euclidean"
@@ -870,12 +874,26 @@ exec = "cpu"
     # distance = "connected" only: retry limit for cut-off pieces (0..1000). Leave it.
     connected_max_rounds = 16
 
-    # distance = "geodesic" only: how path lengths are computed
+    # distance = "geodesic" only.
+    # solver: how path lengths are computed
     # - "fim"   = Fast Iterative Method: solves for the shortest-path distance smoothly through
     #             the elements; accurate (recommended)
     # - "graph" = faster, follows element edges, so paths come out up to ~12% (hexes) or ~30%
     #             (tets) too long; grain boundaries move less than that
-    geodesic = { solver = "fim" }
+    # elongation: only for anisotropy kind "columnar" or "lamellar". Paths cannot be measured
+    #             with "infinitely long" columns, so the geodesic mode treats every column as k
+    #             times longer than wide (layers: k times wider than thick).
+    #             - "auto" (default) = k chosen from the part so columns run through it:
+    #               k = 10 x (part length along the axis) / (column width), at least 10, where
+    #               the column width is what each seed would get if the seeds shared the part's
+    #               bounding-box cross-section. Example: a 2 x 2 x 20 mm pillar along z with
+    #               num_seeds = 50 gives width sqrt(2 x 2 / 50) = 0.28 mm and k = 10 x 20 / 0.28,
+    #               rounded up to 710. The log and the mesh header show the k used.
+    #             - a number from 1 to 10000 = your own k. Use it when you know the columns end
+    #               inside the part (k = typical column length / width), or when "auto" was
+    #               limited to 10000 (the log says so).
+    #             Very large k makes the solver's work harder; k = 10000 is the upper limit.
+    geodesic = { solver = "fim", elongation = "auto" }
 
     # ===== Matching grain volumes to target sizes =====
     # Adjusts the seed weights until every grain has its target volume (the [Seeds.Size]

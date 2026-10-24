@@ -23,11 +23,14 @@
 #include "microstructure/labeling/geodesic_fim.hpp"
 
 #include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/fim_scan.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
 #include "mfem.hpp"
 
+#include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -43,108 +46,17 @@ constexpr double INF = std::numeric_limits<double>::infinity();
 /** @brief Label of a reached vertex whose label is not known yet (larger than any seed index). */
 constexpr int UNSET_LABEL = INT_MAX;
 
-/** @brief Largest number of vertices of an element (linear hex); 7 "other" vertices per element. */
+/** @brief Largest number of vertices of an element (linear hex); 7 "other" vertices per element
+ * (the gathered corner arrays of IncidenceCandidates have 7 entries). */
 constexpr int MAX_ELEMENT_VERTICES = 8;
-
-/**
- * @brief Scans every candidate of node v inside one cell (the element itself for the corner field,
- * a lattice sub-cell for the nodal field, see FieldCellView) and returns the smallest candidate
- * value together with the cell corners supporting the candidates that attain it.
- *
- * The candidates (see the file comment) are, over the cell's other corners o_0 .. o_{n-1}:
- *   - every vertex: T(o_i) + |v - o_i|                        (7 for a hex, 3 for a tet)
- *   - every pair:   the open-segment minimizer (o_i, o_j)       (21 for a hex, 3 for a tet)
- *   - every triple: the triangle-interior minimizer (o_i, o_j, o_k) (35 for a hex, 1 for a tet)
- * Their minimum is the minimum over all triangles of other vertices of the full-face update, since
- * every segment and vertex of such a triangle is a candidate of its own. Each candidate function
- * sorts its vertices by coordinates, so the values are the same bits whatever the element's vertex
- * order (see eikonal_local_solver.hpp).
- *
- * Single pass: a strictly smaller value replaces the running best and its mask, an exactly equal
- * value adds its vertices to the mask. Each candidate value is computed exactly once, here, and
- * both the distance update and the label pass use the stored result (see CandidateSweep).
- *
- * Host and device (called inside the mfem::forall sweep).
- *
- * @param xv     coordinates of v (3 doubles).
- * @param others local node ids of the other corners of the cell (n entries).
- * @param pos    neighbor bit of each of them (FieldCellView, n entries): the position 0 .. 7 in the
- *               element's vertex list for the corner field, the lattice offset code 0 .. 26 for
- *               the nodal field.
- * @param n      number of other corners, 0 .. 7.
- * @param xyz    vertex coordinates, xyz[3*u + d].
- * @param t      distances T(u) per local vertex (+infinity = not reached).
- * @param mask   out: bit pos[i] set when o_i belongs to a candidate whose value equals the returned
- *               minimum (exact comparison); 0 when the minimum is +infinity.
- * @return the smallest candidate value (+infinity if no other vertex is reached).
- */
-MFEM_HOST_DEVICE inline double ScanElementCandidates(const double* xv,
-                                                     const int* others,
-                                                     const int* pos,
-                                                     int n,
-                                                     const double* xyz,
-                                                     const double* t,
-                                                     int* mask) {
-    const double inf = EikonalInfinity();
-    double best = inf;
-    int m = 0;
-    // Through a single vertex
-    for (int i = 0; i < n; ++i) {
-        const int a = others[i];
-        const double value = EikonalVertexValue(xv, &xyz[3 * a], t[a]);
-        const int support = 1 << pos[i];
-        if (value < best) {
-            best = value;
-            m = support;
-        } else if (value == best && value < inf) {
-            m |= support;
-        }
-    }
-    // Through the open segment between two vertices
-    for (int i = 0; i < n; ++i) {
-        for (int j = i + 1; j < n; ++j) {
-            const int a = others[i];
-            const int b = others[j];
-            const double value = EikonalSegmentValue(xv, &xyz[3 * a], &xyz[3 * b], t[a], t[b]);
-            const int support = (1 << pos[i]) | (1 << pos[j]);
-            if (value < best) {
-                best = value;
-                m = support;
-            } else if (value == best && value < inf) {
-                m |= support;
-            }
-        }
-    }
-    // Through the interior of the triangle of three vertices
-    for (int i = 0; i < n; ++i) {
-        for (int j = i + 1; j < n; ++j) {
-            for (int k = j + 1; k < n; ++k) {
-                const int a = others[i];
-                const int b = others[j];
-                const int c = others[k];
-                const double value = EikonalTriangleInteriorValue(
-                    xv, &xyz[3 * a], &xyz[3 * b], &xyz[3 * c], t[a], t[b], t[c]);
-                const int support = (1 << pos[i]) | (1 << pos[j]) | (1 << pos[k]);
-                if (value < best) {
-                    best = value;
-                    m = support;
-                } else if (value == best && value < inf) {
-                    m |= support;
-                }
-            }
-        }
-    }
-    *mask = m;
-    return best;
-}
 
 /**
  * @brief The smallest candidate of node v inside element e, over every cell of e that has v as a
  * corner, together with the neighbor bits (FieldCellView) of the nodes supporting it.
  *
  * Corner field: one cell, the element, with the other vertices in element order and bit = their
- * position, i.e. exactly the Stage 1e scan (ScanElementCandidates on the same arrays, so the same
- * bits). Nodal field: every lattice sub-cell around v (up to 8 sub-hexes or 24 sub-tets), each
+ * position (ScanCell of labeling/fim_scan.hpp on the gathered corners). Nodal field: every
+ * lattice sub-cell around v (up to 8 sub-hexes or 24 sub-tets), each
  * scanned like an element; the results are combined like candidates of one scan (a strictly
  * smaller value replaces the best and its mask, an equal finite value adds its mask), so the
  * value is the minimum over all sub-cell candidates and the mask the union of the supports that
@@ -160,9 +72,19 @@ MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view, in
     const double* xv = &xyz[3 * v];
     double best = inf;
     int m = 0;
+    const bool curved = view.curved != 0;
     view.ForEachCellOfIncidence(v, e, lattice, [&](const int* others, const int* bits, int n) {
         int cell_mask = 0;
-        const double value = ScanElementCandidates(xv, others, bits, n, xyz, t, &cell_mask);
+        // Gather the cell's other corners; hexes scan their far faces only (CellFarMasks)
+        const double* xo[7];
+        double to[7];
+        for (int i = 0; i < n; ++i) {
+            xo[i] = &xyz[3 * others[i]];
+            to[i] = t[others[i]];
+        }
+        int far[7];
+        const bool hex = CellFarMasks(curved, bits, n, far);
+        const double value = ScanCell(xv, xo, to, bits, hex ? far : nullptr, n, &cell_mask);
         if (value < best) {
             best = value;
             m = cell_mask;
@@ -175,61 +97,31 @@ MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view, in
 }
 
 /**
- * @brief Marks the nodes to recompute in the next distance round: active[v] = 1 if any node that
- * shares a cell with v (v included) has changed[u] = 1. The candidates of v read only such nodes.
- * Corner field: every vertex of every element of v (as in Stage 1e); nodal field: the 3 x 3 x 3
- * lattice block around v in each of its elements (a superset of its cell neighbors, which costs
- * extra work only). One mfem::forall iteration per node (gather over the CSR tables, no atomics).
- * Not collective.
- */
-void MarkActive(const VertexField& field, const mfem::Array<int>& changed,
-                mfem::Array<int>& active) {
-    const int nv = field.NumVertices();
-    active.SetSize(nv);
-    if (nv == 0) {
-        return;
-    }
-    const int* ve_offsets = field.VertexElementOffsets().Read();
-    const int* ve_items = field.VertexElements().Read();
-    const FieldCellView view = field.CellView();
-    const int* chg = changed.Read();
-    int* act = active.Write();
-    mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
-        int a = 0;
-        for (int k = ve_offsets[v]; k < ve_offsets[v + 1] && a == 0; ++k) {
-            const int e = ve_items[k];
-            const int lattice = view.LatticeOfIncidence(k);
-            for (int j = 0; j < view.NumNeighborBits(e); ++j) {
-                const int u = view.NeighborNode(e, lattice, j);
-                if (u >= 0 && chg[u] != 0) {
-                    a = 1;
-                    break;
-                }
-            }
-        }
-        act[v] = a;
-    });
-}
-
-/**
  * @brief One synchronous distance sweep, the only place where candidate values are computed.
  *
- * For every active vertex v and every element of v (incidence k of the vertex -> element table):
- * cand_value[k] = the element's smallest candidate and cand_mask[k] = the element vertices
- * supporting it (ScanElementCandidates), computed from T only (the previous round's values);
- * then t_new[v] = min(T(v), min over k of cand_value[k]). Inactive vertices copy T(v) and keep
- * their stored cand_value / cand_mask, which still equal what a recomputation would give (none of
- * the inputs changed since they were stored). After the last round the stored values are
+ * For every vertex v and every element of v (incidence k of the vertex -> element table): if a
+ * node the element's candidates of v read has changed[u] = 1 (it changed in the previous round,
+ * locally or through the exchange), cand_value[k] = the element's smallest candidate and
+ * cand_mask[k] = the nodes supporting it (IncidenceCandidates), computed from T only (the previous
+ * round's values); otherwise the stored cand_value / cand_mask are kept, since they still equal
+ * what a recomputation would give (none of their inputs changed since they were stored). Then
+ * t_new[v] = min(T(v), min over k of cand_value[k]). After the last round the stored values are
  * therefore the candidates of the converged T for every vertex, and the label pass reads them
  * instead of recomputing them: one binary, one code path per value, so the label pass can never
  * disagree with the distances by a rounding bit (e.g. from multiply-add fusion done differently in
  * two kernels).
  *
+ * The nodes checked per incidence are the element's neighbor nodes of v (FieldCellView: every
+ * vertex of the element for the corner field; the 3 x 3 x 3 lattice block around v for the nodal
+ * field, a superset of its cell neighbors, which costs extra checks only). Skipping unchanged
+ * elements saves most of the work of the late rounds, where only a few nodes of each active
+ * neighborhood still change (a hex scan is 63 local solves; the check is at most 27 reads).
+ *
  * One mfem::forall iteration per vertex (gathers over the CSR tables, no atomics). Not
  * collective. cand_value / cand_mask must be sized to the number of incidences and initialized
  * (+infinity / 0) before the first sweep.
  */
-void CandidateSweep(const VertexField& field, const mfem::Array<int>& active,
+void CandidateSweep(const VertexField& field, const mfem::Array<int>& changed,
                     mfem::Vector& cand_value, mfem::Array<int>& cand_mask, mfem::Vector& t_new) {
     const int nv = field.NumVertices();
     t_new.SetSize(nv);
@@ -240,26 +132,30 @@ void CandidateSweep(const VertexField& field, const mfem::Array<int>& active,
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
     const FieldCellView view = field.CellView();
-    const double* xyz = field.Coordinates().Read();
+    const double* xyz = field.MetricCoordinates().Read();
     const double* t = field.Distance().Read();
-    const int* act = active.Read();
-    // ReadWrite: inactive vertices keep their stored candidates
+    const int* chg = changed.Read();
+    // ReadWrite: unchanged incidences keep their stored candidates
     double* cvalue = cand_value.ReadWrite();
     int* cmask = cand_mask.ReadWrite();
     double* out = t_new.Write();
     mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
         double best = t[v];
-        if (act[v] != 0) {
-            // Smallest candidate of every element of v (over its cells), stored per incidence
-            for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
-                const int e = ve_items[k];
-                int mask = 0;
-                const double value =
-                    IncidenceCandidates(view, v, e, view.LatticeOfIncidence(k), xyz, t, &mask);
-                cvalue[k] = value;
-                cmask[k] = mask;
-                best = (value < best) ? value : best;
+        for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
+            const int e = ve_items[k];
+            const int lattice = view.LatticeOfIncidence(k);
+            bool dirty = false;
+            for (int j = 0; j < view.NumNeighborBits(e) && !dirty; ++j) {
+                const int u = view.NeighborNode(e, lattice, j);
+                dirty = u >= 0 && chg[u] != 0;
             }
+            if (dirty) {
+                // Smallest candidate of the element (over its cells), stored per incidence
+                int mask = 0;
+                cvalue[k] = IncidenceCandidates(view, v, e, lattice, xyz, t, &mask);
+                cmask[k] = mask;
+            }
+            best = (cvalue[k] < best) ? cvalue[k] : best;
         }
         out[v] = best;
     });
@@ -303,18 +199,35 @@ void SmallestCandidate(const VertexField& field, const mfem::Vector& cand_value,
  * @brief Upwind sets and starting labels for the label rounds, from the stored candidates.
  * (Neighbor bits are turned back into nodes with FieldCellView::NeighborNode.)
  *
- * For every reached vertex v and incidence k (element e of v): upwind_mask[k] = cand_mask[k] if
- * cand_value[k] == m[v] (the element holds a candidate attaining the global minimum), restricted
- * to the vertices u of e with T(u) < T(v); 0 otherwise. label[v] starts at the source label when
- * v is a source vertex attaining m (T0(v) == m[v]), at UNSET_LABEL otherwise; unreached vertices
- * get -1 and empty masks. Comparisons only. One mfem::forall iteration per vertex. Not collective.
+ * For every reached vertex v and incidence k (element e of v):
+ *  1. upwind_mask[k] = cand_mask[k] if cand_value[k] == m[v] (the element holds a candidate
+ *     attaining the global minimum), restricted to the vertices u of e with T(u) < T(v); 0
+ *     otherwise;
+ *  2. arrival through each remaining u: a(u) = T(u) + |v - u| (EikonalVertexValue, in the metric
+ *     coordinates); incidence_best[k] = the smallest a(u) of the incidence (+infinity if none) and
+ *     the mask keeps only the vertices attaining it; local_best[v] = the smallest over v's
+ *     incidences. The caller makes local_best the minimum over the ranks and FilterUpwind keeps
+ *     only the incidences attaining it.
+ * Why step 2: the support of a face candidate can span two grains (a face crossing a grain
+ * boundary), and taking the smallest seed index over all of it would let the lowest-numbered seed
+ * leak across boundaries and grow downstream. The support vertex whose own front reaches v first
+ * in a straight line carries the right seed (exact ties still go to the lowest index).
+ * A source vertex attaining m (T0(v) == m[v]) starts with its seed's label and keeps no upwind
+ * vertices (they can only tie it); other reached vertices start at UNSET_LABEL; unreached
+ * vertices get -1 and empty masks. Every a(u) is computed here only, so values compared later
+ * (FilterUpwind, across ranks) come from one kernel and agree bitwise. One mfem::forall
+ * iteration per vertex. Not collective.
  */
 void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vector& cand_value,
                 const mfem::Array<int>& cand_mask, mfem::Array<int>& upwind_mask,
-                mfem::Array<int>& label) {
+                mfem::Vector& incidence_best, mfem::Vector& local_best, mfem::Array<int>& label) {
     const int nv = field.NumVertices();
     const int num_incidences = field.VertexElements().Size();
     upwind_mask.SetSize(num_incidences);
+    incidence_best.SetSize(num_incidences);
+    incidence_best.UseDevice(true);
+    local_best.SetSize(nv);
+    local_best.UseDevice(true);
     label.SetSize(nv);
     if (nv == 0) {
         return;
@@ -322,6 +235,7 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
     const int* ve_offsets = field.VertexElementOffsets().Read();
     const int* ve_items = field.VertexElements().Read();
     const FieldCellView view = field.CellView();
+    const double* xyz = field.MetricCoordinates().Read();
     const double* t = field.Distance().Read();
     const double* t0 = field.SourceDistance().Read();
     const int* label0 = field.SourceLabel().Read();
@@ -329,35 +243,78 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
     const double* cvalue = cand_value.Read();
     const int* cmask = cand_mask.Read();
     int* masks = upwind_mask.Write();
+    double* ibest = incidence_best.Write();
+    double* vbest = local_best.Write();
     int* lab = label.Write();
     const double inf = INF;
     const int unset = UNSET_LABEL;
     mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
         const double tv = t[v];
-        if (!(tv < inf)) {
+        const bool source = tv < inf && label0[v] >= 0 && t0[v] == mv[v];
+        if (!(tv < inf) || source) {
             for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
                 masks[k] = 0;
+                ibest[k] = inf;
             }
-            lab[v] = -1;
+            vbest[v] = inf;
+            lab[v] = source ? label0[v] : -1;
             return;
         }
-        // Source vertex that attains the smallest candidate: starts with its seed's label
-        lab[v] = (label0[v] >= 0 && t0[v] == mv[v]) ? label0[v] : unset;
+        lab[v] = unset;
+        double best_v = inf;
         for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
             const int e = ve_items[k];
             int mask = (cvalue[k] == mv[v]) ? cmask[k] : 0;
-            // Keep only nodes strictly upwind (smaller T), so the dependencies form no loop
+            // Keep only nodes strictly upwind (smaller T), so the dependencies form no loop, and
+            // among them those whose straight-line arrival at v is smallest
             const int lattice = view.LatticeOfIncidence(k);
+            double best_k = inf;
+            int keep = 0;
             for (int j = 0; j < view.NumNeighborBits(e); ++j) {
                 if ((mask & (1 << j)) == 0) {
                     continue;
                 }
                 const int u = view.NeighborNode(e, lattice, j);
                 if (u < 0 || !(t[u] < tv)) {
-                    mask &= ~(1 << j);
+                    continue;
+                }
+                const double arrival = EikonalVertexValue(&xyz[3 * v], &xyz[3 * u], t[u]);
+                if (arrival < best_k) {
+                    best_k = arrival;
+                    keep = 1 << j;
+                } else if (arrival == best_k) {
+                    keep |= 1 << j;
                 }
             }
-            masks[k] = mask;
+            masks[k] = keep;
+            ibest[k] = best_k;
+            best_v = (best_k < best_v) ? best_k : best_v;
+        }
+        vbest[v] = best_v;
+    });
+}
+
+/**
+ * @brief Keeps the upwind vertices of the incidences whose smallest arrival equals the global
+ * smallest arrival of their vertex (best[v], the rank minimum of UpwindSets' local_best): masks of
+ * the other incidences are cleared. Comparisons only (of values computed by UpwindSets). One
+ * mfem::forall iteration per vertex. Not collective.
+ */
+void FilterUpwind(const VertexField& field, const mfem::Vector& incidence_best,
+                  const mfem::Vector& best, mfem::Array<int>& upwind_mask) {
+    const int nv = field.NumVertices();
+    if (nv == 0) {
+        return;
+    }
+    const int* ve_offsets = field.VertexElementOffsets().Read();
+    const double* ibest = incidence_best.Read();
+    const double* vbest = best.Read();
+    int* masks = upwind_mask.ReadWrite();
+    mfem::forall(nv, [=] MFEM_HOST_DEVICE(int v) {
+        for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
+            if (!(ibest[k] == vbest[v])) {
+                masks[k] = 0;
+            }
         }
     });
 }
@@ -403,6 +360,29 @@ void LabelSweep(const VertexField& field, const mfem::Array<int>& upwind_mask,
     });
 }
 
+/**
+ * @brief Diagonal of the bounding box of the field nodes in the metric coordinates
+ * (VertexField::MetricCoordinates), over all ranks: min/max reductions, which are exact, so every
+ * partition gets the same bits. 0 for a field without nodes. Collective. Host.
+ */
+double MetricDiameter(const VertexField& field, MPI_Comm comm) {
+    double bounds[6] = {INF, INF, INF, INF, INF, INF}; // min x y z, -max x y z
+    const double* xyz = field.MetricCoordinates().HostRead();
+    for (int v = 0; v < field.NumVertices(); ++v) {
+        for (int d = 0; d < 3; ++d) {
+            bounds[d] = std::min(bounds[d], xyz[3 * v + d]);
+            bounds[3 + d] = std::min(bounds[3 + d], -xyz[3 * v + d]);
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, bounds, 6, MPI_DOUBLE, MPI_MIN, comm);
+    double sum = 0.0;
+    for (int d = 0; d < 3; ++d) {
+        const double extent = (bounds[d] < INF) ? (-bounds[3 + d] - bounds[d]) : 0.0;
+        sum += extent * extent;
+    }
+    return std::sqrt(sum);
+}
+
 /** @brief Global sum of a local count (MPI_Allreduce). Collective. */
 std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
     long long value = static_cast<long long>(local);
@@ -420,13 +400,16 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
  *     the element-size check (collective: every rank learns whether any rank has an element with
  *     more than 8 vertices).
  *  2. VertexField (collective) and InitializeSources (collective).
- *  3. Phase 1, distance rounds: MarkActive -> CandidateSweep -> copy back and note local changes ->
+ *  3. Phase 1, distance rounds: CandidateSweep -> copy back and note local changes ->
  *     ReduceSharedDistance (marks vertices changed by the exchange) -> stop when nothing changed
- *     on any rank. Round 1 treats every reached vertex as "changed", so the vertices around the
- *     sources are active.
+ *     on any rank. A new value is taken only when it is a first arrival or improves T by more
+ *     than the stopping tolerance (GeodesicParameters::tolerance times the metric diameter).
+ *     Round 1 treats every reached vertex as "changed", so the elements around the sources are
+ *     scanned.
  *  4. Phase 2, labels (from the candidates stored by the last sweeps, never recomputed):
  *     SmallestCandidate -> ReduceSharedMinimum (global m per vertex) ->
- *     UpwindSets -> rounds of LabelSweep + copy back + ReduceSharedLabels until no label changes.
+ *     UpwindSets -> ReduceSharedMinimum (global smallest arrival) -> FilterUpwind ->
+ *     rounds of LabelSweep + copy back + ReduceSharedLabels until no label changes.
  *     Vertices left at UNSET_LABEL (degenerate meshes only) become -1 and are counted.
  *  5. Element labels (centroid or vote) and the global statistics.
  * The copy-back and change detection loops run on the host: the exchange that follows needs the
@@ -436,11 +419,11 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
  *   - two MPI_Allreduce calls (AnyRank of the local changes, and the one inside ReduceShared*);
  *     they could be merged into one;
  *   - host loops over all vertices (copy-back, change detection, merging the exchange marker),
- *     although only the active vertices change;
+ *     although only a few vertices change in the late rounds;
  *   - on a GPU, about three vertex-sized host/device copies (T or labels to the host for the
  *     exchange and back, plus the changed marker), which an on-device copy-back and a device
  *     exchange buffer for the shared vertices only would avoid;
- *   - phase arrays kept alive after their phase (t_new, active, changed, the stored candidates
+ *   - phase arrays kept alive after their phase (t_new, changed, the stored candidates
  *     cand_value / cand_mask during the label rounds, label_new), which could be released early.
  */
 GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
@@ -448,6 +431,9 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     // Step 1: parameters (seeds are validated by InitializeSources)
     if (params.max_rounds < 1) {
         throw std::invalid_argument("LabelGeodesicFim: max_rounds must be >= 1");
+    }
+    if (!(params.tolerance >= 0.0 && params.tolerance < 1.0)) {
+        throw std::invalid_argument("LabelGeodesicFim: tolerance must be in [0, 1)");
     }
     if (params.sampling == SamplingMode::QUADRATURE_VOTE) {
         if (params.vote_levels < 0 || params.vote_levels > 3) {
@@ -484,11 +470,13 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     result.field =
         std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
+    field.SetMetricStretch(params.stretch); // identity = plain lengths (Voronoi, Additive)
     const std::vector<double> no_weights;
     result.sources =
         field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
     result.report.seeds_outside_material = result.sources.num_seeds_outside;
     const int nv = field.NumVertices();
+    const double tolerance = params.tolerance * MetricDiameter(field, comm);
 
     // Step 3: phase 1, distance rounds. changed[v] = 1 for the vertices whose T changed in the
     // previous round (locally or through the exchange); at the start: every reached vertex.
@@ -502,7 +490,6 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
             chg[v] = (t[v] < INF) ? 1 : 0;
         }
     }
-    mfem::Array<int> active;
     mfem::Array<int> exchange_changed;
     mfem::Vector t_new;
     // Stored candidates per (vertex, element) incidence, filled by CandidateSweep and read by the
@@ -514,20 +501,23 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     mfem::Array<int> cand_mask(num_incidences);
     cand_mask = 0;
     for (int round = 1;; ++round) {
-        // Synchronous update of the active vertices from the previous round's T
-        MarkActive(field, changed, active);
-        CandidateSweep(field, active, cand_value, cand_mask, t_new);
+        // Synchronous update from the previous round's T (elements with a changed node only)
+        CandidateSweep(field, changed, cand_value, cand_mask, t_new);
         // Copy back and note local changes (bitwise comparison; T only decreases)
         bool local_change = false;
         {
             const double* tn = t_new.HostRead();
             double* t = field.Distance().HostReadWrite();
             int* chg = changed.HostWrite();
+            // A value is taken when it is the first arrival or improves T by more than the
+            // tolerance; smaller improvements are dropped (see "Stopping tolerance")
             for (int v = 0; v < nv; ++v) {
-                const bool c = tn[v] != t[v];
+                const bool c = !(t[v] < INF) ? (tn[v] < INF) : (tn[v] < t[v] - tolerance);
                 chg[v] = c ? 1 : 0;
                 local_change = local_change || c;
-                t[v] = tn[v];
+                if (c) {
+                    t[v] = tn[v];
+                }
             }
         }
         // Exchange: every copy of a shared vertex takes the smallest T over the ranks
@@ -556,7 +546,12 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     field.ReduceSharedMinimum(m);
     mfem::Array<int> upwind_mask;
     mfem::Array<int> label_start;
-    UpwindSets(field, m, cand_value, cand_mask, upwind_mask, label_start);
+    mfem::Vector incidence_best;
+    mfem::Vector arrival_best;
+    UpwindSets(field, m, cand_value, cand_mask, upwind_mask, incidence_best, arrival_best,
+               label_start);
+    field.ReduceSharedMinimum(arrival_best);
+    FilterUpwind(field, incidence_best, arrival_best, upwind_mask);
     {
         const int* ls = label_start.HostRead();
         int* lab = field.Label().HostWrite();

@@ -1384,6 +1384,20 @@ TEST(MicrostructureOptions, Stage1eKeysParse) {
     const auto typo = FromString("[Tessellation]\ngeodesic = {solver = \"dijkstra\"}\n");
     EXPECT_EQ(typo.tessellation.geodesic_solver, "dijkstra");
 
+    // Elongation of the regularized columnar / lamellar metric: "auto" (stored as 0) or a number
+    EXPECT_EQ(defaults.tessellation.geodesic_elongation, 0.0);
+    EXPECT_EQ(FromString("[Tessellation]\ngeodesic = {elongation = \"auto\"}\n")
+                  .tessellation.geodesic_elongation,
+              0.0);
+    EXPECT_EQ(FromString("[Tessellation]\ngeodesic = {elongation = 200}\n")
+                  .tessellation.geodesic_elongation,
+              200.0);
+    EXPECT_EQ(FromString("[Tessellation]\ngeodesic = {elongation = 0}\n")
+                  .tessellation.geodesic_elongation,
+              -1.0); // a hand-written 0 is out of range (validate() refuses it)
+    EXPECT_THROW(FromString("[Tessellation]\ngeodesic = {elongation = \"long\"}\n"),
+                 std::invalid_argument);
+
     // Wrong TOML types are rejected by the reader
     EXPECT_ANY_THROW(FromString("[Tessellation]\nconnected_max_rounds = 1.5\n"));
     EXPECT_ANY_THROW(FromString("[Tessellation]\ngeodesic = {solver = 3}\n"));
@@ -1455,13 +1469,51 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
         geodesic(o);
         o.tessellation.metric = ms::MetricType::LAGUERRE;
     }));
+    // Quadric: one global tensor (paths measured with A), columnar / lamellar regularized
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "tensor";
+        o.tessellation.global_tensor = {1.0, 1.0, 0.0625, 0.0, 0.0, 0.0};
+    }));
+    for (const char* kind : {"columnar", "lamellar"}) {
+        EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+            geodesic(o);
+            o.tessellation.metric = ms::MetricType::QUADRIC;
+            o.tessellation.anisotropy_kind = kind;
+        }));
+        EXPECT_TRUE(check(ValidAutoOptions(), [&](O& o) {
+            geodesic(o);
+            o.tessellation.metric = ms::MetricType::QUADRIC;
+            o.tessellation.anisotropy_kind = kind;
+            o.tessellation.geodesic_elongation = 1.0e4; // the limit
+        }));
+    }
     EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
         geodesic(o);
         o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "columnar";
+        o.tessellation.geodesic_elongation = 2.0e4;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) { // out of range in any mode
+        o.tessellation.geodesic_elongation = 0.5;
     }));
     EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
         geodesic(o);
         o.tessellation.anisotropy_kind = "tensor"; // ignored by Voronoi, but refused here
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
+        geodesic(o);
+        o.seeds.num_seeds = 0;
+        o.seeds.source = "file";
+        o.seeds.placement = ms::SeedPlacement::FILE;
+        o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+        o.tessellation.metric = ms::MetricType::QUADRIC;
+        o.tessellation.anisotropy_kind = "per_seed";
     }));
 
     // Connected: any metric, including a per-seed Quadric seed table
@@ -1640,6 +1692,7 @@ TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     EXPECT_EQ(pt.distance, et.distance);
     EXPECT_EQ(pt.connected_max_rounds, et.connected_max_rounds);
     EXPECT_EQ(pt.geodesic_solver, et.geodesic_solver);
+    EXPECT_EQ(pt.geodesic_elongation, et.geodesic_elongation);
     EXPECT_EQ(pt.fit_volumes.enabled, et.fit_volumes.enabled);
     EXPECT_EQ(pt.fit_volumes.tolerance, et.fit_volumes.tolerance);
     EXPECT_EQ(pt.fit_volumes.max_iterations, et.fit_volumes.max_iterations);

@@ -83,6 +83,17 @@ MFEM_HOST_DEVICE inline double SquaredDistanceToVertex(const double* xyz, int v,
 }
 
 /**
+ * @brief y = S p for the row-major 3x3 stretch S of VertexField::SetMetricStretch, written out
+ * in a fixed order. Host and device.
+ */
+MFEM_HOST_DEVICE inline void MapToMetric(const double* stretch, double px, double py, double pz,
+                                         double* y) {
+    y[0] = stretch[0] * px + stretch[1] * py + stretch[2] * pz;
+    y[1] = stretch[3] * px + stretch[4] * py + stretch[5] * pz;
+    y[2] = stretch[6] * px + stretch[7] * py + stretch[8] * pz;
+}
+
+/**
  * @brief The vote over per-point labels for one chunk of elements (one mfem::forall iteration
  * per element); the same rule as quadrature_vote.cpp's VoteChunk, but on labels that are already
  * seed indices.
@@ -934,6 +945,29 @@ void VertexField::BroadcastCoordinates() {
 }
 
 /*
+ * SetMetricStretch: y = S x per node, in one host loop (MapToMetric), so every copy of a node,
+ * whose physical coordinates are bitwise equal after BroadcastCoordinates, gets the same bits.
+ * The identity clears the metric (no copy).
+ */
+void VertexField::SetMetricStretch(const std::array<double, 9>& stretch) {
+    const std::array<double, 9> identity = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    m_stretch = stretch;
+    m_has_metric = (stretch != identity);
+    if (!m_has_metric) {
+        m_metric_coords.Destroy();
+        return;
+    }
+    m_metric_coords.SetSize(3 * m_num_vertices);
+    m_metric_coords.UseDevice(true);
+    const double* xyz = m_coords.HostRead();
+    double* out = m_metric_coords.HostWrite();
+    for (int v = 0; v < m_num_vertices; ++v) {
+        MapToMetric(m_stretch.data(), xyz[3 * v + 0], xyz[3 * v + 1], xyz[3 * v + 2],
+                    &out[3 * v]);
+    }
+}
+
+/*
  * MarkSharedNodes: the GroupCommunicator's group -> dof table lists, in rows 1.., the dofs shared
  * with other ranks (communication.hpp:291); those nodes are marked 1.
  */
@@ -1189,16 +1223,22 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             const int k = offsets[e] + fill[static_cast<std::size_t>(e)]++;
             entry_seed[k] = i;
             entry_cell[k] = report.source_cell_local[s];
-            entry_data[4 * k + 0] = seeds.x[s];
-            entry_data[4 * k + 1] = seeds.y[s];
-            entry_data[4 * k + 2] = seeds.z[s];
+            // Seed position in the metric (y = S s; the plain position without a metric)
+            double ys[3] = {seeds.x[s], seeds.y[s], seeds.z[s]};
+            if (m_has_metric) {
+                MapToMetric(m_stretch.data(), seeds.x[s], seeds.y[s], seeds.z[s], ys);
+            }
+            entry_data[4 * k + 0] = ys[0];
+            entry_data[4 * k + 1] = ys[1];
+            entry_data[4 * k + 2] = ys[2];
             entry_data[4 * k + 3] = additive_weights.empty() ? 0.0 : additive_weights[s];
         }
     }
 
     // Step 4d: source values at the corners of each local source cell
     {
-        const double* xyz = m_coords.HostRead();
+        // Distances in the metric: mapped nodes and mapped seed positions
+        const double* xyz = MetricCoordinates().HostRead();
         double* t = m_T.HostReadWrite();
         int* lab = m_label.HostReadWrite();
         int corners[FieldCellView::MAX_CELL_NODES];
@@ -1209,12 +1249,15 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
                 continue;
             }
             const double a = additive_weights.empty() ? 0.0 : additive_weights[s];
+            double ys[3] = {seeds.x[s], seeds.y[s], seeds.z[s]};
+            if (m_has_metric) {
+                MapToMetric(m_stretch.data(), seeds.x[s], seeds.y[s], seeds.z[s], ys);
+            }
             const int nc = view.CellNodes(e, report.source_cell_local[s], corners);
             for (int k = 0; k < nc; ++k) {
                 const int v = corners[k];
                 const double value =
-                    std::sqrt(SquaredDistanceToVertex(xyz, v, seeds.x[s], seeds.y[s],
-                                                      seeds.z[s])) - a;
+                    std::sqrt(SquaredDistanceToVertex(xyz, v, ys[0], ys[1], ys[2])) - a;
                 // Lexicographic minimum: seeds come in increasing index, so "<" keeps the lower
                 // index on equal values
                 if (value < t[v]) {
@@ -1429,7 +1472,14 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
     const FieldCellView view = CellView();
     const int* cl = (cells != nullptr) ? cells->Read() : nullptr;
     const bool repeats = cells_repeat;
-    const double* xyz = m_coords.Read();
+    // Distances in the metric (VertexField::SetMetricStretch): mapped nodes, seeds stored
+    // mapped, and each point mapped below
+    const double* xyz = MetricCoordinates().Read();
+    const bool has_metric = m_has_metric;
+    double stretch[9];
+    for (int k = 0; k < 9; ++k) {
+        stretch[k] = m_stretch[static_cast<std::size_t>(k)];
+    }
     const double* t = m_T.Read();
     const int* lab = m_label.Read();
     const int* src_offsets = m_elem_src_offsets.Read();
@@ -1456,11 +1506,15 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
         const int cell = (cl != nullptr) ? cl[repeats ? i % npe : i] : 0;
         int corners[FieldCellView::MAX_CELL_NODES];
         const int nc = view.CellNodes(e, cell, corners);
+        double p[3] = {px[i], py[i], pz[i]};
+        if (has_metric) {
+            MapToMetric(stretch, px[i], py[i], pz[i], p);
+        }
         double best = inf;
         int best_label = -1;
         for (int k = 0; k < nc; ++k) {
             const int v = corners[k];
-            const double cand = t[v] + sqrt(SquaredDistanceToVertex(xyz, v, px[i], py[i], pz[i]));
+            const double cand = t[v] + sqrt(SquaredDistanceToVertex(xyz, v, p[0], p[1], p[2]));
             const int cand_label = lab[v];
             // Lexicographic minimum of (distance, seed index); unreached nodes (inf, -1)
             // never replace the initial (inf, -1)
@@ -1474,9 +1528,9 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
             if (src_cell[k] != cell) {
                 continue;
             }
-            const double dx = px[i] - src_data[4 * k + 0];
-            const double dy = py[i] - src_data[4 * k + 1];
-            const double dz = pz[i] - src_data[4 * k + 2];
+            const double dx = p[0] - src_data[4 * k + 0];
+            const double dy = p[1] - src_data[4 * k + 1];
+            const double dz = p[2] - src_data[4 * k + 2];
             const double cand = sqrt(dx * dx + dy * dy + dz * dz) - src_data[4 * k + 3];
             const int cand_label = src_seeds[k];
             if (cand < best || (cand == best && cand_label < best_label)) {

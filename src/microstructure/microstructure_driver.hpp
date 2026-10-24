@@ -223,6 +223,13 @@ struct GenerationReport {
      */
     GeodesicReport geodesic;
     /**
+     * @brief Geodesic mode with a columnar or lamellar anisotropy: the elongation k of the
+     * regularized metric (labeling/geodesic_metric.hpp); 0 otherwise. Partition independent.
+     */
+    double geodesic_elongation = 0.0;
+    /** @brief True when geodesic_elongation was chosen automatically from the part. */
+    bool geodesic_elongation_auto = false;
+    /**
      * @brief Geodesic mode: active elements that no seed reaches through material (bodies of the
      * part without a seed; GeodesicReport::unreached_elements: none of their vertices has a
      * finite distance). They take their straight-line (Euclidean) nearest-seed label, and the

@@ -221,6 +221,7 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
     result.field =
         std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
+    field.SetMetricStretch(params.stretch); // identity = plain lengths (Voronoi, Additive)
     const std::vector<double> no_weights;
     result.sources =
         field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
@@ -233,7 +234,7 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
     g.elem_verts = field.ElementVertices().HostRead();
     g.vert_elem_offsets = field.VertexElementOffsets().HostRead();
     g.vert_elems = field.VertexElements().HostRead();
-    g.xyz = field.Coordinates().HostRead();
+    g.xyz = field.MetricCoordinates().HostRead();
     g.cells = field.HostCellView();
 
     // Step 3: phase 1, distances

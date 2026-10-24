@@ -1,11 +1,15 @@
 # Fast Iterative Method eikonal geodesic labeler (ms_labeling: labeling/geodesic_fim,
-# labeling/eikonal_local_solver.hpp).
+# labeling/fim_scan.hpp, labeling/eikonal_local_solver.hpp).
 #
 # test_geodesic_fim checks the local eikonal update against brute-force minimization over random
 # faces (including unreached vertices and a run inside an mfem::forall kernel), the accuracy of
 # the FIM distances on a straight strut and around the inner corner of an L-shaped strut (hex and
 # tet), geodesic vs Euclidean labels on the U-shaped part, the Additive boundary d1 - a1 =
-# d2 - a2, seed snapping, a body without a seed, ranks without elements and invalid input. Every
+# d2 - a2, seed snapping, a body without a seed, ranks without elements and invalid input, and the
+# metric of labeling/geodesic_metric.hpp: stretch builders, automatic columnar / lamellar
+# elongation, a tilted-tensor strut against the analytic A-length, convex boxes against the exact
+# nearest-seed labels (Voronoi, tensor, columnar, lamellar) and columns that do not cross the slot
+# of the U-shaped part. Every
 # labeler run compares the distributed result (and the round counts) with a single-rank reference
 # computed in the same run, so np = 2, 3, 4 are compared bitwise against np = 1.
 ms_add_gtest(NAME          test_geodesic_fim

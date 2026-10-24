@@ -5,6 +5,7 @@
 
 #include "mfem.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -38,6 +39,16 @@ struct GeodesicParameters {
      */
     int max_rounds = 100000;
     /**
+     * @brief FIM only: stopping tolerance of the distance rounds, relative to the diagonal D of
+     * the bounding box of the field nodes (in the metric coordinates). A vertex takes a new
+     * distance only when it is its first arrival or lowers T by more than tolerance * D, so the
+     * long tail of tiny corrections (Jacobi sweeps converge geometrically, slowly on stretched
+     * cells) is cut. The converged T then lies within a few tolerance * D of the fully converged
+     * one, far below the discretization error (about 1e-2 h); the labels and the round counts stay
+     * partition independent (geodesic_fim.hpp). In [0, 1); 0 iterates until no value changes.
+     */
+    double tolerance = 1.0e-6;
+    /**
      * @brief Which points carry the distance field (labeling/vertex_field.hpp): AUTO (default)
      * uses the element corners on straight-sided meshes, exactly as before curved support, and
      * every nodal point of the mesh's own Nodes space with p^3 virtual sub-cells per element on
@@ -52,6 +63,13 @@ struct GeodesicParameters {
      * unreached. nullptr = every element.
      */
     const MaterialContext* context = nullptr;
+    /**
+     * @brief Metric of the path lengths (VertexField::SetMetricStretch): a vector r has length
+     * |S r|, S row-major 3x3, i.e. paths are measured with the Quadric tensor A = S^T S
+     * (labeling/geodesic_metric.hpp builds S from the tessellation options). The identity
+     * (default) gives plain lengths, bitwise as before metrics existed.
+     */
+    std::array<double, 9> stretch = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
 };
 
 /**

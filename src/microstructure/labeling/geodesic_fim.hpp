@@ -36,18 +36,26 @@
  * (Fu, Kirby & Whitaker, SIAM J. Sci. Comput. 35(5), 2013), with the triangle's edges and vertices
  * as fallbacks when the minimizer lies outside the triangle.
  *   - Tets: the triangle is the face of each adjacent tet opposite v (the standard tet FIM).
- *   - Hexes ("virtual simplices"): every triangle of the other 7 vertices of each adjacent hex (35
- *     per hex), so a path may enter the hex anywhere on the faces, diagonals or interior planes
- *     spanned by its vertices. All of these triangles lie inside a straight-sided hex with planar
- *     faces (which is convex), so a path never leaves the element and never cuts across a void.
- *     A trilinear hex with warped (non-planar) faces is not convex: a path may leave it by up to
- *     the face warp.
+ *   - Hexes: the triangles of the 3 faces of each adjacent hex that do not contain v ("far
+ *     faces"), each face split along both diagonals (12 triangles per hex). Together the far
+ *     faces of all elements around v enclose v (they form its "link"), and any path reaching v
+ *     from outside crosses them, so the minimum over them is the continuum update; splitting each
+ *     face both ways keeps the smaller of the two interpolations of a warped face. A
+ *     straight-sided hex with planar faces is convex, so a path never leaves the element and never
+ *     cuts across a void. A trilinear hex with warped (non-planar) faces is not convex: a path may
+ *     leave it by up to the face warp.
+ *     Earlier versions also scanned the 23 triangles through the hex interior (all 35 triangles of
+ *     the other 7 vertices). They interpolate T across the element instead of along its boundary,
+ *     never improved the accuracy in the tests (strut, L-shape, curved walls: identical errors),
+ *     and slowed the convergence on stretched cells (a convex box with a 4x Quadric tensor needed
+ *     49 distance rounds instead of 11), so they were dropped: 34 local solves per hex instead of
+ *     63.
  *   - Curved (high-order) elements: the update runs on the cells of the VertexField
  *     (FieldCellView). For a curved mesh (GeodesicParameters::field_nodes = AUTO) these are the
  *     p^3 straight virtual sub-cells spanned by each element's nodal lattice, with the nodal
  *     points of the mesh's own Nodes space as field nodes, so a path follows chords of length about
- *     h/p on the true geometry (a sub-hex uses its 35 triangles, a sub-tet its opposite face, as
- *     above). The candidates of node v in element e are those of every sub-cell of e having v as a
+ *     h/p on the true geometry (a sub-hex uses its 12 far-face triangles, a sub-tet its opposite
+ *     face, as above). The candidates of node v in element e are those of every sub-cell of e having v as a
  *     corner, combined exactly like the candidates of one scan (smallest value; on exact ties the
  *     union of the supports), and stored per (v, e) incidence as before; the supports are stored
  *     as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is built. With
@@ -57,12 +65,12 @@
  *     touching only along an edge or at a vertex are therefore connected for the geodesic solvers
  *     (a front passes through the shared edge), whereas the face-based fragment cleanup
  *     (labeling/fragment_cleanup.hpp) treats them as separate pieces.
- *   - Any other element type (wedge, pyramid) uses the same rule: every triangle of the other
- *     vertices of the element.
+ *   - Any other element type (wedge, pyramid) uses every triangle of the other vertices of the
+ *     element.
  * In practice the element's candidates are evaluated as: every other vertex alone (T(a) + |v - a|),
- * every pair (the minimum over the open segment), and every triple (the interior minimizer); the
- * smallest of these equals the smallest full-triangle minimum, since every edge and vertex of a
- * triangle appears as a pair or a vertex of its own.
+ * every pair of a scanned triangle (the minimum over the open segment), and every scanned triangle
+ * (the interior minimizer); the smallest of these equals the smallest full-triangle minimum, since
+ * every edge and vertex of a triangle appears as a pair or a vertex of its own.
  *
  * **Jacobi rounds (phase 1, distances).** Starting from VertexField::InitializeSources (the
  * vertices of each seed's source element hold T0 = |v - s_i| - a_i, all others +infinity):
@@ -83,11 +91,20 @@
  *     (minimum over the ranks, so all copies agree).
  *  2. The *upwind* vertices of v are the vertices of every candidate attaining m(v) exactly (the
  *     support of the minimizer: 3 vertices for a triangle interior, 2 for a segment, 1 for a
- *     vertex), restricted to vertices u with T(u) < T(v). v is a *source* vertex when T0(v) = m(v).
- *  3. label(v) = the smallest seed index among v's source seed (if any) and the labels of its
- *     upwind vertices. Computed by Jacobi rounds with VertexField::ReduceSharedLabels: labels start
- *     at "unknown" (larger than any seed index) except at source vertices and only decrease.
- * Ties go to the lowest seed index.
+ *     vertex), restricted to vertices u with T(u) < T(v), and among those only the ones with the
+ *     smallest straight-line arrival a(u) = T(u) + |v - u| (minimum over the ranks). v is a
+ *     *source* vertex when T0(v) = m(v); it has no upwind vertices.
+ *     Why the arrival filter: the support of a face candidate can span two grains (a face that
+ *     crosses a grain boundary). Taking the smallest seed index over the whole support let the
+ *     lowest-numbered seed leak across boundaries and grow downstream from there; the support
+ *     vertex whose own front reaches v first in a straight line carries the right seed.
+ *  3. label(v) = the source seed of a source vertex, else the smallest seed index among the labels
+ *     of its upwind vertices. Computed by Jacobi rounds with VertexField::ReduceSharedLabels:
+ *     labels start at "unknown" (larger than any seed index) except at source vertices and only
+ *     decrease.
+ * Exact ties go to the lowest seed index. Near a grain boundary the label of an element can still
+ * differ from the exact nearest seed where the two arrival distances differ by less than the
+ * distance error (first order in h, about 0.6 h next to a point source).
  *
  * **Why the result does not depend on the partition (bitwise).**
  *  - Every candidate value is computed by the same code (one kernel, CandidateSweep, in one
@@ -101,14 +118,18 @@
  *    if a value were recomputed in a second kernel, where the compiler may fuse multiply-adds
  *    differently. The label pass therefore reads the candidate
  *    values and supports stored by the distance sweeps (per vertex-element pair) and never
- *    recomputes them.
+ *    recomputes them; the arrivals a(u) of step 2 are computed in one kernel (UpwindSets) and only
+ *    compared with each other.
  *  - Consistency of the stored values with T: a vertex's stored candidates are recomputed whenever
  *    a vertex of its elements changes, so after the last round they are the candidates of the
- *    converged T, and T(v) is no larger than any of them or than T0(v): T(v) <= m(v). Normally
- *    T(v) = m(v); if a candidate went up by a rounding bit when an input went down (the closed
- *    form is not exactly monotone), m(v) > T(v), and the upwind set is still taken from the
- *    candidates attaining m(v), filtered by T(u) < T(v).
- *  - In round k, a full synchronous sweep over the whole mesh would give
+ *    converged T (an element is rescanned when one of the nodes its candidates read changed; the
+ *    stored values of the others are what a rescan would give), and T(v) <= m(v) + tol (stopping
+ *    tolerance below; tol = 0 gives T(v) <= m(v)). Normally T(v) = m(v); if a candidate went up
+ *    by a rounding bit when an input went down (the closed form is not exactly monotone), or an
+ *    improvement smaller than tol was not taken, m(v) != T(v), and the upwind set is still taken
+ *    from the candidates attaining m(v), filtered by T(u) < T(v).
+ *  - In round k, a full synchronous sweep over the whole mesh would give (with tol = 0; see the
+ *    stopping tolerance for tol > 0)
  *        T^k(v) = min( T^{k-1}(v), min over all candidates of v computed from T^{k-1} ).
  *    Each rank computes the minimum over the candidates of its own elements; step 2 takes the
  *    minimum over the ranks. A minimum of doubles is exact and does not depend on the order in
@@ -129,13 +150,36 @@
  * start above it, only decrease, and reach it after at most "longest upwind chain" rounds.
  * GeodesicParameters::max_rounds is only a safety net.
  *
+ * **Stopping tolerance.** Jacobi sweeps converge geometrically: after the front has passed, every
+ * round still lowers many values by a shrinking amount, and on stretched cells (a strong Quadric
+ * tensor, see "Metric") the tail is long: on a 16^3 box with a 4x tensor, rounds 30 to 127 changed
+ * values by less than 1e-5 relative, far below the discretization error. A vertex therefore takes
+ * a new value only when it is its first arrival or lowers T by more than
+ * tol = GeodesicParameters::tolerance x D, D the diagonal of the bounding box of the field nodes
+ * in the metric coordinates (exact min/max reductions, identical on every partition); otherwise
+ * it keeps its T and does not count as changed. The result lies within a few tol of the fully
+ * converged T. This keeps the partition independence above: the acceptance test is a function of
+ * the old value and the candidate minimum only, a rank that accepts a value holds a candidate
+ * below T - tol, and the rank minimum of the exchange then equals the value a single-rank sweep
+ * would accept (and if no rank accepts, every copy keeps T, as on one rank). A rejected
+ * improvement leaves a stored candidate slightly below T(v); the label pass handles m(v) != T(v)
+ * as described above. tolerance = 0 restores the iteration to an exact fixed point.
+ *
  * **Where it runs.** The update and label sweeps are mfem::forall kernels (MFEM's parallel loop:
  * GPU kernels when the mfem::Device has a CUDA or HIP backend, host loops otherwise); the rank
  * exchanges and source placement run on the host.
  *
- * **Scope (Stage 1e).** Voronoi (a_i = 0) and Additive (distance - a_i) metrics only; no periodic
- * axes; passthrough parts are excluded with an element mask (GeodesicParameters::context), so paths
- * stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
+ * **Metric.** GeodesicParameters::stretch S measures a vector r as |S r| (the Quadric tensor
+ * A = S^T S, labeling/geodesic_metric.hpp). The node coordinates, seed positions and labeled
+ * points are mapped once with y = S x (VertexField::SetMetricStretch) and everything above runs
+ * unchanged on the mapped coordinates: a linear map keeps the cells, their convexity and the
+ * linear interpolation, and turns A-lengths into Euclidean lengths. The identity (default) is the
+ * plain length.
+ *
+ * **Scope.** Voronoi (a_i = 0), Additive (distance - a_i) and, through the stretch, Quadric with
+ * one global tensor and no weights; not yet Laguerre, weighted Quadric or per-seed tensors; no
+ * periodic axes; passthrough parts are excluded with an element mask
+ * (GeodesicParameters::context), so paths stay inside the active material. A body of the mesh with no seed keeps T = +infinity and label
  * -1, and its elements get element_seed = -1 (the driver decides what to do with them). Elements
  * must have at most 8 vertices (all linear 3D MFEM elements); the nodal field for curved meshes
  * needs all hexes or all tets.

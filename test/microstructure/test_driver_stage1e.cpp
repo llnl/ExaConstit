@@ -288,6 +288,10 @@ void WriteFixtures() {
             WriteText("one_seed.csv",
                       "id,x,y,z\n"
                       "7,0.3,0.4,0.5\n");
+            WriteText("weighted.csv",
+                      "id,x,y,z,weight\n"
+                      "1,0.3,0.3,0.3,0.01\n"
+                      "2,0.7,0.6,0.5,0.0\n");
         } catch (const std::exception& e) {
             error = e.what();
         }
@@ -845,9 +849,6 @@ TEST(DriverStage1e, RefusedCombinations) {
     O laguerre = geodesic;
     laguerre.tessellation.metric = ms::MetricType::LAGUERRE;
     EXPECT_TRUE(refused(laguerre));
-    O quadric = geodesic;
-    quadric.tessellation.metric = ms::MetricType::QUADRIC;
-    EXPECT_TRUE(refused(quadric));
     O tensor = geodesic;
     tensor.tessellation.anisotropy_kind = "tensor";
     EXPECT_TRUE(refused(tensor));
@@ -876,6 +877,54 @@ TEST(DriverStage1e, RefusedCombinations) {
     seeds.source_id = {0, 1};
     EXPECT_THROW(ms::LabelTessellation(*d.pmesh, MPI_COMM_WORLD, seeds, direct.tessellation),
                  std::invalid_argument);
+}
+
+// Geodesic quadric through the driver: columnar grains along z on a convex 1 x 1 x 4 box
+// (8 x 8 x 32 hexes) with 6 random seeds. The regularized metric uses the automatic elongation
+// (L = 4, w = sqrt(1 x 1 / 6) = 0.408, 10 L / w -> 98), reported identically on every rank count;
+// the labels equal the distributed run's and stay close to the Euclidean (exact, endless) columns
+// on this convex part. Seed weights from a seed table are refused under quadric (not supported
+// yet), whereas the same table runs with Voronoi.
+TEST(DriverStage1e, GeodesicQuadricColumnar) {
+    WriteFixtures();
+    mfem::Mesh serial = exaconstit::MakeAutoHexMesh({8, 8, 32}, {1.0, 1.0, 4.0});
+    ms::MicrostructureOptions options;
+    options.seeds.num_seeds = 6;
+    options.seeds.rng_seed = 3u;
+    options.tessellation.metric = ms::MetricType::QUADRIC;
+    options.tessellation.anisotropy_kind = "columnar";
+    options.tessellation.anisotropy_axis = {0.0, 0.0, 1.0};
+    options.tessellation.distance = ms::DistanceMode::GEODESIC;
+    const RunPair geodesic = RunAndCompare(serial, options);
+    EXPECT_TRUE(geodesic.alone.report.used_geodesic);
+    EXPECT_EQ(geodesic.alone.report.geodesic_elongation, 98.0);
+    EXPECT_TRUE(geodesic.alone.report.geodesic_elongation_auto);
+    EXPECT_EQ(geodesic.world.report.geodesic_elongation, 98.0);
+
+    options.tessellation.distance = ms::DistanceMode::EUCLIDEAN;
+    const DriverRun euclidean = RunDriver(serial, options, MPI_COMM_SELF);
+    EXPECT_EQ(euclidean.report.geodesic_elongation, 0.0);
+    int differ = 0;
+    for (std::size_t e = 0; e < euclidean.labels.size(); ++e) {
+        differ += (euclidean.labels[e] != geodesic.alone.labels[e]) ? 1 : 0;
+    }
+    EXPECT_LT(static_cast<double>(differ) / serial.GetNE(), 0.10);
+
+    // A user elongation is used as given
+    options.tessellation.distance = ms::DistanceMode::GEODESIC;
+    options.tessellation.geodesic_elongation = 500.0;
+    const DriverRun given = RunDriver(serial, options, MPI_COMM_WORLD);
+    EXPECT_EQ(given.report.geodesic_elongation, 500.0);
+    EXPECT_FALSE(given.report.geodesic_elongation_auto);
+
+    // Seed weights: refused under quadric, accepted with Voronoi (weights unused there)
+    Distributed d = Distribute(serial, MPI_COMM_WORLD);
+    ms::MicrostructureOptions weighted = TableOptions("weighted.csv");
+    weighted.tessellation.distance = ms::DistanceMode::GEODESIC;
+    weighted.tessellation.metric = ms::MetricType::QUADRIC;
+    EXPECT_TRUE(Refused(*d.pmesh, weighted));
+    weighted.tessellation.metric = ms::MetricType::VORONOI;
+    EXPECT_FALSE(Refused(*d.pmesh, weighted));
 }
 
 // ---------------------------------------------------------------------------------------------

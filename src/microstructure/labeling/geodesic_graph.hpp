@@ -106,8 +106,9 @@
  * least one label per round and labels are bounded below. GeodesicParameters::max_rounds is only a
  * safety net.
  *
- * **Scope (Stage 1e).** Voronoi (a_i = 0) and Additive (distance - a_i) metrics only; no periodic
- * axes; passthrough parts are excluded with an element mask (GeodesicParameters::context), so
+ * **Scope.** Voronoi (a_i = 0), Additive (distance - a_i) and, through GeodesicParameters::stretch
+ * (edge lengths |S (u - v)|, labeling/geodesic_metric.hpp), Quadric with one global tensor and no
+ * weights; no periodic axes; passthrough parts are excluded with an element mask (GeodesicParameters::context), so
  * paths stay inside the active material. A body of the mesh with no seed keeps T = +infinity
  * and label -1, and its elements get element_seed = -1 (the driver decides what to do with them).
  */
