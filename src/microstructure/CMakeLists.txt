@@ -179,3 +179,6 @@ blt_add_executable(NAME       microstructure_generator
                    SOURCES    tools/microstructure_generator.cpp
                    OUTPUT_DIR ${BINARY_DIR}
                    DEPENDS_ON exaconstit_microstructure ${MICROSTRUCTURE_DEPENDS})
+# Installed next to mechanics. The ms_* libraries are static, so the executable needs nothing
+# else from this build at run time (only the same shared TPLs as mechanics, e.g. HDF5).
+install(TARGETS microstructure_generator DESTINATION bin)
