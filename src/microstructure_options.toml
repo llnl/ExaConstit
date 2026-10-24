@@ -1,0 +1,1132 @@
+# ExaConstit Microstructure Generator Configuration File
+#
+# This file lists every option of ExaConstit's microstructure generator, the tool that fills a
+# finite element mesh with grains (crystals) and gives every grain a crystal orientation and a
+# material. It explains what each option does, which values it takes, and when you would use it.
+# Lines starting with '#' are comments and are ignored by the program.
+# The file uses TOML format: options live in tables [Table] and sub-tables [Table.SubTable].
+#
+# You do not need to read all of it:
+#   - for a first run, read "FIRST RUN" just below and stop there;
+#   - to change the grains, read "WORDS EVERYONE NEEDS" and "RECIPES", then only the tables the
+#     recipe names. Most runs change five keys or fewer;
+#   - background, derivations and exact file layouts are in doc/microstructure.md.
+#
+# Needs ExaConstit built with ENABLE_MICROSTRUCTURE=ON (which needs the Axom library). The
+# standalone program microstructure_generator is built next to mechanics, in the bin/ directory
+# of the build, and make install puts both in <install prefix>/bin.
+
+# =====================================
+# FIRST RUN (copy, paste, run)
+# =====================================
+# Start INSIDE ExaConstit: add the tables below to the [Mesh] section of a working ExaConstit
+# options.toml that uses an auto (box) mesh. This makes 100 random grains in a 1 x 1 x 1 box of
+# 30 x 30 x 30 elements when the simulation starts:
+#
+#   [Mesh]
+#       type = "auto"
+#       [Mesh.Auto]
+#           length = [1.0, 1.0, 1.0]
+#           ncuts = [30, 30, 30]
+#       [Mesh.Microstructure.Seeds]
+#           num_seeds = 100            # number of grains
+#           rng_seed = 1               # change it for another, statistically similar, set of grains
+#           min_distance_factor = 0.5  # keeps grains of similar size (see [Seeds])
+#       [Mesh.Microstructure.Output]
+#           basename = "grains"
+#           paraview = true            # off by default inside ExaConstit
+#
+# Then DELETE from the old deck, because the generator now provides them:
+#   - the top-level grain_file, orientation_file and region_mapping_file;
+#   - in every [Materials.Grain]: orientation_file, grain_file and num_grains, and ori_type
+#     unless it is "quat". Keep ori_state_var_loc and ori_stride.
+# ExaConstit stops at start-up with a message naming any of these you forget.
+#
+# To look at the grains: open results/<your deck's basename>/grains_paraview/grains_paraview.pvd
+# in ParaView and color by grain_id. With [Visualizations] paraview = true, ExaConstit's own
+# output also carries a "Grain ID" field next to stresses and strains.
+# A complete deck of this kind (FCC crystal plasticity, tension to 1% strain) is
+# 01_voronoi/voronoi.toml of the microstructure_examples set, which also shows Laguerre,
+# columnar and Johnson-Mehl grains and thick-ring meshes.
+#
+# Which route to use:
+#   - Inside ExaConstit ([Mesh.Microstructure], above): simplest; nothing to keep track of. The
+#     grains are made again, identically, every time the deck runs.
+#   - The standalone tool (mpirun -np 4 microstructure_generator -i this_file.toml): use it to
+#     look at and tune the grains in seconds without running mechanics, and to save a
+#     microstructure as files that many decks share. Its [Output] section says what it writes and
+#     what to put in ExaConstit. Command-line flags override the file:
+#          -m FILE   use this mesh file (sets [Mesh] type = "file")
+#          -n N      make N random grains (also switches a seed table back to random seeds)
+#          -s S      random number key (Seeds.rng_seed)
+#          -o NAME   output file name (Output.basename)
+#          --parts P also write the mesh split into P files for parallel reading
+#
+# Several random variations (scatter studies), like testing several specimens of the same
+# material: make copies of your deck that differ only in two lines, then run each copy.
+#   - rng_seed: 1 in the first copy, 2 in the second, and so on. Each value gives a different
+#     but statistically similar set of grains (and random orientations).
+#   - basename (top of the deck): e.g. "run_1", "run_2", ..., so the results go to separate
+#     folders instead of overwriting each other.
+#
+# As written, the active (uncommented) values in this file are a working standalone run: 50
+# random grains on a box of 20 x 20 x 20 elements. Every active value is the default, except the
+# mesh (a box instead of a mesh file) and the number of grains (which has no default). Inside
+# ExaConstit two defaults differ: Output.paraview is off and Output.directory is the run's
+# results directory (see the last section of this file).
+
+# =====================================
+# GETTING YOUR MESH IN, AND UNITS
+# =====================================
+# Mesh formats: the generator and ExaConstit read the formats MFEM reads: MFEM (.mesh, .mesh.gz),
+# Gmsh (.msh, versions 2.2 and 4.1), VTK (legacy .vtk and XML .vtu), Netgen, TrueGrid, and
+# Cubit/Exodus (needs MFEM built with NetCDF). There is no Abaqus (.inp) or ANSYS reader: export
+# the mesh to Gmsh or VTK first (Gmsh, or Python's meshio package, can do the conversion).
+# Element sets become numbered element attributes: a Gmsh physical volume group's number, or a
+# VTK cell data array named "material" or "attribute". Write down which number is which set
+# (e.g. GAUGE = 1, GRIP = 2); [Mesh] active_attributes and passthrough_attributes use those
+# numbers. After generation the attributes hold grain numbers instead, see [Mesh].
+#
+# Units: the generator has no units. Every length (box size, distances, grain sizes) is in the
+# units of the mesh coordinates. ExaConstit does not fix a length unit either: stresses come out
+# in the units of your material constants, strains have none, and only lengths you give it (mesh,
+# velocity boundary values in length/time) must use the mesh unit. A 1 x 1 x 1 box is 1 mm on a
+# side if you decide the mesh is in mm.
+
+# =====================================
+# WORDS EVERYONE NEEDS
+# =====================================
+# Grain        One crystal of the metal. Every element of the mesh belongs to exactly one grain; a
+#              grain is a group of elements. The grain number of each element is stored as its
+#              element attribute, which ExaConstit already uses as the grain ID.
+# Seed         A point that a grain grows from: one seed = one grain. Where the seeds are decides
+#              how big the grains are and where they sit.
+# Orientation  How a grain's crystal lattice is rotated relative to the specimen. Each grain has
+#              one, stored as a quaternion (four numbers describing a rotation). You do not need
+#              the math unless you bring your own orientations; the exact convention is under
+#              [Orientations].
+# Region       An ExaConstit material: region r uses the r-th [[Materials]] block of ExaConstit's
+#              options.toml. Every grain belongs to one region. Region numbers start at 1. With
+#              one material, everything is region 1 and you can ignore regions.
+# Random number key  Seeds.rng_seed. The same key always gives the same microstructure, on any
+#              number of MPI ranks. A different key gives a different microstructure with the same
+#              statistics, like testing several specimens of one material.
+# RVE          Representative volume element: a cube of material meant to behave like the bulk.
+
+# =====================================
+# WORDS ABOUT GRAIN SHAPES (used in RECIPES)
+# =====================================
+# Equiaxed     Grains of roughly the same size in every direction (not stretched).
+# Tessellation Splitting the part into grains by giving every element to its "closest" seed. The
+#              rule for "closest" is the metric ([Tessellation] metric); it sets the grain shapes.
+# voronoi      The plain rule: straight-line distance. Grains are many-sided blocks with flat
+#              faces, like a typical equiaxed metal.
+# laguerre     voronoi plus a "weight" per seed that makes its grain bigger or smaller; used to
+#              control grain sizes.
+# quadric      A stretched ruler: distance counts less along some directions, so grains grow
+#              longer there (elongated, columnar or flat grains).
+# additive     The rule behind Johnson-Mehl grains (grains that appear over time; curved faces).
+# Log-normal   The usual description of measured grain size spreads: most grains near a typical
+#              size, a few much larger. Its width is sigma ([Seeds.Size]).
+# fit_volumes  Adjusting the laguerre weights until every grain has its target size.
+# Polydisperse placement  Placing seeds so that big grains get more room.
+# Lloyd smoothing  (lloyd_iterations) Moving seeds to the middle of their grains, which makes the
+#              grains rounder and more uniform.
+
+# =====================================
+# WORDS ABOUT MEASURED DATA (skip if you only make synthetic grains)
+# =====================================
+# Phase        What your data calls a material, e.g. the matrix (phase 1) and precipitates
+#              (phase 2) of a measured data set, or a made-up "hard" and "soft" phase. Phase
+#              numbers start at 1. The phases present become regions 1, 2, ... in ascending
+#              order, so phases 1..M are simply regions 1..M.
+# Texture      A preference of the grain orientations for some directions (e.g. after rolling);
+#              no texture = random orientations. An ODF (orientation distribution function) is
+#              the usual description of a texture.
+# EBSD         Electron backscatter diffraction: maps grain orientations on a polished surface
+#              (2D); stacks of sections give 3D data.
+# HEDM         High-energy X-ray diffraction microscopy: measures grains inside a specimen in 3D.
+#              Far-field HEDM gives a grain list (center, orientation, size); near-field HEDM
+#              gives a 3D map of grain numbers.
+# DREAM.3D, ExaCA, SPPARKS  Programs that make or process 3D microstructures (DREAM.3D:
+#              reconstruction and synthetic generation; ExaCA: solidification / additive
+#              manufacturing simulation; SPPARKS: grain growth simulation).
+# Voxel map    A 3D picture of a microstructure on a regular grid of small boxes (voxels), each
+#              holding the number of the grain it belongs to, plus a list of grain orientations.
+#              This is how near-field HEDM, EBSD stacks, DREAM.3D, ExaCA and SPPARKS data are
+#              stored. The generator can put such a picture onto any mesh ([VoxelMap]).
+# Seed table   A text (CSV) file listing grains as seed points, one row per grain, with optional
+#              orientation, phase, size and shape. Far-field HEDM grain lists come in this way.
+# RD/TD/ND     Rolling, transverse and normal direction: the specimen axes of a rolled plate.
+
+# =====================================
+# HOW THE GENERATOR WORKS
+# =====================================
+# Each table controls one step. They appear in this file in the order below ([Output] is placed
+# right after [Mesh] so reading and writing meshes sit side by side; it is applied last):
+#
+#   [Mesh]          the mesh to put grains on (READ), and which parts of it get grains
+#   [Output]        the files to WRITE: the mesh with grains, orientations, ParaView, ...
+#   [Source]        make grains from seeds (synthetic or measured), or read a voxel map
+#   [Seeds]         where the grain seeds are, and how many
+#     [Seeds.Size]        optional: a grain size distribution
+#     [Seeds.JohnsonMehl] optional: a nucleation-and-growth model that places the seeds
+#   [Tessellation]  the shape rule: how seeds grow into grains
+#   [VoxelMap]      instead of seeds: the voxel map file to read
+#   [Cleanup]       tidy up: no grain split into pieces, no grains too small for the mesh
+#   [Orientations]  the crystal orientation of every grain
+#   [Regions]       the ExaConstit material of every grain
+#
+# Grain boundaries always follow element faces: on a coarse mesh they look like stair steps. A
+# finer mesh gives smoother boundaries but the same grains in the same places (except with
+# Seeds.placement = "element_weighted", whose seeds depend on the elements).
+# The microstructure depends only on the options, never on the number of MPI ranks.
+
+# =====================================
+# RECIPES: which options give which microstructure
+# =====================================
+# The terms are defined in the WORD sections above; each option is explained in its table
+# below. The example values are starting points that look like the named case, not measured
+# values for any particular alloy: adjust them to your own micrographs or data.
+#
+#   Equiaxed grains, the standard synthetic polycrystal:
+#       [Tessellation] metric = "voronoi";  [Seeds] num_seeds = N, min_distance_factor = 0.5
+#   A realistic spread of grain sizes (log-normal, like measured grain size histograms):
+#       [Tessellation] metric = "laguerre", fit_volumes = {enabled = true, ...}
+#       [Seeds.Size] distribution = "lognormal", sigma = 0.3, polydisperse_placement = true
+#   Very uniform, rounded grains (an idealized material):
+#       [Tessellation] metric = "voronoi", lloyd_iterations = 10
+#   Elongated grains in any direction (rolled plate, drawn wire, forging):
+#       [Tessellation] metric = "quadric", global_tensor = [...]  (starting values there)
+#   Columns through the whole part (directional solidification, additive builds):
+#       [Tessellation] metric = "quadric", anisotropy = {kind = "columnar", axis = [0, 0, 1]}
+#   Flat layered grains (pancakes / lamellae through the whole part):
+#       [Tessellation] metric = "quadric", anisotropy = {kind = "lamellar", normal = [0, 0, 1]}
+#   A recrystallized-looking structure with curved boundaries and big and small grains mixed:
+#       [Seeds] placement = "johnson_mehl" + [Seeds.JohnsonMehl];
+#       [Tessellation] metric = "additive"
+#   Your measured grains from a far-field HEDM grain list (HEXRD, MIDAS):
+#       convert with scripts/microstructure/*_to_seeds.py, then [Seeds] source = "file",
+#       [Orientations] source = "from_source"; usually with roi + fill_outside_roi = "random".
+#       To also match the measured grain sizes: [Seeds.Size] distribution = "from_source",
+#       [Tessellation] metric = "laguerre", fit_volumes = {enabled = true, ...}
+#   A textured synthetic polycrystal (e.g. a rolling texture like your specimen):
+#       see "BRINGING IN YOUR OWN DATA" below (orientations sampled from your ODF)
+#   Your voxel data (near-field HEDM, EBSD stacks, DREAM.3D, ExaCA, SPPARKS):
+#       [Source] type = "voxel_map" + [VoxelMap]  (ExaCA and SPPARKS through a converter)
+#   Grains whose shape or direction changes through the part (radial columns in a tube):
+#       a seed table with one shape per grain + anisotropy = {kind = "per_seed"}
+#   Parts with holes, slots, thin walls or lattice struts (no grain on both sides of a gap):
+#       [Tessellation] distance = "connected"
+#   Two or more materials (phases):
+#       [Regions] mode = "phase_fractions" (made up) or "from_phase" (from your data)
+#   A build plate, grip or anvil kept as one block of its own material:
+#       [Mesh] passthrough_attributes
+#   A periodic RVE (grains continue across opposite faces of the box):
+#       [Tessellation] periodic = [true, true, true]
+
+# =====================================
+# BRINGING IN YOUR OWN DATA
+# =====================================
+# Measured or simulated microstructures come in through one of two doors:
+#   - a seed table (one row per grain: position, orientation, phase, size): far-field HEDM grain
+#     lists (HEXRD, MIDAS converters), or any grain list you write yourself. Keys: [Seeds]
+#     source = "file", file, units_scale, translate, roi, fill_outside_roi.
+#   - a voxel map (a 3D grid of grain numbers): near-field HEDM, DREAM.3D reconstructions of
+#     EBSD serial sections (.ang/.ctf stacks: reconstruct them in DREAM.3D first), ExaCA,
+#     SPPARKS. Keys: [Source] type = "voxel_map" and the [VoxelMap] table.
+# Then [Orientations] source = "from_source" keeps your orientations, and [Regions] mode =
+# "from_phase" turns your phases into ExaConstit materials.
+#
+# A single 2D EBSD map is not supported directly: build a 3D data set first (e.g. in DREAM.3D).
+#
+# Frames: the generator never rotates your data (rotating positions would also mean rotating
+# every orientation, which it refuses to guess). If your sample axes (RD/TD/ND, or the HEDM
+# beam frame) do not match the mesh x, y, z, either build the mesh in the sample frame, or
+# rotate BOTH the positions and the orientations in your own script before writing the seed
+# table or voxel map. None of the converters rotate data.
+#
+# Texture without measured grains: there is no built-in texture option yet. Sample N
+# orientations from your ODF (e.g. MTEX calcOrientations), write a seed table with random
+# x, y, z and those qw, qx, qy, qz, then use [Seeds] source = "file" and [Orientations]
+# source = "from_source". Seed tables are used as given, so space the random positions in your
+# script if you want evenly sized grains.
+
+# =====================================
+# TOP-LEVEL SETTINGS
+# =====================================
+
+# Where the generator's computations run:
+# - "cpu"    = on the processors (always available)
+# - "openmp" = with OpenMP threads (needs an OpenMP build)
+# - "gpu"    = on GPUs (needs a CUDA or HIP build)
+# The same choice as ExaConstit's [Solvers] rtmodel. Asking for one this build lacks is an error.
+# Not allowed inside ExaConstit's [Mesh.Microstructure]: there it follows rtmodel.
+exec = "cpu"
+
+# deterministic = true   reserved for a future "bit-for-bit identical on CPU and GPU" mode; it
+#                        does nothing yet (results never depend on the rank count anyway)
+
+# =====================================
+# MESH (the mesh the generator READS)
+# =====================================
+# The finite element mesh to put grains on. The generator never moves or changes elements: it
+# only sets every element's attribute to its grain number (1..N).
+# Any element type and order MFEM reads works: hexes, tets, wedges, curved (high-order) elements.
+#
+# This table is about the mesh going IN. To save the mesh with its grains for later simulations
+# (as one mesh file or as files for parallel reading, gzip-compressed), see [Output] right below.
+
+[Mesh]
+    # Where the mesh comes from:
+    # - "file"     = one MFEM mesh file (.mesh, or gzip-compressed .mesh.gz), given by floc
+    # - "auto"     = a box of hexahedra, built exactly like ExaConstit's own [Mesh] type = "auto"
+    #                (sizes in [Mesh.Auto] below). Good for RVEs and quick tests.
+    # - "parallel" = a mesh already split into one file per MPI rank (for example written by this
+    #                tool with Output.mesh_format = "parallel"); floc is the file name prefix
+    type = "auto"
+
+    # The mesh file for type = "file", or the file name prefix for type = "parallel" (the files
+    # are <prefix>000000, <prefix>000001, ...; floc = "part.mesh." reads "part.mesh.000000", ...).
+    # Relative paths start from the directory you run in.
+    # floc = "my_part.mesh"
+
+    # ===== Which parts of the mesh get grains (optional) =====
+    # Both keys use the element attributes your mesh file already has (for example from the
+    # mesher's volume groups). An auto box has attribute 1 everywhere, so these keys only matter
+    # for mesh files.
+
+    # Element attributes (numbers > 0) that get grains. Empty = all of them except the ones in
+    # passthrough_attributes below. Every attribute of the mesh must be either active or
+    # passthrough; an attribute in neither list stops the run with an error.
+    # Example: a dog-bone mesh, gauge section = attribute 1, grips = attribute 2, grips as
+    # material block 2:
+    #   active_attributes = [1]
+    #   passthrough_attributes = { "2" = 2 }
+    active_attributes = []
+
+    # Parts kept as ONE block each, with no grains inside, and the ExaConstit region (material)
+    # each block uses:
+    #   { "mesh attribute" = region number }   (the attribute must be written in quotes)
+    # Typical uses: the build plate under an additively manufactured part, grips, an anvil.
+    # Each block counts as one extra grain with no rotation (the identity orientation), and is
+    # included in num_grains. Its region is marked non-crystalline, so its [[Materials]] block
+    # can be any ExaConstit material, e.g. a simple elastic or isotropic model for grips (a
+    # crystal plasticity block works too; ExaConstit then only prints a warning).
+    # After generation the element attributes hold grain numbers, not your set numbers. The
+    # blocks are the LAST grain numbers (N+1, N+2, ...) and keep their own regions, so in
+    # ParaView select them by grain ID > N (or by region); everything else is the active part.
+    #
+    # Grains only in the gauge section: if gauge and grips are separate element sets, use
+    # active_attributes + passthrough_attributes (grips become plain blocks of their own
+    # material). Use Seeds.sampling_box instead only when the whole part should be grains but
+    # the seeds (and so the small grains) should sit in one box-shaped zone.
+    # With [Regions] mode = "single" the grains are region 1, so the block regions must continue
+    # the numbering without gaps: { "2" = 2 } is fine, { "2" = 3 } is not (region 2 would be
+    # missing). With mode = "from_phase" or "phase_fractions" the phase regions come first
+    # (1..M) and the blocks may use those numbers (same material) or continue with M+1, ...; all
+    # regions together must again be 1, 2, ... without gaps.
+    # Cannot be combined with Tessellation.periodic.
+    # Example: grains in attribute 1, base plate (attribute 2) as material block 2:
+    #   passthrough_attributes = { "2" = 2 }
+    passthrough_attributes = {}
+
+    # ===== Box size (type = "auto" only) =====
+    # The box is [0, Lx] x [0, Ly] x [0, Lz].
+    [Mesh.Auto]
+        # Box edge lengths [Lx, Ly, Lz] (ExaConstit's name `mxyz` also works)
+        length = [1.0, 1.0, 1.0]
+
+        # Number of elements along x, y, z (ExaConstit's name `nxyz` also works).
+        # How fine is fine enough: divide the number of elements by the number of grains. Below
+        # about 30-50 elements per grain, grains look blocky and the smallest ones may vanish
+        # (see [Cleanup]). Here: 8000 elements / 50 grains = 160 elements per grain.
+        ncuts = [20, 20, 20]
+
+# =====================================
+# OUTPUT (the files the generator WRITES)
+# =====================================
+# All files are written to <directory>/<basename>... Which ones depends on the mesh:
+#
+#   File                          What it is                   Use in an ExaConstit simulation
+#   <basename>.mesh.gz            the mesh, grain number as    [Mesh] type = "file",
+#     (or .mesh if compression=0) element attribute            floc = "<basename>.mesh.gz"
+#   <basename>.mesh.000000, ...   the same mesh split into     [Mesh] type = "parallel",
+#                                 one file per MPI rank        floc = "<basename>.mesh."
+#   <basename>.grains             grain number per element     grain_file (auto box meshes only,
+#                                 (auto box meshes only)       which ExaConstit builds itself)
+#   <basename>.ori                one orientation per grain    [Materials.Grain] orientation_file
+#   <basename>.regions            grain -> region list         region_mapping_file
+#                                 (only with 2+ regions)
+#   <basename>_grains.csv         table of every grain: orientation, size, centroid, number of
+#                                 neighbors (for your own statistics and plots)
+#   <basename>_adjacency.csv      which grains touch, and over what area (grain_adjacency)
+#   <basename>_paraview/          ParaView files: open the .pvd file, color by "grain_id"
+# Exact layouts of every file: doc/microstructure.md, section 3.3.
+#
+# At the end of a run the tool prints the ExaConstit settings to use with these files, with
+# their paths. For an auto box it shows both choices: [Mesh] type = "file" with the written
+# mesh, or [Mesh] type = "auto" with the same box and grain_file = the .grains file (grain_file
+# may sit at the top level or in [Materials.Grain]; if both, they must agree). It also prints
+# the [Materials.Grain] line: ori_type = "quat", ori_stride = 4, orientation_file, and
+# num_grains = the FINAL grain count (which can be a little below num_seeds; always copy the
+# printed number), plus region_mapping_file and the [[Materials]] blocks needed when there are
+# several regions. So a microstructure is made once and reused by as many simulations as
+# you like, without the auto-box + grain_file route. The mesh files keep the boundary
+# attributes of the input mesh, so boundary conditions use the same ids as before.
+# (Inside ExaConstit's [Mesh.Microstructure] only the parallel mesh can be saved; for one mesh
+# file, run this tool with the same options on the same mesh: same options + same mesh = same
+# grains.)
+
+[Output]
+    # Directory for all files (created if missing)
+    directory = "."
+
+    # Start of every file name (must not be empty)
+    basename = "microstructure"
+
+    # Which mesh file(s) to write:
+    # - "serial"   = one mesh file. Simplest; ExaConstit reads it on any number of ranks.
+    # - "parallel" = one file per part, read directly by ExaConstit's [Mesh] type = "parallel".
+    #                Use for very large meshes, where reading one big file and splitting it at
+    #                start-up is slow. ExaConstit must then run on exactly num_parts ranks, and
+    #                must not refine the mesh again (ref_ser = ref_par = 0), or the parts no
+    #                longer match.
+    # - "both"
+    mesh_format = "serial"
+
+    # Number of parts for "parallel" (>= 0). 0 = the number of ranks the tool runs on.
+    num_parts = 0
+
+    # gzip compression level 0-9 for the mesh files, serial AND parallel. 0 = plain text
+    # (".mesh"). Any other level writes compressed files: the serial file gets ".gz" added, the
+    # parallel part files keep their names (ExaConstit detects compression by itself). 6 is a
+    # good balance of size and speed. Needs MFEM built with zlib; otherwise plain text is
+    # written with a warning.
+    compression = 6
+
+    # Write <basename>.grains (one grain number per element):
+    # - "auto"  = only for auto box meshes (ExaConstit rebuilds those itself, so the grain
+    #             numbers cannot travel inside a mesh file)
+    # - "true" / "false" (a TOML true / false works too)
+    grain_file = "auto"
+
+    # Write the ParaView files. Cheap, and the quickest way to check a microstructure.
+    paraview = true
+
+    # Write <basename>_adjacency.csv: one row per pair of touching grains, with the shared
+    # boundary area. Useful for grain boundary statistics or misorientation studies.
+    grain_adjacency = false
+
+# =====================================
+# GRAIN SOURCE
+# =====================================
+
+[Source]
+    # Where the grains come from:
+    # - "tessellation" = grown from seed points ([Seeds] + [Tessellation]). Covers all synthetic
+    #                    microstructures, and measured grain lists given as a seed table.
+    # - "voxel_map"    = copied from a voxel map ([VoxelMap]): your measured or simulated 3D
+    #                    data. No seeds and no shape rules are involved; options that only make
+    #                    sense for seeds (sizes, metric, anisotropy, periodic, ...) are refused.
+    type = "tessellation"
+
+# =====================================
+# SEEDS
+# =====================================
+# One seed = one grain. The seeds decide how many grains there are and where they sit.
+
+[Seeds]
+    # Where the seeds come from:
+    # - "random" = made by the generator (see placement below)
+    # - "file"   = read from a seed table (see `file` below), e.g. your HEDM grain list
+    source = "random"
+
+    # How many grains to make (random seeds). If you know a typical grain diameter d instead,
+    # either use [Seeds.Size] mean_diameter (the count then follows) or set num_seeds to
+    # (part volume) / (pi d^3 / 6). Example: a 1 mm cube with 100 micron grains: 1 / (pi 0.1^3
+    # / 6) = about 1900 grains. Required, except when [Seeds.Size] gives an
+    # average grain size (the count then follows from the part volume) or placement =
+    # "johnson_mehl" (the model decides the count). Ignored for a seed table (one grain per row).
+    # The final count can be a little lower: on a coarse mesh a seed may get no element, and
+    # [Cleanup] may merge grains that are too small. The final count is printed at the end.
+    # Delete this key when the count comes from [Seeds.Size] mean_diameter / mean_volume, from
+    # Johnson-Mehl, from a seed table or from a voxel map (otherwise you get a warning, and with
+    # a mean size num_seeds wins). The tool's -n flag also switches a seed table back to random.
+    num_seeds = 50
+
+    # Random number key (whole number >= 0). The same key gives the same grains on any number of
+    # ranks. Change it for another microstructure with the same statistics.
+    rng_seed = 0
+
+    # ===== How random seeds are placed =====
+    # - "rejection"        = random: points spread evenly over the part (the name refers to how
+    #                        it is done). The default; right for nearly everything.
+    # - "element_weighted" = the same even spread, computed differently: efficient when the part
+    #                        fills only a tiny fraction of its bounding box, such as a lattice
+    #                        structure (a truss-like part made of thin struts). The generator
+    #                        switches to it by itself when the part fills less than 0.01% of its
+    #                        box. Unlike the other choices, its seeds change when the mesh is
+    #                        refined.
+    # - "lattice"          = seeds on a regular repeating pattern of points (lattice_type below),
+    #                        instead of random. Gives (nearly) identical grains, useful for
+    #                        idealized studies and mesh convergence tests. "bcc" gives the
+    #                        14-sided "Kelvin" cell, the classic idealized grain shape; "cubic"
+    #                        gives cubes; "fcc" and "hcp" give 12-sided cells (mostly for tests).
+    #                        (These are patterns of SEED POINTS. They have nothing to do with
+    #                        the crystal structure of your material, nor with lattice structures
+    #                        made of struts.)
+    # - "johnson_mehl"     = seeds appear over time and grow ([Seeds.JohnsonMehl] below). Needs
+    #                        [Tessellation] metric = "additive".
+    # - "file"             = from the seed table (set by itself when source = "file")
+    placement = "rejection"
+
+    # ===== Keeping seeds apart =====
+    # Purely random seeds sometimes land very close together, which gives slivers of grains next
+    # to large ones: a much wider spread of grain sizes than in real annealed metals. A minimum
+    # distance between seeds fixes that and gives more realistic equiaxed grains.
+    # The distance is a fraction of the average grain spacing (part volume / num_seeds)^(1/3)
+    # (the edge of a cube of the average grain volume; the equivalent sphere diameter of
+    # [Seeds.Size] is about 1.24 times larger):
+    #   0       = off (purely random, wide size spread)
+    #   0.3-0.6 = typical; more uniform, realistic grains (0.5 is a good start; the default
+    #             stays 0 so that leaving the key out means plain random seeds)
+    #   > 0.8   = placing seeds slows down sharply and can fail (the seeds can no longer fit)
+    min_distance_factor = 0.0
+
+    # The same minimum distance in mesh length units (e.g. microns). When > 0 it replaces
+    # min_distance_factor.
+    min_distance = 0.0
+
+    # If the minimum distance is so large that not all num_seeds seeds fit:
+    # - false = stop with an error (default)
+    # - true  = keep the seeds placed so far, and report how many
+    allow_fewer_seeds = false
+
+    # Keep seeds at least this far from the outside surface of the part (mesh length units).
+    # 0 = off. Avoids tiny grains cut by the surface.
+    boundary_clearance = 0.0
+
+    # Where seeds may go:
+    # - "material" = only inside the part (default). Every grain then has its seed in the part.
+    # - "bbox"     = anywhere in the part's bounding box (or in sampling_box below), also outside
+    #                the part, e.g. in a hole or around a curved surface. Grains then reach into
+    #                the part from outside, so the part looks machined out of a larger piece of
+    #                material: surface grains are cut by the surface, as in a real specimen.
+    sampling_domain = "material"
+
+    # Only put seeds inside this box [xlo, ylo, zlo, xhi, yhi, zhi] (mesh length units).
+    # Elements outside the box still get grains (from the nearest seeds, so they are large).
+    # Typical use: fine grains in the gauge section only.
+    # Cannot be combined with Seeds.Size.polydisperse_placement.
+    # sampling_box = [0.0, 0.0, 0.25, 1.0, 1.0, 0.75]
+
+    # ===== placement = "lattice" only =====
+    # Seed pattern: "cubic", "bcc", "fcc" or "hcp" (see placement above). num_seeds sets the
+    # spacing of the pattern; the number of seeds that fit in the part is used.
+    lattice_type = "cubic"
+
+    # Random shift of every seed, as a fraction of the pattern spacing (>= 0).
+    # 0 = perfect pattern (identical grains); 0.1-0.3 = slightly irregular grains of nearly equal
+    # size.
+    lattice_jitter = 0.0
+
+    # ===== Seed table (source = "file") =====
+    # A CSV text file, "ExaConstit seed table v1" format (path relative to where you run):
+    #   - lines starting with '#' are comments; the first other line names the columns;
+    #   - columns in any order, names in any letter case:
+    #       x, y, z         seed position (required)
+    #       id              your grain number, whole number >= 0 (default: the row number)
+    #       qw, qx, qy, qz  orientation: unit quaternion, crystal-to-sample, w first
+    #                       (used with [Orientations] source = "from_source")
+    #       phase           which material, a whole number >= 1 (used with [Regions]
+    #                       mode = "from_phase")
+    #       weight          advanced: how strongly the grain pushes its boundaries outward
+    #                       (the laguerre / additive weight, see [Tessellation] metric)
+    #       volume, radius or diameter   the grain's size (at most one of the three; used with
+    #                       [Seeds.Size] distribution = "from_source")
+    #       m11, m22, m33, m23, m13, m12 the grain's shape (see anisotropy kind = "per_seed")
+    #   - Euler angles and rotation matrices are refused on purpose: the generator never
+    #     guesses an angle convention. Convert to qw, qx, qy, qz first (scipy, MTEX, or the
+    #     converters in scripts/microstructure/) and check one grain you know.
+    # Example (3 grains with orientations, two materials):
+    #   # my HEDM grains, positions in microns
+    #   id, x, y, z, qw, qx, qy, qz, phase
+    #   1, 10.0, 20.0, 5.0, 1.0, 0.0, 0.0, 0.0, 1
+    #   2, 40.0, 25.0, 5.0, 0.7071068, 0.0, 0.0, 0.7071068, 1
+    #   3, 25.0, 45.0, 8.0, 0.9238795, 0.3826834, 0.0, 0.0, 2
+    # Converters that write this format: scripts/microstructure/hexrd_grains_to_seeds.py (HEXRD
+    # grains.out) and midas_grains_to_seeds.py (MIDAS Grains.csv). Exact grammar (spaces,
+    # number formats, refused columns): doc/microstructure.md, section 3.1.
+    # file = "grains.csv"
+
+    # Table coordinates to mesh coordinates: x_mesh = units_scale * x_table + translate.
+    # Example: a table in microns and a mesh in millimeters: units_scale = 1.0e-3.
+    # Sizes and shapes are scaled to match. There is no rotation option, because rotating the
+    # positions would also require rotating every orientation.
+    units_scale = 1.0
+    translate = [0.0, 0.0, 0.0]
+
+    # Region of interest (seed tables only): drop table rows outside this box (mesh units, after
+    # units_scale and translate). Typical use: keep only the grains of the measured volume.
+    # roi = { lo = [0.0, 0.0, 0.0], hi = [1.0, 1.0, 0.5] }
+
+    # How the rest of the part (outside roi) gets grains. Typical case: an HEDM scan measured
+    # only the middle of the gauge section, but your mesh is the whole specimen.
+    # - "none"   = the measured grains grow out into the unmeasured part, so the grains next to
+    #              the roi become very large (usually not what you want)
+    # - "random" = the unmeasured part is filled with random grains ("filler" grains): random
+    #              positions, random orientations, about the same size as the measured grains.
+    #              Your measured grains then sit inside a similar random polycrystal. Needs roi.
+    #              Filler grains have no measured phase; with [Regions] mode = "from_phase" you
+    #              must say which material they are with Regions.filler_phase.
+    fill_outside_roi = "none"
+
+    # Number of filler grains (>= 0). 0 = automatic: the same average grain size as the
+    # measured grains.
+    filler_num_seeds = 0
+
+    # Minimum distance between filler seeds, as a fraction of their average grain spacing (same
+    # meaning as min_distance_factor). 0 = off.
+    filler_min_distance_factor = 0.0
+
+    # ===== Grain size distribution (optional) =====
+    # Grain size here means the equivalent diameter d: the diameter of a sphere with the same
+    # volume as the grain (what most EBSD / HEDM software reports).
+    # A size distribution gives every seed a target size. The targets are only used by the three
+    # options below, so turn on at least one of them (a warning tells you if none is on):
+    #   - polydisperse_placement (here): big grains get more room when seeds are placed;
+    #   - [Tessellation] metric = "laguerre": big grains start out bigger;
+    #   - [Tessellation] fit_volumes: grain volumes are adjusted until they match the targets.
+    # For the closest match to a measured size histogram, use all three.
+    [Seeds.Size]
+        # - "none"        = no targets (fit_volumes then makes all grains the same volume)
+        # - "lognormal"   = the log-normal distribution, the usual fit to measured grain sizes
+        # - "from_source" = the volume / radius / diameter column of the seed table
+        distribution = "none"
+
+        # Average equivalent diameter (mesh length units). When > 0 and num_seeds = 0, the number
+        # of grains follows from the part volume. Handy for "50 micron grains" without counting
+        # grains. Give mean_diameter or mean_volume, not both.
+        mean_diameter = 0.0
+
+        # Average grain volume (mesh length units cubed), instead of mean_diameter.
+        mean_volume = 0.0
+
+        # Width of the log-normal distribution: the standard deviation of ln(d) (>= 0).
+        # What the numbers mean: about two thirds of the grains have a diameter within a factor
+        # exp(sigma) of the median, and about 1 in 40 is larger than exp(2 sigma) times it.
+        #   0.2 -> two thirds within +-22% of the median; about 1 in 50 above 1.5x
+        #   0.4 -> two thirds within a factor 1.5; about 1 in 40 above 2.2x
+        #   0.5 -> two thirds within a factor 1.65; about 1 in 40 above 2.7x
+        # If your EBSD software reports the coefficient of variation CV = (standard deviation of
+        # d) / (mean of d), use sigma = sqrt(ln(1 + CV^2)); e.g. CV = 0.4 -> sigma = 0.39.
+        # Published values for annealed metals are mostly 0.3-0.5 (e.g. CV = 0.4 for annealed 304
+        # stainless steel, sigma = 0.5 for sputtered Al and Cu films). Wide distributions need a
+        # finer mesh, because the small grains still need enough elements.
+        sigma = 0.0
+
+        # Place seeds biggest grain first, keeping each pair of seeds apart in proportion to the
+        # two grains' sizes. Replaces min_distance / min_distance_factor (set those to 0).
+        # Needs placement "rejection" or "element_weighted" and no sampling_box.
+        polydisperse_placement = false
+
+        # How far apart, as a fraction of each grain's radius, in (0, 0.669]. 0.4-0.6 is typical;
+        # larger values space the grains more evenly but can make placement fail.
+        exclusion_factor = 0.5
+
+    # ===== Johnson-Mehl: grains that appear over time (placement = "johnson_mehl") =====
+    # In plain words: imagine grains popping up at random places and random moments, then
+    # growing outward at the same speed until they bump into each other. Early grains have more
+    # time to grow and end up big; late grains get squeezed in between and stay small. Grain
+    # boundaries end up curved, not flat. The result looks like a recrystallized or transformed
+    # microstructure, with a natural mix of large and small grains.
+    #
+    # You do NOT choose the number of grains directly. Only the ratio rate / growth_speed
+    # matters (the time units cancel out); a bigger ratio = more, smaller grains.
+    #
+    # Where the grain count comes from: grains can only appear in material that no grain has
+    # reached yet, and that untransformed share shrinks quickly over time. Adding up the grains
+    # that manage to appear gives about 0.896 (rate / growth_speed)^(3/4) grains per unit
+    # volume. This is the classical Johnson-Mehl-Avrami-Kolmogorov result; the number 0.896 and
+    # its derivation and references are in doc/microstructure.md, section 1.
+    # Turned around, for about N grains in a part of volume V, keep growth_speed = 1 and set
+    #     rate = (N / (0.896 V))^(4/3)
+    # Example: N = 100 grains in a unit cube: rate = (100 / 0.896)^(4/3), about 540.
+    # The formula is for an infinite body. A finite part gets a few more grains (grains at the
+    # surface can only grow inward, which leaves room for more), and [Cleanup] then merges the
+    # last tiny ones. Example 04 of microstructure_examples: rate 500 predicts 95, 99 grains
+    # appeared, 89 were left after cleanup with min_grain_elements = 8. Check the count printed
+    # at the end of the run and adjust rate.
+    #
+    # If you want something else:
+    #   - an exact grain count: set num_nuclei = N and a rate somewhat above the formula's value
+    #     (the count then stops at N; the grains are larger and the late small ones are missing,
+    #     so the size spread is narrower);
+    #   - fewer small grains / a narrower size spread: end_time > 0 (stop new grains early);
+    #   - all grains starting at once (no size spread from timing): that is a plain Voronoi
+    #     structure, so use placement = "rejection" and metric = "voronoi" instead;
+    #   - a prescribed size distribution: Johnson-Mehl cannot do that; use [Seeds.Size] with
+    #     laguerre and fit_volumes instead;
+    #   - a rate that changes with time: supported inside the library but not exposed as an
+    #     option yet.
+    #
+    # Needs [Tessellation] metric = "additive". Cannot be combined with [Seeds.Size],
+    # fit_volumes, lloyd_iterations or periodic (those would undo what the model produced);
+    # num_seeds and the seed distance keys are ignored.
+    [Seeds.JohnsonMehl]
+        # How often new grains appear (> 0 when used): grains per unit volume per unit time.
+        # Sets the grain count together with growth_speed (see the formula above).
+        rate = 0.0
+
+        # How fast grains grow (> 0): length per unit time. Leave at 1 and tune rate.
+        growth_speed = 1.0
+
+        # Stop new grains from appearing after this time (> 0). 0 = they keep appearing until the
+        # part is full (the usual choice). Stopping early gives fewer, bigger grains with a
+        # narrower size mix. For scale: with growth_speed = 1, the part is essentially full at
+        # about t = 1.3 / (rate growth_speed^3)^(1/4) (untransformed fraction below 5%), so an
+        # end_time of half that removes the late, small grains.
+        end_time = 0.0
+
+        # Stop after this many grains have appeared (> 0). 0 = no limit. The grains already
+        # there keep growing until the part is full, so the final count is this number (minus
+        # any [Cleanup] merges) whenever it is below what the rate alone would give.
+        num_nuclei = 0
+
+# =====================================
+# TESSELLATION (the shape rule)
+# =====================================
+# Every element joins the grain of its "closest" seed. The metric is the rule for "closest", and
+# it decides the grain SHAPES.
+
+[Tessellation]
+    # ===== Metric =====
+    # - "voronoi"  = plain straight-line distance. Flat grain faces halfway between neighboring
+    #                seeds; roughly equal, equiaxed grains. The default and the right choice for
+    #                a generic polycrystal.
+    # - "laguerre" = like voronoi, but every seed also gets a "weight" that pushes its grain
+    #                faces outward: a heavier seed gets a bigger grain. Faces are still flat. Use
+    #                it to control grain SIZES ([Seeds.Size] + fit_volumes). A seed whose weight
+    #                ends up too small can lose its grain entirely.
+    # - "quadric"  = a stretched ruler: distances in some directions count less than in others,
+    #                so grains grow longer in those directions. Use it for elongated, columnar,
+    #                layered or locally varying grain shapes (anisotropy below). Grain faces can
+    #                be curved.
+    # - "additive" = the rule behind Johnson-Mehl: straight-line distance minus a head start for
+    #                each seed. Gives curved grain faces. Needed by placement = "johnson_mehl";
+    #                also usable with the weight column of a seed table.
+    metric = "voronoi"
+
+    # ===== Elongated and directional grains (metric = "quadric" only) =====
+    # The stretch is described by a symmetric 3x3 matrix A. Easiest form: the grain is k times
+    # longer along a direction than across it. Then use the diagonal entry 1/k^2 for that
+    # direction and 1 for the others. A is written as 6 numbers in the order
+    # [xx, yy, zz, yz, xz, xy]:
+    #   global_tensor = [1.0, 1.0, 0.0625, 0.0, 0.0, 0.0]  -> 4x longer along z  (1/4^2 = 0.0625)
+    #   global_tensor = [0.111, 1.0, 1.0, 0.0, 0.0, 0.0]   -> 3x longer along x, e.g. the rolling
+    #                                                         direction of a plate
+    #   global_tensor = [0.111, 0.25, 1.0, 0.0, 0.0, 0.0]  -> pancakes: 3x along x, 2x along y
+    # A direction that is not x, y or z: for k times longer along the unit vector a, use
+    # A = I - (1 - 1/k^2) a a^T. Example, 3x longer along a = (1, 0, 1)/sqrt(2), i.e. tilted
+    # 45 degrees between x and z:
+    #   global_tensor = [0.5556, 1.0, 0.5556, 0.0, -0.4444, 0.0]
+    # Starting values that look like common cases (adjust to your micrographs; real values vary
+    # widely with alloy and processing):
+    #   rolled plate, pancake grains, RD = x, TD = y, ND = z, about 3 : 2 : 1:
+    #       global_tensor = [0.111, 0.25, 1.0, 0.0, 0.0, 0.0]
+    #   drawn wire or extruded bar along z, grains 3-5x longer along the axis:
+    #       global_tensor = [1.0, 1.0, 0.0625, 0.0, 0.0, 0.0]   (4x)
+    #   additively built, columns along the build direction z that end inside the part, 3-10x:
+    #       global_tensor = [1.0, 1.0, 0.04, 0.0, 0.0, 0.0]     (5x); columns through the whole
+    #       part: anisotropy = { kind = "columnar", axis = [0.0, 0.0, 1.0] }
+    # Elongated grains are k times longer, so k times fewer of them fit along the long direction.
+    # Keep the part at least a few grain lengths long in that direction, or add seeds.
+    # How many grains across a specimen: as a rule of thumb, with fewer than about 10 grains
+    # across the smallest dimension (e.g. the gauge thickness) individual grains dominate the
+    # response and specimen-to-specimen scatter is large; that is exactly the regime a scatter
+    # study with several rng_seed values explores.
+    # global_tensor = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+    #
+    # Shortcuts, written as `anisotropy = { kind = ... }`:
+    # - kind = "none"     : no stretch beyond global_tensor (the default)
+    # - kind = "tensor"   : use global_tensor (set by itself when you write global_tensor)
+    # - kind = "columnar" : infinitely long grains along `axis`. Every grain is a column through
+    #                       the whole part, with a random-polygon cross-section, like
+    #                       directionally solidified or many additively built materials. Here
+    #                       num_seeds is the number of COLUMNS. For columns of finite length
+    #                       (grains that end inside the part), use global_tensor with k = 4-10.
+    #     anisotropy = { kind = "columnar", axis = [0.0, 0.0, 1.0] }
+    # - kind = "lamellar" : infinitely wide flat grains perpendicular to `normal`: every grain is
+    #                       a slab through the whole part (layered microstructures).
+    #     anisotropy = { kind = "lamellar", normal = [0.0, 0.0, 1.0] }
+    # - kind = "per_seed" : every grain has its own shape and direction, taken from the m11..m12
+    #                       columns of a seed table (needs Seeds.source = "file"). For grain
+    #                       shapes that change through the part, such as columns pointing toward
+    #                       the axis of a cast tube, or measured grain shapes. For a grain shaped
+    #                       like an ellipsoid with half-axes a, b, c along x, y, z, write
+    #                       m11 = a^2, m22 = b^2, m33 = c^2 and the other three as 0 (rotate this
+    #                       matrix for other directions: M = R diag(a^2, b^2, c^2) R^T).
+    #     anisotropy = { kind = "per_seed" }
+    anisotropy = { kind = "none" }
+
+    # ===== How each element picks its grain =====
+    # A grain boundary often cuts through an element, so part of the element lies in one grain
+    # and part in another. The element has to pick one:
+    # - "centroid"        = the element joins the grain that owns its center point. Fast. But
+    #                       the center can lie on the side holding LESS of the element's volume
+    #                       (for a tet, possibly only 42% of it), so grain volumes and shapes
+    #                       come out a bit off on coarse meshes.
+    # - "quadrature_vote" = (not the FE quadrature rule: points on a uniform sub-grid.)
+    #                       The element is divided into 8^vote_levels equal small pieces (like
+    #                       refining it uniformly vote_levels times). Each piece checks which
+    #                       grain its center is in, and the element joins the grain that owns the
+    #                       most pieces, i.e. the grain holding most of its volume. Grain volumes
+    #                       and boundaries are represented more accurately, with fewer odd single
+    #                       elements sticking out of grains. Costs about 8^vote_levels times more
+    #                       labeling work than "centroid" (64x at the default; this slows the
+    #                       generator only, never the simulation). Use it when grains have fewer
+    #                       than about 100 elements, on tet meshes, and with curved (high-order)
+    #                       elements.
+    sampling = "centroid"
+
+    # quadrature_vote only: number of times the element is split, 0..3:
+    #   0 = 1 piece (about the same as "centroid"), 2 = 64 pieces (default, recommended),
+    #   3 = 512 pieces. Avoid 1 (8 pieces): measured on test meshes, it assigned volumes worse
+    #   than "centroid".
+    vote_levels = 2
+
+    # Internal speed setting of the seed search (>= 1); never changes the grains. Leave it.
+    num_bins = 8
+
+    # ===== Periodic microstructure =====
+    # Along x, y, z: a grain cut by one face of the box continues on the opposite face, like a
+    # tile of an infinite material. For RVEs meant for periodic boundary conditions, and for
+    # grain statistics without the bias of grains cut at the box faces. (ExaConstit's mechanics
+    # does not offer periodic boundary conditions yet; the microstructure itself is periodic.)
+    # Needs a mesh with matching faces on opposite sides (every auto box has them).
+    # Cannot be combined with fit_volumes, lloyd_iterations, Johnson-Mehl, passthrough_attributes
+    # or distance = "connected" / "geodesic".
+    periodic = [false, false, false]
+
+    # Periodic only: how closely opposite faces must match, as a fraction of the smallest face
+    # edge, in (0, 0.5). Raise it only if a mesh with slightly mismatched faces is refused.
+    periodic_tolerance = 1.0e-6
+
+    # ===== Parts with holes, slots, thin walls or struts =====
+    # "Closest seed" in a straight line can reach across empty space: a seed on one side of a
+    # slot can claim elements on the other side, so one grain appears on both sides of the gap,
+    # which is not physical.
+    # - "euclidean" = straight lines, even across gaps. Exact for solid parts, and fine when
+    #                 grains are much smaller than the holes and gaps. The default.
+    # - "connected" = straight lines, but a grain keeps only the elements it can reach through
+    #                 material; pieces cut off by a gap go to the next closest seed. Cheap,
+    #                 works with every metric. Use it for thin walls, rings and tubes, lattice
+    #                 structures, notches.
+    # - "geodesic"  = distance measured along paths that stay inside the material, so grains
+    #                 wrap around holes and corners the way real growth would. Worth it only when
+    #                 grains are large compared with the holes and corners; when grains are small,
+    #                 it gives the same grains as "connected" with slightly noisier boundaries,
+    #                 so use "connected" then.
+    #                 Only with metric "voronoi" or "additive", without stretching, for now.
+    #                 This is a limit of the current solver, not of the idea (why: see
+    #                 doc/microstructure.md, section 2); laguerre and quadric support is planned.
+    # "connected" and "geodesic" cannot be combined with periodic, fit_volumes, lloyd_iterations
+    # or voxel maps.
+    distance = "euclidean"
+
+    # distance = "connected" only: retry limit for cut-off pieces (0..1000). Leave it.
+    connected_max_rounds = 16
+
+    # distance = "geodesic" only: how path lengths are computed
+    # - "fim"   = Fast Iterative Method: solves for the shortest-path distance smoothly through
+    #             the elements; accurate (recommended)
+    # - "graph" = faster, follows element edges, so paths come out up to ~12% (hexes) or ~30%
+    #             (tets) too long; grain boundaries move less than that
+    geodesic = { solver = "fim" }
+
+    # ===== Matching grain volumes to target sizes =====
+    # Adjusts the seed weights until every grain has its target volume (the [Seeds.Size]
+    # targets, or equal volumes without a size distribution). Needs metric "laguerre" (usual),
+    # "quadric" or "additive"; not "voronoi", which has no weights.
+    # - enabled        : turn the matching on
+    # - tolerance      : stop when every grain is within this fraction of its target (> 0);
+    #                    0.02-0.05 is typical. A grain of n elements cannot be matched better
+    #                    than about 1/n (it changes one whole element at a time), so tight
+    #                    tolerances need fine meshes.
+    # - max_iterations : give up after this many steps (>= 0)
+    # - samples        : how volumes are measured: "quadrature" (smooth, recommended) or
+    #                    "element" (whole elements: exactly what ExaConstit will see, but jumpy)
+    fit_volumes = { enabled = false, tolerance = 0.02, max_iterations = 200, samples = "quadrature" }
+
+    # ===== Rounder, more uniform grains =====
+    # Number of smoothing steps (>= 0). Each step moves every seed to the center of its grain.
+    # The grains become rounder and more similar in size; after many steps they look like a
+    # honeycomb (more regular than real metals). 1-3 = mild smoothing; 10-20 = very regular.
+    # metric "voronoi" or "laguerre" only; not with seed tables (measured positions must stay).
+    lloyd_iterations = 0
+
+    # Round grains WITH a size distribution: after every smoothing step the grain volumes are
+    # matched to the [Seeds.Size] targets again. Needs lloyd_iterations > 0 and
+    # metric = "laguerre"; uses the fit_volumes tolerance and max_iterations.
+    centroidal_power = false
+
+# =====================================
+# VOXEL MAP (only with [Source] type = "voxel_map")
+# =====================================
+# A voxel map is a 3D picture of a microstructure: a regular grid of small boxes (voxels), each
+# holding the number of the grain it belongs to, plus one orientation (and optionally one phase)
+# per grain. The generator gives each element of your mesh the grain of the voxel(s) under it.
+# The mesh does not have to match the voxel grid: it can be finer, coarser, or a different shape
+# (e.g. a dog-bone cut out of a cube of data). Voxels with grain number 0 or less (empty space,
+# unindexed points) are skipped; elements that land only on those take a neighbor's grain.
+#
+# Supported data and how to bring it in:
+#   - ExaConstit voxel map v2 (HDF5) ........ read directly, format = "exaconstit"
+#   - DREAM.3D files (6.x and DREAM3D-NX) ... read directly, format = "dream3d"
+#   - ExaCA (VTK output with GrainID) ....... convert first with the utility
+#     scripts/microstructure/exaca_to_voxels.py (documented in scripts/microstructure/README.md
+#     and in the script's own header), then format = "exaconstit":
+#         python scripts/microstructure/exaca_to_voxels.py ExaCA_run.vtk grains.h5 \
+#             --units-scale 1e3 --orientations GrainOrientationVectors.csv --conjugate yes
+#     ExaCA lengths are in meters, so --units-scale 1e3 gives millimeters. Negative ExaCA grain
+#     numbers (nucleated grains) are renumbered automatically. --conjugate yes is correct for
+#     ExaCA's standard 9-value orientation file (GrainOrientationVectors.csv): its rows are the
+#     Bunge orientation matrix g, which maps sample to crystal (checked against ExaCA's own
+#     GrainOrientationEulerAnglesBungeZXZ.csv), while ExaConstit needs crystal to sample, the
+#     transpose. Run the script with --help for every option.
+#     ExaCA's substrate (baseplate) grains are ordinary grains here; cells with GrainID 0 take
+#     a neighbor's grain. The mesh may cover only part of an ExaCA domain (place it with
+#     units_scale / translate); use sampling = "quadrature_vote" below when elements are larger
+#     than the CA cells.
+#   - SPPARKS site dumps .................... convert first:
+#         python scripts/microstructure/spparks_to_voxels.py --help
+#   - Anything else: write the v2 layout yourself (a few lines of Python with h5py; see the
+#     writer in scripts/microstructure/exaconstit_microstructure_io.py).
+# ("v2" because ExaConstit's auto-box grain_file plus orientation file counts as v1; v1 is not
+# read here.)
+#
+# The voxel map is DATA with its own grid, separate from the mesh. That is why it carries its
+# own corner (origin) and voxel size (spacing): a scan or an ExaCA run has its own resolution
+# and position, and the mesh you simulate on can be anything (finer, coarser, a different
+# shape). It does not replace the mesh. If you want one element per voxel, as ExaConstit's
+# auto mesh + grain_file did, use [Mesh] type = "auto" with ncuts = the voxel counts (nx, ny,
+# nz) and length = counts x spacing, placed so the boxes coincide (translate if needed).
+# Note: this format can only describe a regular box grid. Data on other point layouts (an
+# unstructured point cloud, the elements of another mesh) cannot be stored in it today.
+
+[VoxelMap]
+    # File layout:
+    # - "exaconstit" = ExaConstit voxel map v2, an HDF5 file with:
+    #     /grain_ids        grain number per voxel, an array of shape (nz, ny, nx). Memory
+    #                       order: x varies fastest, then y, then z (x -> y -> z, the C / numpy
+    #                       and DREAM.3D order). Voxel (i, j, k) (i along x, 0-based) is entry
+    #                       i + nx (j + ny k) of the flattened array. No other order is accepted;
+    #                       data stored z -> y -> x must be transposed before writing.
+    #     /origin           lower corner of voxel (0, 0, 0): (x, y, z)
+    #     /spacing          voxel edge lengths (dx, dy, dz); voxel (i, j, k) is the box from
+    #                       origin + (i, j, k) * spacing to origin + (i+1, j+1, k+1) * spacing
+    #     /features/id      (optional) grain numbers of the table below
+    #     /features/quat    (optional) orientation per grain, w x y z, crystal-to-sample
+    #     /features/phase   (optional) phase per grain, numbers >= 1
+    # - "dream3d"    = a DREAM.3D file: FeatureIds, AvgQuats and Phases are found by name (or
+    #                  set the *_path keys below when the file has several)
+    # Exact specification for writing your own files (accepted data types, datasets vs
+    # attributes, id rules, chunking and compression): doc/microstructure.md, section 3.2.
+    format = "exaconstit"
+
+    # The file (relative to where you run). Required.
+    # file = "microstructure.dream3d"
+
+    # Where in the HDF5 file the grain numbers, orientations and phases are. Leave empty to use
+    # the format's standard names; set them only if the file has several candidates (the error
+    # message then lists them).
+    feature_ids_path = ""
+    quats_path = ""
+    phases_path = ""
+
+    # DREAM.3D only, required when orientations are read ([Orientations] source = "from_source"):
+    # the order of the four quaternion numbers in the file, "wxyz" or "xyzw". "" = not given.
+    # There is deliberately no default: a wrong guess silently rotates every grain.
+    # Files written by DREAM.3D (its EbsdLib library) store the scalar last: use "xyzw".
+    quat_layout = ""
+
+    # DREAM.3D only, required like quat_layout: whether the stored orientations must be inverted
+    # (conjugated) to become ExaConstit's crystal-to-sample rotation. No default.
+    # Files written by DREAM.3D need conjugate = true: EbsdLib uses passive (sample-to-crystal)
+    # rotations, the transpose of what ExaConstit uses. (Checked: EbsdLib's Euler-to-quaternion
+    # conversion, conjugated, gives the crystal-to-sample matrix ExaCMech builds.) Files made by
+    # other tools in the DREAM.3D layout may differ, so check one grain you know.
+    # conjugate = true
+
+    # Override the file's first-voxel corner and voxel size (file units), if the file lacks them
+    # or they are wrong.
+    # origin = [0.0, 0.0, 0.0]
+    # spacing = [1.0, 1.0, 1.0]
+
+    # File coordinates to mesh coordinates: x_mesh = units_scale * x_file + translate.
+    # Example: voxels in microns, mesh in millimeters: units_scale = 1.0e-3. No rotation.
+    # The converters (e.g. exaca_to_voxels.py --units-scale) can scale when they write the file;
+    # scale in ONE place only, or lengths are scaled twice.
+    # Checking the placement: the run summary prints the voxel grid (dimensions, origin and
+    # spacing in mesh units) and how many sample points fell outside it. That count should be
+    # 0 (or small) when your mesh lies inside the data; points outside take a neighbor's grain.
+    units_scale = 1.0
+    translate = [0.0, 0.0, 0.0]
+
+    # How each element picks its voxel (same idea as Tessellation.sampling, which is ignored
+    # here):
+    # - "centroid"        = the voxel under the element center. Right when elements are about
+    #                       the voxel size or smaller.
+    # - "quadrature_vote" = 8^vote_levels points per element vote. Better when one element covers
+    #                       several voxels (mesh coarser than the data).
+    sampling = "centroid"
+    vote_levels = 2
+
+    # How much of the file each rank reads at a time. Voxel maps can be huge, so no rank reads
+    # the whole file: the grid is cut into cubes of tile_size x tile_size x tile_size voxels,
+    # and each rank reads only the cubes that its own elements sit on. Affects reading speed and
+    # memory only, never the grains. Leave at 32.
+    tile_size = 32
+
+# =====================================
+# CLEANUP
+# =====================================
+# After every element has a grain, two things can be wrong:
+#   - a grain can end up in several separate pieces (cut by a hole, or a single element touching
+#     its grain only along an edge on a coarse mesh);
+#   - a grain can be too small to mean anything on this mesh (a handful of elements).
+# Cleanup fixes both, so every grain is one solid piece. "Touching" means sharing an element face.
+
+[Cleanup]
+    # What to do with a grain in several pieces:
+    # - "auto"  = sensible default: for random seeds, big separate pieces become grains of their
+    #             own (a grain really cut in two by a hole) and tiny pieces join the neighbor
+    #             they touch most; for seed tables, every extra piece joins a neighbor (a
+    #             measured grain must not multiply)
+    # - "split" = every extra piece becomes a new grain (with a new random orientation)
+    # - "merge" = every extra piece joins the neighbor it touches most
+    # - "none"  = leave it; only count and report the pieces
+    fragments = "auto"
+
+    # "auto" only: a piece with fewer elements than this counts as tiny and is merged (>= 0)
+    min_fragment_elements = 8
+
+    # "auto" only: a piece smaller than this fraction of its grain is tiny too, in [0, 1]
+    min_fragment_fraction = 0.1
+
+    # Which piece keeps the grain's number and orientation:
+    # - "largest" = the biggest piece
+    # - "seed"    = the piece holding the seed (or the biggest, if the seed is in none)
+    keep_component = "largest"
+
+    # Grains with fewer elements than this join the neighbor they touch most (0 or 1 = off).
+    # A grain of only a few elements has no room for stress or strain to vary inside it, so it
+    # adds little physics. 8-20 is sensible when grains average ~100 elements or more; this is
+    # useful with Johnson-Mehl and wide size distributions, which make some very small grains.
+    # Merged grains no longer count in the final grain count.
+    min_grain_elements = 1
+
+# =====================================
+# ORIENTATIONS
+# =====================================
+# One crystal orientation per grain: a unit quaternion (w x y z), crystal-to-sample, passive,
+# exactly the convention of ExaConstit's orientation files. Supplied orientations are only
+# normalized to length 1; the generator never converts angle conventions.
+
+[Orientations]
+    # - "random"      = random orientations evenly spread over all rotations: no texture.
+    #                   With about 100 grains or fewer a random set still has some accidental
+    #                   texture, so the stress-strain response changes a little with rng_seed;
+    #                   run a few keys if that matters.
+    # - "from_source" = from your data: the qw, qx, qy, qz columns of a seed table, or the
+    #                   orientations of a voxel map. Grains without one (filler grains) get
+    #                   random orientations. Needs Seeds.source = "file" or a voxel map.
+    # - "list"        = planned (a separate orientation list); refused for now
+    source = "random"
+
+# =====================================
+# REGIONS (which material each grain is)
+# =====================================
+# ExaConstit gives material properties by region: region r uses the r-th [[Materials]] block.
+# This table decides the region of every grain, usually through its phase (see "WORDS USED IN
+# THIS FILE"). Passthrough blocks ([Mesh]) bring their own regions.
+# In an ExaConstit simulation, the number of [[Materials]] blocks must equal the number of
+# regions produced.
+
+[Regions]
+    # - "single"          = every grain is region 1 (one material). The default.
+    # - "from_phase"      = the phase in your data decides. The phases present are numbered into
+    #                       regions 1, 2, ... in ascending order: phases 1, 2, 3 -> regions 1, 2,
+    #                       3; phases 1 and 3 only -> regions 1 and 2. phase_to_region overrides.
+    #                       Needs a seed table with a phase column, or a voxel map with phases.
+    # - "phase_fractions" = made-up phases: the generator assigns grains to the `phases` below so
+    #                       that each phase gets its share of the volume. Guaranteed accuracy:
+    #                       each phase is within (largest grain volume / part volume) of its
+    #                       target, so more grains give closer fractions. For two-phase alloys,
+    #                       or hard/soft grain studies.
+    mode = "single"
+
+    # phase_fractions only: phase numbers (>= 1, all different) and volume fractions (> 0,
+    # adding up to 1). Here 70% of the volume is phase 1 (region 1), 30% phase 2 (region 2).
+    # phases = [{ id = 1, fraction = 0.7 }, { id = 2, fraction = 0.3 }]
+
+    # Phases (numbers >= 1) whose grains are not crystals, e.g. an amorphous phase or an
+    # inclusion you model with an isotropic (not crystal plasticity) material. Their grains get
+    # no rotation (the identity orientation).
+    non_crystalline_phases = []
+
+    # Optional: send phases to regions yourself, written { "phase" = region }. Several phases may
+    # share a region (same material). The regions used must be exactly 1, 2, ..., M.
+    # Example: phases 1 and 3 use material 1, phase 7 uses material 2:
+    #   phase_to_region = { "1" = 1, "3" = 1, "7" = 2 }
+    phase_to_region = {}
+
+    # Which phase (>= 1) the random filler grains get (only with Seeds.fill_outside_roi =
+    # "random"; see there). Needed only with mode = "from_phase": every grain needs a phase to
+    # get a material, and filler grains were not measured, so they have none. Pick the phase of
+    # the material surrounding your measured volume, usually the matrix. Example: measured
+    # grains are phase 1 (matrix) and phase 2 (precipitates), the rest of the specimen is plain
+    # matrix: filler_phase = 1, so filler grains use material block 1. All filler grains get
+    # this one phase.
+    # filler_phase = 1
+
+# =====================================
+# USING THESE OPTIONS INSIDE EXACONSTIT ([Mesh.Microstructure])
+# =====================================
+# ExaConstit can make the grains itself when a simulation starts, on its own mesh (after
+# refinement). The grains, orientations and regions stay in memory, so grain_file,
+# orientation_file, region_mapping_file and num_grains are not needed (and are refused).
+# Two ways to write it in ExaConstit's options.toml:
+#
+#   1. Point to a file with these tables:
+#       [Mesh.Microstructure]
+#           file = "micro.toml"
+#
+#   2. Write the tables directly, with "Mesh.Microstructure." in front of each table name:
+#       [Mesh.Microstructure.Seeds]
+#           num_seeds = 100
+#           rng_seed = 42
+#       [Mesh.Microstructure.Tessellation]
+#           metric = "voronoi"
+#
+# What is different from the standalone tool:
+#   - The mesh is ExaConstit's own [Mesh], so this file's [Mesh] type, floc and [Mesh.Auto] are
+#     refused; only active_attributes and passthrough_attributes may be given. This template
+#     contains them, so do not point `file =` at it directly: copy the tables you need into
+#     your own file.
+#   - `exec` is refused (the generator follows [Solvers] rtmodel).
+#   - [Output]: the record files (.ori, .regions, _grains.csv, _adjacency.csv) go to
+#     results/<simulation basename>/ unless `directory` is given. paraview is OFF unless you set
+#     paraview = true. mesh_format may only be "parallel": it saves the grain mesh, one file per
+#     rank, for later runs, which must use the same number of MPI ranks and ref_ser = ref_par =
+#     0. Those runs also need orientation_file = the saved .ori, num_grains (from the log or
+#     the _grains.csv), ori_type = "quat" and, with several regions, region_mapping_file = the
+#     saved .regions. num_parts and grain_file are refused. For a single mesh file, run the
+#     standalone tool instead (same options + same mesh = same grains).
+#   - Each [Materials.Grain] gets num_grains and ori_type = "quat" from the generator; keep only
+#     ori_state_var_loc and ori_stride there.
+#   - One region per [[Materials]] block (region r uses block r).
+#   - A restarted simulation takes the grains from the checkpoint and does not run the generator.
+# Every key you do not write keeps the default shown above, as in the tool, so the same tables
+# give the same grains in both (on the same mesh).

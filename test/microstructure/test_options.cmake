@@ -4,6 +4,8 @@ ms_add_gtest(NAME          test_options
              DEPENDS_ON    ms_options
              NUM_MPI_TASKS 1)
 
-# The example options files live in the source tree; their paths are resolved from here
+# The example options files and the documented options template (src/microstructure_options.toml)
+# live in the source tree; their paths are resolved from here
 target_compile_definitions(test_options PRIVATE
-                           MS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/test/data")
+                           MS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/test/data"
+                           MS_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/src")

@@ -6,6 +6,7 @@
  * The options pipeline is: parse the TOML file -> apply command-line flags -> validate(). These
  * tests check each stage on its own:
  *   - the two example files in test/data/microstructure parse to the values they spell out;
+ *   - the documented template src/microstructure_options.toml shows exactly the defaults;
  *   - omitted keys keep the documented defaults;
  *   - every accepted spelling and alternative form is understood;
  *   - aliases and duplicate spellings resolve as documented;
@@ -1492,6 +1493,152 @@ TEST(MicrostructureOptions, ParseStage1eExamples) {
     EXPECT_EQ(jm.tessellation.geodesic_solver, "graph");
     jm.mesh.floc = dir / jm.mesh.floc;
     EXPECT_TRUE(jm.validate());
+}
+
+// src/microstructure_options.toml is the user documentation of every generator option, and it
+// promises that its uncommented values are the defaults (apart from the auto mesh and num_seeds)
+// and form a valid run. Check all three promises: no key in it is unknown to the parser (a typo
+// or a renamed key would only warn at run time), it validates as written, and every value equals
+// the default of a default-constructed MicrostructureOptions. A changed default or a renamed key
+// therefore fails here until the template is updated with it.
+TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
+    // Parse with stderr captured: unknown keys and validation warnings are MFEM warnings on rank 0
+    ::testing::internal::CaptureStderr();
+    const auto parsed =
+        ms::MicrostructureOptions::parse_options_file(fs::path(MS_TEST_SOURCE_DIR) /
+                                                      "microstructure_options.toml");
+    const bool valid = parsed.validate();
+    const std::string messages = ::testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(valid);
+    EXPECT_EQ(messages.find("ignoring unknown"), std::string::npos) << messages;
+    EXPECT_EQ(messages.find("Warning"), std::string::npos) << messages;
+
+    // The two documented exceptions: an auto box of 20^3 elements and 50 random seeds
+    ms::MicrostructureOptions expected;
+    expected.mesh.type = "auto";
+    expected.mesh.nxyz = {20, 20, 20};
+    expected.seeds.num_seeds = 50;
+
+    EXPECT_EQ(parsed.exec, expected.exec);
+    EXPECT_EQ(parsed.deterministic, expected.deterministic);
+
+    // [Mesh]
+    EXPECT_EQ(parsed.mesh.type, expected.mesh.type);
+    EXPECT_EQ(parsed.mesh.floc, expected.mesh.floc);
+    EXPECT_EQ(parsed.mesh.nxyz, expected.mesh.nxyz);
+    EXPECT_EQ(parsed.mesh.mxyz, expected.mesh.mxyz);
+    EXPECT_EQ(parsed.mesh.active_attributes, expected.mesh.active_attributes);
+    EXPECT_EQ(parsed.mesh.passthrough_attributes, expected.mesh.passthrough_attributes);
+
+    // [Source]
+    EXPECT_EQ(parsed.source.type, expected.source.type);
+
+    // [Seeds]
+    const auto& ps = parsed.seeds;
+    const auto& es = expected.seeds;
+    EXPECT_EQ(ps.source, es.source);
+    EXPECT_EQ(ps.num_seeds, es.num_seeds);
+    EXPECT_EQ(ps.rng_seed, es.rng_seed);
+    EXPECT_EQ(ps.placement, es.placement);
+    EXPECT_EQ(ps.min_distance_factor, es.min_distance_factor);
+    EXPECT_EQ(ps.min_distance, es.min_distance);
+    EXPECT_EQ(ps.boundary_clearance, es.boundary_clearance);
+    EXPECT_EQ(ps.sampling_domain, es.sampling_domain);
+    EXPECT_EQ(ps.use_sampling_box, es.use_sampling_box);
+    EXPECT_EQ(ps.allow_fewer_seeds, es.allow_fewer_seeds);
+    EXPECT_EQ(ps.lattice_type, es.lattice_type);
+    EXPECT_EQ(ps.lattice_jitter, es.lattice_jitter);
+    EXPECT_EQ(ps.file, es.file);
+    EXPECT_EQ(ps.units_scale, es.units_scale);
+    EXPECT_EQ(ps.translate, es.translate);
+    EXPECT_EQ(ps.use_roi, es.use_roi);
+    EXPECT_EQ(ps.fill_outside_roi, es.fill_outside_roi);
+    EXPECT_EQ(ps.filler_num_seeds, es.filler_num_seeds);
+    EXPECT_EQ(ps.filler_min_distance_factor, es.filler_min_distance_factor);
+
+    // [Seeds.Size] and [Seeds.JohnsonMehl]
+    EXPECT_EQ(ps.size.distribution, es.size.distribution);
+    EXPECT_EQ(ps.size.mean_diameter, es.size.mean_diameter);
+    EXPECT_EQ(ps.size.mean_volume, es.size.mean_volume);
+    EXPECT_EQ(ps.size.sigma, es.size.sigma);
+    EXPECT_EQ(ps.size.polydisperse_placement, es.size.polydisperse_placement);
+    EXPECT_EQ(ps.size.exclusion_factor, es.size.exclusion_factor);
+    EXPECT_EQ(ps.johnson_mehl.rate, es.johnson_mehl.rate);
+    EXPECT_EQ(ps.johnson_mehl.growth_speed, es.johnson_mehl.growth_speed);
+    EXPECT_EQ(ps.johnson_mehl.end_time, es.johnson_mehl.end_time);
+    EXPECT_EQ(ps.johnson_mehl.num_nuclei, es.johnson_mehl.num_nuclei);
+
+    // [Tessellation]
+    const auto& pt = parsed.tessellation;
+    const auto& et = expected.tessellation;
+    EXPECT_EQ(pt.metric, et.metric);
+    EXPECT_EQ(pt.global_tensor, et.global_tensor);
+    EXPECT_EQ(pt.anisotropy_kind, et.anisotropy_kind);
+    EXPECT_EQ(pt.anisotropy_axis, et.anisotropy_axis);
+    EXPECT_EQ(pt.anisotropy_normal, et.anisotropy_normal);
+    EXPECT_EQ(pt.sampling, et.sampling);
+    EXPECT_EQ(pt.vote_levels, et.vote_levels);
+    EXPECT_EQ(pt.num_bins, et.num_bins);
+    EXPECT_EQ(pt.periodic, et.periodic);
+    EXPECT_EQ(pt.periodic_tolerance, et.periodic_tolerance);
+    EXPECT_EQ(pt.distance, et.distance);
+    EXPECT_EQ(pt.connected_max_rounds, et.connected_max_rounds);
+    EXPECT_EQ(pt.geodesic_solver, et.geodesic_solver);
+    EXPECT_EQ(pt.fit_volumes.enabled, et.fit_volumes.enabled);
+    EXPECT_EQ(pt.fit_volumes.tolerance, et.fit_volumes.tolerance);
+    EXPECT_EQ(pt.fit_volumes.max_iterations, et.fit_volumes.max_iterations);
+    EXPECT_EQ(pt.fit_volumes.samples, et.fit_volumes.samples);
+    EXPECT_EQ(pt.lloyd_iterations, et.lloyd_iterations);
+    EXPECT_EQ(pt.centroidal_power, et.centroidal_power);
+
+    // [VoxelMap]
+    const auto& pv = parsed.voxel_map;
+    const auto& ev = expected.voxel_map;
+    EXPECT_EQ(pv.format, ev.format);
+    EXPECT_EQ(pv.file, ev.file);
+    EXPECT_EQ(pv.feature_ids_path, ev.feature_ids_path);
+    EXPECT_EQ(pv.quats_path, ev.quats_path);
+    EXPECT_EQ(pv.phases_path, ev.phases_path);
+    EXPECT_EQ(pv.quat_layout, ev.quat_layout);
+    EXPECT_EQ(pv.conjugate, ev.conjugate);
+    EXPECT_EQ(pv.has_origin, ev.has_origin);
+    EXPECT_EQ(pv.has_spacing, ev.has_spacing);
+    EXPECT_EQ(pv.units_scale, ev.units_scale);
+    EXPECT_EQ(pv.translate, ev.translate);
+    EXPECT_EQ(pv.sampling, ev.sampling);
+    EXPECT_EQ(pv.vote_levels, ev.vote_levels);
+    EXPECT_EQ(pv.tile_size, ev.tile_size);
+
+    // [Cleanup], [Orientations]
+    EXPECT_EQ(parsed.cleanup.fragments, expected.cleanup.fragments);
+    EXPECT_EQ(parsed.cleanup.min_fragment_elements, expected.cleanup.min_fragment_elements);
+    EXPECT_EQ(parsed.cleanup.min_fragment_fraction, expected.cleanup.min_fragment_fraction);
+    EXPECT_EQ(parsed.cleanup.keep_component, expected.cleanup.keep_component);
+    EXPECT_EQ(parsed.cleanup.min_grain_elements, expected.cleanup.min_grain_elements);
+    EXPECT_EQ(parsed.orientations.source, expected.orientations.source);
+
+    // [Regions]
+    const auto& pr = parsed.regions;
+    const auto& er = expected.regions;
+    EXPECT_EQ(pr.mode, er.mode);
+    EXPECT_EQ(pr.non_crystalline_phases, er.non_crystalline_phases);
+    EXPECT_EQ(pr.phase_to_region, er.phase_to_region);
+    EXPECT_EQ(pr.phase_ids, er.phase_ids);
+    EXPECT_EQ(pr.phase_fractions, er.phase_fractions);
+    EXPECT_EQ(pr.has_filler_phase, er.has_filler_phase);
+    EXPECT_EQ(pr.filler_phase, er.filler_phase);
+
+    // [Output]
+    const auto& po = parsed.output;
+    const auto& eo = expected.output;
+    EXPECT_EQ(po.directory, eo.directory);
+    EXPECT_EQ(po.basename, eo.basename);
+    EXPECT_EQ(po.mesh_format, eo.mesh_format);
+    EXPECT_EQ(po.num_parts, eo.num_parts);
+    EXPECT_EQ(po.compression, eo.compression);
+    EXPECT_EQ(po.grain_file, eo.grain_file);
+    EXPECT_EQ(po.paraview, eo.paraview);
+    EXPECT_EQ(po.grain_adjacency, eo.grain_adjacency);
 }
 
 // MPI must be initialized because the options code prints warnings through WARNING_0_OPT, which
