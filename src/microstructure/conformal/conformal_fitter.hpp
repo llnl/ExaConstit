@@ -42,10 +42,12 @@
  * and the rest of the mesh keeps fitting. A round that ends above the floor is kept; the rounds
  * stop when a round from the fourth on (the weak early springs improve little) improves the mean
  * deviation by less than `min_improvement` (relative), when a round cannot be brought above the
- * floor, when a round would leave more than 1 % of the elements below floor + 0.2 (the bulk
- * quality guard: quality first, a little more fit is not worth many mediocre elements), or after
- * `max_rounds`. The last kept state is the
- * result (the input mesh if none passes).
+ * floor, when a round would leave more than 1 % of the elements below floor + 0.2 beyond those
+ * already below it in the input mesh (the bulk quality guard: quality first, a little more fit is
+ * not worth many mediocre elements), or after `max_rounds`. If the very first round fails the bulk
+ * guard, it is retried with a quarter of the spring (at most 3 times), so a mesh whose elements
+ * start close to the guard still gets a partial fit. The last kept state is the result (the input
+ * mesh if none passes).
  *
  * **Quality stiffening.** After each solve, elements below a scaled Jacobian of 0.6 get a stiffness
  * factor (0.6 / sj)^`stiffening_exponent` (capped at 1e3, never lowered again) for the next solve,
@@ -55,10 +57,18 @@
  *
  * **Which nodes move.** Every node is free except: on a flat boundary surface whose normal is a
  * coordinate axis (box faces) that coordinate is fixed (nodes slide along the face, edges keep two
- * coordinates, corners all three; the value is kept bit for bit), and nodes on any other boundary
- * surface (tilted or curved) are fixed unless FIT (their target lies on the surface). Where several
- * nodes share one 4-label set (a quad point), only the one closest to the quad point is fitted
- * (decided over all ranks).
+ * coordinates, corners all three; the value is kept bit for bit). Free surface nodes stay on their
+ * surfaces:
+ *  - on one or two flat surfaces with at least one tilted (normal not a coordinate axis), the node
+ *    slides along them (along their intersection for two);
+ *  - on exactly one curved surface, it slides along the input boundary faces around it (its
+ *    one-ring patch, boundary_projector.hpp; it moves well under an element per fit);
+ *  - on a curved surface and another one, or on three or more surfaces, it is fixed.
+ * A sliding node gets a stiff normal spring (1e4 h, along the tilted planes' normals or the
+ * area-weighted normal of its patch) in the elastic solve, and after every solve it is put back
+ * on its surfaces exactly (projection onto the planes or the closest point on its patch; box face
+ * coordinates restored bit for bit). Where several nodes share one 4-label set (a quad point),
+ * only the one closest to the quad point is fitted (decided over all ranks).
  *
  * **Deviation.** The deviation of a fitted node is its distance from its grain boundary at its
  * final position (the closest point from there, NodeTargets::Evaluate with a position), in units

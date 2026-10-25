@@ -3,6 +3,8 @@
  */
 #include "microstructure/conformal/conformal_fitter.hpp"
 
+#include "microstructure/conformal/boundary_projector.hpp"
+
 #include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
@@ -27,6 +29,41 @@ constexpr double MAX_STIFFNESS = 1e3;
 /** @brief Bulk quality guard: at most this share of elements below floor + BULK_MARGIN. */
 constexpr double BULK_SHARE = 0.01;
 constexpr double BULK_MARGIN = 0.2;
+/** @brief Retries of a first round that fails the bulk guard, each with a quarter of the spring. */
+constexpr int WEAK_TRIES = 3;
+/** @brief Normal penalty of a node sliding on a tilted or curved surface, per unit of h. */
+constexpr double NORMAL_PENALTY = 1e4;
+
+/** @brief How a node on a tilted or curved boundary surface moves. */
+enum class Slide : char {
+    NONE = 0,   ///< no such surface (box faces only, or none)
+    PLANES = 1, ///< on one or two flat surfaces, at least one tilted: along their intersection
+    CURVED = 2, ///< on exactly one curved surface: along its input boundary faces
+    FIXED = 3   ///< several surfaces with a curved one, or three or more: does not move
+};
+
+/**
+ * @brief Projects y onto the intersection of `num` planes n_k . y = c_k (unit normals, not
+ * parallel; num = 1 or 2): y - N^T (N N^T)^-1 (N y - c).
+ */
+void ProjectOntoPlanes(const double (*n)[3], const double* c, int num, double y[3]) {
+    double r[2];
+    for (int k = 0; k < num; ++k) {
+        r[k] = n[k][0] * y[0] + n[k][1] * y[1] + n[k][2] * y[2] - c[k];
+    }
+    double a[2] = {r[0], 0.0};
+    if (num == 2) {
+        const double g = n[0][0] * n[1][0] + n[0][1] * n[1][1] + n[0][2] * n[1][2];
+        const double det = 1.0 - g * g;
+        a[0] = (r[0] - g * r[1]) / det;
+        a[1] = (r[1] - g * r[0]) / det;
+    }
+    for (int k = 0; k < num; ++k) {
+        for (int d = 0; d < 3; ++d) {
+            y[d] -= a[k] * n[k][d];
+        }
+    }
+}
 
 bool IsAxis(const double n[3]) {
     int zeros = 0;
@@ -170,12 +207,17 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
     const int* surf_planar = labels.SurfacePlanar().HostRead();
     const int* loff = labels.LabelOffsets().HostRead();
     const int* litems = labels.Labels().HostRead();
+    const double* xyz0 = field.Coordinates().HostRead();
     std::vector<char> fixed(3 * static_cast<std::size_t>(nv), 0);
+    std::vector<Slide> slide(static_cast<std::size_t>(nv), Slide::NONE);
+    std::vector<char> on_curved(static_cast<std::size_t>(nv), 0);
     std::int64_t fit_nodes = 0;
     std::int64_t fixed_nodes = 0;
     for (int v = 0; v < nv; ++v) {
         const auto vs = 3 * static_cast<std::size_t>(v);
-        bool all_fixed = false;
+        const int num_surfaces = surf_off[v + 1] - surf_off[v];
+        bool tilted = false;
+        bool curved = false;
         for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
             const double* n = surf_normal + 3 * s;
             if (surf_planar[s] != 0 && IsAxis(n)) {
@@ -183,10 +225,18 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
                     fixed[vs + d] |= (n[d] != 0.0) ? 1 : 0;
                 }
             } else {
-                all_fixed = all_fixed || !marker[v];
+                tilted = tilted || surf_planar[s] != 0;
+                curved = curved || surf_planar[s] == 0;
             }
         }
-        if (all_fixed) {
+        Slide& kind = slide[static_cast<std::size_t>(v)];
+        if (curved) {
+            kind = (num_surfaces == 1) ? Slide::CURVED : Slide::FIXED;
+        } else if (tilted) {
+            kind = (num_surfaces <= 2) ? Slide::PLANES : Slide::FIXED;
+        }
+        on_curved[static_cast<std::size_t>(v)] = (kind == Slide::CURVED) ? 1 : 0;
+        if (kind == Slide::FIXED) {
             fixed[vs] = fixed[vs + 1] = fixed[vs + 2] = 1;
         }
         fit_nodes += (marker[v] && owned[v]) ? 1 : 0;
@@ -194,6 +244,88 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
     }
     report.fit_nodes = GlobalSum(fit_nodes, comm);
     report.fixed_nodes = GlobalSum(fixed_nodes, comm);
+
+    // Sliding nodes: their surfaces (planes with offsets at the input position, or the curved
+    // surface's input faces) and the normals of the penalty (tilted planes, curved surface)
+    const SurfacePatches patches(field, on_curved);
+    std::vector<std::array<double, 8>> planes(static_cast<std::size_t>(nv)); // n0 c0 n1 c1
+    std::vector<std::array<double, 7>> penalty(static_cast<std::size_t>(nv)); // count, n0, n1
+    for (int v = 0; v < nv; ++v) {
+        const Slide kind = slide[static_cast<std::size_t>(v)];
+        auto& pl = planes[static_cast<std::size_t>(v)];
+        auto& pen = penalty[static_cast<std::size_t>(v)];
+        pen[0] = 0.0;
+        if (kind == Slide::PLANES) {
+            int k = 0;
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s, ++k) {
+                const double* n = surf_normal + 3 * s;
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                double c = 0.0;
+                for (int d = 0; d < 3; ++d) {
+                    pl[4 * k + d] = n[d] / len;
+                    c += pl[4 * k + d] * xyz0[3 * v + d];
+                }
+                pl[4 * k + 3] = c;
+                if (!IsAxis(n)) {
+                    const int m = static_cast<int>(pen[0]);
+                    for (int d = 0; d < 3; ++d) {
+                        pen[1 + 3 * m + d] = pl[4 * k + d];
+                    }
+                    pen[0] += 1.0;
+                }
+            }
+        } else if (kind == Slide::CURVED) {
+            // Area-weighted normal of the input faces around the node
+            double n[3] = {0.0, 0.0, 0.0};
+            for (int tri = 0; tri < patches.NumTriangles(v); ++tri) {
+                const double* q = patches.Triangle(v, tri);
+                const double a[3] = {q[3] - q[0], q[4] - q[1], q[5] - q[2]};
+                const double b[3] = {q[6] - q[0], q[7] - q[1], q[8] - q[2]};
+                n[0] += a[1] * b[2] - a[2] * b[1];
+                n[1] += a[2] * b[0] - a[0] * b[2];
+                n[2] += a[0] * b[1] - a[1] * b[0];
+            }
+            const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 0.0) {
+                pen[0] = 1.0;
+                for (int d = 0; d < 3; ++d) {
+                    pen[1 + d] = n[d] / len;
+                }
+            }
+        }
+    }
+    // Puts the sliding nodes back on their surfaces (the same on every copy of a node: the same
+    // position, planes and patch); box face coordinates are restored bit for bit
+    const auto project_to_surfaces = [&]() {
+        for (int v = 0; v < nv; ++v) {
+            const Slide kind = slide[static_cast<std::size_t>(v)];
+            if (kind != Slide::PLANES && kind != Slide::CURVED) {
+                continue;
+            }
+            double y[3];
+            for (int d = 0; d < 3; ++d) {
+                y[d] = (*nodes)(fes.DofToVDof(v, d));
+            }
+            if (kind == Slide::PLANES) {
+                const auto& pl = planes[static_cast<std::size_t>(v)];
+                const double n[2][3] = {{pl[0], pl[1], pl[2]}, {pl[4], pl[5], pl[6]}};
+                const double c[2] = {pl[3], pl[7]};
+                ProjectOntoPlanes(n, c, surf_off[v + 1] - surf_off[v], y);
+            } else if (patches.NumTriangles(v) > 0) {
+                double p[3];
+                double pn[3];
+                bool interior = false;
+                patches.ClosestPoint(v, y, p, pn, interior);
+                y[0] = p[0];
+                y[1] = p[1];
+                y[2] = p[2];
+            }
+            for (int d = 0; d < 3; ++d) {
+                const int vd = fes.DofToVDof(v, d);
+                (*nodes)(vd) = fixed[3 * static_cast<std::size_t>(v) + d] ? x0(vd) : y[d];
+            }
+        }
+    };
 
     // Deviation of the fitted nodes from their grain boundaries at the current positions
     std::vector<double> here;
@@ -337,7 +469,32 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             }
             mfem::SparseMatrix diag(fes.GetTrueVSize());
             for (int i = 0; i < fes.GetTrueVSize(); ++i) {
-                diag.Set(i, i, k_true(i));
+                diag.Add(i, i, k_true(i));
+            }
+            // Normal penalty k n n^T of the sliding nodes, on the owner's true dofs (not on fixed
+            // components, whose rows are already eliminated)
+            for (int v = 0; v < nv; ++v) {
+                const auto& pen = penalty[static_cast<std::size_t>(v)];
+                if (pen[0] == 0.0 || owned[v] == 0) {
+                    continue;
+                }
+                int td[3];
+                for (int d = 0; d < 3; ++d) {
+                    td[d] = fixed[3 * static_cast<std::size_t>(v) + d]
+                                ? -1
+                                : fes.GetLocalTDofNumber(fes.DofToVDof(v, d));
+                }
+                const double k = NORMAL_PENALTY * targets.MeshSize(v);
+                for (int m = 0; m < static_cast<int>(pen[0]); ++m) {
+                    const double* n = pen.data() + 1 + 3 * m;
+                    for (int i = 0; i < 3; ++i) {
+                        for (int j = 0; j < 3; ++j) {
+                            if (td[i] >= 0 && td[j] >= 0) {
+                                diag.Add(td[i], td[j], k * n[i] * n[j]);
+                            }
+                        }
+                    }
+                }
             }
             diag.Finalize();
             mfem::HypreParMatrix P(comm, fes.GlobalTrueVSize(), fes.GetTrueDofOffsets(), &diag);
@@ -357,12 +514,25 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             for (int i = 0; i < nodes->Size(); ++i) {
                 (*nodes)(i) = x0(i) + u(i);
             }
+            project_to_surfaces();
             ++report.solves;
         };
+
+        // Elements of the input already below floor + BULK_MARGIN (the guard counts new ones)
+        double input_below = 0.0;
+        for (int e = 0; e < ne; ++e) {
+            double q = 0.0;
+            double ar = 0.0;
+            double det = 0.0;
+            ElementQuality(pmesh, e, q, ar, det);
+            input_below += (q < floor + BULK_MARGIN) ? 1.0 : 0.0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &input_below, 1, MPI_DOUBLE, MPI_SUM, comm);
 
         mfem::Vector good(x0);
         double c = options.initial_spring;
         double last_mean = report.initial_deviation;
+        int weak_tries = 0;
         for (int round = 0; round < options.max_rounds; ++round) {
             bool ok = false;
             for (int attempt = 0; attempt < options.max_attempts && !ok; ++attempt) {
@@ -403,23 +573,29 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
                 break;
             }
             // Bulk quality guard: a round that leaves more than 1 % of the elements below
-            // floor + 0.2 is not kept (quality first: the small extra fit is not worth it)
+            // floor + 0.2, beyond those of the input, is not kept (quality first: the small
+            // extra fit is not worth it)
             double below[2] = {0.0, static_cast<double>(ne)};
             for (int e = 0; e < ne; ++e) {
                 below[0] += (sj[static_cast<std::size_t>(e)] < floor + BULK_MARGIN) ? 1.0 : 0.0;
             }
             MPI_Allreduce(MPI_IN_PLACE, below, 2, MPI_DOUBLE, MPI_SUM, comm);
-            if (below[0] > BULK_SHARE * below[1]) {
+            if (below[0] - input_below > BULK_SHARE * below[1]) {
+                if (report.rounds == 0 && weak_tries < WEAK_TRIES) {
+                    ++weak_tries;
+                    c *= 0.25;
+                    continue;
+                }
                 break;
             }
             good = *nodes;
-            report.rounds = round + 1;
+            ++report.rounds;
             report.final_spring = c;
             double max_dev = 0.0;
             double mean_dev = 0.0;
             deviation(max_dev, mean_dev);
             // Weak early springs improve little, so the stop rule applies from the fourth round
-            if (round >= 3 && mean_dev > (1.0 - options.min_improvement) * last_mean) {
+            if (report.rounds >= 4 && mean_dev > (1.0 - options.min_improvement) * last_mean) {
                 break;
             }
             last_mean = mean_dev;

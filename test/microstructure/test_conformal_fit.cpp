@@ -14,14 +14,19 @@
  *    1 is close to the analytic 1/2.
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
+ *  - Curved and tilted outer boundary (box with a domed top, faces x = 0, 1 tilted; hex and tet,
+ *    12 grains): nodes on those surfaces slide along them and end on them (the planes, or the
+ *    input boundary faces around the node, to rounding), some of them move, the floor holds and
+ *    the deviation drops.
  *  - Rank count: the fitted positions on MPI_COMM_WORLD (round-robin partition) agree with those on
  *    MPI_COMM_SELF to the linear solver tolerance.
  *  - With CONFORMAL_DUMP_DIR set, ConformalFit.DumpSlices writes the elements of a polycrystal
  *    before and after fitting (label, quality, original center, corners) for plotting
- *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET select the case); skipped otherwise.
+ *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED select the case); skipped otherwise.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "microstructure/conformal/boundary_projector.hpp"
 #include "microstructure/conformal/conformal_fitter.hpp"
 #include "microstructure/conformal/label_repair.hpp"
 #include "microstructure/conformal/quality.hpp"
@@ -168,15 +173,21 @@ double ShareBelow(mfem::ParMesh& pmesh, double limit) {
     return c[0] / c[1];
 }
 
-/** Nodes that left a box face they were on (face coordinate not kept bit for bit). */
-int FaceViolations(const Fitted& f) {
+/**
+ * Nodes that left a box face they were on (face coordinate not kept bit for bit). With `sheared`,
+ * only the faces that stay axis planes under DomeAndShear (y = 0, 1 and z = 0) are checked.
+ */
+int FaceViolations(const Fitted& f, bool sheared = false) {
     const mfem::GridFunction& x = *f.pmesh->GetNodes();
     const mfem::FiniteElementSpace& fes = *x.FESpace();
     int bad = 0;
     for (int v = 0; v < fes.GetNDofs(); ++v) {
         for (int d = 0; d < 3; ++d) {
             const double before = f.x0(fes.DofToVDof(v, d));
-            if (before == 0.0 || before == 1.0) {
+            const bool face = sheared ? (d == 1 && (before == 0.0 || before == 1.0)) ||
+                                            (d == 2 && before == 0.0)
+                                      : before == 0.0 || before == 1.0;
+            if (face) {
                 bad += (x(fes.DofToVDof(v, d)) != before) ? 1 : 0;
             }
         }
@@ -237,6 +248,114 @@ void CheckBisector(mfem::Mesh& serial, double floor, double fit_ratio) {
     }
 }
 
+/**
+ * Largest distance of a sliding node from its surfaces, in units of h: a node on one curved
+ * surface from the input boundary around it (its one-ring triangle patch on an unfitted copy of the
+ * mesh, same partition); a node on one or two flat surfaces, at least one tilted, from each of
+ * their planes. `count` gets the number of such nodes that moved.
+ */
+double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
+    int size = 1;
+    MPI_Comm_size(f.pmesh->GetComm(), &size);
+    std::vector<int> part(static_cast<std::size_t>(serial.GetNE()));
+    for (int e = 0; e < serial.GetNE(); ++e) {
+        part[static_cast<std::size_t>(e)] = e % size;
+    }
+    mfem::ParMesh ref(f.pmesh->GetComm(), serial, part.data());
+    ref.SetCurvature(1, false, 3, mfem::Ordering::byNODES);
+    const ms::VertexField field(ref, ms::FieldNodes::MESH_NODES);
+    const ms::SurfacePatches patches(
+        field, std::vector<char>(static_cast<std::size_t>(field.NumVertices()), 1));
+    const ms::NodeLabels& nl = f.repair.targets->Labels();
+    const int* surf_off = nl.SurfaceOffsets().HostRead();
+    const double* normal = nl.SurfaceNormals().HostRead();
+    const int* planar = nl.SurfacePlanar().HostRead();
+    const mfem::GridFunction& x = *f.pmesh->GetNodes();
+    const mfem::FiniteElementSpace& fes = *x.FESpace();
+    double worst = 0.0;
+    int moved = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        bool tilted = false;
+        bool curved = false;
+        for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+            const double* n = normal + 3 * s;
+            const int zeros = (n[0] == 0.0) + (n[1] == 0.0) + (n[2] == 0.0);
+            curved = curved || planar[s] == 0;
+            tilted = tilted || (planar[s] != 0 && zeros != 2);
+        }
+        const int num = nl.BoundarySurfaces(v);
+        if (!(curved && num == 1) && !(tilted && !curved && num <= 2)) {
+            continue;
+        }
+        double y[3];
+        double y0[3];
+        bool same = true;
+        for (int d = 0; d < 3; ++d) {
+            y[d] = x(fes.DofToVDof(v, d));
+            y0[d] = f.x0(fes.DofToVDof(v, d));
+            same = same && y[d] == y0[d];
+        }
+        double dist = 0.0;
+        if (curved) {
+            double p[3], pn[3];
+            bool interior = false;
+            dist = patches.ClosestPoint(v, y, p, pn, interior);
+        } else {
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+                const double* n = normal + 3 * s;
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                dist = std::max(dist, std::fabs(n[0] * (y[0] - y0[0]) + n[1] * (y[1] - y0[1]) +
+                                                n[2] * (y[2] - y0[2])) /
+                                          len);
+            }
+        }
+        worst = std::max(worst, dist / f.repair.targets->MeshSize(v));
+        moved += (same || field.OwnedVertexMarker().HostRead()[v] == 0) ? 0 : 1;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &worst, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    count = GlobalSum(moved);
+    return worst;
+}
+
+/**
+ * Unit box with a domed top z = 1 + 0.3 x (1 - x) + 0.3 y (1 - y) and the faces x = 0, 1 tilted
+ * (x shifted by 0.2 z): one curved surface and two tilted planes besides the axis planes.
+ */
+void DomeAndShear(mfem::Mesh& serial, double shear) {
+    serial.Transform([shear](const mfem::Vector& p, mfem::Vector& y) {
+        y = p;
+        y(2) = p(2) * (1.0 + 0.3 * p(0) * (1.0 - p(0)) + 0.3 * p(1) * (1.0 - p(1)));
+        y(0) = p(0) + shear * p(2);
+    });
+}
+
+void CheckCurved(mfem::Element::Type type, int n, double floor, double shear) {
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, type);
+    DomeAndShear(serial, shear);
+    ms::SeedSet seeds = ScatteredSeeds(12);
+    for (std::size_t i = 0; i < seeds.Size(); ++i) {
+        seeds.x[i] += shear * seeds.z[i];
+        seeds.z[i] *= 1.1;
+    }
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds);
+    const ms::ConformalFitReport& r = f.report;
+    int moved = 0;
+    const double drift = SurfaceDrift(serial, f, moved);
+    EXPECT_EQ(r.quality_after.inverted, 0);
+    EXPECT_GE(r.quality_after.min_scaled_jacobian, floor);
+    EXPECT_EQ(FaceViolations(f, true), 0);
+    EXPECT_LT(r.mean_deviation, r.initial_deviation);
+    EXPECT_LE(drift, 1e-9);
+    EXPECT_GT(moved, 0);
+    if (mfem::Mpi::Root()) {
+        std::printf("curved %s: deviation %.3f -> %.3f h (max %.3f), sj %.3f -> %.3f, rounds %d, "
+                    "surface drift %.2e h, moved on surface %d\n",
+                    type == mfem::Element::TETRAHEDRON ? "tet" : "hex", r.initial_deviation,
+                    r.mean_deviation, r.max_deviation, r.quality_before.min_scaled_jacobian,
+                    r.quality_after.min_scaled_jacobian, r.rounds, drift, moved);
+    }
+}
+
 } // namespace
 
 TEST(MeshQuality, SimpleElements) {
@@ -293,6 +412,14 @@ TEST(ConformalFit, HexPolycrystal) {
     }
 }
 
+TEST(ConformalFit, HexCurvedAndTiltedBoundary) {
+    CheckCurved(mfem::Element::HEXAHEDRON, 12, ms::MESH_QUALITY_FLOOR_HEX, 0.2);
+}
+
+TEST(ConformalFit, TetCurvedAndTiltedBoundary) {
+    CheckCurved(mfem::Element::TETRAHEDRON, 8, ms::MESH_QUALITY_FLOOR_TET, 0.2);
+}
+
 TEST(ConformalFit, DumpSlices) {
     const char* dir = std::getenv("CONFORMAL_DUMP_DIR");
     if (dir == nullptr) {
@@ -304,10 +431,18 @@ TEST(ConformalFit, DumpSlices) {
     const int skip =
         std::getenv("CONFORMAL_DUMP_SKIP") ? std::atoi(std::getenv("CONFORMAL_DUMP_SKIP")) : 0;
     const bool tet = std::getenv("CONFORMAL_DUMP_TET") != nullptr;
+    const bool curved = std::getenv("CONFORMAL_DUMP_CURVED") != nullptr;
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
         n, n, n, tet ? mfem::Element::TETRAHEDRON : mfem::Element::HEXAHEDRON);
-    Fitted f = Fit(serial, MPI_COMM_WORLD, ScatteredSeeds(grains, skip),
-                   std::string(dir) + "/orig.txt");
+    ms::SeedSet seeds = ScatteredSeeds(grains, skip);
+    if (curved) { // the case of CheckCurved
+        DomeAndShear(serial, 0.2);
+        for (std::size_t i = 0; i < seeds.Size(); ++i) {
+            seeds.x[i] += 0.2 * seeds.z[i];
+            seeds.z[i] *= 1.1;
+        }
+    }
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt");
     if (mfem::Mpi::Root()) {
         const ms::ConformalFitReport& r = f.report;
         std::printf("DUMP %s %d^3 %d grains: deviation %.3f -> %.3f h (max %.3f), sj %.3f, rounds "
