@@ -271,6 +271,9 @@ struct GenerationReport {
     /** @brief Grains too thin to fit (no node inside the grain, e.g. one element thick); their
      * grain boundary nodes keep the staircase. Global count. */
     std::int64_t conformal_under_resolved_grains = 0;
+    /** @brief Grain boundary nodes held because a grain pinches there (touches itself only at
+     * the node or along an edge) after label repair. Global count. */
+    std::int64_t conformal_pinched_nodes = 0;
 
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;

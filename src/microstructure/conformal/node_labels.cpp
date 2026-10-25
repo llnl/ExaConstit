@@ -3,13 +3,16 @@
  */
 #include "microstructure/conformal/node_labels.hpp"
 
+#include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <numeric>
+#include <set>
 #include <utility>
 #include <stdexcept>
 #include <vector>
@@ -154,9 +157,13 @@ NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_lab
 
     m_field = std::make_unique<VertexField>(pmesh, options.nodes);
     m_element_label = element_label;
+    m_adjacency = std::make_unique<MeshAdjacency>(pmesh);
+    m_keys = ComputeElementKeys(pmesh);
+    m_adjacency->ExchangeKeys(m_keys, m_ghost_keys);
     FindSurfaceFaces();
     BuildLabelSets(element_label);
     BuildBoundarySurfaces(angle);
+    FindPinches();
     BuildSummary();
 }
 
@@ -195,7 +202,7 @@ void NodeLabels::FindSurfaceFaces() {
     if (m_fixed_labels.empty()) {
         return;
     }
-    const MeshAdjacency adj(pmesh);
+    const MeshAdjacency& adj = *m_adjacency;
     mfem::Array<int> ghost;
     adj.ExchangeLabels(m_element_label, ghost);
     const int* off = adj.Offsets().HostRead();
@@ -237,6 +244,7 @@ void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
                    "NodeLabels::SetElementLabels: elements of fixed labels cannot change");
     m_element_label = element_label;
     BuildLabelSets(element_label);
+    FindPinches();
     BuildSummary();
 }
 
@@ -420,6 +428,150 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     std::copy(normals_out.begin(), normals_out.end(), m_surface_normals.begin());
     m_surface_planar.SetSize(static_cast<int>(planar_out.size()));
     std::copy(planar_out.begin(), planar_out.end(), m_surface_planar.begin());
+}
+
+/*
+ * FindPinches
+ *  1. Ghost labels (MeshAdjacency::ExchangeLabels).
+ *  2. Per node, from every local element containing it: an entry (key, label) and, for each face
+ *     neighbor through a face containing the node, a pair (key, neighbor key); keys as two exact
+ *     32-bit halves in doubles. Fixed labels are left out.
+ *  3. The lists go to the other copies (VertexField::ExchangeSharedLists).
+ *  4. Per node: distinct elements, union of the pairs whose two elements have the same label,
+ *     and the node is pinched when some label has two or more groups.
+ */
+void NodeLabels::FindPinches() {
+    const VertexField& field = *m_field;
+    mfem::ParMesh& pmesh = field.Mesh();
+    const MeshAdjacency& adj = *m_adjacency;
+    const int nv = field.NumVertices();
+
+    // Step 1
+    mfem::Array<int> ghost;
+    adj.ExchangeLabels(m_element_label, ghost);
+    const auto label_of = [&](int n) {
+        return adj.IsGhost(n) ? ghost[n - adj.NumElements()] : m_element_label[n];
+    };
+    const auto key_of = [&](int n) {
+        return adj.IsGhost(n) ? m_ghost_keys[static_cast<std::size_t>(n - adj.NumElements())]
+                              : m_keys[static_cast<std::size_t>(n)];
+    };
+
+    // Step 2: entries per node, 4 doubles each: (kind, key hi, key lo, label or other key)
+    const mfem::FiniteElementSpace* node_fes =
+        field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace() : nullptr;
+    const int* en_off = field.ElementVertexOffsets().HostRead();
+    const int* en = field.ElementVertices().HostRead();
+    const int* off = adj.Offsets().HostRead();
+    const int* nbr = adj.Neighbors().HostRead();
+    const int* face = adj.FaceIndices().HostRead();
+    std::vector<std::vector<double>> lists(static_cast<std::size_t>(nv));
+    const auto split = [](std::uint64_t k, double& hi, double& lo) {
+        hi = static_cast<double>(k >> 32);
+        lo = static_cast<double>(k & 0xffffffffULL);
+    };
+    mfem::Array<int> face_nodes;
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        const int a = m_element_label[e];
+        if (IsFixedLabel(a)) {
+            continue;
+        }
+        double kh, kl;
+        split(m_keys[static_cast<std::size_t>(e)], kh, kl);
+        for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
+            auto& list = lists[static_cast<std::size_t>(en[k])];
+            list.insert(list.end(), {0.0, kh, kl, static_cast<double>(a)});
+        }
+        for (int j = off[e]; j < off[e + 1]; ++j) {
+            const int n = nbr[j];
+            if (label_of(n) != a) {
+                continue; // only same-label pairs join groups
+            }
+            if (node_fes != nullptr) {
+                node_fes->GetFaceDofs(face[j], face_nodes);
+            } else {
+                pmesh.GetFaceVertices(face[j], face_nodes);
+            }
+            const std::uint64_t other = key_of(n);
+            double oh, ol;
+            split(other, oh, ol);
+            for (int q = 0; q < face_nodes.Size(); ++q) {
+                const int node = (face_nodes[q] >= 0) ? face_nodes[q] : -1 - face_nodes[q];
+                // A pair: kind 1 (this key) directly followed by kind 2 (the neighbor's key)
+                auto& list = lists[static_cast<std::size_t>(node)];
+                list.insert(list.end(), {1.0, kh, kl, 0.0, 2.0, oh, ol, 0.0});
+            }
+        }
+    }
+
+    // Step 3
+    std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
+    std::vector<double> send;
+    for (int v = 0; v < nv; ++v) {
+        const auto& list = lists[static_cast<std::size_t>(v)];
+        send.insert(send.end(), list.begin(), list.end());
+        send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
+    }
+    std::vector<int> recv_off;
+    std::vector<double> recv;
+    field.ExchangeSharedLists(send_off, send, recv_off, recv);
+
+    // Step 4
+    m_pinched.SetSize(nv);
+    const int* owned = field.OwnedVertexMarker().HostRead();
+    std::int64_t count = 0;
+    for (int v = 0; v < nv; ++v) {
+        const auto vs = static_cast<std::size_t>(v);
+        std::map<std::pair<double, double>, int> label; // element key -> label
+        std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> pairs;
+        const auto scan = [&](const std::vector<double>& items, int begin, int end) {
+            for (int k = begin; k < end; k += 4) {
+                const double* it = &items[static_cast<std::size_t>(k)];
+                if (it[0] == 0.0) {
+                    label[{it[1], it[2]}] = static_cast<int>(it[3]);
+                } else if (it[0] == 1.0) {
+                    pairs.push_back({{it[1], it[2]}, {it[5], it[6]}});
+                    k += 4; // the kind-2 entry that follows
+                }
+            }
+        };
+        scan(send, send_off[vs], send_off[vs + 1]);
+        scan(recv, recv_off[vs], recv_off[vs + 1]);
+        // Union-find over the elements around the node
+        std::map<std::pair<double, double>, std::pair<double, double>> parent;
+        for (const auto& entry : label) {
+            parent[entry.first] = entry.first;
+        }
+        const auto find = [&](std::pair<double, double> x) {
+            while (parent[x] != x) {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        };
+        for (const auto& [a, b] : pairs) {
+            if (parent.count(a) == 0 || parent.count(b) == 0) {
+                continue;
+            }
+            const auto ra = find(a);
+            const auto rb = find(b);
+            if (ra != rb) {
+                parent[std::max(ra, rb)] = std::min(ra, rb);
+            }
+        }
+        std::map<int, std::set<std::pair<double, double>>> groups;
+        for (const auto& entry : label) {
+            groups[entry.second].insert(find(entry.first));
+        }
+        bool pinched = false;
+        for (const auto& g : groups) {
+            pinched = pinched || g.second.size() > 1;
+        }
+        m_pinched[v] = pinched ? 1 : 0;
+        count += (pinched && owned[v] != 0) ? 1 : 0;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_INT64_T, MPI_SUM, field.Comm());
+    m_num_pinched = count;
 }
 
 /*

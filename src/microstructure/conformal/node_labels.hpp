@@ -73,6 +73,15 @@
  * once over all ranks: by the rank of its non-fixed element (of the smaller label when both are
  * fixed), with the normal pointing out of that element.
  *
+ * **Pinches.** A grain *pinches* at a node when its elements around the node form two or more
+ * groups that do not share a face through the node: the grain touches itself only at the node, or
+ * along an edge through it (a 2 x 2 checkerboard around an edge). Its boundaries there cannot be
+ * fitted (the node would have to be on two sheets of the grain's boundary at once). For every
+ * node each rank lists its elements around the node (element key, label) and the pairs of them
+ * that share a face containing the node (ghost keys and labels from MeshAdjacency); the lists of
+ * all copies are merged and every copy counts the face-connected groups per label, so Pinched()
+ * is the same on every copy for any partition. Fixed labels are ignored.
+ *
  * **Constraints.** Each surface a node must stay on removes one direction in which it can move:
  *   - grain constraints = (number of labels) - 1 (0 inside a grain, 1 on a grain boundary face,
  *     2 on a triple line, 3 at a quad point);
@@ -88,6 +97,8 @@
  */
 
 namespace exaconstit::microstructure {
+
+class MeshAdjacency;
 
 /** @brief Settings of NodeLabels. */
 struct NodeLabelOptions {
@@ -214,6 +225,10 @@ public:
     const std::vector<char>& SurfaceFaces() const {
         return m_surface_faces;
     }
+    /** @brief True when a label of node v pinches there (see the file comment). */
+    bool Pinched(int v) const {
+        return m_pinched[v] != 0;
+    }
     /** @brief Number of distinct labels at node v (>= 1). */
     int NumLabels(int v) const {
         return m_label_offsets[v + 1] - m_label_offsets[v];
@@ -253,6 +268,10 @@ public:
     int Constraints(int v) const {
         return GrainConstraints(v) + BoundaryConstraints(v);
     }
+    /** @brief Global number of pinched nodes (each node once). */
+    std::int64_t NumPinched() const {
+        return m_num_pinched;
+    }
     /** @brief More than 3 constraints. */
     bool OverConstrained(int v) const {
         return Constraints(v) > 3;
@@ -268,6 +287,7 @@ public:
 private:
     void BuildLabelSets(const mfem::Array<int>& element_label);
     void FindSurfaceFaces();
+    void FindPinches();
     void BuildBoundarySurfaces(double feature_angle_degrees);
     void BuildSummary();
 
@@ -276,6 +296,10 @@ private:
     std::vector<int> m_fixed_labels;
     double m_feature_cosine = 0.0;
     std::vector<char> m_surface_faces;
+    mfem::Array<int> m_pinched;
+    std::unique_ptr<MeshAdjacency> m_adjacency; ///< built once (the topology does not change)
+    std::vector<std::uint64_t> m_keys;          ///< element keys (mesh/element_key.hpp)
+    std::vector<std::uint64_t> m_ghost_keys;
     /** @brief Interface faces counted here: (local face, local element they point out of). */
     std::vector<std::pair<int, int>> m_interface_faces;
     mfem::Array<int> m_label_offsets;
@@ -286,6 +310,7 @@ private:
     mfem::Vector m_surface_normals;
     mfem::Array<int> m_surface_planar;
     NodeLabelSummary m_summary;
+    std::int64_t m_num_pinched = 0;
 };
 
 } // namespace exaconstit::microstructure

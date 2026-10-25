@@ -146,6 +146,10 @@ std::string ConformalText(const GenerationReport& report) {
     os << "conformal grain boundaries: label repair changed the grain of " << repair.flips
        << " element(s) (" << repair.passes << " pass(es)); unfit grain boundary nodes "
        << repair.bad_nodes_before << " -> " << repair.bad_nodes_after << "\n";
+    if (report.conformal_pinched_nodes > 0) {
+        os << "  " << report.conformal_pinched_nodes
+           << " node(s) held where a grain touches itself only at a node or an edge\n";
+    }
     if (report.conformal_under_resolved_grains > 0) {
         os << "  " << report.conformal_under_resolved_grains
            << " grain(s) too thin to fit (no mesh node inside the grain, e.g. one element thick): "

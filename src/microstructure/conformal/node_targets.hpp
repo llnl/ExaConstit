@@ -73,6 +73,11 @@
  * HELD (UNDER_RESOLVED) in the constructor's result, and the grains are counted
  * (NodeTargetSummary::under_resolved_grains). Fixed labels (passthrough parts) are not grains here.
  *
+ * **Pinches.** A grain boundary node where a grain pinches (NodeLabels::Pinched: the grain
+ * touches itself only at the node or along an edge through it) cannot be fitted. It is HELD
+ * (PINCH) with NodeTargetOptions::hold_pinches (default), or a FAKE_JUNCTION (PINCH) for label
+ * repair to remove.
+ *
  * **Status of every node** (TargetStatus; the target of every node that is not FIT is x itself):
  *   - NONE: one label (inside a grain, or on the outer boundary only);
  *   - FIT: a valid target;
@@ -123,6 +128,11 @@ struct NodeTargetOptions {
      * the summary.
      */
     bool hold_under_resolved = true;
+    /**
+     * @brief Pinched nodes (NodeLabels::Pinched): true = HELD (PINCH), they keep their place;
+     * false = FAKE_JUNCTION (PINCH), a bad node that label repair works on (its passes).
+     */
+    bool hold_pinches = true;
 };
 
 /** @brief What happens to a node (see the file comment). */
@@ -146,9 +156,10 @@ enum class TargetReason : int {
     RESIDUAL = 6,        ///< an equation does not hold at the target
     TOO_FAR = 7,         ///< the target is more than max_move element sizes away
     FOREIGN_SEED = 8,    ///< another seed is closer at the target
-    UNDER_RESOLVED = 9   ///< HELD: a label of a grain without an interior node
+    UNDER_RESOLVED = 9,  ///< HELD: a label of a grain without an interior node
+    PINCH = 10           ///< a grain pinches at the node (NodeLabels::Pinched)
 };
-inline constexpr int NUM_TARGET_REASONS = 10;
+inline constexpr int NUM_TARGET_REASONS = 11;
 
 /** @brief Global counts (each node once, on its owner). */
 struct NodeTargetSummary {

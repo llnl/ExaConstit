@@ -439,6 +439,19 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
         m_status[v] = static_cast<int>(r.status);
         m_reason[v] = static_cast<int>(r.reason);
     }
+    // Pinches: held, or bad for label repair (over-constrained nodes stay over-constrained)
+    {
+        const double* xyz = field.Coordinates().HostRead();
+        for (int v = 0; v < nv; ++v) {
+            if (labels.Pinched(v) && labels.NumLabels(v) >= 2 &&
+                Status(v) != TargetStatus::OVER_CONSTRAINED) {
+                m_status[v] = static_cast<int>(options.hold_pinches ? TargetStatus::HELD
+                                                                    : TargetStatus::FAKE_JUNCTION);
+                m_reason[v] = static_cast<int>(TargetReason::PINCH);
+                std::copy(xyz + 3 * v, xyz + 3 * v + 3, target + 3 * v);
+            }
+        }
+    }
     // Under-resolved grains: interior nodes per grain (owned, one non-fixed label), summed
     if (options.hold_under_resolved) {
         int max_label = 0;

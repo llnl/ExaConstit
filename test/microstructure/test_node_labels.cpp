@@ -20,6 +20,8 @@
  *  - Fixed labels (a passthrough plate under a bicrystal): the plate's top face is a flat boundary
  *    surface with the exact normal +-e_z for the nodes on it, the fixed label leaves their label
  *    sets, nodes inside the plate keep it, and each interface face is counted by one rank.
+ *  - Pinches (E3): a checkerboard around a vertical line pinches both grains at exactly the 5
+ *    nodes of the line; a bicrystal has none.
  *  - Invalid input throws on every rank.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
@@ -386,6 +388,28 @@ TEST(NodeLabels, FixedLabelInterface) {
     }
     MPI_Allreduce(MPI_IN_PLACE, &faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     EXPECT_EQ(faces, 16);
+}
+
+TEST(NodeLabels, Pinches) {
+    // A 2 x 2 checkerboard around the vertical line x = y = 1/2: each grain touches itself only
+    // along that line, so its 5 nodes are pinched (E3) and no other node is
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
+    std::unique_ptr<mfem::ParMesh> pmesh = Distribute(serial);
+    const LabelFunction checker = [](const double* x) {
+        return ((x[0] > 0.5) != (x[1] > 0.5)) ? 2 : 1;
+    };
+    const ms::NodeLabels nl(*pmesh, CenterLabels(*pmesh, checker));
+    EXPECT_EQ(nl.NumPinched(), 5);
+    EXPECT_EQ(CountOwned(nl,
+                         [&](const double* x, int v) {
+                             return nl.Pinched(v) && (std::fabs(x[0] - 0.5) > 1e-12 ||
+                                                      std::fabs(x[1] - 0.5) > 1e-12);
+                         }),
+              0);
+    // A plain bicrystal has no pinch
+    const ms::NodeLabels plain(*pmesh,
+                               CenterLabels(*pmesh, [](const double* x) { return x[0] < 0.5 ? 1 : 2; }));
+    EXPECT_EQ(plain.NumPinched(), 0);
 }
 
 TEST(NodeLabels, InvalidInputThrowsOnEveryRank) {

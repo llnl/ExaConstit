@@ -25,7 +25,7 @@
  *     miniapps/meshing/mesh-fitting.hpp, for N grains: there the element switches when all but
  *     one of its faces see another material.)
  *   - a *bad node*: a FAKE_JUNCTION (the grains of its label set have no common analytic boundary
- *     near it) or OVER_CONSTRAINED node (5 or more grains, a quad point on the outer boundary,
+ *     near it, or a grain pinches there) or OVER_CONSTRAINED node (5 or more grains, a quad point on the outer boundary,
  *     ...).
  *     An element at such a node can often take the label of a face neighbor that the node already
  *     has, which removes the extra label from the node.
@@ -71,8 +71,12 @@
  * MeshAdjacency) and node statuses, all identical on every rank; priorities use element keys; the
  * undo decisions use the same data. The repaired labels therefore do not depend on the partition.
  *
- * **Not covered yet** (planned): pinches (a grain touching itself at a single node or edge),
- * under-resolved grains, and a comparison of the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
+ * **Pinches and thin grains.** During the passes pinched nodes (a grain touching itself only at a
+ * node or along an edge, NodeLabels::Pinched) are bad nodes, so flips remove them; the final
+ * targets hold the pinches that remain (NodeTargetOptions::hold_pinches) and the grain boundary
+ * nodes of under-resolved grains (NodeTargetOptions::hold_under_resolved).
+ *
+ * **Not covered yet** (planned): a comparison of the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
  * move are kept above the quality floor by the fitter (conformal_fitter.hpp).
  *
  * Host and MPI (Stage 2 is CPU-only).

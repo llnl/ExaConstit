@@ -11,6 +11,8 @@
  *  - Guard: a grain of one element is never emptied (the flip is blocked, its nodes stay unfit).
  *  - A flip never splits a grain (E4): a U one element thick whose bottom lies in another grain's
  *    analytic cell stays in one piece; the flips that would cut it are undone.
+ *  - Pinches (E3) are bad nodes: flips remove most of the pinches of a checkerboard around a
+ *    line, and the remaining pinched nodes are held.
  *  - A peninsula in a non-analytic grain (grain_seed = -1, as for voxel maps) is still repaired,
  *    but a fixed label (a passthrough part) is never flipped into or out of.
  *  - FlipToCurrentOwner: an element whose center lies past the bisector flips to the neighbor
@@ -185,6 +187,33 @@ TEST(LabelRepair, FlipsNeverSplitAGrain) {
                     static_cast<long long>(result.report.flips),
                     static_cast<long long>(result.report.split_undone));
     }
+}
+
+TEST(LabelRepair, PinchesAreRemoved) {
+    // A 2 x 2 checkerboard around a vertical line (both grains pinch along it, E3), without
+    // analytic boundaries: the pinched nodes are bad, flips remove pinches
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
+    auto pmesh = Distribute(serial, MPI_COMM_WORLD);
+    mfem::Array<int> labels(pmesh->GetNE());
+    mfem::Vector c(3);
+    for (int e = 0; e < pmesh->GetNE(); ++e) {
+        pmesh->GetElementCenter(e, c);
+        labels[e] = ((c(0) > 0.5) != (c(1) > 0.5)) ? 2 : 1;
+    }
+    ms::LabelRepairOptions options;
+    options.targets.analytic = false;
+    const ms::SeedSet none;
+    const auto result = ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, none, {},
+                                         {-1, -1}, options);
+    // 7 nodes pinch at first; single flips remove most of the pinches (where two grains are
+    // stacked in a checkerboard on both sides of a node it takes two flips at once, which the
+    // greedy repair does not try); the remaining ones are held, none is left unfit
+    EXPECT_EQ(result.report.bad_nodes_before, 7);
+    EXPECT_GT(result.report.flips, 0);
+    EXPECT_LT(result.labels->NumPinched(), 7);
+    EXPECT_EQ(result.targets->Summary().reason[static_cast<int>(ms::TargetReason::PINCH)],
+              result.labels->NumPinched());
+    EXPECT_EQ(result.report.bad_nodes_after, 0);
 }
 
 TEST(LabelRepair, PeninsulaFlipsBack) {

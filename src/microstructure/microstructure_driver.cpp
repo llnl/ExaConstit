@@ -1706,6 +1706,8 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
     // Step 4
     report.conformal_smoothed_nodes = repair.targets->Summary().smoothed;
     report.conformal_under_resolved_grains = repair.targets->Summary().under_resolved_grains;
+    report.conformal_pinched_nodes =
+        repair.targets->Summary().reason[static_cast<int>(TargetReason::PINCH)];
     report.conformal_fit = FitConformal(pmesh, *repair.targets);
     report.conformal_repair = repair.report;
     report.ran_conformal = true;

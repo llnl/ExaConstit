@@ -259,6 +259,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     NodeTargetOptions pass_targets = options.targets;
     pass_targets.smoothed = false;
     pass_targets.hold_under_resolved = false; // thin grains' bad nodes are still repaired
+    pass_targets.hold_pinches = false;        // pinched nodes are bad: repair removes pinches
     const auto rebuild_targets = [&]() {
         result.targets.reset();
         result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
@@ -505,7 +506,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     }
 
     report.peninsulas_after = count_peninsulas();
-    if (options.targets.smoothed || options.targets.hold_under_resolved) {
+    if (options.targets.smoothed || options.targets.hold_under_resolved ||
+        options.targets.hold_pinches) {
         result.targets.reset();
         result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
                                                        grain_seed, options.targets);
