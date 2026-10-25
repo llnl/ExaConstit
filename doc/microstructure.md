@@ -11,6 +11,7 @@ Contents:
 3. File formats: inputs (seed table CSV, ExaConstit microstructure file, phase-to-region file) and
    outputs (mesh, grain file, orientation file, region map, grain table, adjacency table,
    microstructure file)
+4. Conformal grain boundaries (`[Conformal]`)
 
 ---
 
@@ -275,7 +276,7 @@ must be exactly 1..M). It replaces the inline map; giving both is an error.
 |---|---|
 | `<b>.mesh` / `<b>.mesh.gz` | MFEM serial mesh ("MFEM mesh v1.0"), element attribute = grain id 1..N, boundary attributes kept from the input mesh, gzip when compression > 0, coordinates at 17 digits |
 | `<b>.mesh.000000`, ... | MFEM parallel mesh ("MFEM mesh v1.2"), one file per part, gzip-compressed when compression > 0 (names unchanged; MFEM detects gzip from the first bytes) |
-| `<b>.grains` | text, one grain id per line, for auto box meshes: line e = element e in ExaConstit's auto-mesh order (x fastest, then y, then z); read by ExaConstit's `grain_file` |
+| `<b>.grains` | text, one grain id per line, for auto box meshes (with `grain_file = "auto"` not after a `[Conformal]` fit, whose moved nodes only the mesh file carries): line e = element e in ExaConstit's auto-mesh order (x fastest, then y, then z); read by ExaConstit's `grain_file` |
 | `<b>.ori` | text, one `w x y z` line per grain (line g = grain g), 17 significant digits, no header; read by `orientation_file` |
 | `<b>.regions` | text, one `grain region` line per grain, no header (only written with 2+ regions); read by `region_mapping_file` |
 | `<b>_grains.csv` | CSV with header: grain_id, qw, qx, qy, qz, then region, source_id, num_elements, volume, cx, cy, cz, num_neighbors, target_volume, phase, filler, feature_id (optional columns only when they carry information) |
@@ -285,3 +286,72 @@ must be exactly 1..M). It replaces the inline map; giving both is an error.
 
 Passthrough parts ([Mesh] passthrough_attributes) become the last grain ids, N+1, N+2, ..., so in
 ParaView "grain_id > N" selects them.
+
+---
+
+## 4. Conformal grain boundaries (`[Conformal]`)
+
+Code: `src/microstructure/conformal/`. The step runs after labeling (driver step 14) and moves
+the mesh nodes; elements, connectivity and element type stay the same.
+
+**Node labels.** Every node gets the sorted set of grains of the elements around it (1 label:
+grain interior; 2: on a grain boundary; 3: on a triple line; 4: at a quad point), and the outer
+boundary surfaces it lies on: boundary faces are grouped into surfaces by their normals (faces
+whose normals differ by less than 30 degrees are one surface), and each surface records whether it
+is flat (one exact normal) or curved. A node with more than three constraints in total (grain
+labels minus one, plus up to three surfaces) is over-constrained and is not fitted.
+
+**Targets.** For a node with labels a, b (and c, d) the analytic grain boundary is the set where
+the metric values agree, f_a(y) = f_b(y) (= f_c(y) ...), with f the metric of the tessellation
+(Voronoi, Laguerre, Additive or Quadric; for Voronoi this is the bisector plane). The node's target
+is the closest point y of that set (plus the planes of its flat boundary surfaces) to the node
+position x, found by a constrained Gauss-Newton projection:
+
+    y <- x - J^T (J J^T)^-1 (J (x - y) + phi(y)),
+
+where phi stacks the constraint values and J their gradients at y. On a curved boundary surface the
+projection alternates with the closest point on the node's ring of boundary triangles. A target is
+kept only if the constraints are met to a tolerance, it is at most about one element size h from
+the node, and no other seed is closer there (otherwise the node is HELD where it is).
+
+**Label repair.** Stair-step corners give nodes whose labels do not match any analytic feature
+(e.g. a node with three grains where the tessellation has only a boundary between two) and single
+elements sticking out of a grain. A few such elements are given to a face-neighboring grain, chosen
+by how much they reduce the unfit nodes and protruding elements (previewed with the target rules),
+at most one per neighborhood (two element rings) per pass, and kept only if that count really
+drops; a grain never loses its last element (or goes below Cleanup.min_grain_elements).
+
+**Fit: spring-balanced pseudo-elastic morph.** The mesh is treated as a linear elastic solid with
+Young's modulus 1 (times a per-element stiffening factor) and Poisson ratio 0.3, assembled on the
+input geometry. Every fitted node v is pulled toward its target t_v by a spring of stiffness
+k_v = c h_v m_v (a tenth of that on triple lines and quad points). The displacement u minimizes
+
+    1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
+
+one linear system (K + P) u = P (t - x) solved by conjugate gradients with an algebraic multigrid
+preconditioner (hypre BoomerAMG, systems mode). The springs let the elastic energy and the pull of
+the targets balance: an element at a stair-step corner cannot become exactly smooth (its two faces
+on the boundary would become one plane), and the balance leaves it a bounded kink instead of a
+collapsed element. The rounds double c; after each solve every element's scaled Jacobian (at its
+corners; times sqrt(2) for tets, so a regular tet scores 1) is checked against the floor, 0.3 for
+hexes and 0.2 for tets. If an element is below the floor, the springs of the nodes of the elements
+near the floor are halved and the round is solved again; elements below 0.6 are stiffened by
+(0.6 / sj)^2 (capped at 1000, spread to their neighbors), so distorted elements pass further
+distortion on to their neighbors. The rounds stop when the mean distance of the fitted nodes from
+their grain boundaries improves by less than 10 % (from the fourth kept round), when a round would
+leave more than 1 % of the elements below floor + 0.2 beyond those of the input, or after 10
+rounds; the last round that passed is kept. If already the first round fails that 1 % guard it is
+retried with a quarter of the spring, up to three times, so meshes whose elements start close to
+the guard still get a partial fit.
+
+**Outer surfaces.** On a box face (normal along a coordinate axis) the normal coordinate is fixed,
+so nodes slide along the face and keep that coordinate bit for bit. On a tilted flat surface, or
+on a single curved surface, a node slides along it: a stiff normal spring (10^4 h) in the solve,
+then an exact projection back onto the plane(s) or onto the closest point of its ring of input
+boundary triangles. Nodes where a curved surface meets another surface do not move.
+
+**Measured behavior** (test meshes, 20-50 Voronoi grains): the mean distance of the grain boundary
+nodes from the analytic boundaries drops from about 0.4 h to about 0.22-0.24 h on hex meshes with a
+smallest scaled Jacobian of about 0.4, and to about 0.3 h on tet meshes (tets made by cutting
+cubes start at a scaled Jacobian of 0.58, so the quality guard stops them sooner).
+

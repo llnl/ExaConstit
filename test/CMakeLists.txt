@@ -203,6 +203,9 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      same labels (>= 99%).
     #   8. the curved file refined once before distribution at 1 and 2 ranks (byte-identical record
     #      files, equal mechanics), and at p_refinement = 1 (the curvature-loss warning).
+    #   9. conformal grain boundaries ([Conformal] enabled): the tool writes a mesh file with the
+    #      moved nodes and mechanics runs on it; the hook fits mechanics' own mesh at 2 ranks;
+    #      the two mechanics results must agree.
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
     # command, prints its output, and fails unless the exit status is 0 AND the output matches the
     # expected text (PASS_REGULAR_EXPRESSION alone would ignore the exit status). mechanics writes
@@ -223,6 +226,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
              "file(COPY \${_decks} \"${_hk_ms}/mechanics/ms_auto_np1.toml\" "
              "\"${_hk_ms}/mechanics/ms_two_phase_tool_np2.toml\" "
              "\"${_hk_ms}/mechanics/ms_hook_pass_read_np2.toml\" "
+             "\"${_hk_ms}/mechanics/ms_conformal_file_np1.toml\" "
              "\"${_hk_ms}/bulged_cube_order2.mesh\" "
              "\"${_hk_data}/props_cp_voce.txt\" \"${_hk_data}/state_cp_voce.txt\" "
              "DESTINATION \"${_hk_dir}\")\n")
@@ -556,6 +560,33 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
                     PASS    "order-2 nodes but Mesh.order .p_refinement. = 1"
                     SETUP   ms_hook_run_curved_order1
                     PROGRAM $<TARGET_FILE:mechanics> -opt hook_curved_order1_np1.toml)
+
+        # Step 9: conformal grain boundaries. Tool (1 rank) on conformal_auto.toml, mechanics on
+        # its mesh file; the hook with [Conformal] at 2 ranks. The fitted positions agree to the
+        # linear solver tolerance, so the mechanics results agree within the comparison
+        # tolerances.
+        set(_hk_conformal "conformal grain boundaries: label repair")
+        ms_hook_run(NAME    test_microstructure_hook_e2e_conformal_tool
+                    NP      1
+                    PASS    "${_hk_conformal}"
+                    SETUP   ms_hook_tool_conformal_files
+                    PROGRAM $<TARGET_FILE:microstructure_generator>
+                            -i ${_hk_ms}/conformal_auto.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_conformal_file
+                    NP      1
+                    PASS    "."
+                    SETUP   ms_hook_run_conformal_file
+                    NEEDS   ms_hook_tool_conformal_files
+                    PROGRAM $<TARGET_FILE:mechanics> -opt ms_conformal_file_np1.toml)
+        ms_hook_run(NAME    test_microstructure_hook_e2e_conformal_hook
+                    NP      2
+                    PASS    "${_hk_conformal}"
+                    SETUP   ms_hook_run_conformal_hook
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_conformal_np2.toml)
+        ms_hook_compare(NAME  test_microstructure_hook_e2e_compare_conformal
+                        DIR_A results/ms_conformal_file_np1
+                        DIR_B results/hook_conformal_np2
+                        NEEDS ms_hook_run_conformal_file ms_hook_run_conformal_hook)
     endif()
 endif()
 

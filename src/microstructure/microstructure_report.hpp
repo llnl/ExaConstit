@@ -87,4 +87,13 @@ int PassthroughGrainId(const GenerationReport& report, const MicrostructureResul
 std::string RegionContents(const GenerationReport& report, const MicrostructureResult& result,
                            int r);
 
+/**
+ * @brief The conformal grain boundary step in words (lines ending in a newline), for the logs of
+ * the tool and the hook: elements that changed grain in the label repair, the distance of the
+ * grain boundary nodes from the analytic boundaries before and after (mean and largest, in
+ * element sizes h), the smallest scaled Jacobian and largest aspect ratio before and after, and
+ * the rounds of the fit. Empty when the step did not run.
+ */
+std::string ConformalText(const GenerationReport& report);
+
 } // namespace exaconstit::microstructure

@@ -767,6 +767,11 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
     // Fragment cleanup (always runs; with fragments = "none" it only reports what it found)
     os << report.cleanup.Summary() << "\n";
 
+    // Conformal grain boundaries
+    if (report.ran_conformal) {
+        os << ms::ConformalText(report);
+    }
+
     // Grain statistics (the same numbers as the grain table)
     if (stats.num_grains > 0) {
         std::int64_t min_elements = stats.num_elements[0];
@@ -787,6 +792,69 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
            << " touching grain pairs, material volume " << stats.total_volume << "\n";
     }
     return os.str();
+}
+
+/*
+ * CopyFittedCorners (collective): after a conformal fit the node positions of the distributed
+ * mesh moved, but the files are written from the serial mesh. Every rank packs the corner
+ * positions of its elements in local order (= ascending serial ids of the elements it owns,
+ * mesh/serial_order.hpp), all ranks gather them, and each rank writes them into its serial copy:
+ * into the vertices, or into the order-1 Nodes when the serial mesh has Nodes (dofs in element
+ * vertex order). The ParMesh keeps each element's vertex order, so corner k is the same vertex
+ * in both meshes.
+ */
+void CopyFittedCorners(MPI_Comm comm, const ms::SerialOrder& order, mfem::ParMesh& pmesh,
+                       mfem::Mesh& serial) {
+    const mfem::GridFunction* pnodes = pmesh.GetNodes();
+    std::vector<double> mine;
+    mfem::Array<int> corners;
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        if (pnodes != nullptr) {
+            pnodes->FESpace()->GetElementDofs(e, corners);
+        } else {
+            pmesh.GetElementVertices(e, corners);
+        }
+        for (const int c : corners) {
+            for (int d = 0; d < 3; ++d) {
+                mine.push_back(pnodes != nullptr ? (*pnodes)(pnodes->FESpace()->DofToVDof(c, d))
+                                                 : pmesh.GetVertex(c)[d]);
+            }
+        }
+    }
+    int size = 1;
+    MPI_Comm_size(comm, &size);
+    int count = static_cast<int>(mine.size());
+    std::vector<int> counts(static_cast<std::size_t>(size));
+    MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
+    std::vector<int> displs(static_cast<std::size_t>(size), 0);
+    for (int r = 1; r < size; ++r) {
+        displs[static_cast<std::size_t>(r)] =
+            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+    }
+    std::vector<double> all(static_cast<std::size_t>(displs.back() + counts.back()));
+    MPI_Allgatherv(mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(),
+                   MPI_DOUBLE, comm);
+    mfem::GridFunction* snodes = serial.GetNodes();
+    std::vector<int> cursor = displs;
+    for (int e = 0; e < serial.GetNE(); ++e) {
+        int& at = cursor[static_cast<std::size_t>(order.partitioning[e])];
+        if (snodes != nullptr) {
+            snodes->FESpace()->GetElementDofs(e, corners);
+        } else {
+            serial.GetElementVertices(e, corners);
+        }
+        for (const int c : corners) {
+            for (int d = 0; d < 3; ++d) {
+                const double x = all[static_cast<std::size_t>(at++)];
+                if (snodes != nullptr) {
+                    (*snodes)(snodes->FESpace()->DofToVDof(c, d)) = x;
+                } else {
+                    serial.GetVertex(c)[d] = x;
+                }
+            }
+        }
+    }
+    serial.NodesUpdated();
 }
 
 /** Paths of everything written, for the summary. */
@@ -1060,6 +1128,10 @@ int main(int argc, char** argv) {
         ms::GenerationReport report;
         ms::MicrostructureResult result = ms::GenerateMicrostructure(options, *pmesh, comm,
                                                                      &report);
+        // A conformal fit moved the nodes: the serial mesh the files are written from follows
+        if (report.ran_conformal) {
+            CopyFittedCorners(comm, order, *pmesh, *serial);
+        }
 
         // Coarse-resolution warning: a grain needs many elements to deform realistically
         const double elements_per_grain =
@@ -1142,8 +1214,11 @@ int main(int argc, char** argv) {
         // Per-grain text files (rank 0): orientations always; region map only with >1 region;
         // grain file for auto input ("auto") or when forced ("true")
         files.orientation_file = base.string() + ".ori";
+        // An auto mesh rebuilt by ExaConstit would lose the fitted node positions, so after a
+        // conformal fit "auto" writes no grain file (the mesh file carries the grains)
         const bool want_grain_file =
-            (out.grain_file == "true") || (out.grain_file == "auto" && options.mesh.type == "auto");
+            (out.grain_file == "true") || (out.grain_file == "auto" &&
+                                           options.mesh.type == "auto" && !report.ran_conformal);
         if (want_grain_file) {
             files.grain_file = base.string() + ".grains";
         }

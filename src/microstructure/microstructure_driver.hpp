@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/conformal/conformal_fitter.hpp"
+#include "microstructure/conformal/label_repair.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/connected_labeler.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
@@ -251,6 +253,18 @@ struct GenerationReport {
      */
     std::int64_t num_unlabeled_elements = 0;
 
+    // ---- Stage 2: conformal grain boundaries ([Conformal]) ------------------------------------
+
+    /** @brief True when the grain boundaries were fitted (Conformal.enabled). */
+    bool ran_conformal = false;
+    /** @brief The label repair before the fit (conformal/label_repair.hpp): flips kept and
+     * undone, unfit nodes and peninsula elements before and after. Global counts. */
+    LabelRepairReport conformal_repair;
+    /** @brief The fit (conformal/conformal_fitter.hpp): fitted and fixed nodes, rounds, mean
+     * and largest distance of the grain boundary nodes from the analytic boundaries before and
+     * after (in element sizes), and the mesh quality before and after. Global values. */
+    ConformalFitReport conformal_fit;
+
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;
 };
@@ -352,6 +366,14 @@ struct GenerationReport {
  * 13. Passthrough: labels mapped back to the whole mesh (AttributeDomain::ToParent) and one grain
  *     appended per passthrough attribute (identity quaternion, its region, phase -1, source id
  *     -attribute). The phase regions and passthrough regions together must be exactly 1..R.
+ * 14. Conformal grain boundaries (Conformal.enabled, Stage 2): label repair against the analytic
+ *     boundaries of the seeds (a few elements next to a grain boundary may change grain;
+ *     conformal/label_repair.hpp), then the fit (conformal/conformal_fitter.hpp), which moves
+ *     the mesh nodes so the grain boundaries become smooth surfaces near the analytic ones while
+ *     every element stays above a fixed quality floor. This is the only step that changes
+ *     `pmesh`: its node positions (a mesh without Nodes gets the fitted positions as vertices
+ *     and stays without Nodes). GenerationReport::adjacency is rebuilt on the fitted geometry.
+ *     Needs a hex or tet mesh of order 1; refused combinations as in validate().
  *
  * Collective over `comm`: every rank of `comm` must call it with identical `options`. The result
  * does not depend on the number of ranks: element labels of the same element are identical for
@@ -361,7 +383,7 @@ struct GenerationReport {
  *
  * @param options validated options (MicrostructureOptions::validate() returned true).
  * @param pmesh   this rank's partition of the mesh. Its geometry and attributes are not
- *                modified, but MFEM builds caches on demand when element geometry is evaluated:
+ *                modified (except the node positions with Conformal.enabled, step 14), but MFEM builds caches on demand when element geometry is evaluated:
  *                the mesh keeps the GeometricFactors object (mesh.cpp:887-899), and the nodal
  *                FE space keeps a QuadratureInterpolator (its output layout set to byNODES) and
  *                an element restriction (mesh.cpp:15251-15261); the face adjacency also calls

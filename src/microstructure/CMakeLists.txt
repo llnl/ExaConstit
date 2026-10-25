@@ -174,8 +174,8 @@ ms_add_module(NAME ms_conformal GLOBS conformal/*
 # pipeline (microstructure_driver) and the record tables and log phrases both consumers write
 # (microstructure_report)
 ms_add_module(NAME exaconstit_microstructure GLOBS microstructure_driver microstructure_report
-              DEPENDS_ON ms_options ms_io ms_morphology ms_seeding ms_labeling ms_geometry
-                         ms_mesh)
+              DEPENDS_ON ms_options ms_io ms_morphology ms_conformal ms_seeding ms_labeling
+                         ms_geometry ms_mesh)
 
 #------------------------------------------------------------------------------
 # Standalone tool: bin/microstructure_generator (options file and/or -m -n -s -o --parts)

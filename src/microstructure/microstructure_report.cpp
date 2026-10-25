@@ -133,6 +133,30 @@ GrainAdjacencyTable BuildAdjacencyTable(const GrainStatistics& stats) {
  * - Johnson-Mehl: the count is not requested but follows from the nucleation (num_nuclei is only
  *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
  */
+/*
+ * ConformalText: see the header. Three lines: repair, fit distance, quality.
+ */
+std::string ConformalText(const GenerationReport& report) {
+    if (!report.ran_conformal) {
+        return "";
+    }
+    const LabelRepairReport& repair = report.conformal_repair;
+    const ConformalFitReport& fit = report.conformal_fit;
+    std::ostringstream os;
+    os << "conformal grain boundaries: label repair changed the grain of " << repair.flips
+       << " element(s) (" << repair.passes << " pass(es)); unfit grain boundary nodes "
+       << repair.bad_nodes_before << " -> " << repair.bad_nodes_after << "\n";
+    os << "  fit: " << fit.fit_nodes << " grain boundary nodes, distance from the analytic "
+       << "boundaries (element sizes h) mean " << fit.initial_deviation << " -> "
+       << fit.mean_deviation << ", largest after " << fit.max_deviation << "; " << fit.rounds
+       << " round(s), " << fit.solves << " elastic solve(s)\n";
+    os << "  mesh quality: smallest scaled Jacobian " << fit.quality_before.min_scaled_jacobian
+       << " -> " << fit.quality_after.min_scaled_jacobian << ", largest aspect ratio "
+       << fit.quality_before.max_aspect_ratio << " -> " << fit.quality_after.max_aspect_ratio
+       << ", inverted elements " << fit.quality_after.inverted << "\n";
+    return os.str();
+}
+
 std::string RequestedGrains(const GenerationReport& report) {
     if (report.used_voxel_map) {
         return "read from the voxel map";

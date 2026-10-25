@@ -1265,6 +1265,8 @@ void check_choice(bool& valid,
  *   - [Orientations] `source`: "random", "from_source" or "list".
  *   - [Regions]: `mode` ("single", "from_phase" or "phase_fractions": how grains are grouped into
  *     ExaConstit material regions) and its phase keys (see regions_from_toml).
+ *   - [Conformal] `enabled`: fit the grain boundaries after labeling (combinations checked in
+ *     validate()).
  * The string values of [Cleanup], [Orientations] and [Regions] are checked in validate().
  *
  * Not collective; every rank may call it on its own copy of the document.
@@ -1285,6 +1287,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
                        "Cleanup",
                        "Orientations",
                        "Regions",
+                       "Conformal",
                        "Output"});
 
     MicrostructureOptions options;
@@ -1373,6 +1376,15 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
     // [Regions]
     if (toml_input.contains("Regions")) {
         options.regions = regions_from_toml(toml::find(toml_input, "Regions"));
+    }
+
+    // [Conformal]
+    if (toml_input.contains("Conformal")) {
+        const auto& conformal = toml::find(toml_input, "Conformal");
+        warn_unknown_keys(conformal, "Conformal", {"enabled"});
+        if (conformal.contains("enabled")) {
+            options.conformal.enabled = toml::find<bool>(conformal, "enabled");
+        }
     }
 
     // [Output]
@@ -2243,6 +2255,26 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             report_error(valid, "Mesh.passthrough_attributes: with Regions.mode = \"single\" the "
                                 "grains are region 1, so the passthrough regions must make the "
                                 "region ids exactly 1..R (no gaps)");
+        }
+    }
+
+    // --- [Conformal] ------------------------------------------------------------------------
+    // The fit needs analytic grain boundaries between the seeds' cells (straight-line metric,
+    // no periodic images) and a mesh whose every element belongs to the tessellation.
+    if (conformal.enabled) {
+        if (voxel_source) {
+            report_error(valid, "Conformal.enabled needs Source.type = \"tessellation\" (voxel "
+                                "maps have no analytic grain boundaries)");
+        }
+        if (tessellation.distance != DistanceMode::EUCLIDEAN) {
+            report_error(valid, "Conformal.enabled needs Tessellation.distance = \"euclidean\"");
+        }
+        if (any_periodic_axis) {
+            report_error(valid, "Conformal.enabled cannot be combined with Tessellation.periodic");
+        }
+        if (passthrough || !mesh.active_attributes.empty()) {
+            report_error(valid, "Conformal.enabled cannot be combined with "
+                                "Mesh.active_attributes or Mesh.passthrough_attributes");
         }
     }
 

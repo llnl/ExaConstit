@@ -41,6 +41,8 @@
  */
 #include "microstructure/microstructure_driver.hpp"
 
+#include "microstructure/conformal/conformal_fitter.hpp"
+#include "microstructure/conformal/label_repair.hpp"
 #include "microstructure/geometry/periodic_images.hpp"
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
@@ -59,6 +61,7 @@
 #include "microstructure/morphology/size_targets.hpp"
 #include "microstructure/orientation/orientation_assigner.hpp"
 #include "microstructure/regions/region_assigner.hpp"
+#include "microstructure/util/collective_errors.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/roi_filler.hpp"
 
@@ -194,6 +197,15 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
     // the bonded interface, seeding/boundary_clearance.hpp)
     if (passthrough && AnyPeriodic(tess)) {
         refuse("Tessellation.periodic cannot be combined with Mesh.passthrough_attributes");
+    }
+
+    // Conformal grain boundaries need analytic boundaries between seed cells (straight-line
+    // distance, no periodic images) and every element in the tessellation
+    if (options.conformal.enabled &&
+        (voxel || tess.distance != DistanceMode::EUCLIDEAN || AnyPeriodic(tess) || passthrough ||
+         !options.mesh.active_attributes.empty())) {
+        refuse("Conformal.enabled needs Source.type = \"tessellation\", Tessellation.distance = "
+               "\"euclidean\", no periodic axis and no active or passthrough attributes");
     }
 
     // Seed tables: measured positions must not move, and the ROI options need a table
@@ -1636,6 +1648,80 @@ void CheckUnitQuaternions(const MicrostructureResult& result) {
 
 } // namespace
 
+namespace {
+
+/*
+ * FitConformalBoundaries (step 14, Conformal.enabled; collective)
+ *  1. Checks: hex or tet elements, geometry of order 1 (no Nodes, or order-1 Nodes).
+ *  2. A mesh without Nodes gets order-1 Nodes (the fitter moves the Nodes).
+ *  3. Label repair against the analytic boundaries of the labeling's seeds and metric
+ *     (conformal/label_repair.hpp; the smallest grain is Cleanup.min_grain_elements, at least 1),
+ *     in place on result.element_grain.
+ *  4. The fit (conformal/conformal_fitter.hpp).
+ *  5. A mesh that had no Nodes gets the fitted positions as its vertices and loses the Nodes
+ *     again, so the caller's mesh keeps its kind (order-1 H1 Nodes: dof v is vertex v).
+ */
+void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
+                            MPI_Comm comm, const std::vector<int>& grain_seed,
+                            GenerationReport& report, MicrostructureResult& result) {
+    // Step 1
+    bool bad_type = false;
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        const mfem::Geometry::Type g = pmesh.GetElementGeometry(e);
+        bad_type = bad_type || (g != mfem::Geometry::CUBE && g != mfem::Geometry::TETRAHEDRON);
+    }
+    ThrowIfAnyRank(comm, bad_type,
+                   "GenerateMicrostructure: Conformal.enabled needs a hex or tet mesh");
+    mfem::GridFunction* nodes = pmesh.GetNodes();
+    const bool had_nodes = nodes != nullptr;
+    ThrowIfAnyRank(comm, had_nodes && nodes->FESpace()->GetMaxElementOrder() != 1,
+                   "GenerateMicrostructure: Conformal.enabled needs a mesh of order 1 "
+                   "(straight-sided elements; higher orders are not supported yet)");
+
+    // Step 2
+    if (!had_nodes) {
+        pmesh.SetCurvature(1, false, 3, mfem::Ordering::byNODES);
+    }
+
+    // Step 3
+    MetricSetup setup;
+    setup.global_tensor = EffectiveGlobalTensor(options.tessellation);
+    setup.per_seed_shape = !report.seeds.shape.empty();
+    LabelRepairOptions repair_options;
+    repair_options.min_grain_elements = std::max(1, options.cleanup.min_grain_elements);
+    LabelRepairResult repair =
+        RepairLabels(pmesh, result.element_grain, options.tessellation.metric, report.seeds,
+                     setup, grain_seed, repair_options);
+
+    // Step 4
+    report.conformal_fit = FitConformal(pmesh, *repair.targets);
+    report.conformal_repair = repair.report;
+    report.ran_conformal = true;
+
+    // Step 5
+    if (!had_nodes) {
+        const mfem::GridFunction& x = *pmesh.GetNodes();
+        const mfem::FiniteElementSpace& fes = *x.FESpace();
+        mfem::Vector vertices(3 * pmesh.GetNV()); // byNODES: all x, then all y, then all z
+        for (int v = 0; v < pmesh.GetNV(); ++v) {
+            for (int d = 0; d < 3; ++d) {
+                vertices(d * pmesh.GetNV() + v) = x(fes.DofToVDof(v, d));
+            }
+        }
+        repair = LabelRepairResult(); // the node labels and targets refer to the Nodes
+        mfem::GridFunction* fitted = nullptr;
+        int own = 0;
+        pmesh.SwapNodes(fitted, own); // fitted: the Nodes, removed from the mesh
+        if (own != 0) {
+            delete fitted;
+        }
+        pmesh.SetVertices(vertices);
+    }
+    pmesh.NodesUpdated(); // drop geometry caches built on the input positions
+}
+
+} // namespace
+
 /*
  * GenerateMicrostructure
  *
@@ -1654,8 +1740,10 @@ void CheckUnitQuaternions(const MicrostructureResult& result) {
  *     source id otherwise (AssignMixedGrainOrientations).
  * 11-12. Phases and regions (AssignRegions); identity quaternions for non-crystalline regions.
  * 13. Passthrough: ToParent and one grain per passthrough attribute (AppendPassthroughGrains).
- *     The report's adjacency is the whole-mesh adjacency of the cleanup. Then
- *     CheckUnitQuaternions confirms every orientation row has norm 1.
+ *     The report's adjacency is the whole-mesh adjacency of the cleanup.
+ * 14. Conformal grain boundaries (Conformal.enabled): FitConformalBoundaries, then the adjacency
+ *     is rebuilt on the fitted geometry. Then CheckUnitQuaternions confirms every orientation
+ *     row has norm 1.
  * Then the report (the global reductions always run, so ranks that differ in passing a report
  * cannot deadlock).
  */
@@ -1743,6 +1831,13 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
                                 grain_feature);
     } else {
         result.element_grain = active.element_grain;
+    }
+
+    // Step 14: conformal grain boundaries (moves the mesh nodes; may flip a few elements)
+    if (options.conformal.enabled) {
+        FitConformalBoundaries(options, pmesh, comm, grain_seed, report, result);
+        // Face areas of the fitted geometry (no periodic axes with Conformal.enabled)
+        adjacency = std::make_shared<const MeshAdjacency>(pmesh);
     }
 
     // Every orientation written is a unit quaternion

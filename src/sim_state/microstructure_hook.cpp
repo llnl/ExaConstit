@@ -469,6 +469,9 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
                       << options.materials[static_cast<std::size_t>(r - 1)].material_name
                       << "'): " << ms::RegionContents(report, result, r) << "\n";
         }
+        if (report.ran_conformal) {
+            std::cout << "  " << ms::ConformalText(report);
+        }
         for (const std::string& warning : report.warnings) {
             std::cout << "  warning: " << warning << "\n";
         }

@@ -184,10 +184,12 @@
 #   [Cleanup]       tidy up: no grain split into pieces, no grains too small for the mesh
 #   [Orientations]  the crystal orientation of every grain
 #   [Regions]       the ExaConstit material of every grain
+#   [Conformal]     optional: move the mesh nodes so grain boundaries are smooth, not stair steps
 #
-# Grain boundaries always follow element faces: on a coarse mesh they look like stair steps. A
-# finer mesh gives smoother boundaries but the same grains in the same places (except with
-# Seeds.placement = "element_weighted", whose seeds depend on the elements).
+# Grain boundaries follow element faces: on a coarse mesh they look like stair steps. A finer
+# mesh gives smoother boundaries but the same grains in the same places (except with
+# Seeds.placement = "element_weighted", whose seeds depend on the elements). [Conformal] smooths
+# them on the same mesh instead, by moving its nodes.
 # The microstructure depends only on the options, never on the number of MPI ranks.
 
 # =====================================
@@ -418,7 +420,8 @@ exec = "cpu"
 
     # Write <basename>.grains (one grain number per element):
     # - "auto"  = only for auto box meshes (ExaConstit rebuilds those itself, so the grain
-    #             numbers cannot travel inside a mesh file)
+    #             numbers cannot travel inside a mesh file), and not after a [Conformal] fit
+    #             (the rebuilt box would lose the moved nodes; use the mesh file)
     # - "true" / "false" (a TOML true / false works too)
     grain_file = "auto"
 
@@ -1165,6 +1168,49 @@ exec = "cpu"
     # filler_phase = 1
 
 # =====================================
+# CONFORMAL GRAIN BOUNDARIES (smooth instead of stair steps)
+# =====================================
+# Every element belongs to exactly one grain, so grain boundaries follow element faces and look
+# like stair steps. With enabled = true the generator then moves the mesh nodes (the corner
+# points of the elements) so that each grain boundary becomes a smooth, slightly wavy surface
+# close to the boundary the tessellation describes. The number of elements, how they connect
+# and the element type stay the same; before the move a few elements next to a grain boundary
+# may switch to the neighboring grain, where that gives a cleaner boundary.
+#
+# Mesh quality always comes first. The shape of an element is measured by its scaled Jacobian,
+# computed at each corner: 1 for a perfect cube corner (or a regular tetrahedron), 0 for a corner
+# squashed flat, below 0 for an inverted (turned inside out) element. The generator never lets
+# an element drop below 0.3 (hex meshes) or 0.2 (tet meshes), and stops early rather than
+# leave many elements barely above that. These limits are fixed, not options. Where they stop
+# it, a boundary stays partly stepped.
+#
+# How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
+# guarantee): grain boundary nodes start on average about 0.4 element sizes from the
+# tessellation's boundaries and end about 0.2-0.25 on hex meshes, about 0.3 on tet meshes (tets
+# start with worse shapes, so the quality limits stop them sooner). The log prints these
+# distances and the smallest scaled Jacobian before and after, so check them for your mesh.
+#
+# Outer surfaces stay where they are: nodes on a flat face of the part slide along that face; on
+# a curved surface they slide along the surface's original elements; nodes on edges and corners
+# where a curved surface meets another surface do not move. Grain volumes change a little,
+# since the boundaries move.
+#
+# Needs: Source.type = "tessellation" with Tessellation.distance = "euclidean"; no periodic
+# axes; no active_attributes or passthrough_attributes; a hex or tet mesh with straight-sided
+# (first-order) elements. Inside ExaConstit that means [Mesh] order = 1. Any other combination
+# is refused with a message.
+#
+# Files: the mesh file and the ParaView view hold the moved nodes. An auto mesh ([Mesh] type =
+# "auto") is rebuilt by ExaConstit from its box size, which would undo the move, so after a fit
+# grain_file = "auto" writes no grain file: run the simulation from the written mesh file
+# ([Mesh] type = "file") instead.
+
+[Conformal]
+    # true = smooth the grain boundaries as described above. false (default) = keep the stair
+    # steps (element faces, nodes untouched).
+    enabled = false
+
+# =====================================
 # USING THESE OPTIONS INSIDE EXACONSTIT ([Mesh.Microstructure])
 # =====================================
 # ExaConstit can make the grains itself when a simulation starts, on its own mesh (after
@@ -1200,6 +1246,9 @@ exec = "cpu"
 #   - Each [Materials.Grain] gets num_grains and ori_type = "quat" from the generator; keep only
 #     ori_state_var_loc and ori_stride there.
 #   - One region per [[Materials]] block (region r uses block r).
+#   - [Conformal] enabled = true moves the nodes of the simulation's own mesh before the run
+#     starts (needs [Mesh] order = 1). The saved grain mesh (mesh_format = "parallel") holds the
+#     moved nodes.
 #   - A restarted simulation takes the grains from the checkpoint and does not run the generator.
 # Every key you do not write keeps the default shown above, as in the tool, so the same tables
 # give the same grains in both (on the same mesh).

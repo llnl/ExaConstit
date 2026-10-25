@@ -1418,6 +1418,37 @@ TEST(MicrostructureOptions, Stage1eKeysParse) {
 // - connected_max_rounds in 0..1000 (the labeler's CONNECTED_MAX_ROUNDS_LIMIT) and a solver
 //   "graph" or "fim", in any mode; valid settings of an unselected mode only warn;
 // - passthrough parts and seed tables are fine (the modes run on the active part).
+TEST(MicrostructureOptions, ConformalParseAndValidation) {
+    // Parsed from [Conformal]; off by default
+    EXPECT_FALSE(FromString("").conformal.enabled);
+    EXPECT_TRUE(FromString("[Conformal]\nenabled = true\n").conformal.enabled);
+
+    using O = ms::MicrostructureOptions;
+    auto check = [](O o, auto&& mutate) {
+        o.conformal.enabled = true;
+        mutate(o);
+        return o.validate();
+    };
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O&) {}));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
+    // Refused: no analytic boundaries between seed cells, periodic images, masked parts
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.distance = ms::DistanceMode::CONNECTED;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.periodic = {true, false, false};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.active_attributes = {1}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.seeds.num_seeds = 0;
+        o.source.type = "voxel_map";
+        o.voxel_map.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+    }));
+}
+
 TEST(MicrostructureOptions, Stage1eValidationFailures) {
     using O = ms::MicrostructureOptions;
     auto check = [](O o, auto&& mutate) {
@@ -1765,6 +1796,9 @@ TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     EXPECT_EQ(pr.phase_fractions, er.phase_fractions);
     EXPECT_EQ(pr.has_filler_phase, er.has_filler_phase);
     EXPECT_EQ(pr.filler_phase, er.filler_phase);
+
+    // [Conformal]
+    EXPECT_EQ(parsed.conformal.enabled, expected.conformal.enabled);
 
     // [Output]
     const auto& po = parsed.output;
