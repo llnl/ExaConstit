@@ -24,6 +24,8 @@ constexpr double JUNCTION_SPRING = 0.1;
 constexpr double BACKOFF_MARGIN = 0.05;
 /** @brief Scaled Jacobian below which an element is stiffened. */
 constexpr double STIFFEN_BELOW = 0.6;
+/** @brief Elements within this margin below the aspect ratio ceiling also back off. */
+constexpr double ASPECT_RATIO_BACKOFF_MARGIN = 0.5;
 /** @brief Cap of the stiffness factor. */
 constexpr double MAX_STIFFNESS = 1e3;
 /** @brief Bulk quality guard: at most this share of elements below floor + BULK_MARGIN. */
@@ -519,12 +521,19 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
         };
 
         // Elements of the input already below floor + BULK_MARGIN (the guard counts new ones)
+        // Per-element limits: the floor and the aspect ratio ceiling, or the element's input value
+        // where the input is already beyond them (it may not get worse)
+        std::vector<double> ar_e(static_cast<std::size_t>(ne), 1.0);
+        std::vector<double> sj_limit(static_cast<std::size_t>(ne), floor);
+        std::vector<double> ar_limit(static_cast<std::size_t>(ne), MESH_ASPECT_RATIO_MAX);
         double input_below = 0.0;
         for (int e = 0; e < ne; ++e) {
             double q = 0.0;
             double ar = 0.0;
             double det = 0.0;
             ElementQuality(pmesh, e, q, ar, det);
+            sj_limit[static_cast<std::size_t>(e)] = std::min(floor, q);
+            ar_limit[static_cast<std::size_t>(e)] = std::max(MESH_ASPECT_RATIO_MAX, ar);
             input_below += (q < floor + BULK_MARGIN) ? 1.0 : 0.0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &input_below, 1, MPI_DOUBLE, MPI_SUM, comm);
@@ -537,28 +546,30 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             bool ok = false;
             for (int attempt = 0; attempt < options.max_attempts && !ok; ++attempt) {
                 solve(c);
-                double worst = HUGE_VAL;
-                bool inverted = false;
+                bool failed = false;
                 for (int e = 0; e < ne; ++e) {
-                    double ar = 0.0;
+                    const auto es = static_cast<std::size_t>(e);
                     double det = 0.0;
-                    ElementQuality(pmesh, e, sj[static_cast<std::size_t>(e)], ar, det);
-                    worst = std::min(worst, sj[static_cast<std::size_t>(e)]);
-                    inverted = inverted || det <= 0.0;
+                    ElementQuality(pmesh, e, sj[es], ar_e[es], det);
+                    failed = failed || det <= 0.0 || sj[es] < sj_limit[es] ||
+                             ar_e[es] > ar_limit[es];
                 }
-                ok = !AnyRank(inverted || worst < floor, comm);
+                ok = !AnyRank(failed, comm);
                 // Stiffen the distorted elements (never softened again) and, if the solve failed,
                 // halve the springs of the nodes of the elements near the floor
                 mfem::Vector next(multiplier);
                 for (int e = 0; e < ne; ++e) {
                     const double q = sj[static_cast<std::size_t>(e)];
+                    const double a = ar_e[static_cast<std::size_t>(e)];
                     if (options.stiffening_exponent > 0.0 && q < STIFFEN_BELOW) {
                         const double ratio = STIFFEN_BELOW / std::max(q, 0.01);
                         const double f =
                             std::min(MAX_STIFFNESS, std::pow(ratio, options.stiffening_exponent));
                         quality_factor(e) = std::max(quality_factor(e), f);
                     }
-                    if (!ok && q < floor + BACKOFF_MARGIN) {
+                    const auto es = static_cast<std::size_t>(e);
+                    if (!ok && (q < sj_limit[es] + BACKOFF_MARGIN ||
+                                a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN)) {
                         for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
                             if (marker[en[k]]) {
                                 next(en[k]) = 0.5 * multiplier(en[k]);

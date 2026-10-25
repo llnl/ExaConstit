@@ -19,8 +19,10 @@
  * value means the element is inverted.
  *
  * **Aspect ratio.** At every corner, the ratio of the largest to the smallest singular value of the
- * edge matrix (e1, e2, e3); 1 for a cube corner. The element's value is the maximum over its
- * corners.
+ * edge matrix (e1, e2, e3) relative to the ideal element's: E for a hex corner, E W^-1 for a tet
+ * corner, W the corner edge matrix of the regular tetrahedron. 1 for a cube or a regular
+ * tetrahedron; a corner squashed to a fifth along one direction scores 5. The element's value is
+ * the maximum over its corners.
  *
  * Curved elements are evaluated at their corners only, from the element map (mesh Nodes).
  *

@@ -1188,10 +1188,13 @@ exec = "cpu"
 #
 # Mesh quality always comes first. The shape of an element is measured by its scaled Jacobian,
 # computed at each corner: 1 for a perfect cube corner (or a regular tetrahedron), 0 for a corner
-# squashed flat, below 0 for an inverted (turned inside out) element. The generator never lets
-# an element drop below 0.3 (hex meshes) or 0.2 (tet meshes), and stops early rather than
-# leave many elements barely above that. These limits are fixed, not options. Where they stop
-# it, a boundary stays partly stepped.
+# squashed flat, below 0 for an inverted (turned inside out) element. Its aspect ratio, also per
+# corner, is how stretched it is: 1 for a cube (or a regular tetrahedron), 4 when one direction
+# is squashed to a quarter of the others. The generator never lets an element drop below a
+# scaled Jacobian of 0.3 (hex meshes) or 0.2 (tet meshes) or rise above an aspect ratio of 4
+# (elements already worse in your input mesh may only not get worse), and stops early rather
+# than leave many elements barely above the floor. These limits are fixed, not options. Where
+# they stop it, a boundary stays partly stepped.
 #
 # How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
 # guarantee): grain boundary nodes start on average about 0.4 element sizes from where they

@@ -22,16 +22,47 @@ double Norm3(const double a[3]) {
     return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
 }
 
-/** @brief Scaled Jacobian and aspect ratio of the corner with edge vectors e (columns). */
-void CornerQuality(const double e[3][3], double scale, double& sj, double& ar, double& det) {
+/**
+ * @brief Inverse of the corner edge matrix of the regular unit tetrahedron (columns: the edges
+ * (1, 0, 0), (1/2, sqrt(3)/2, 0), (1/2, sqrt(3)/6, sqrt(2/3)) from one corner), so that
+ * E W^-1 is the identity, up to a rotation and scale, for a regular tetrahedron.
+ */
+mfem::DenseMatrix RegularTetInverse() {
+    mfem::DenseMatrix w(3);
+    const double cols[3][3] = {{1.0, 0.0, 0.0},
+                               {0.5, std::sqrt(3.0) / 2.0, 0.0},
+                               {0.5, std::sqrt(3.0) / 6.0, std::sqrt(2.0 / 3.0)}};
+    for (int c = 0; c < 3; ++c) {
+        for (int r = 0; r < 3; ++r) {
+            w(r, c) = cols[c][r];
+        }
+    }
+    w.Invert();
+    return w;
+}
+
+/**
+ * @brief Scaled Jacobian and aspect ratio of the corner with edge vectors e (columns). The aspect
+ * ratio is the ratio of the extreme singular values of E W^-1, W the corner edge matrix of the
+ * ideal element (the identity for a hex corner, RegularTetInverse for a tet corner), so the
+ * ideal element scores 1.
+ */
+void CornerQuality(const double e[3][3], double scale, const mfem::DenseMatrix* w_inv,
+                   double& sj, double& ar, double& det) {
     det = Det3(e[0], e[1], e[2]);
     const double lengths = Norm3(e[0]) * Norm3(e[1]) * Norm3(e[2]);
     sj = (lengths > 0.0) ? scale * det / lengths : -1.0;
-    mfem::DenseMatrix m(3);
+    mfem::DenseMatrix edges(3);
     for (int c = 0; c < 3; ++c) {
         for (int r = 0; r < 3; ++r) {
-            m(r, c) = e[c][r];
+            edges(r, c) = e[c][r];
         }
+    }
+    mfem::DenseMatrix m(3);
+    if (w_inv != nullptr) {
+        mfem::Mult(edges, *w_inv, m);
+    } else {
+        m = edges;
     }
     const double smax = m.CalcSingularvalue(0);
     const double smin = m.CalcSingularvalue(2);
@@ -67,7 +98,7 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
                 }
             }
             double sj, ar, det;
-            CornerQuality(edges, 1.0, sj, ar, det);
+            CornerQuality(edges, 1.0, nullptr, sj, ar, det);
             scaled_jacobian = std::min(scaled_jacobian, sj);
             aspect_ratio = std::max(aspect_ratio, ar);
             min_det = std::min(min_det, det);
@@ -82,6 +113,7 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
         T->Transform(corners->IntPoint(i), p[i]);
     }
     const int others[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    static const mfem::DenseMatrix w_inv = RegularTetInverse();
     for (int i = 0; i < 4; ++i) {
         double edges[3][3];
         for (int k = 0; k < 3; ++k) {
@@ -90,7 +122,7 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
             }
         }
         double sj, ar, det;
-        CornerQuality(edges, std::sqrt(2.0), sj, ar, det);
+        CornerQuality(edges, std::sqrt(2.0), &w_inv, sj, ar, det);
         scaled_jacobian = std::min(scaled_jacobian, sj);
         aspect_ratio = std::max(aspect_ratio, ar);
         min_det = std::min(min_det, det);

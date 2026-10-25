@@ -361,8 +361,11 @@ the targets balance: an element at a stair-step corner cannot become exactly smo
 on the boundary would become one plane), and the balance leaves it a bounded kink instead of a
 collapsed element. The rounds double c; after each solve every element's scaled Jacobian (at its
 corners; times sqrt(2) for tets, so a regular tet scores 1) is checked against the floor, 0.3 for
-hexes and 0.2 for tets. If an element is below the floor, the springs of the nodes of the elements
-near the floor are halved and the round is solved again; elements below 0.6 are stiffened by
+hexes and 0.2 for tets, and its aspect ratio (the ratio of the extreme singular values of the
+corner edge matrix, relative to the regular tet for tets) against the ceiling 4; an element whose
+input value is already beyond a limit is held to its input value instead. If an element breaks a
+limit, the springs of the nodes of the elements near the floor or the ceiling are halved and the
+round is solved again; elements below 0.6 are stiffened by
 (0.6 / sj)^2 (capped at 1000, spread to their neighbors), so distorted elements pass further
 distortion on to their neighbors. The rounds stop when the mean distance of the fitted nodes from
 their grain boundaries improves by less than 10 % (from the fourth kept round), when a round would

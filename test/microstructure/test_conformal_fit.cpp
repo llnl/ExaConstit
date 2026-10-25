@@ -9,9 +9,10 @@
  *  - Inclined bicrystal (Voronoi bisector x + 0.2 y + 0.1 z = 0.65 through the unit box), hex and
  *    tet meshes, after label repair: the quality floor holds, no element is inverted, nodes on the
  *    box faces keep their face coordinate bit for bit, the grain boundary nodes end much closer to
- *    the analytic plane than the staircase (hex: below a quarter of its deviation; tet: below
- *    three quarters, the bulk quality guard stops the Kuhn tets earlier), and the volume of grain
- *    1 is close to the analytic 1/2.
+ *    the analytic plane than the staircase (hex: below 0.4 of its deviation, the aspect ratio
+ *    ceiling holds the shallow 1:5 steps back; tet: below three quarters, the bulk quality guard
+ *    stops the Kuhn tets earlier), no element above the aspect ratio ceiling, and the volume of
+ *    grain 1 is close to the analytic 1/2.
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
  *  - Curved and tilted outer boundary (box with a domed top, faces x = 0, 1 tilted; hex and tet,
@@ -241,6 +242,7 @@ void CheckBisector(mfem::Mesh& serial, double floor, double fit_ratio) {
     EXPECT_GE(r.rounds, 1);
     EXPECT_EQ(r.quality_after.inverted, 0);
     EXPECT_GE(r.quality_after.min_scaled_jacobian, floor);
+    EXPECT_LE(r.quality_after.max_aspect_ratio, ms::MESH_ASPECT_RATIO_MAX);
     EXPECT_EQ(FaceViolations(f), 0);
     EXPECT_LT(r.mean_deviation, fit_ratio * r.initial_deviation);
     EXPECT_NEAR(GrainVolume(*f.pmesh, f.labels, 1), 0.5, 0.01);
@@ -380,6 +382,7 @@ TEST(MeshQuality, SimpleElements) {
     tet.FinalizeTetMesh();
     ms::ElementQuality(tet, 0, sj, ar, det);
     EXPECT_NEAR(std::fabs(sj), 1.0, 1e-12);
+    EXPECT_NEAR(ar, 1.0, 1e-12); // aspect ratio relative to the regular tet
     mfem::ParMesh pcube(MPI_COMM_SELF, cube);
     pcube.SetCurvature(1, false, 3, mfem::Ordering::byNODES);
     mfem::GridFunction& x = *pcube.GetNodes();
@@ -391,7 +394,7 @@ TEST(MeshQuality, SimpleElements) {
 
 TEST(ConformalFit, HexInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
-    CheckBisector(serial, ms::MESH_QUALITY_FLOOR_HEX, 0.25);
+    CheckBisector(serial, ms::MESH_QUALITY_FLOOR_HEX, 0.4);
 }
 
 TEST(ConformalFit, TetInclinedBicrystal) {
@@ -405,6 +408,7 @@ TEST(ConformalFit, HexPolycrystal) {
     const ms::ConformalFitReport& r = f.report;
     EXPECT_EQ(r.quality_after.inverted, 0);
     EXPECT_GE(r.quality_after.min_scaled_jacobian, ms::MESH_QUALITY_FLOOR_HEX);
+    EXPECT_LE(r.quality_after.max_aspect_ratio, ms::MESH_ASPECT_RATIO_MAX);
     const double below = ShareBelow(*f.pmesh, 0.5); // collective: outside the Root() block
     EXPECT_LT(below, 0.02);
     EXPECT_LT(r.mean_deviation, 0.75 * r.initial_deviation);
@@ -450,6 +454,20 @@ TEST(ConformalFit, DumpSlices) {
     }
     const bool smoothed_only = std::getenv("CONFORMAL_DUMP_SMOOTHED") != nullptr;
     Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only);
+    double ar_counts[4] = {0.0, 0.0, 0.0, static_cast<double>(f.pmesh->GetNE())};
+    for (int e = 0; e < f.pmesh->GetNE(); ++e) {
+        double sj, ar, det;
+        ms::ElementQuality(*f.pmesh, e, sj, ar, det);
+        ar_counts[0] += (ar > 3.0) ? 1.0 : 0.0;
+        ar_counts[1] += (ar > 4.0) ? 1.0 : 0.0;
+        ar_counts[2] += (ar > 5.0) ? 1.0 : 0.0;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, ar_counts, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if (mfem::Mpi::Root()) {
+        std::printf("DUMP aspect ratio: max %.2f, share > 3: %.4f, > 4: %.4f, > 5: %.4f\n",
+                    f.report.quality_after.max_aspect_ratio, ar_counts[0] / ar_counts[3],
+                    ar_counts[1] / ar_counts[3], ar_counts[2] / ar_counts[3]);
+    }
     if (mfem::Mpi::Root()) {
         const ms::ConformalFitReport& r = f.report;
         std::printf("DUMP %s %d^3 %d grains: deviation %.3f -> %.3f h (max %.3f), sj %.3f, rounds "

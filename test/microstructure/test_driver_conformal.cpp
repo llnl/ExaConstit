@@ -116,6 +116,7 @@ void CheckFit(const char* name, DriverRun& run, double floor, double volume) {
     EXPECT_GE(r.conformal_fit.rounds, 1);
     EXPECT_EQ(r.conformal_fit.quality_after.inverted, 0);
     EXPECT_GE(r.conformal_fit.quality_after.min_scaled_jacobian, floor);
+    EXPECT_LE(r.conformal_fit.quality_after.max_aspect_ratio, ms::MESH_ASPECT_RATIO_MAX);
     EXPECT_LT(r.conformal_fit.mean_deviation, r.conformal_fit.initial_deviation);
     EXPECT_NEAR(Volume(*run.pmesh), volume, 1e-12 * volume);
     if (mfem::Mpi::Root()) {
