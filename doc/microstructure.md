@@ -361,9 +361,13 @@ the targets balance: an element at a stair-step corner cannot become exactly smo
 on the boundary would become one plane), and the balance leaves it a bounded kink instead of a
 collapsed element. The rounds double c; after each solve every element's scaled Jacobian (at its
 corners; times sqrt(2) for tets, so a regular tet scores 1) is checked against the floor, 0.3 for
-hexes and 0.2 for tets, and its aspect ratio (the ratio of the extreme singular values of the
-corner edge matrix, relative to the regular tet for tets) against the ceiling 4; an element whose
-input value is already beyond a limit is held to its input value instead. If an element breaks a
+hexes, and its aspect ratio (the ratio of the extreme singular values of the corner edge matrix)
+against the ceiling 4; a tet's mean ratio (3 |det S|^(2/3) / |S|_F^2 per corner, S the corner edge
+matrix relative to the regular tet) against the floor 0.4. An element whose input value is beyond
+a limit, or within 10 % of it, may lose at most 10 % of its input value instead. Tets use the mean
+ratio because their corner scaled Jacobian is a poor shape measure: a perfect Kuhn tet scores
+0.58 (mean ratio 0.76), and the slivers of unstructured meshes jump with tiny node moves; with
+the scaled Jacobian rules an unstructured gmsh cube could hardly be fitted. If an element breaks a
 limit, the springs of the nodes of the elements near the floor or the ceiling are halved and the
 round is solved again; elements below 0.6 are stiffened by
 (0.6 / sj)^2 (capped at 1000, spread to their neighbors), so distorted elements pass further
@@ -394,6 +398,7 @@ and higher are refused (their nodal points are not on a uniform lattice).
 **Measured behavior** (test meshes, 20-50 grains): the mean distance of the grain boundary nodes
 from their targets drops from about 0.4 h to about 0.21-0.24 h on hex meshes with a smallest scaled
 Jacobian of about 0.4, for analytic targets (Voronoi) and smoothed ones (a noisy voxel map, geodesic
-grains) alike, and to about 0.3 h on tet meshes (tets made by cutting cubes start at a scaled
-Jacobian of 0.58, so the quality guard stops them sooner).
+grains) alike. Tets: an 18^3 x 6 Kuhn mesh reaches 0.23 h with the worst dihedral angle at 16.5
+degrees, an unstructured gmsh cube 0.26 h (from 0.34) with its worst tet unchanged (10 degrees,
+from the input).
 

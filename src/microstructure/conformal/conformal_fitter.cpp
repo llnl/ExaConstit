@@ -26,6 +26,11 @@ constexpr double BACKOFF_MARGIN = 0.05;
 constexpr double STIFFEN_BELOW = 0.6;
 /** @brief Elements within this margin below the aspect ratio ceiling also back off. */
 constexpr double ASPECT_RATIO_BACKOFF_MARGIN = 0.5;
+/** @brief An element of the input beyond a limit or this close to it (relative) may lose this
+ * fraction of its input value. */
+constexpr double POOR_INPUT_SLACK = 0.1;
+/** @brief Bulk guard for tets: a tet below this mean ratio counts as mediocre. */
+constexpr double TET_GUARD_MEAN_RATIO = 0.5;
 /** @brief Cap of the stiffness factor. */
 constexpr double MAX_STIFFNESS = 1e3;
 /** @brief Bulk quality guard: at most this share of elements below floor + BULK_MARGIN. */
@@ -207,9 +212,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
     report.quality_before = ComputeMeshQuality(pmesh);
     const int nv = labels.NumNodes();
     const int ne = pmesh.GetNE();
+    // The scaled Jacobian floor of hexes (tets use the mean ratio floor instead)
     const double floor = (pmesh.GetTypicalElementGeometry() == mfem::Geometry::CUBE)
                              ? MESH_QUALITY_FLOOR_HEX
-                             : MESH_QUALITY_FLOOR_TET;
+                             : -1.0;
     const mfem::ParGridFunction x0(*nodes);
 
     // Step 2
@@ -601,9 +607,20 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
             ++report.solves;
         };
 
-        // Elements of the input already below floor + BULK_MARGIN (the guard counts new ones)
-        // Per-element limits: the floor and the aspect ratio ceiling, or the element's input value
-        // where the input is already beyond them (it may not get worse)
+        // Quality limits per element. Hexes: the scaled Jacobian floor and the aspect ratio
+        // ceiling; tets: the mean ratio floor (the corner scaled Jacobian of a tet is a poor
+        // measure of its shape: a perfect Kuhn tet scores 0.58, and slivers of unstructured
+        // meshes jump with tiny moves). An element whose input value is beyond a limit, or within
+        // POOR_INPUT_SLACK of it, may lose at most that fraction of its input value instead.
+        // Mediocre elements (the bulk guard): hexes below floor + BULK_MARGIN, tets below a mean
+        // ratio of TET_GUARD_MEAN_RATIO; the guard counts the ones beyond those of the input.
+        const bool tets = pmesh.GetTypicalElementGeometry() == mfem::Geometry::TETRAHEDRON;
+        const auto Mediocre = [&](int e, double q) {
+            return tets ? ElementMeanRatio(pmesh, e) < TET_GUARD_MEAN_RATIO
+                        : q < floor + BULK_MARGIN;
+        };
+        std::vector<double> eta_limit(static_cast<std::size_t>(ne), 0.0);
+        std::vector<double> eta_e(static_cast<std::size_t>(ne), 1.0);
         std::vector<double> ar_e(static_cast<std::size_t>(ne), 1.0);
         std::vector<double> sj_limit(static_cast<std::size_t>(ne), floor);
         std::vector<double> ar_limit(static_cast<std::size_t>(ne), MESH_ASPECT_RATIO_MAX);
@@ -613,9 +630,14 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
             double ar = 0.0;
             double det = 0.0;
             ElementQuality(pmesh, e, q, ar, det);
-            sj_limit[static_cast<std::size_t>(e)] = std::min(floor, q);
-            ar_limit[static_cast<std::size_t>(e)] = std::max(MESH_ASPECT_RATIO_MAX, ar);
-            input_below += (q < floor + BULK_MARGIN) ? 1.0 : 0.0;
+            const auto es = static_cast<std::size_t>(e);
+            sj_limit[es] = std::min(floor, (1.0 - POOR_INPUT_SLACK) * q);
+            ar_limit[es] = std::max(MESH_ASPECT_RATIO_MAX, (1.0 + POOR_INPUT_SLACK) * ar);
+            if (tets) {
+                eta_limit[es] = std::min(MESH_MEAN_RATIO_FLOOR_TET,
+                                         (1.0 - POOR_INPUT_SLACK) * ElementMeanRatio(pmesh, e));
+            }
+            input_below += Mediocre(e, q) ? 1.0 : 0.0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &input_below, 1, MPI_DOUBLE, MPI_SUM, comm);
 
@@ -632,13 +654,20 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                     const auto es = static_cast<std::size_t>(e);
                     double det = 0.0;
                     ElementQuality(pmesh, e, sj[es], ar_e[es], det);
-                    failed = failed || det <= 0.0 || sj[es] < sj_limit[es] ||
-                             ar_e[es] > ar_limit[es];
+                    if (tets) {
+                        eta_e[es] = ElementMeanRatio(pmesh, e);
+                        failed = failed || det <= 0.0 || eta_e[es] < eta_limit[es];
+                    } else {
+                        failed = failed || det <= 0.0 || sj[es] < sj_limit[es] ||
+                                 ar_e[es] > ar_limit[es];
+                    }
                 }
                 ok = !AnyRank(failed, comm);
                 // Stiffen the distorted elements (never softened again) and, if the solve failed,
                 // halve the springs of the nodes of the elements near the floor
                 mfem::Vector next(multiplier);
+                mfem::Vector hit(nv);
+                hit = 0.0;
                 for (int e = 0; e < ne; ++e) {
                     const double q = sj[static_cast<std::size_t>(e)];
                     const double a = ar_e[static_cast<std::size_t>(e)];
@@ -649,13 +678,20 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                         quality_factor(e) = std::max(quality_factor(e), f);
                     }
                     const auto es = static_cast<std::size_t>(e);
-                    if (!ok && (q < sj_limit[es] + BACKOFF_MARGIN ||
-                                a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN)) {
+                    const bool near = tets
+                                          ? eta_e[es] < eta_limit[es] + BACKOFF_MARGIN
+                                          : (q < sj_limit[es] + BACKOFF_MARGIN ||
+                                             a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN);
+                    if (!ok && near) {
                         for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
-                            if (marker[en[k]]) {
-                                next(en[k]) = 0.5 * multiplier(en[k]);
-                            }
+                            hit(en[k]) = 1.0;
                         }
+                    }
+                }
+                // Halve the springs of the fitted nodes of the elements near a limit
+                for (int v = 0; v < nv; ++v) {
+                    if (hit(v) > 0.0 && marker[v]) {
+                        next(v) = 0.5 * multiplier(v);
                     }
                 }
                 field.ReduceSharedMinimum(next);
@@ -669,7 +705,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
             // extra fit is not worth it)
             double below[2] = {0.0, static_cast<double>(ne)};
             for (int e = 0; e < ne; ++e) {
-                below[0] += (sj[static_cast<std::size_t>(e)] < floor + BULK_MARGIN) ? 1.0 : 0.0;
+                below[0] += Mediocre(e, sj[static_cast<std::size_t>(e)]) ? 1.0 : 0.0;
             }
             MPI_Allreduce(MPI_IN_PLACE, below, 2, MPI_DOUBLE, MPI_SUM, comm);
             if (below[0] - input_below > BULK_SHARE * below[1]) {

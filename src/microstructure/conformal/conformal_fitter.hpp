@@ -35,18 +35,20 @@
  * instead of collapsing. K is always assembled on the input geometry.
  *
  * **Rounds and local back-off.** Round k uses c = `initial_spring` * 2^k. After each solve every
- * element is checked against two limits (at the corners, quality.hpp): the quality floor on the
- * scaled Jacobian (MESH_QUALITY_FLOOR_HEX for hexes, MESH_QUALITY_FLOOR_TET for tets) and the
- * ceiling MESH_ASPECT_RATIO_MAX on the aspect ratio. An element of the input already beyond a limit
- * gets its own input value as the limit (it may not get worse), so graded or poor input meshes can
- * still be fitted. If an element breaks a limit, the multipliers m_v of the fitted nodes of every
+ * element is checked against its quality limits (at the corners, quality.hpp): for hexes the floor
+ * MESH_QUALITY_FLOOR_HEX on the scaled Jacobian and the ceiling MESH_ASPECT_RATIO_MAX on the aspect
+ * ratio; for tets the floor MESH_MEAN_RATIO_FLOOR_TET on the mean ratio. An element of the input
+ * beyond a limit, or within 10 % of it, may lose at most 10 % of its input value instead, so
+ * graded or unstructured input meshes (whose worst elements are often below the floors) can still
+ * be fitted. If an element breaks a limit, the multipliers m_v of the fitted nodes of every
  * element within 0.05 of the floor or 0.5 of the ceiling are halved and the round is solved again
  * (at most `max_attempts` times); the halving is agreed over the copies of a shared node (minimum).
  * So only the nodes that block the fit are pulled less, and the rest of the mesh keeps fitting. A
  * round that ends above the floor is kept; the rounds stop when a round from the fourth on (the
  * weak early springs improve little) improves the mean deviation by less than `min_improvement`
  * (relative), when a round cannot be brought above the floor, when a round would leave more than
- * 1 % of the elements below floor + 0.2 beyond those already below it in the input mesh (the bulk
+ * 1 % of the elements mediocre (hexes below floor + 0.2, tets below a mean ratio of 0.5) beyond
+ * those already mediocre in the input mesh (the bulk
  * quality guard: quality first, a little more fit is not worth many mediocre elements), or after
  * `max_rounds`. If the very first round fails the bulk guard, it is retried with a quarter of the
  * spring (at most 3 times), so a mesh whose elements start close to the guard still gets a partial
@@ -97,8 +99,16 @@ namespace exaconstit::microstructure {
 
 /** @brief Quality floor (smallest scaled Jacobian) of a fitted linear hex mesh. */
 inline constexpr double MESH_QUALITY_FLOOR_HEX = 0.3;
-/** @brief Quality floor (smallest scaled Jacobian) of a fitted linear tet mesh. */
-inline constexpr double MESH_QUALITY_FLOOR_TET = 0.2;
+/**
+ * @brief Quality floor of a fitted tet mesh: the smallest mean ratio (quality.hpp, 1 for a regular
+ * tet). It replaces the scaled Jacobian floor and the aspect ratio ceiling for tets: a perfect
+ * Kuhn tet (a cube cut into six) has a corner scaled Jacobian of only 0.58 and a mean ratio of
+ * 0.76. Measured: on an 18^3 x 6 Kuhn mesh with 50 grains the fit reaches 0.23 h (0.28 with the
+ * scaled Jacobian rules) with the worst dihedral angle at 16.5 degrees, and an unstructured gmsh
+ * cube (whose own worst tet has 10 degrees) is fitted from 0.34 to 0.26 h (it hardly moved
+ * before).
+ */
+inline constexpr double MESH_MEAN_RATIO_FLOOR_TET = 0.4;
 /**
  * @brief Largest corner aspect ratio of a fitted element (quality.hpp; hex and tet). Measured on a
  * 32^3 hex / 50-grain polycrystal: without it the fit leaves aspect ratios up to about 6 (0.4 %

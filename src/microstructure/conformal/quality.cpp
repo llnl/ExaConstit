@@ -161,6 +161,56 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
     }
 }
 
+/*
+ * ElementMeanRatio: per corner (every nodal point for curved elements) S = E W^-1 as for the
+ * aspect ratio, eta = 3 |det S|^(2/3) / |S|_F^2 with the sign of det S; the minimum.
+ */
+double ElementMeanRatio(mfem::Mesh& mesh, int e) {
+    const mfem::Geometry::Type geom = mesh.GetElementBaseGeometry(e);
+    if (geom != mfem::Geometry::CUBE && geom != mfem::Geometry::TETRAHEDRON) {
+        throw std::invalid_argument("ElementMeanRatio: only hex and tet elements are supported");
+    }
+    mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
+    const mfem::IntegrationRule* corners = mfem::Geometries.GetVertices(geom);
+    const mfem::GridFunction* nodes = mesh.GetNodes();
+    const bool curved = nodes != nullptr && nodes->FESpace()->GetFE(e)->GetOrder() > 1;
+    const bool tet = geom == mfem::Geometry::TETRAHEDRON;
+    const mfem::IntegrationRule* points =
+        (curved || !tet) ? (curved ? &nodes->FESpace()->GetFE(e)->GetNodes() : corners) : corners;
+    static const mfem::DenseMatrix w_inv = RegularTetInverse();
+    const int others[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    double eta = HUGE_VAL;
+    mfem::DenseMatrix E(3);
+    mfem::DenseMatrix S(3);
+    const auto measure = [&](const mfem::DenseMatrix& m) {
+        const double det = m.Det();
+        const double fro2 = m.FNorm2();
+        const double value = (fro2 > 0.0) ? 3.0 * std::cbrt(det * det) / fro2 : 0.0;
+        eta = std::min(eta, (det > 0.0) ? value : -value);
+    };
+    for (int q = 0; q < points->GetNPoints(); ++q) {
+        T->SetIntPoint(&points->IntPoint(q));
+        const mfem::DenseMatrix& J = T->Jacobian();
+        if (!tet) {
+            measure(J);
+            continue;
+        }
+        for (int i = 0; i < 4; ++i) {
+            const mfem::IntegrationPoint& ri = corners->IntPoint(i);
+            for (int k = 0; k < 3; ++k) {
+                const mfem::IntegrationPoint& rk = corners->IntPoint(others[i][k]);
+                const double dr[3] = {rk.x - ri.x, rk.y - ri.y, rk.z - ri.z};
+                for (int d = 0; d < 3; ++d) {
+                    E(d, k) = J(d, 0) * dr[0] + J(d, 1) * dr[1] + J(d, 2) * dr[2];
+                }
+            }
+            mfem::Mult(E, w_inv, S);
+            measure(S);
+        }
+    }
+    return eta;
+}
+
 MeshQuality ComputeMeshQuality(mfem::ParMesh& pmesh) {
     const MPI_Comm comm = pmesh.GetComm();
     bool bad = false;
@@ -169,7 +219,7 @@ MeshQuality ComputeMeshQuality(mfem::ParMesh& pmesh) {
         bad = bad || (g != mfem::Geometry::CUBE && g != mfem::Geometry::TETRAHEDRON);
     }
     ThrowIfAnyRank(comm, bad, "ComputeMeshQuality: only hex and tet elements are supported");
-    double mins[2] = {HUGE_VAL, HUGE_VAL}; // scaled Jacobian, det
+    double mins[3] = {HUGE_VAL, HUGE_VAL, HUGE_VAL}; // scaled Jacobian, det, mean ratio
     double max_ar = 0.0;
     std::int64_t counts[2] = {0, pmesh.GetNE()};
     for (int e = 0; e < pmesh.GetNE(); ++e) {
@@ -177,15 +227,17 @@ MeshQuality ComputeMeshQuality(mfem::ParMesh& pmesh) {
         ElementQuality(pmesh, e, sj, ar, det);
         mins[0] = std::min(mins[0], sj);
         mins[1] = std::min(mins[1], det);
+        mins[2] = std::min(mins[2], ElementMeanRatio(pmesh, e));
         max_ar = std::max(max_ar, ar);
         counts[0] += (det <= 0.0) ? 1 : 0;
     }
-    MPI_Allreduce(MPI_IN_PLACE, mins, 2, MPI_DOUBLE, MPI_MIN, comm);
+    MPI_Allreduce(MPI_IN_PLACE, mins, 3, MPI_DOUBLE, MPI_MIN, comm);
     MPI_Allreduce(MPI_IN_PLACE, &max_ar, 1, MPI_DOUBLE, MPI_MAX, comm);
     MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, comm);
     MeshQuality q;
     q.min_scaled_jacobian = mins[0];
     q.min_det = mins[1];
+    q.min_mean_ratio = mins[2];
     q.max_aspect_ratio = max_ar;
     q.inverted = counts[0];
     q.num_elements = counts[1];

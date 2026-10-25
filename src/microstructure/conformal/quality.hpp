@@ -39,6 +39,7 @@ struct MeshQuality {
     double min_scaled_jacobian = 1.0; ///< minimum over all elements
     double max_aspect_ratio = 1.0;    ///< maximum over all elements
     double min_det = 0.0;             ///< smallest corner Jacobian determinant
+    double min_mean_ratio = 1.0;      ///< minimum over all elements (ElementMeanRatio)
     std::int64_t inverted = 0;        ///< elements with a corner of non-positive determinant
     std::int64_t num_elements = 0;
 };
@@ -49,6 +50,14 @@ struct MeshQuality {
  */
 void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio,
                     double& min_det);
+
+/**
+ * @brief Mean ratio of one local element: at every corner (every nodal point for curved
+ * elements), with S the corner edge matrix relative to the ideal element (as for the aspect
+ * ratio), eta = 3 |det S|^(2/3) / |S|_F^2 (1 for a cube or a regular tetrahedron, toward 0 for a
+ * flat corner, negative when inverted); the minimum over the points. Host.
+ */
+double ElementMeanRatio(mfem::Mesh& mesh, int e);
 
 /**
  * @brief Quality of all local elements, reduced over the communicator. **Collective.**

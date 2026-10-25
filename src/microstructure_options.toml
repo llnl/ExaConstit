@@ -1190,18 +1190,20 @@ exec = "cpu"
 # computed at each corner: 1 for a perfect cube corner (or a regular tetrahedron), 0 for a corner
 # squashed flat, below 0 for an inverted (turned inside out) element. Its aspect ratio, also per
 # corner, is how stretched it is: 1 for a cube (or a regular tetrahedron), 4 when one direction
-# is squashed to a quarter of the others. The generator never lets an element drop below a
-# scaled Jacobian of 0.3 (hex meshes) or 0.2 (tet meshes) or rise above an aspect ratio of 4
-# (elements already worse in your input mesh may only not get worse), and stops early rather
-# than leave many elements barely above the floor. These limits are fixed, not options. Where
-# they stop it, a boundary stays partly stepped.
+# is squashed to a quarter of the others. Tets are judged by their mean ratio instead, a standard
+# measure of the whole tet's shape: 1 for a regular tet, 0.76 for the six tets a cube is cut into,
+# toward 0 for a flat one. The generator never lets a hex drop below a scaled Jacobian of 0.3 or
+# rise above an aspect ratio of 4, nor a tet drop below a mean ratio of 0.4; elements of your
+# input mesh that are already worse than that, or within 10 % of it, may lose at most 10 % of
+# their quality. It also stops early rather than leave many elements barely above the floor.
+# These limits are fixed, not options. Where they stop it, a boundary stays partly stepped.
 #
 # How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
 # guarantee): grain boundary nodes start on average about 0.4 element sizes from where they
 # should go and end about 0.2-0.25 on hex meshes, for analytic and smoothed boundaries alike,
-# and about 0.3 on tet meshes (tets start with worse shapes, so the quality limits stop them
-# sooner). The log prints these distances, how many nodes used the smoothed staircase, and the
-# smallest scaled Jacobian before and after, so check them for your mesh.
+# and about 0.23-0.26 on tet meshes (structured or from a mesh generator). The log prints these
+# distances, how many nodes used the smoothed staircase, and the smallest scaled Jacobian, mean
+# ratio and largest aspect ratio before and after, so check them for your mesh.
 #
 # Outer surfaces stay where they are: nodes on a flat face of the part slide along that face; on
 # a curved surface they slide along the surface's original elements; nodes on edges and corners

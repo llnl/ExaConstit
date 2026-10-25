@@ -10,11 +10,14 @@
  *    tet meshes, after label repair: the quality floor holds, no element is inverted, nodes on the
  *    box faces keep their face coordinate bit for bit, the grain boundary nodes end much closer to
  *    the analytic plane than the staircase (hex: below 0.4 of its deviation, the aspect ratio
- *    ceiling holds the shallow 1:5 steps back; tet: below three quarters, the bulk quality guard
- *    stops the Kuhn tets earlier), no element above the aspect ratio ceiling, and the volume of
+ *    ceiling holds the shallow 1:5 steps back; tet: below 0.55), the quality limits hold (hex:
+ *    scaled Jacobian floor and aspect ratio ceiling; tet: mean ratio floor), and the volume of
  *    grain 1 is close to the analytic 1/2.
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
+ *  - Jittered tets (8^3 x 6 Kuhn mesh with interior vertices moved up to 0.2 element sizes): poor
+ *    input tets below the mean ratio floor, the fit still reduces the deviation by a quarter or more
+ *    and keeps the limits relative to the input.
  *  - Order-2 Nodes (hex 6^3, 8 grains): every nodal point is fitted (more than twice the fitted
  *    nodes of order 1), the limits hold, no element folds on a denser Gauss-Lobatto grid, box faces
  *    are kept, and WORLD agrees with SELF to the solver tolerance.
@@ -26,8 +29,9 @@
  *    MPI_COMM_SELF to the linear solver tolerance.
  *  - With CONFORMAL_DUMP_DIR set, ConformalFit.DumpSlices writes the elements of a polycrystal
  *    before and after fitting (label, quality, original center, corners) for plotting
- *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _SMOOTHED select the case; _SMOOTHED fits
- *    to the smoothed staircase instead of the analytic boundaries); skipped otherwise.
+ *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _SMOOTHED, _MESH (a mesh file) select the
+ *    case; _SMOOTHED fits to the smoothed staircase instead of the analytic boundaries); skipped
+ *    otherwise.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
@@ -235,19 +239,36 @@ double WorstRankDifference(const Fitted& dist, const Fitted& self) {
 }
 
 /**
- * `fit_ratio`: the mean deviation must end below this fraction of the staircase's (hexes fit
- * closely; Kuhn tets start at a scaled Jacobian of 0.58, so the bulk quality guard stops them
- * earlier).
+ * The quality limits of the fit (conformal_fitter.hpp): hexes the scaled Jacobian floor and the
+ * aspect ratio ceiling, tets the mean ratio floor; an input already beyond a limit (or within 10 %
+ * of it) may lose at most 10 % of its value.
  */
-void CheckBisector(mfem::Mesh& serial, double floor, double fit_ratio) {
+void ExpectLimits(const ms::ConformalFitReport& r, bool tet) {
+    const ms::MeshQuality& in = r.quality_before;
+    const ms::MeshQuality& out = r.quality_after;
+    EXPECT_EQ(out.inverted, 0);
+    if (tet) {
+        EXPECT_GE(out.min_mean_ratio,
+                  std::min(ms::MESH_MEAN_RATIO_FLOOR_TET, 0.9 * in.min_mean_ratio) - 1e-12);
+    } else {
+        EXPECT_GE(out.min_scaled_jacobian,
+                  std::min(ms::MESH_QUALITY_FLOOR_HEX, 0.9 * in.min_scaled_jacobian) - 1e-12);
+        EXPECT_LE(out.max_aspect_ratio,
+                  std::max(ms::MESH_ASPECT_RATIO_MAX, 1.1 * in.max_aspect_ratio) + 1e-12);
+    }
+}
+
+/**
+ * `fit_ratio`: the mean deviation must end below this fraction of the staircase's (the shallow
+ * 1:5 steps of this bisector are the worst case for the aspect ratio ceiling of hexes).
+ */
+void CheckBisector(mfem::Mesh& serial, bool tet, double fit_ratio) {
     const ms::SeedSet seeds = BisectorSeeds();
     Fitted f = Fit(serial, MPI_COMM_WORLD, seeds);
     const ms::ConformalFitReport& r = f.report;
     EXPECT_GT(r.fit_nodes, 0);
     EXPECT_GE(r.rounds, 1);
-    EXPECT_EQ(r.quality_after.inverted, 0);
-    EXPECT_GE(r.quality_after.min_scaled_jacobian, floor);
-    EXPECT_LE(r.quality_after.max_aspect_ratio, ms::MESH_ASPECT_RATIO_MAX);
+    ExpectLimits(r, tet);
     EXPECT_EQ(FaceViolations(f), 0);
     EXPECT_LT(r.mean_deviation, fit_ratio * r.initial_deviation);
     EXPECT_NEAR(GrainVolume(*f.pmesh, f.labels, 1), 0.5, 0.01);
@@ -342,7 +363,7 @@ void DomeAndShear(mfem::Mesh& serial, double shear) {
     });
 }
 
-void CheckCurved(mfem::Element::Type type, int n, double floor, double shear) {
+void CheckCurved(mfem::Element::Type type, int n, double shear) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, type);
     DomeAndShear(serial, shear);
     ms::SeedSet seeds = ScatteredSeeds(12);
@@ -354,8 +375,7 @@ void CheckCurved(mfem::Element::Type type, int n, double floor, double shear) {
     const ms::ConformalFitReport& r = f.report;
     int moved = 0;
     const double drift = SurfaceDrift(serial, f, moved);
-    EXPECT_EQ(r.quality_after.inverted, 0);
-    EXPECT_GE(r.quality_after.min_scaled_jacobian, floor);
+    ExpectLimits(r, type == mfem::Element::TETRAHEDRON);
     EXPECT_EQ(FaceViolations(f, true), 0);
     EXPECT_LT(r.mean_deviation, r.initial_deviation);
     EXPECT_LE(drift, 1e-9);
@@ -399,12 +419,12 @@ TEST(MeshQuality, SimpleElements) {
 
 TEST(ConformalFit, HexInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
-    CheckBisector(serial, ms::MESH_QUALITY_FLOOR_HEX, 0.4);
+    CheckBisector(serial, false, 0.4);
 }
 
 TEST(ConformalFit, TetInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
-    CheckBisector(serial, ms::MESH_QUALITY_FLOOR_TET, 0.75);
+    CheckBisector(serial, true, 0.55);
 }
 
 TEST(ConformalFit, HexPolycrystal) {
@@ -424,6 +444,37 @@ TEST(ConformalFit, HexPolycrystal) {
                     r.initial_deviation, r.mean_deviation, r.max_deviation,
                     r.quality_after.min_scaled_jacobian, below, r.rounds,
                     r.solves);
+    }
+}
+
+TEST(ConformalFit, JitteredTetPolycrystal) {
+    // An unstructured-like tet mesh: the interior vertices of an 8^3 x 6 Kuhn mesh moved by up to
+    // 0.2 element sizes (fixed pseudo-random sequence), so the worst tets start below the mean
+    // ratio floor, as in meshes from a mesh generator (a gmsh cube's worst tet: 0.33). The fit must still
+    // move the boundaries (it could hardly move with the scaled Jacobian rules), keep the limits
+    // relative to the input, and invert nothing.
+    const int n = 8;
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::TETRAHEDRON);
+    double r = 0.4321;
+    for (int v = 0; v < serial.GetNV(); ++v) {
+        double* x = serial.GetVertex(v);
+        for (int d = 0; d < 3; ++d) {
+            r = std::fmod(r * 9301.0 + 0.49297, 1.0);
+            const bool face = x[d] == 0.0 || x[d] == 1.0;
+            x[d] += face ? 0.0 : 0.2 * (2.0 * r - 1.0) / n;
+        }
+    }
+    Fitted f = Fit(serial, MPI_COMM_WORLD, ScatteredSeeds(12));
+    const ms::ConformalFitReport& r_fit = f.report;
+    EXPECT_LT(r_fit.quality_before.min_mean_ratio, ms::MESH_MEAN_RATIO_FLOOR_TET);
+    ExpectLimits(r_fit, true);
+    EXPECT_LT(r_fit.mean_deviation, 0.75 * r_fit.initial_deviation);
+    EXPECT_EQ(FaceViolations(f), 0);
+    if (mfem::Mpi::Root()) {
+        std::printf("jittered tets: deviation %.3f -> %.3f h, mean ratio %.3f -> %.3f, rounds %d\n",
+                    r_fit.initial_deviation, r_fit.mean_deviation,
+                    r_fit.quality_before.min_mean_ratio, r_fit.quality_after.min_mean_ratio,
+                    r_fit.rounds);
     }
 }
 
@@ -467,11 +518,11 @@ TEST(ConformalFit, HexOrderTwoPolycrystal) {
 }
 
 TEST(ConformalFit, HexCurvedAndTiltedBoundary) {
-    CheckCurved(mfem::Element::HEXAHEDRON, 12, ms::MESH_QUALITY_FLOOR_HEX, 0.2);
+    CheckCurved(mfem::Element::HEXAHEDRON, 12, 0.2);
 }
 
 TEST(ConformalFit, TetCurvedAndTiltedBoundary) {
-    CheckCurved(mfem::Element::TETRAHEDRON, 8, ms::MESH_QUALITY_FLOOR_TET, 0.2);
+    CheckCurved(mfem::Element::TETRAHEDRON, 8, 0.2);
 }
 
 TEST(ConformalFit, DumpSlices) {
@@ -486,8 +537,12 @@ TEST(ConformalFit, DumpSlices) {
         std::getenv("CONFORMAL_DUMP_SKIP") ? std::atoi(std::getenv("CONFORMAL_DUMP_SKIP")) : 0;
     const bool tet = std::getenv("CONFORMAL_DUMP_TET") != nullptr;
     const bool curved = std::getenv("CONFORMAL_DUMP_CURVED") != nullptr;
-    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
-        n, n, n, tet ? mfem::Element::TETRAHEDRON : mfem::Element::HEXAHEDRON);
+    const char* mesh_file = std::getenv("CONFORMAL_DUMP_MESH");
+    mfem::Mesh serial = (mesh_file != nullptr)
+                            ? mfem::Mesh(mesh_file)
+                            : mfem::Mesh::MakeCartesian3D(n, n, n,
+                                                          tet ? mfem::Element::TETRAHEDRON
+                                                              : mfem::Element::HEXAHEDRON);
     ms::SeedSet seeds = ScatteredSeeds(grains, skip);
     if (curved) { // the case of CheckCurved
         DomeAndShear(serial, 0.2);
@@ -501,6 +556,17 @@ TEST(ConformalFit, DumpSlices) {
         std::getenv("CONFORMAL_DUMP_ORDER") ? std::atoi(std::getenv("CONFORMAL_DUMP_ORDER")) : 1;
     Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only,
                    order);
+    if (mfem::Mpi::Root() && std::getenv("CONFORMAL_DUMP_STATUS")) {
+        const auto& ts = f.repair.targets->Summary();
+        std::printf("DUMP status: none %lld fit %lld over %lld held %lld fake %lld (smoothed %lld); "
+                    "reasons:",
+                    (long long)ts.status[0], (long long)ts.status[1], (long long)ts.status[2],
+                    (long long)ts.status[3], (long long)ts.status[4], (long long)ts.smoothed);
+        for (int k = 0; k < ms::NUM_TARGET_REASONS; ++k) {
+            std::printf(" %lld", (long long)ts.reason[static_cast<std::size_t>(k)]);
+        }
+        std::printf("\n");
+    }
     double ar_counts[4] = {0.0, 0.0, 0.0, static_cast<double>(f.pmesh->GetNE())};
     for (int e = 0; e < f.pmesh->GetNE(); ++e) {
         double sj, ar, det;

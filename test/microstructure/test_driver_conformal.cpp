@@ -9,7 +9,7 @@
  *    element, the grain boundary nodes end closer to the analytic boundaries, the box keeps its
  *    volume (its faces stay in place), the grain count is the same as without the step, and only
  *    a few elements change grain (label repair, the count the report gives).
- *  - Tet box: the tet floor holds.
+ *  - Tet box: the tet floor (mean ratio) holds.
  *  - A mesh with order-2 Nodes (as ExaConstit's mesh at [Mesh] order = 2) is fitted and keeps its
  *    Nodes; order 3 is refused on every rank with std::invalid_argument.
  *  - The Phase 1 grain sources without analytic boundaries: a voxel map (the shared voxelized
@@ -203,7 +203,7 @@ TEST(DriverConformal, TetBox) {
     const ms::GenerationReport& r = fitted.report;
     ASSERT_TRUE(r.ran_conformal);
     EXPECT_EQ(r.conformal_fit.quality_after.inverted, 0);
-    EXPECT_GE(r.conformal_fit.quality_after.min_scaled_jacobian, ms::MESH_QUALITY_FLOOR_TET);
+    EXPECT_GE(r.conformal_fit.quality_after.min_mean_ratio, ms::MESH_MEAN_RATIO_FLOOR_TET);
     EXPECT_LE(r.conformal_fit.mean_deviation, r.conformal_fit.initial_deviation);
     EXPECT_NEAR(Volume(*fitted.pmesh), 1.0, 1e-12);
 }

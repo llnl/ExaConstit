@@ -154,7 +154,9 @@ std::string ConformalText(const GenerationReport& report) {
     os << "  mesh quality: smallest scaled Jacobian " << fit.quality_before.min_scaled_jacobian
        << " -> " << fit.quality_after.min_scaled_jacobian << ", largest aspect ratio "
        << fit.quality_before.max_aspect_ratio << " -> " << fit.quality_after.max_aspect_ratio
-       << ", inverted elements " << fit.quality_after.inverted << "\n";
+       << ", smallest mean ratio " << fit.quality_before.min_mean_ratio << " -> "
+       << fit.quality_after.min_mean_ratio << ", inverted elements "
+       << fit.quality_after.inverted << "\n";
     return os.str();
 }
 

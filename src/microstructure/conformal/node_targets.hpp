@@ -49,10 +49,10 @@
  *      f_{s(l)}(y) over the node's seeds, every other seed k has f_k(y) >= F - delta (delta =
  *      `tolerance * h` times the largest |grad f_{s(l)}(y)|). Otherwise the target lies inside
  *      another grain's cell (the seed search SeedIndex::FindBestExcluding, exact).
- * h is the node's mesh size: the smallest element size / p over the elements that contain it
+ * h is the node's mesh size: the mean element size / p over the elements that contain it
  * (element size = the edge length of the regular cube or tetrahedron with the element's volume,
  * mfem::Mesh::GetElementSize(e, 0); p = order of the Nodes, 1 without Nodes), the same on every
- * copy (minimum over the copies).
+ * copy (all sizes gathered and averaged in sorted order).
  *
  * Nodes on exactly one curved surface get their triangle patch whatever their labels, so
  * Evaluate can also answer for label sets the node does not have yet.

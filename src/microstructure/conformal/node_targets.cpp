@@ -487,8 +487,10 @@ std::vector<NodeTargetResult> NodeTargets::Evaluate(
 /*
  * ComputeMeshSize: per element Mesh::GetElementSize(e, 0) / p (mesh.cpp: |det J|^(1/3) at the
  * element center, with J relative to the regular reference element, Geometries.JacToPerfJac: the
- * edge length of the regular cube or tetrahedron of the same volume), minimum over the local
- * elements of each node, then the minimum over the copies (exact, so every copy has the same h).
+ * edge length of the regular cube or tetrahedron of the same volume), the mean over all elements
+ * of each node: the local sizes go to the other copies, and every copy sorts all of them and
+ * averages, so every copy has the same h. (The mean rather than the smallest: on an unstructured
+ * mesh one sliver next to a node would make its h, and so its spring and move limit, tiny.)
  */
 void NodeTargets::ComputeMeshSize() {
     const VertexField& field = m_labels.Field();
@@ -503,14 +505,32 @@ void NodeTargets::ComputeMeshSize() {
     const int* ve_off = field.VertexElementOffsets().HostRead();
     const int* ve = field.VertexElements().HostRead();
     m_h.SetSize(nv);
-    for (int v = 0; v < nv; ++v) {
-        double h = HUGE_VAL;
-        for (int k = ve_off[v]; k < ve_off[v + 1]; ++k) {
-            h = std::min(h, size[static_cast<std::size_t>(ve[k])]);
+    {
+        // Mean over all elements of the node (every element belongs to one rank): the local
+        // sizes go to the other copies; each copy sorts all sizes and averages them
+        std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
+        std::vector<double> send;
+        for (int v = 0; v < nv; ++v) {
+            for (int k = ve_off[v]; k < ve_off[v + 1]; ++k) {
+                send.push_back(size[static_cast<std::size_t>(ve[k])]);
+            }
+            send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
         }
-        m_h(v) = h;
+        std::vector<int> recv_off;
+        std::vector<double> recv;
+        field.ExchangeSharedLists(send_off, send, recv_off, recv);
+        for (int v = 0; v < nv; ++v) {
+            const auto vs = static_cast<std::size_t>(v);
+            std::vector<double> all(send.begin() + send_off[vs], send.begin() + send_off[vs + 1]);
+            all.insert(all.end(), recv.begin() + recv_off[vs], recv.begin() + recv_off[vs + 1]);
+            std::sort(all.begin(), all.end());
+            double sum = 0.0;
+            for (const double x : all) {
+                sum += x;
+            }
+            m_h(v) = sum / static_cast<double>(all.size());
+        }
     }
-    field.ReduceSharedMinimum(m_h);
 }
 
 /*
