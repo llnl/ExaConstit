@@ -89,7 +89,8 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
                                     NodeTargetResult& r) const {
     const int v = q.node;
     const int n = q.num_labels;
-    const double* x = m_labels.Field().Coordinates().HostRead() + 3 * v;
+    const double* x0 = m_labels.Field().Coordinates().HostRead() + 3 * v;
+    const double* x = (q.position != nullptr) ? q.position : x0;
     std::copy(x, x + 3, r.target);
     const auto set = [&](TargetStatus s, TargetReason why) {
         r.status = s;
@@ -140,7 +141,7 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
         row.kind = ManifoldRow::PLANE;
         const double* nrm = surf_normal + 3 * s;
         std::copy(nrm, nrm + 3, row.normal);
-        row.offset = nrm[0] * x[0] + nrm[1] * x[1] + nrm[2] * x[2];
+        row.offset = nrm[0] * x0[0] + nrm[1] * x0[1] + nrm[2] * x0[2];
     }
 
     const Metric& f = m_index.GetMetric();
@@ -204,7 +205,7 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
     for (int k = n - 1; k < num_rows; ++k) {
         const int axis = AxisOf(rows[k].normal);
         if (axis >= 0) {
-            y[axis] = x[axis];
+            y[axis] = x0[axis];
         }
     }
     for (int k = 0; k < num_rows; ++k) {
@@ -281,7 +282,10 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
         }
         const double delta = m_options.tolerance * m_h(v) * grad_max;
         if (best_host[c].id1 >= 0 && best_host[c].f1 < largest - delta) {
-            const double* x = m_labels.Field().Coordinates().HostRead() + 3 * v;
+            const NodeLabelQuery& q = queries[static_cast<std::size_t>(cand.query)];
+            const double* x = (q.position != nullptr)
+                                  ? q.position
+                                  : m_labels.Field().Coordinates().HostRead() + 3 * v;
             std::copy(x, x + 3, r.target);
             r.status = TargetStatus::FAKE_JUNCTION;
             r.reason = TargetReason::FOREIGN_SEED;

@@ -3,9 +3,12 @@
  */
 #include "microstructure/conformal/label_repair.hpp"
 
+#include "microstructure/geometry/seed_index.hpp"
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/util/collective_errors.hpp"
+
+#include "axom/core.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -422,6 +425,83 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     report.bad_nodes_after = count_bad();
     report.peninsulas_after = count_peninsulas();
     return result;
+}
+
+/*
+ * FlipToCurrentOwner: exact best seed at the element centers (one batched search), the distance
+ * past the boundary, and the label of a face neighbor of the best seed (ghost labels from
+ * MeshAdjacency).
+ */
+std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
+                                MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
+                                const std::vector<int>& grain_seed, double hysteresis,
+                                std::vector<char>& flipped) {
+    const int ne = pmesh.GetNE();
+    if (flipped.empty()) {
+        flipped.assign(static_cast<std::size_t>(ne), 0);
+    }
+    const MeshAdjacency adj(pmesh);
+    mfem::Array<int> ghost_label;
+    adj.ExchangeLabels(element_label, ghost_label);
+    mfem::Vector cx(ne), cy(ne), cz(ne), c(3);
+    for (int e = 0; e < ne; ++e) {
+        pmesh.GetElementCenter(e, c);
+        cx(e) = c(0);
+        cy(e) = c(1);
+        cz(e) = c(2);
+    }
+    std::vector<int> new_label(static_cast<std::size_t>(ne), -1);
+    DispatchMetric(metric, [&](auto metric_tag) {
+        using Metric = decltype(metric_tag);
+        SeedIndex<axom::SEQ_EXEC, Metric> index;
+        index.Build(seeds, setup, 8, axom::execution_space<axom::SEQ_EXEC>::allocatorID());
+        mfem::Array<BestPair> best;
+        if (ne > 0) {
+            index.FindBest(cx, cy, cz, best, false);
+        }
+        const BestPair* b = (ne > 0) ? best.HostRead() : nullptr;
+        const Metric& f = index.GetMetric();
+        const int* off = adj.Offsets().HostRead();
+        const int* nbr = adj.Neighbors().HostRead();
+        for (int e = 0; e < ne; ++e) {
+            const int own = grain_seed[static_cast<std::size_t>(element_label[e] - 1)];
+            if (own < 0 || flipped[static_cast<std::size_t>(e)] != 0 || b[e].id1 < 0 ||
+                b[e].id1 == own) {
+                continue;
+            }
+            double ga[3];
+            double gb[3];
+            f.Grad(own, cx(e), cy(e), cz(e), ga);
+            f.Grad(b[e].id1, cx(e), cy(e), cz(e), gb);
+            const double g = std::sqrt((ga[0] - gb[0]) * (ga[0] - gb[0]) +
+                                       (ga[1] - gb[1]) * (ga[1] - gb[1]) +
+                                       (ga[2] - gb[2]) * (ga[2] - gb[2]));
+            const double gap = (f.Eval(own, cx(e), cy(e), cz(e)) - b[e].f1) / g;
+            if (!(g > 0.0) || gap <= hysteresis * pmesh.GetElementSize(e, 0)) {
+                continue;
+            }
+            int target = -1;
+            for (int k = off[e]; k < off[e + 1]; ++k) {
+                const int n = nbr[k];
+                const int lb =
+                    adj.IsGhost(n) ? ghost_label[n - adj.NumElements()] : element_label[n];
+                if (grain_seed[static_cast<std::size_t>(lb - 1)] == b[e].id1 &&
+                    (target < 0 || lb < target)) {
+                    target = lb;
+                }
+            }
+            new_label[static_cast<std::size_t>(e)] = target;
+        }
+    });
+    std::int64_t flips = 0;
+    for (int e = 0; e < ne; ++e) {
+        if (new_label[static_cast<std::size_t>(e)] > 0) {
+            element_label[e] = new_label[static_cast<std::size_t>(e)];
+            flipped[static_cast<std::size_t>(e)] = 1;
+            ++flips;
+        }
+    }
+    return GlobalSum(flips, pmesh.GetComm());
 }
 
 } // namespace exaconstit::microstructure

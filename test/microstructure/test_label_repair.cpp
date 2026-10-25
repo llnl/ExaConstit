@@ -10,6 +10,8 @@
  *    nodes fake junctions; the repair flips it to grain 1 and no bad node is left.
  *  - Guard: a grain of one element is never emptied (the flip is blocked, its nodes stay unfit).
  *  - Non-analytic grains (grain_seed = -1) are never flipped into.
+ *  - FlipToCurrentOwner: an element whose center lies past the bisector flips to the neighbor
+ *    grain beyond the hysteresis, not below it.
  *  - Rank invariance and effect: a 12-grain tet mesh with perturbed labels is repaired on
  *    MPI_COMM_WORLD (round-robin partition) and on MPI_COMM_SELF; labels and reports are
  *    identical, every peninsula is gone and fewer than half of the bad nodes remain. Run at
@@ -176,6 +178,27 @@ TEST(LabelRepair, NonAnalyticGrainsAreNotFlippedInto) {
     EXPECT_EQ(Differences(labels, stray), 0);
     EXPECT_EQ(result.report.flips, 0);
     EXPECT_EQ(result.report.peninsulas_before, 0); // grain 2 is not analytic
+}
+
+TEST(LabelRepair, FlipToCurrentOwner) {
+    // An element of grain 1 whose center lies half an element past the bisector, inside grain 2:
+    // it flips to grain 2 (its face neighbors there grew from seed 1), and only once
+    const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
+    auto pmesh = Distribute(serial, MPI_COMM_WORLD);
+    const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
+    mfem::Array<int> labels = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
+    std::vector<char> flipped;
+    EXPECT_EQ(ms::FlipToCurrentOwner(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1},
+                                     0.2, flipped),
+              1);
+    EXPECT_EQ(Differences(labels, clean), 0);
+    // A hysteresis beyond the element's offset (0.5 h) flips nothing
+    mfem::Array<int> again = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
+    std::vector<char> fresh;
+    EXPECT_EQ(ms::FlipToCurrentOwner(*pmesh, again, ms::MetricType::VORONOI, seeds, {}, {0, 1},
+                                     0.6, fresh),
+              0);
 }
 
 TEST(LabelRepair, RankInvariance) {

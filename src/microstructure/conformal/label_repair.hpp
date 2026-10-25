@@ -62,11 +62,11 @@
  * MeshAdjacency) and node statuses, all identical on every rank; priorities use element keys; the
  * undo decisions use the same data. The repaired labels therefore do not depend on the partition.
  *
- * **Not covered yet** (see agent_microstructure/STATUS.md): pinches (a grain touching itself
- * at a single node or edge), elements that collapse when all their nodes move, grains split by a
- * flip (flips take labels from face neighbors, so a grain grows only into faces it touches, but a
- * flip can cut the grain it leaves), and a comparison of the discrete with the analytic grain
- * adjacency.
+ * **Not covered yet** (planned): pinches (a grain touching itself at a single node or edge),
+ * grains split by a flip (flips take labels from face neighbors, so a grain grows only into faces
+ * it touches, but a flip can cut the grain it leaves), under-resolved grains, and a comparison of
+ * the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
+ * move are kept above the quality floor by the fitter (conformal_fitter.hpp).
  *
  * Host and MPI (Stage 2 is CPU-only).
  */
@@ -121,5 +121,28 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
                                MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
                                const std::vector<int>& grain_seed,
                                const LabelRepairOptions& options = {});
+
+/**
+ * @brief Flips elements whose *current* center (the mesh may already be fitted) lies clearly in
+ * another grain: after a fit the grain boundaries have moved, and an element that ended up on the
+ * far side of a neighboring grain's analytic boundary belongs to that grain.
+ *
+ * For every element of an analytic grain that has not flipped before (`flipped`): the seed with
+ * the smallest metric value at the element center (exact seed search); if it is not the
+ * element's own seed, the distance of the center past the boundary between the two seeds,
+ * (f_own - f_best) / |grad f_own - grad f_best|, is compared with `hysteresis` times the element
+ * size (Mesh::GetElementSize(e, 0)). Beyond it, the element takes the label of a face neighbor
+ * that grew from the best seed (if there is none, it does not flip). Flipped elements are marked
+ * in `flipped`, so an element flips at most once over repeated calls.
+ *
+ * Partition independent: element centers come from the element's own nodes and the seeds are
+ * replicated. **Collective** (ghost labels, global count).
+ * @param flipped per local element, in/out (resized to NE if empty).
+ * @return the global number of flips.
+ */
+std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
+                                MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
+                                const std::vector<int>& grain_seed, double hysteresis,
+                                std::vector<char>& flipped);
 
 } // namespace exaconstit::microstructure

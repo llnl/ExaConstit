@@ -130,6 +130,13 @@ struct NodeLabelQuery {
     int node = -1;
     int num_labels = 0;
     int labels[NODE_QUERY_LABELS] = {};
+    /**
+     * @brief Where the node is (3 doubles), or nullptr = its original position
+     * (VertexField::Coordinates). The fitter re-projects from the nodes' current positions so
+     * that they can slide along the grain boundaries. The boundary planes still pass through
+     * the original position (a free surface does not move).
+     */
+    const double* position = nullptr;
 };
 
 /** @brief The evaluation of a NodeLabelQuery. */
