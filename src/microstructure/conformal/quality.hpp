@@ -24,7 +24,10 @@
  * tetrahedron; a corner squashed to a fifth along one direction scores 5. The element's value is
  * the maximum over its corners.
  *
- * Curved elements are evaluated at their corners only, from the element map (mesh Nodes).
+ * Curved elements (Nodes of order > 1) are evaluated at every nodal point of the element (corners
+ * included): at each point the corner edges are replaced by the Jacobian of the element map
+ * applied to the reference corner edges, so a straight element gives the same values as from its
+ * corners, and a curved element whose map folds inside is caught (min_det <= 0 at a point).
  *
  * Host; collective (global minimum / maximum / count).
  */

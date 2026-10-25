@@ -1649,7 +1649,8 @@ namespace {
 
 /*
  * FitConformalBoundaries (step 14, Conformal.enabled; collective)
- *  1. Checks: hex or tet elements, geometry of order 1 (no Nodes, or order-1 Nodes).
+ *  1. Checks: hex or tet elements, geometry of order 1 or 2 (no Nodes, or Nodes of order <= 2;
+ *     with order-2 Nodes every nodal point is fitted, so grain boundaries become curved).
  *  2. A mesh without Nodes gets order-1 Nodes (the fitter moves the Nodes).
  *  3. Label repair (conformal/label_repair.hpp; the smallest grain is
  *     Cleanup.min_grain_elements, at least 1), in place on result.element_grain. Targets:
@@ -1677,9 +1678,9 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
                    "GenerateMicrostructure: Conformal.enabled needs a hex or tet mesh");
     mfem::GridFunction* nodes = pmesh.GetNodes();
     const bool had_nodes = nodes != nullptr;
-    ThrowIfAnyRank(comm, had_nodes && nodes->FESpace()->GetMaxElementOrder() != 1,
-                   "GenerateMicrostructure: Conformal.enabled needs a mesh of order 1 "
-                   "(straight-sided elements; higher orders are not supported yet)");
+    ThrowIfAnyRank(comm, had_nodes && nodes->FESpace()->GetMaxElementOrder() > 2,
+                   "GenerateMicrostructure: Conformal.enabled supports meshes of order 1 and 2 "
+                   "(Nodes of order 3 and higher are not supported yet)");
 
     // Step 2
     if (!had_nodes) {

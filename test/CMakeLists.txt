@@ -205,7 +205,8 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      files, equal mechanics), and at p_refinement = 1 (the curvature-loss warning).
     #   9. conformal grain boundaries ([Conformal] enabled): the tool writes a mesh file with the
     #      moved nodes and mechanics runs on it; the hook fits mechanics' own mesh at 2 ranks;
-    #      the two mechanics results must agree. Then the passthrough case of step 6 with the fit.
+    #      the two mechanics results must agree. Then the passthrough case of step 6 and the
+    #      order-2 auto box with the fit.
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
     # command, prints its output, and fails unless the exit status is 0 AND the output matches the
     # expected text (PASS_REGULAR_EXPRESSION alone would ignore the exit status). mechanics writes
@@ -587,6 +588,12 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
                         DIR_A results/ms_conformal_file_np1
                         DIR_B results/hook_conformal_np2
                         NEEDS ms_hook_run_conformal_file ms_hook_run_conformal_hook)
+        # Element order 2 with [Conformal]: every nodal point fitted, curved grain boundaries
+        ms_hook_run(NAME    test_microstructure_hook_e2e_conformal_order2
+                    NP      1
+                    PASS    "${_hk_conformal}"
+                    SETUP   ms_hook_run_conformal_order2
+                    PROGRAM $<TARGET_FILE:mechanics> -opt hook_conformal_p2_np1.toml)
         # The passthrough case of step 6 with [Conformal]: fitted grain boundaries, the
         # passthrough interface kept in place
         ms_hook_run(NAME    test_microstructure_hook_e2e_conformal_passthrough

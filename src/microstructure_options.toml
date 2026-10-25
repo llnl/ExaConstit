@@ -1211,8 +1211,15 @@ exec = "cpu"
 # passthrough elements never change grain (they may still deform a little inside). Grain volumes
 # change a little, since the boundaries move.
 #
-# Needs: no periodic axes, and a hex or tet mesh with straight-sided (first-order) elements.
-# Inside ExaConstit that means [Mesh] order = 1. Other combinations are refused with a message.
+# Element order: first-order meshes get straight element faces that follow the boundaries in
+# small facets (a softened staircase); second-order meshes (curved elements, e.g. ExaConstit's
+# mesh at [Mesh] order = 2, or a curved order-2 mesh file) get curved faces, so the boundaries
+# become truly smooth and lie closer to where they should go (about 0.15 element sizes instead
+# of 0.25 on the test meshes, at the same quality). Every nodal point of the element is checked
+# against the quality limits.
+#
+# Needs: no periodic axes (not planned), and a hex or tet mesh of order 1 or 2. Other
+# combinations are refused with a message.
 #
 # Files: the mesh file and the ParaView view hold the moved nodes. An auto mesh ([Mesh] type =
 # "auto") is rebuilt by ExaConstit from its box size, which would undo the move, so after a fit
@@ -1260,9 +1267,9 @@ exec = "cpu"
 #   - Each [Materials.Grain] gets num_grains and ori_type = "quat" from the generator; keep only
 #     ori_state_var_loc and ori_stride there.
 #   - One region per [[Materials]] block (region r uses block r).
-#   - [Conformal] enabled = true moves the nodes of the simulation's own mesh before the run
-#     starts (needs [Mesh] order = 1). The saved grain mesh (mesh_format = "parallel") holds the
-#     moved nodes.
+#   - [Conformal] enabled = true moves the nodes of the simulation's own mesh before the run starts
+#     (needs [Mesh] order = 1 or 2; order 2 gives curved grain boundaries). The saved grain mesh
+#     (mesh_format = "parallel") holds the moved nodes.
 #   - A restarted simulation takes the grains from the checkpoint and does not run the generator.
 # Every key you do not write keeps the default shown above, as in the tool, so the same tables
 # give the same grains in both (on the same mesh).

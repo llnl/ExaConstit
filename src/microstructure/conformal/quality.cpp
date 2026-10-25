@@ -72,7 +72,8 @@ void CornerQuality(const double e[3][3], double scale, const mfem::DenseMatrix* 
 } // namespace
 
 /*
- * ElementQuality: corners from the geometry's reference vertices. Hex: the Jacobian of the
+ * ElementQuality: corners from the geometry's reference vertices (every nodal point for curved
+ * elements). Hex: the Jacobian of the
  * element map at the corner (columns = edges along the reference axes). Tet: the edges from the
  * corner to the three others, ordered so that the determinant has the sign of the element map.
  */
@@ -87,9 +88,15 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
     scaled_jacobian = HUGE_VAL;
     aspect_ratio = 0.0;
     min_det = HUGE_VAL;
+    // Curved elements (Nodes of order > 1): every nodal point of the element (its corners
+    // included), where the edges are the Jacobian applied to the reference corner edges
+    const mfem::GridFunction* nodes = mesh.GetNodes();
+    const bool curved = nodes != nullptr && nodes->FESpace()->GetFE(e)->GetOrder() > 1;
+    const mfem::IntegrationRule* points =
+        curved ? &nodes->FESpace()->GetFE(e)->GetNodes() : corners;
     if (geom == mfem::Geometry::CUBE) {
-        for (int i = 0; i < corners->GetNPoints(); ++i) {
-            T->SetIntPoint(&corners->IntPoint(i));
+        for (int i = 0; i < points->GetNPoints(); ++i) {
+            T->SetIntPoint(&points->IntPoint(i));
             const mfem::DenseMatrix& J = T->Jacobian();
             double edges[3][3];
             for (int c = 0; c < 3; ++c) {
@@ -107,13 +114,38 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
     }
     // Tet: physical corners, and corner i's edges to the others in an even permutation so that
     // det keeps the sign of det(x1 - x0, x2 - x0, x3 - x0)
+    const int others[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    static const mfem::DenseMatrix w_inv = RegularTetInverse();
+    if (curved) {
+        // At every nodal point, the four corner patterns with edges J (r_k - r_i), r the
+        // reference vertices (for a straight tet these are the physical corner edges)
+        for (int q = 0; q < points->GetNPoints(); ++q) {
+            T->SetIntPoint(&points->IntPoint(q));
+            const mfem::DenseMatrix& J = T->Jacobian();
+            for (int i = 0; i < 4; ++i) {
+                const mfem::IntegrationPoint& ri = corners->IntPoint(i);
+                double edges[3][3];
+                for (int k = 0; k < 3; ++k) {
+                    const mfem::IntegrationPoint& rk = corners->IntPoint(others[i][k]);
+                    const double dr[3] = {rk.x - ri.x, rk.y - ri.y, rk.z - ri.z};
+                    for (int d = 0; d < 3; ++d) {
+                        edges[k][d] = J(d, 0) * dr[0] + J(d, 1) * dr[1] + J(d, 2) * dr[2];
+                    }
+                }
+                double sj, ar, det;
+                CornerQuality(edges, std::sqrt(2.0), &w_inv, sj, ar, det);
+                scaled_jacobian = std::min(scaled_jacobian, sj);
+                aspect_ratio = std::max(aspect_ratio, ar);
+                min_det = std::min(min_det, det);
+            }
+        }
+        return;
+    }
     mfem::Vector p[4];
     for (int i = 0; i < 4; ++i) {
         p[i].SetSize(3);
         T->Transform(corners->IntPoint(i), p[i]);
     }
-    const int others[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
-    static const mfem::DenseMatrix w_inv = RegularTetInverse();
     for (int i = 0; i < 4; ++i) {
         double edges[3][3];
         for (int k = 0; k < 3; ++k) {

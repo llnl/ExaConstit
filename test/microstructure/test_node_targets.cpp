@@ -21,7 +21,8 @@
  *  - Smoothed staircase (the same bicrystal on a finer mesh without seeds, as for a voxel map):
  *    every boundary node is FIT on the smoothed staircase, which lies far closer to the true
  *    bisector than the staircase nodes, keeps box face coordinates bit for bit, stays within the
- *    move limit, and is bit for bit the same on MPI_COMM_SELF.
+ *    move limit, and is bit for bit the same on MPI_COMM_SELF; also with order-2 Nodes (smoothing
+ *    over the lattice of the nodal points).
  *  - Rank invariance: the distributed targets and statuses equal, bit for bit, those of the same
  *    mesh on MPI_COMM_SELF (meshes distributed round robin), at np = 1, 2, 3, 4.
  *
@@ -523,6 +524,31 @@ TEST(NodeTargets, SmoothedStaircase) {
         std::printf("smoothed staircase: mean distance to the bisector %.4f -> %.4f (h = %.4f)\n",
                     sums[0] / sums[2], sums[1] / sums[2], 1.0 / 12.0);
     }
+
+    // Order-2 Nodes (smoothing over the lattice of the nodal points): same checks, coarser mesh
+    mfem::Mesh coarse = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
+    coarse.SetCurvature(2);
+    Fitted dist2 = Fit(coarse, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none,
+                       {-1, -1}, {}, options);
+    Fitted self2 = Fit(coarse, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none,
+                       {-1, -1}, {}, options);
+    EXPECT_EQ(CompareWithSerial(dist2, self2), 0);
+    const ms::NodeLabels& nl2 = *dist2.labels;
+    const double* xyz2 = nl2.Field().Coordinates().HostRead();
+    const double* t2 = dist2.targets->Targets().HostRead();
+    const int* owned2 = nl2.Field().OwnedVertexMarker().HostRead();
+    double sums2[3] = {0.0, 0.0, 0.0};
+    for (int v = 0; v < nl2.NumNodes(); ++v) {
+        if (nl2.NumLabels(v) == 2 && !nl2.OverConstrained(v) && owned2[v] != 0) {
+            sums2[0] += distance(xyz2 + 3 * v);
+            sums2[1] += distance(t2 + 3 * v);
+            sums2[2] += 1.0;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, sums2, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    EXPECT_GT(sums2[2], 0.0);
+    // The order-2 staircase nodes start closer (half of them are edge and face midpoints)
+    EXPECT_LT(sums2[1], 0.6 * sums2[0]);
 }
 
 TEST(NodeTargets, Validation) {

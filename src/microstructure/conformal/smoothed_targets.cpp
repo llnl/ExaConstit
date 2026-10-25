@@ -31,6 +31,41 @@ int AxisOf(const double n[3]) {
     return (zeros == 2) ? axis : -1;
 }
 
+/**
+ * @brief Pairs of nodal points of the element that are neighbors on its node lattice: their
+ * reference positions differ by one lattice step (1 / order) along an edge direction of the
+ * reference element (the axes for a hex; the axes and their differences for a tet). For order 1
+ * these are the element edges; for order 2 (uniform lattice) the edges of the sub-elements.
+ * Indices are element-local dof indices (the order of FiniteElement::GetNodes).
+ */
+std::vector<std::pair<int, int>> LatticeNeighbors(const mfem::FiniteElement& fe) {
+    const mfem::IntegrationRule& ref = fe.GetNodes();
+    const double p = static_cast<double>(fe.GetOrder());
+    const bool tet = fe.GetGeomType() == mfem::Geometry::TETRAHEDRON;
+    std::vector<std::pair<int, int>> pairs;
+    for (int a = 0; a < ref.GetNPoints(); ++a) {
+        for (int b = a + 1; b < ref.GetNPoints(); ++b) {
+            const mfem::IntegrationPoint& ia = ref.IntPoint(a);
+            const mfem::IntegrationPoint& ib = ref.IntPoint(b);
+            const double d[3] = {p * (ib.x - ia.x), p * (ib.y - ia.y), p * (ib.z - ia.z)};
+            int ones = 0;
+            int zeros = 0;
+            double sum = 0.0;
+            for (int k = 0; k < 3; ++k) {
+                ones += (std::fabs(std::fabs(d[k]) - 1.0) < 1e-9) ? 1 : 0;
+                zeros += (std::fabs(d[k]) < 1e-9) ? 1 : 0;
+                sum += d[k];
+            }
+            // One axis step, or (tets) one step along a difference of two axes
+            if ((ones == 1 && zeros == 2) || (tet && ones == 2 && zeros == 1 &&
+                                             std::fabs(sum) < 1e-9)) {
+                pairs.emplace_back(a, b);
+            }
+        }
+    }
+    return pairs;
+}
+
 /** @brief True when every label of v is a label of u (both ascending). */
 bool HasLabelsOf(const NodeLabels& labels, int u, int v) {
     const int* off = labels.LabelOffsets().HostRead();
@@ -142,13 +177,18 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
     }
     const int* en_off = field.ElementVertexOffsets().HostRead();
     const int* en = field.ElementVertices().HostRead();
+    // The element's nodal points: the Nodes space, or the vertices (order 1) without Nodes
+    const mfem::FiniteElementSpace* fes =
+        (pmesh.GetNodes() != nullptr) ? pmesh.GetNodes()->FESpace() : nullptr;
+    const mfem::H1_FECollection linear(1, 3);
     std::vector<std::vector<int>> nbrs(static_cast<std::size_t>(nv));
     for (int e = 0; e < pmesh.GetNE(); ++e) {
-        const mfem::Element* el = pmesh.GetElement(e);
-        for (int k = 0; k < el->GetNEdges(); ++k) {
-            const int* ev = el->GetEdgeVertices(k);
-            const int a = en[en_off[e] + ev[0]];
-            const int b = en[en_off[e] + ev[1]];
+        const mfem::FiniteElement& fe =
+            (fes != nullptr) ? *fes->GetFE(e)
+                             : *linear.FiniteElementForGeometry(pmesh.GetElementBaseGeometry(e));
+        for (const auto& [ka, kb] : LatticeNeighbors(fe)) {
+            const int a = en[en_off[e] + ka];
+            const int b = en[en_off[e] + kb];
             for (const auto& [v, u] : {std::pair<int, int>{a, b}, std::pair<int, int>{b, a}}) {
                 if (moved[static_cast<std::size_t>(v)] != 0 && HasLabelsOf(labels, u, v) &&
                     HasSurfacesOf(labels, u, v)) {
@@ -168,8 +208,16 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
     std::vector<double> send;
     std::vector<int> recv_off;
     std::vector<double> recv;
-    for (int step = 0; step < 2 * params.steps; ++step) {
-        const double w = (step % 2 == 0) ? TAUBIN_LAMBDA : TAUBIN_MU;
+    // Both the smoothing length (sqrt(steps) nodal spacings) and Taubin's pass band
+    // k_pb = 1 / lambda + 1 / mu (wavelengths longer than about 2 pi / sqrt(k_pb) spacings are
+    // kept) are in units of the nodal spacing, element size / order. For order p the steps are
+    // multiplied by p^2 and the pass band divided by p^2, so both stay the same in element sizes.
+    const int order = field.LatticeOrder();
+    const int steps = params.steps * order * order;
+    const double pass_band = (1.0 / TAUBIN_LAMBDA + 1.0 / TAUBIN_MU) / (order * order);
+    const double mu = 1.0 / (pass_band - 1.0 / TAUBIN_LAMBDA);
+    for (int step = 0; step < 2 * steps; ++step) {
+        const double w = (step % 2 == 0) ? TAUBIN_LAMBDA : mu;
         send.clear();
         for (int v = 0; v < nv; ++v) {
             for (const int u : nbrs[static_cast<std::size_t>(v)]) {
@@ -234,7 +282,7 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
         const double dist = std::sqrt((y[0] - x[0]) * (y[0] - x[0]) +
                                       (y[1] - x[1]) * (y[1] - x[1]) +
                                       (y[2] - x[2]) * (y[2] - x[2]));
-        const double limit = params.max_move * h(v);
+        const double limit = params.max_move * h(v) * field.LatticeOrder(); // element sizes
         if (moved[static_cast<std::size_t>(v)] != 0 && dist > limit) {
             for (int d = 0; d < 3; ++d) {
                 y[d] = x[d] + (y[d] - x[d]) * (limit / dist);

@@ -380,6 +380,17 @@ on a single curved surface, a node slides along it: a stiff normal spring (10^4 
 then an exact projection back onto the plane(s) or onto the closest point of its ring of input
 boundary triangles. Nodes where a curved surface meets another surface do not move.
 
+**Second-order meshes.** With order-2 Nodes every nodal point is a node of the fit (labels,
+targets and smoothing on the lattice of nodal points; quality at every nodal point). Pulling single
+nodal points of a curved element makes sharp local spikes that fold it, so the fit runs in two
+passes: the vertices first, with an order-1 displacement field (the same elasticity on the curved
+geometry) interpolated to every nodal point, then, with the vertices fixed, the edge and face nodes
+toward the closest point of their grain boundary from where they are, which curves the element
+faces. The springs of both passes and the move limits are in element sizes. On a 16^3 hex mesh with
+20 grains the mean distance of the grain boundary nodes from their targets ends at about 0.15
+element sizes (order 1: 0.25) at the same quality; order-2 tets likewise (0.15 vs 0.31). Orders 3
+and higher are refused (their nodal points are not on a uniform lattice).
+
 **Measured behavior** (test meshes, 20-50 grains): the mean distance of the grain boundary nodes
 from their targets drops from about 0.4 h to about 0.21-0.24 h on hex meshes with a smallest scaled
 Jacobian of about 0.4, for analytic targets (Voronoi) and smoothed ones (a noisy voxel map, geodesic

@@ -10,7 +10,8 @@
  *    volume (its faces stay in place), the grain count is the same as without the step, and only
  *    a few elements change grain (label repair, the count the report gives).
  *  - Tet box: the tet floor holds.
- *  - A mesh with order-2 Nodes is refused on every rank with std::invalid_argument.
+ *  - A mesh with order-2 Nodes (as ExaConstit's mesh at [Mesh] order = 2) is fitted and keeps its
+ *    Nodes; order 3 is refused on every rank with std::invalid_argument.
  *  - The Phase 1 grain sources without analytic boundaries: a voxel map (the shared voxelized
  *    Voronoi fixture, one element per voxel) and geodesic labels on the U-shaped part fit every
  *    grain boundary node to the smoothed staircase; connected labels on the U-shaped part use
@@ -121,11 +122,13 @@ void CheckFit(const char* name, DriverRun& run, double floor, double volume) {
     EXPECT_NEAR(Volume(*run.pmesh), volume, 1e-12 * volume);
     if (mfem::Mpi::Root()) {
         std::printf("%s: %d grains, %lld fitted nodes (%lld smoothed), deviation %.3f -> %.3f h, "
-                    "sj %.3f\n",
+                    "sj %.3f, ar %.2f, rounds %d, solves %d\n",
                     name, run.result.num_grains, static_cast<long long>(r.conformal_fit.fit_nodes),
                     static_cast<long long>(r.conformal_smoothed_nodes),
                     r.conformal_fit.initial_deviation, r.conformal_fit.mean_deviation,
-                    r.conformal_fit.quality_after.min_scaled_jacobian);
+                    r.conformal_fit.quality_after.min_scaled_jacobian,
+                    r.conformal_fit.quality_after.max_aspect_ratio, r.conformal_fit.rounds,
+                    r.conformal_fit.solves);
     }
 }
 
@@ -188,7 +191,9 @@ TEST(DriverConformal, HexBox) {
         std::printf("hex box: %d grains, %d flips, deviation %.3f -> %.3f h, sj %.3f\n",
                     fitted.result.num_grains, changed, r.conformal_fit.initial_deviation,
                     r.conformal_fit.mean_deviation,
-                    r.conformal_fit.quality_after.min_scaled_jacobian);
+                    r.conformal_fit.quality_after.min_scaled_jacobian,
+                    r.conformal_fit.quality_after.max_aspect_ratio, r.conformal_fit.rounds,
+                    r.conformal_fit.solves);
     }
 }
 
@@ -207,9 +212,24 @@ TEST(DriverConformal, RefusesHigherOrder) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
     std::unique_ptr<mfem::ParMesh> pmesh = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
-    pmesh->SetCurvature(2);
+    pmesh->SetCurvature(3);
     EXPECT_THROW(ms::GenerateMicrostructure(Options(true), *pmesh, MPI_COMM_WORLD),
                  std::invalid_argument);
+}
+
+TEST(DriverConformal, OrderTwoHook) {
+    // A mesh with order-2 Nodes, as ExaConstit's mesh at [Mesh] order = 2: the fit moves every
+    // nodal point and the mesh keeps its order-2 Nodes
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
+    const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
+    DriverRun run;
+    run.pmesh = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
+    run.pmesh->SetCurvature(2);
+    run.result =
+        ms::GenerateMicrostructure(Options(true), *run.pmesh, MPI_COMM_WORLD, &run.report);
+    CheckFit("order 2", run, ms::MESH_QUALITY_FLOOR_HEX, 1.0);
+    ASSERT_NE(run.pmesh->GetNodes(), nullptr);
+    EXPECT_EQ(run.pmesh->GetNodes()->FESpace()->GetMaxElementOrder(), 2);
 }
 
 #ifdef AXOM_USE_HDF5

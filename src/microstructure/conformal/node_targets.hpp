@@ -43,7 +43,8 @@
  * **Validation** (a failure marks a *fake junction*: the mesh shows grains meeting at the node,
  * but their analytic boundaries do not meet near it; label repair, Stage 2c, handles these):
  *   1. the projection converged and every equation holds to `tolerance * h` in distance;
- *   2. the node moves at most `max_move * h`;
+ *   2. the node moves at most `max_move` element sizes (max_move * h * p, p the order of the
+ *      Nodes: for curved meshes h is the spacing of the nodal points, a fraction of the element);
  *   3. no other seed is closer than the node's own seeds at the target: with F = the largest
  *      f_{s(l)}(y) over the node's seeds, every other seed k has f_k(y) >= F - delta (delta =
  *      `tolerance * h` times the largest |grad f_{s(l)}(y)|). Otherwise the target lies inside
@@ -88,7 +89,7 @@ namespace exaconstit::microstructure {
 
 /** @brief Settings of NodeTargets. */
 struct NodeTargetOptions {
-    /** @brief Largest allowed move, in units of the node's mesh size h. */
+    /** @brief Largest allowed move, in element sizes (h times the order of the Nodes). */
     double max_move = 1.0;
     /** @brief Projection step and residual tolerance, in units of h. */
     double tolerance = 1e-10;
@@ -130,7 +131,7 @@ enum class TargetReason : int {
     SINGULAR = 4,        ///< dependent equations (e.g. a grain boundary parallel to a box face)
     NOT_CONVERGED = 5,   ///< the projection did not converge
     RESIDUAL = 6,        ///< an equation does not hold at the target
-    TOO_FAR = 7,         ///< the target is more than max_move * h away
+    TOO_FAR = 7,         ///< the target is more than max_move element sizes away
     FOREIGN_SEED = 8     ///< another seed is closer at the target
 };
 inline constexpr int NUM_TARGET_REASONS = 9;

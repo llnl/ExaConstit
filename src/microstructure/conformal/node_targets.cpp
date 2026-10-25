@@ -271,7 +271,8 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
     }
     const double move = std::sqrt((y[0] - x[0]) * (y[0] - x[0]) + (y[1] - x[1]) * (y[1] - x[1]) +
                                   (y[2] - x[2]) * (y[2] - x[2]));
-    if (move > m_options.max_move * h) {
+    // The move limit is in element sizes (h times the order of the Nodes)
+    if (move > m_options.max_move * h * m_labels.Field().LatticeOrder()) {
         return set(TargetStatus::FAKE_JUNCTION, TargetReason::TOO_FAR);
     }
     std::copy(y, y + 3, r.target);

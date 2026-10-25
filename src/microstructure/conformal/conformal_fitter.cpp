@@ -166,8 +166,24 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels, const NodeTargets& targ
  *     while above the floor and improving (file comment).
  *  4. Deviation and quality of the result.
  */
-ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets,
-                                const ConformalFitOptions& options) {
+namespace {
+
+/**
+ * @brief What a fitting pass moves (FitConformal).
+ *  - ALL: every fitted node, displacement in the Nodes space (order-1 meshes);
+ *  - LINEAR_VERTICES: the vertex nodes (dofs 0..NV-1 of the Nodes space, numbered first by MFEM)
+ *    with an order-1 displacement field, interpolated to every nodal point (higher orders, first
+ *    pass: the elements move as straight-sided order-1 elements would);
+ *  - CURVATURE: the vertices fixed, the other fitted nodal points pulled toward the closest point
+ *    of their grain boundary from where they are now (higher orders, second pass).
+ */
+enum class PassKind { ALL, LINEAR_VERTICES, CURVATURE };
+
+/** @brief One fitting pass (the file comment) from the current Nodes. */
+ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
+                           const ConformalFitOptions& options, PassKind kind_of_pass) {
+    const bool vertices_only = kind_of_pass == PassKind::LINEAR_VERTICES;
+    const bool curvature = kind_of_pass == PassKind::CURVATURE;
     const MPI_Comm comm = pmesh.GetComm();
     const NodeLabels& labels = targets.Labels();
     const VertexField& field = labels.Field();
@@ -238,7 +254,7 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             kind = (num_surfaces <= 2) ? Slide::PLANES : Slide::FIXED;
         }
         on_curved[static_cast<std::size_t>(v)] = (kind == Slide::CURVED) ? 1 : 0;
-        if (kind == Slide::FIXED) {
+        if (kind == Slide::FIXED || (curvature && v < pmesh.GetNV())) {
             fixed[vs] = fixed[vs + 1] = fixed[vs + 2] = 1;
         }
         fit_nodes += (marker[v] && owned[v]) ? 1 : 0;
@@ -371,6 +387,53 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
     };
     double unused_max = 0.0;
     deviation(unused_max, report.initial_deviation);
+    // Higher-order passes: the initial deviation above covers every fitted node; from here only
+    // the vertex nodes (LINEAR_VERTICES) or the other nodal points (CURVATURE) carry springs.
+    // The springs pull toward the targets, for CURVATURE toward the closest point of the grain
+    // boundary from the current position.
+    std::vector<double> pull(t, t + 3 * static_cast<std::size_t>(nv));
+    if (vertices_only) {
+        for (int v = pmesh.GetNV(); v < nv; ++v) {
+            marker[v] = false;
+        }
+    }
+    if (curvature) {
+        GatherPositions(*nodes, fes, nv, here);
+        std::vector<NodeLabelQuery> queries;
+        for (int v = 0; v < nv; ++v) {
+            marker[v] = marker[v] && v >= pmesh.GetNV();
+            if (!marker[v]) {
+                continue;
+            }
+            NodeLabelQuery q;
+            q.node = v;
+            q.num_labels = labels.NumLabels(v);
+            for (int k = 0; k < std::min(q.num_labels, NODE_QUERY_LABELS); ++k) {
+                q.labels[k] = litems[loff[v] + k];
+            }
+            q.position = &here[3 * static_cast<std::size_t>(v)];
+            queries.push_back(q);
+        }
+        const std::vector<NodeTargetResult> res = targets.Evaluate(queries);
+        for (std::size_t i = 0; i < queries.size(); ++i) {
+            const int v = queries[i].node;
+            for (int d = 0; d < 3; ++d) {
+                pull[3 * static_cast<std::size_t>(v) + d] =
+                    (res[i].status == TargetStatus::FIT) ? res[i].target[d] : here[3 * v + d];
+            }
+        }
+    }
+    // The displacement space: the Nodes space, or order 1 for LINEAR_VERTICES (its dof v is
+    // vertex v, as in the Nodes space)
+    std::unique_ptr<mfem::H1_FECollection> linear_fec;
+    std::unique_ptr<mfem::ParFiniteElementSpace> linear_fes;
+    if (vertices_only) {
+        linear_fec = std::make_unique<mfem::H1_FECollection>(1, 3);
+        linear_fes = std::make_unique<mfem::ParFiniteElementSpace>(&pmesh, linear_fec.get(), 3,
+                                                                   fes.GetOrdering());
+    }
+    mfem::ParFiniteElementSpace& sfes = vertices_only ? *linear_fes : fes;
+    const int sn = sfes.GetNDofs();
 
     // Step 3
     if (report.fit_nodes > 0) {
@@ -386,16 +449,16 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
         std::vector<double> sj(static_cast<std::size_t>(ne), 1.0);
 
         // Essential (fixed) true dofs; they keep their input value (zero displacement)
-        mfem::Array<int> ess_marker(fes.GetVSize());
+        mfem::Array<int> ess_marker(sfes.GetVSize());
         ess_marker = 0;
-        for (int v = 0; v < nv; ++v) {
+        for (int v = 0; v < sn; ++v) {
             for (int d = 0; d < 3; ++d) {
-                ess_marker[fes.DofToVDof(v, d)] = fixed[3 * static_cast<std::size_t>(v) + d];
+                ess_marker[sfes.DofToVDof(v, d)] = fixed[3 * static_cast<std::size_t>(v) + d];
             }
         }
         mfem::Array<int> ess_tdof_marker;
         mfem::Array<int> ess_tdof;
-        fes.GetRestrictionMatrix()->BooleanMult(ess_marker, ess_tdof_marker);
+        sfes.GetRestrictionMatrix()->BooleanMult(ess_marker, ess_tdof_marker);
         mfem::FiniteElementSpace::MarkerToList(ess_tdof_marker, ess_tdof);
 
         // Stiffness for the next solve: quality factor, spread to the neighbors
@@ -425,7 +488,14 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
         };
 
         // One spring-balanced elastic solve on the input geometry; sets the Nodes to x0 + u
-        mfem::ParGridFunction u(&fes);
+        mfem::ParGridFunction u(&sfes);
+        mfem::ParGridFunction u_nodes(&fes);
+        // Higher orders: a Gauss rule of order 2 p (27 points per order-2 hex) instead of MFEM's
+        // default for curved elements, which is several times larger; enough for a mesh morph
+        const int order = sfes.GetMaxElementOrder();
+        const mfem::IntegrationRule* quad_rule =
+            (order > 1) ? &mfem::IntRules.Get(pmesh.GetTypicalElementGeometry(), 2 * order)
+                        : nullptr;
         const double nu = options.poisson_ratio;
         const auto solve = [&](double c) {
             *nodes = x0;
@@ -433,49 +503,54 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             mfem::GridFunctionCoefficient e_coeff(&stiffness);
             mfem::ProductCoefficient mu(1.0 / (2.0 * (1.0 + nu)), e_coeff);
             mfem::ProductCoefficient lambda(nu / ((1.0 + nu) * (1.0 - 2.0 * nu)), e_coeff);
-            mfem::ParBilinearForm a(&fes);
-            a.AddDomainIntegrator(new mfem::ElasticityIntegrator(lambda, mu));
+            mfem::ParBilinearForm a(&sfes);
+            auto* elasticity = new mfem::ElasticityIntegrator(lambda, mu);
+            if (quad_rule != nullptr) {
+                elasticity->SetIntRule(quad_rule);
+            }
+            a.AddDomainIntegrator(elasticity);
             a.Assemble();
             // Springs and their loads on the local vdofs, then on the true dofs (owned values
             // only, so the spring of a shared node counts once)
-            mfem::ParGridFunction k_local(&fes);
-            mfem::ParGridFunction load_local(&fes);
+            mfem::ParGridFunction k_local(&sfes);
+            mfem::ParGridFunction load_local(&sfes);
             k_local = 0.0;
             load_local = 0.0;
-            for (int v = 0; v < nv; ++v) {
+            for (int v = 0; v < sn; ++v) {
                 if (!marker[v]) {
                     continue;
                 }
                 const double k = c * multiplier(v) * targets.MeshSize(v) *
                                  (labels.NumLabels(v) >= 3 ? JUNCTION_SPRING : 1.0);
                 for (int d = 0; d < 3; ++d) {
-                    const int vd = fes.DofToVDof(v, d);
+                    const int vd = sfes.DofToVDof(v, d);
                     k_local(vd) = k;
-                    load_local(vd) = k * (t[3 * v + d] - x0(vd));
+                    load_local(vd) =
+                        k * (pull[3 * static_cast<std::size_t>(v) + d] - x0(fes.DofToVDof(v, d)));
                 }
             }
             u = 0.0;
-            mfem::ParLinearForm rhs(&fes);
+            mfem::ParLinearForm rhs(&sfes);
             rhs = 0.0;
             mfem::HypreParMatrix A;
             mfem::Vector X;
             mfem::Vector B;
             a.FormLinearSystem(ess_tdof, u, rhs, A, X, B);
-            mfem::Vector k_true(fes.GetTrueVSize());
-            mfem::Vector load_true(fes.GetTrueVSize());
-            fes.GetRestrictionMatrix()->Mult(k_local, k_true);
-            fes.GetRestrictionMatrix()->Mult(load_local, load_true);
+            mfem::Vector k_true(sfes.GetTrueVSize());
+            mfem::Vector load_true(sfes.GetTrueVSize());
+            sfes.GetRestrictionMatrix()->Mult(k_local, k_true);
+            sfes.GetRestrictionMatrix()->Mult(load_local, load_true);
             for (const int i : ess_tdof) {
                 k_true(i) = 0.0;
                 load_true(i) = 0.0;
             }
-            mfem::SparseMatrix diag(fes.GetTrueVSize());
-            for (int i = 0; i < fes.GetTrueVSize(); ++i) {
+            mfem::SparseMatrix diag(sfes.GetTrueVSize());
+            for (int i = 0; i < sfes.GetTrueVSize(); ++i) {
                 diag.Add(i, i, k_true(i));
             }
             // Normal penalty k n n^T of the sliding nodes, on the owner's true dofs (not on fixed
             // components, whose rows are already eliminated)
-            for (int v = 0; v < nv; ++v) {
+            for (int v = 0; v < sn; ++v) {
                 const auto& pen = penalty[static_cast<std::size_t>(v)];
                 if (pen[0] == 0.0 || owned[v] == 0) {
                     continue;
@@ -484,7 +559,7 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
                 for (int d = 0; d < 3; ++d) {
                     td[d] = fixed[3 * static_cast<std::size_t>(v) + d]
                                 ? -1
-                                : fes.GetLocalTDofNumber(fes.DofToVDof(v, d));
+                                : sfes.GetLocalTDofNumber(sfes.DofToVDof(v, d));
                 }
                 const double k = NORMAL_PENALTY * targets.MeshSize(v);
                 for (int m = 0; m < static_cast<int>(pen[0]); ++m) {
@@ -499,7 +574,8 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
                 }
             }
             diag.Finalize();
-            mfem::HypreParMatrix P(comm, fes.GlobalTrueVSize(), fes.GetTrueDofOffsets(), &diag);
+            mfem::HypreParMatrix P(comm, sfes.GlobalTrueVSize(), sfes.GetTrueDofOffsets(),
+                                   &diag);
             std::unique_ptr<mfem::HypreParMatrix> AP(mfem::ParAdd(&A, &P));
             B += load_true;
             mfem::HypreBoomerAMG amg(*AP);
@@ -513,8 +589,13 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
             cg.SetOperator(*AP);
             cg.Mult(B, X);
             a.RecoverFEMSolution(X, rhs, u);
+            if (vertices_only) {
+                u_nodes.ProjectGridFunction(u); // the order-1 field at every nodal point
+            } else {
+                u_nodes = u;
+            }
             for (int i = 0; i < nodes->Size(); ++i) {
-                (*nodes)(i) = x0(i) + u(i);
+                (*nodes)(i) = x0(i) + u_nodes(i);
             }
             project_to_surfaces();
             ++report.solves;
@@ -618,6 +699,29 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
     // Step 4
     deviation(report.max_deviation, report.mean_deviation);
     report.quality_after = ComputeMeshQuality(pmesh);
+    return report;
+}
+
+} // namespace
+
+/*
+ * FitConformal: one pass for order-1 Nodes. For higher orders the vertices are fitted first with
+ * an order-1 displacement field interpolated to every nodal point (the elements move as
+ * straight-sided elements; a pull on a single nodal point of a higher-order element makes a
+ * sharp local spike that folds the element), then, with the vertices fixed, the other nodal
+ * points are pulled onto the grain boundaries, which adds their curvature.
+ */
+ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets,
+                                const ConformalFitOptions& options) {
+    if (targets.Labels().Field().LatticeOrder() == 1) {
+        return FitPass(pmesh, targets, options, PassKind::ALL);
+    }
+    const ConformalFitReport first = FitPass(pmesh, targets, options, PassKind::LINEAR_VERTICES);
+    ConformalFitReport report = FitPass(pmesh, targets, options, PassKind::CURVATURE);
+    report.quality_before = first.quality_before;
+    report.initial_deviation = first.initial_deviation;
+    report.rounds += first.rounds;
+    report.solves += first.solves;
     return report;
 }
 

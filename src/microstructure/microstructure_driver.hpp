@@ -382,7 +382,8 @@ struct GenerationReport {
  *     description (voxel maps, geodesic labels, pieces moved by the cleanup or the connected
  *     relabeling) to a smoothed copy of the element staircase (conformal/smoothed_targets.hpp).
  *     Passthrough parts keep their shape: their interfaces are treated like the outer boundary.
- *     Needs a hex or tet mesh of order 1 and no periodic axis.
+ *     Needs a hex or tet mesh of order 1 or 2 (order 2: every nodal point is fitted, so the
+ *     grain boundaries become curved) and no periodic axis.
  *
  * Collective over `comm`: every rank of `comm` must call it with identical `options`. The result
  * does not depend on the number of ranks: element labels of the same element are identical for

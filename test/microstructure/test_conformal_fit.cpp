@@ -15,6 +15,9 @@
  *    grain 1 is close to the analytic 1/2.
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
+ *  - Order-2 Nodes (hex 6^3, 8 grains): every nodal point is fitted (more than twice the fitted
+ *    nodes of order 1), the limits hold, no element folds on a denser Gauss-Lobatto grid, box faces
+ *    are kept, and WORLD agrees with SELF to the solver tolerance.
  *  - Curved and tilted outer boundary (box with a domed top, faces x = 0, 1 tilted; hex and tet,
  *    12 grains): nodes on those surfaces slide along them and end on them (the planes, or the
  *    input boundary faces around the node, to rounding), some of them move, the floor holds and
@@ -118,13 +121,15 @@ struct Fitted {
 
 void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
                    const std::string& path);
+void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+                   const std::string& path);
 
 /**
  * Distribute round robin on `comm`, label (Voronoi of `seeds`), repair, fit. With `dump_before`
  * set, the repaired labels on the unfitted mesh are written there first (DumpSlices).
  */
 Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
-           const std::string& dump_before = "", bool smoothed_only = false) {
+           const std::string& dump_before = "", bool smoothed_only = false, int order = 1) {
     int size = 1;
     MPI_Comm_size(comm, &size);
     std::vector<int> part(static_cast<std::size_t>(serial.GetNE()));
@@ -133,7 +138,7 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
     }
     Fitted f;
     f.pmesh = std::make_unique<mfem::ParMesh>(comm, serial, part.data());
-    f.pmesh->SetCurvature(1, false, 3, mfem::Ordering::byNODES);
+    f.pmesh->SetCurvature(order, false, 3, mfem::Ordering::byNODES);
     f.x0 = *f.pmesh->GetNodes();
     f.labels = VoronoiLabels(*f.pmesh, seeds);
     std::vector<int> grain_seed(seeds.Size());
@@ -422,6 +427,45 @@ TEST(ConformalFit, HexPolycrystal) {
     }
 }
 
+TEST(ConformalFit, HexOrderTwoPolycrystal) {
+    // Order-2 Nodes: every nodal point is fitted (curved grain boundaries). The quality limits
+    // hold at the nodal points; an independent check on a denser Gauss-Lobatto grid (5 points
+    // per direction) finds no folded element either.
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
+    const ms::SeedSet seeds = ScatteredSeeds(8);
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, "", false, 2);
+    const ms::ConformalFitReport& r = f.report;
+    EXPECT_EQ(r.quality_after.inverted, 0);
+    EXPECT_GE(r.quality_after.min_scaled_jacobian, ms::MESH_QUALITY_FLOOR_HEX);
+    EXPECT_LE(r.quality_after.max_aspect_ratio, ms::MESH_ASPECT_RATIO_MAX);
+    EXPECT_LT(r.mean_deviation, 0.85 * r.initial_deviation);
+    EXPECT_EQ(FaceViolations(f), 0);
+    mfem::IntegrationRules lobatto(0, mfem::Quadrature1D::GaussLobatto);
+    const mfem::IntegrationRule& ir = lobatto.Get(mfem::Geometry::CUBE, 7);
+    int folded = 0;
+    for (int e = 0; e < f.pmesh->GetNE(); ++e) {
+        mfem::ElementTransformation* T = f.pmesh->GetElementTransformation(e);
+        for (int q = 0; q < ir.GetNPoints(); ++q) {
+            T->SetIntPoint(&ir.IntPoint(q));
+            folded += (T->Weight() <= 0.0) ? 1 : 0;
+        }
+    }
+    EXPECT_EQ(GlobalSum(folded), 0);
+    // More nodes are fitted than at order 1 (edge and face nodes of the grain boundaries)
+    Fitted linear = Fit(serial, MPI_COMM_WORLD, seeds);
+    EXPECT_GT(r.fit_nodes, 2 * linear.report.fit_nodes);
+    Fitted self = Fit(serial, MPI_COMM_SELF, seeds, "", false, 2);
+    EXPECT_LE(WorstRankDifference(f, self), 1e-6);
+    if (mfem::Mpi::Root()) {
+        std::printf("order 2: deviation %.3f -> %.3f h (max %.3f), sj %.3f, ar %.2f, rounds %d, "
+                    "fitted nodes %lld (order 1: %lld)\n",
+                    r.initial_deviation, r.mean_deviation, r.max_deviation,
+                    r.quality_after.min_scaled_jacobian, r.quality_after.max_aspect_ratio,
+                    r.rounds, static_cast<long long>(r.fit_nodes),
+                    static_cast<long long>(linear.report.fit_nodes));
+    }
+}
+
 TEST(ConformalFit, HexCurvedAndTiltedBoundary) {
     CheckCurved(mfem::Element::HEXAHEDRON, 12, ms::MESH_QUALITY_FLOOR_HEX, 0.2);
 }
@@ -453,7 +497,10 @@ TEST(ConformalFit, DumpSlices) {
         }
     }
     const bool smoothed_only = std::getenv("CONFORMAL_DUMP_SMOOTHED") != nullptr;
-    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only);
+    const int order =
+        std::getenv("CONFORMAL_DUMP_ORDER") ? std::atoi(std::getenv("CONFORMAL_DUMP_ORDER")) : 1;
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only,
+                   order);
     double ar_counts[4] = {0.0, 0.0, 0.0, static_cast<double>(f.pmesh->GetNE())};
     for (int e = 0; e < f.pmesh->GetNE(); ++e) {
         double sj, ar, det;
@@ -477,6 +524,9 @@ TEST(ConformalFit, DumpSlices) {
                     r.quality_after.min_scaled_jacobian, r.rounds, r.solves);
     }
     WriteElements(*f.pmesh, f.labels, f.x0, std::string(dir) + "/fit.txt");
+    if (!tet) {
+        WriteSections(*f.pmesh, f.labels, f.x0, std::string(dir) + "/fit_sections.txt");
+    }
 }
 
 namespace {
@@ -503,6 +553,49 @@ void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const m
         std::fprintf(out, "%d %.6g %.6g %.6g %.6g", labels[e], sj, c0[0], c0[1], c0[2]);
         for (int j = 0; j < m; ++j) {
             std::fprintf(out, " %.8g %.8g %.8g", x(vd[j]), x(vd[m + j]), x(vd[2 * m + j]));
+        }
+        std::fprintf(out, "\n");
+    }
+    std::fclose(out);
+}
+
+/**
+ * One line per local hex: label, quality, original center, then 24 points (x y) of the boundary
+ * of the element's mid-section (reference z = 1/2) through the element map, so curved (order-2)
+ * faces show as curves (.r<rank>).
+ */
+void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+                   const std::string& path) {
+    int rank = 0;
+    MPI_Comm_rank(pmesh.GetComm(), &rank);
+    FILE* out = std::fopen((path + ".r" + std::to_string(rank)).c_str(), "w");
+    const mfem::GridFunction& x = *pmesh.GetNodes();
+    mfem::Vector X(3);
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        double sj, ar, det;
+        ms::ElementQuality(pmesh, e, sj, ar, det);
+        mfem::Array<int> vd;
+        x.FESpace()->GetElementVDofs(e, vd);
+        const int m = vd.Size() / 3;
+        double c0[3] = {0.0, 0.0, 0.0};
+        for (int j = 0; j < m; ++j) {
+            for (int d = 0; d < 3; ++d) {
+                c0[d] += x0(vd[d * m + j]) / m;
+            }
+        }
+        std::fprintf(out, "%d %.6g %.6g %.6g %.6g", labels[e], sj, c0[0], c0[1], c0[2]);
+        mfem::ElementTransformation* T = pmesh.GetElementTransformation(e);
+        const double side[4][2][2] = {{{0, 0}, {1, 0}}, {{1, 0}, {1, 1}}, {{1, 1}, {0, 1}},
+                                      {{0, 1}, {0, 0}}};
+        for (const auto& s : side) {
+            for (int k = 0; k < 6; ++k) {
+                const double t = k / 6.0;
+                mfem::IntegrationPoint ip;
+                ip.Set3(s[0][0] + t * (s[1][0] - s[0][0]), s[0][1] + t * (s[1][1] - s[0][1]),
+                        0.5);
+                T->Transform(ip, X);
+                std::fprintf(out, " %.8g %.8g", X(0), X(1));
+            }
         }
         std::fprintf(out, "\n");
     }
