@@ -9,6 +9,8 @@
  *  - Stray element: an element of grain 3 inside grain 1, far from grain 3's own cell, makes its
  *    nodes fake junctions; the repair flips it to grain 1 and no bad node is left.
  *  - Guard: a grain of one element is never emptied (the flip is blocked, its nodes stay unfit).
+ *  - A flip never splits a grain (E4): a U one element thick whose bottom lies in another grain's
+ *    analytic cell stays in one piece; the flips that would cut it are undone.
  *  - A peninsula in a non-analytic grain (grain_seed = -1, as for voxel maps) is still repaired,
  *    but a fixed label (a passthrough part) is never flipped into or out of.
  *  - FlipToCurrentOwner: an element whose center lies past the bisector flips to the neighbor
@@ -21,6 +23,9 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
 #include "microstructure/conformal/label_repair.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
 
 #include "mfem.hpp"
 
@@ -29,10 +34,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mpi.h>
+#include <set>
 #include <vector>
 
 namespace ms = exaconstit::microstructure;
@@ -118,7 +125,67 @@ int Differences(const mfem::Array<int>& got, const mfem::Array<int>& expect) {
     return GlobalSum(diff);
 }
 
+/** Face-connected pieces of grain `grain` (global). Collective. */
+int Pieces(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int grain) {
+    const ms::MeshAdjacency adj(pmesh);
+    std::vector<std::uint64_t> component;
+    ms::LabelComponents(adj, labels, ms::ComputeElementKeys(pmesh), component);
+    std::set<std::uint64_t> mine;
+    for (int e = 0; e < labels.Size(); ++e) {
+        if (labels[e] == grain) {
+            mine.insert(component[static_cast<std::size_t>(e)]);
+        }
+    }
+    // Pieces seen on several ranks have the same id: gather the ids on every rank
+    std::vector<std::uint64_t> send(mine.begin(), mine.end());
+    int size = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    int count = static_cast<int>(send.size());
+    std::vector<int> counts(static_cast<std::size_t>(size));
+    MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    std::vector<int> displs(static_cast<std::size_t>(size), 0);
+    for (int r = 1; r < size; ++r) {
+        displs[static_cast<std::size_t>(r)] =
+            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+    }
+    std::vector<std::uint64_t> all(static_cast<std::size_t>(displs.back() + counts.back()));
+    MPI_Allgatherv(send.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
+                   MPI_UINT64_T, MPI_COMM_WORLD);
+    return static_cast<int>(std::set<std::uint64_t>(all.begin(), all.end()).size());
+}
+
 } // namespace
+
+TEST(LabelRepair, FlipsNeverSplitAGrain) {
+    // Grain 3 is a U one element thick inside grain 1: its arm tips reach into the analytic cell
+    // of its seed (above y = 0.575, the bisector of the two seeds), its bottom lies in grain 1's
+    // cell, so the bottom's nodes are fake junctions and its elements flip candidates. Flipping a
+    // bottom element would cut the U in two; such flips must be undone (E4).
+    const ms::SeedSet seeds = MakeSeeds({{0.5, 0.2, 0.5}, {0.5, 0.95, 0.5}});
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
+    auto pmesh = Distribute(serial, MPI_COMM_WORLD);
+    mfem::Array<int> labels(pmesh->GetNE());
+    mfem::Vector c(3);
+    for (int e = 0; e < pmesh->GetNE(); ++e) {
+        pmesh->GetElementCenter(e, c);
+        const int i = static_cast<int>(c(0) * 8);
+        const int j = static_cast<int>(c(1) * 8);
+        const int k = static_cast<int>(c(2) * 8);
+        const bool arm = (i == 1 || i == 6) && j >= 2 && j <= 6;
+        const bool bottom = j == 2 && i >= 1 && i <= 6;
+        labels[e] = (k == 3 && (arm || bottom)) ? 3 : 1;
+    }
+    EXPECT_EQ(Pieces(*pmesh, labels, 3), 1);
+    const auto result =
+        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 0, 1});
+    EXPECT_GT(result.report.split_undone, 0);
+    EXPECT_EQ(Pieces(*pmesh, labels, 3), 1);
+    if (mfem::Mpi::Root()) {
+        std::printf("U: %lld flips kept, %lld undone because they split the grain\n",
+                    static_cast<long long>(result.report.flips),
+                    static_cast<long long>(result.report.split_undone));
+    }
+}
 
 TEST(LabelRepair, PeninsulaFlipsBack) {
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
@@ -162,8 +229,13 @@ TEST(LabelRepair, OneElementGrainIsNotEmptied) {
     EXPECT_EQ(Differences(labels, stray), 0);
     EXPECT_GT(result.report.blocked, 0);
     EXPECT_EQ(result.report.flips, 0);
-    EXPECT_EQ(result.report.bad_nodes_after, result.report.bad_nodes_before);
-    EXPECT_EQ(result.report.bad_nodes_after, 8);
+    EXPECT_EQ(result.report.bad_nodes_before, 8);
+    // The one-element grain has no interior node: its 8 nodes are held in the final targets
+    // (under-resolved, E5) instead of counting as unfit
+    EXPECT_EQ(result.report.bad_nodes_after, 0);
+    EXPECT_EQ(result.targets->Summary().under_resolved_grains, 1);
+    EXPECT_EQ(result.targets->Summary().reason[static_cast<int>(ms::TargetReason::UNDER_RESOLVED)],
+              8);
 }
 
 TEST(LabelRepair, NonAnalyticAndFixedLabels) {

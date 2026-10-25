@@ -49,13 +49,16 @@
  *      same neighbor, so their effects are independent;
  *   4. drops the chosen flips out of a grain that would leave it with fewer than
  *      min_grain_elements elements (all flips out of that grain in this pass);
- *   5. applies the flips, recomputes, and undoes every flip whose local potential did not strictly
- *      decrease (the preview does not see a neighbor becoming a peninsula; this check does).
+ *   5. applies the flips and undoes every flip into or out of a grain whose number of
+ *      face-connected pieces grew (a flip may not split a grain; the pieces are counted with
+ *      LabelComponents, partition independent, labeling/fragment_cleanup.hpp), recomputes, and
+ *      undoes every flip whose local potential did not strictly decrease (the preview does not see a neighbor becoming a peninsula; this check does).
  *      Potential = 8 x (bad nodes among the element's nodes) + (peninsulas among the element and
  *      its face neighbors), so removing a bad node outweighs any change of peninsulas (at most 7
  *      elements). Undone flips are remembered and never proposed again.
- * During the passes the targets use the analytic rules only; with NodeTargetOptions::smoothed
- * in `options.targets` the returned targets are rebuilt once more with the smoothed fallback.
+ * During the passes the targets use the analytic rules only (no smoothed fallback, and the bad
+ * nodes of under-resolved grains count, so they are still repaired); the returned targets are
+ * rebuilt once more with the options as given (smoothed fallback, under-resolved grains held).
  * Without analytic boundaries (NodeTargetOptions::analytic = false: voxel maps, geodesic labels)
  * only over-constrained nodes count as bad, so the repair removes peninsulas and
  * over-constrained nodes.
@@ -69,9 +72,7 @@
  * undo decisions use the same data. The repaired labels therefore do not depend on the partition.
  *
  * **Not covered yet** (planned): pinches (a grain touching itself at a single node or edge),
- * grains split by a flip (flips take labels from face neighbors, so a grain grows only into faces
- * it touches, but a flip can cut the grain it leaves), under-resolved grains, and a comparison of
- * the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
+ * under-resolved grains, and a comparison of the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
  * move are kept above the quality floor by the fitter (conformal_fitter.hpp).
  *
  * Host and MPI (Stage 2 is CPU-only).
@@ -97,6 +98,7 @@ struct LabelRepairReport {
     std::int64_t flips = 0;             ///< flips kept
     std::int64_t undone = 0;            ///< flips applied and undone (no decrease)
     std::int64_t blocked = 0;           ///< flips dropped by min_grain_elements
+    std::int64_t split_undone = 0;      ///< flips undone because they split a grain
     std::int64_t bad_nodes_before = 0;  ///< FAKE_JUNCTION + OVER_CONSTRAINED nodes, before
     std::int64_t bad_nodes_after = 0;   ///< ... after, with the final targets (unfit nodes)
     std::int64_t peninsulas_before = 0; ///< peninsula elements before

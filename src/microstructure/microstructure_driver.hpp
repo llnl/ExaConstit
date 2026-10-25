@@ -268,6 +268,9 @@ struct GenerationReport {
      * analytic target: voxel maps, geodesic labels, pieces moved by the cleanup or the
      * connected relabeling). Global count. */
     std::int64_t conformal_smoothed_nodes = 0;
+    /** @brief Grains too thin to fit (no node inside the grain, e.g. one element thick); their
+     * grain boundary nodes keep the staircase. Global count. */
+    std::int64_t conformal_under_resolved_grains = 0;
 
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;

@@ -15,6 +15,9 @@
  *    grain 1 is close to the analytic 1/2.
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
+ *  - Thin grains: a grain two elements thick squeezed by two inclined boundaries keeps the limits
+ *    and its volume (E1); a grain one element thick is reported as under-resolved and its grain
+ *    boundary nodes are held (E5).
  *  - Jittered tets (8^3 x 6 Kuhn mesh with interior vertices moved up to 0.2 element sizes): poor
  *    input tets below the mean ratio floor, the fit still reduces the deviation by a quarter or more
  *    and keeps the limits relative to the input.
@@ -44,6 +47,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -445,6 +449,49 @@ TEST(ConformalFit, HexPolycrystal) {
                     r.quality_after.min_scaled_jacobian, below, r.rounds,
                     r.solves);
     }
+}
+
+TEST(ConformalFit, ThinGrains) {
+    // E1: the middle of three grains in a row is two elements thick and both its (inclined)
+    // boundaries pull its nodes inward; the limits hold and it keeps its volume. E5: with the seeds
+    // closer, the middle grain is one element thick: it has no interior node, is reported as
+    // under-resolved, and its nodes keep their positions.
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(10, 10, 10, mfem::Element::HEXAHEDRON);
+    const auto run = [&](double middle, double spread, double tilt) {
+        ms::SeedSet s;
+        const double p[3][3] = {{middle - spread, 0.5 - tilt, 0.5}, {middle, 0.5, 0.5},
+                                {middle + spread, 0.5 + tilt, 0.5 - 0.3 * tilt}};
+        for (const auto& q : p) {
+            s.x.push_back(q[0]);
+            s.y.push_back(q[1]);
+            s.z.push_back(q[2]);
+        }
+        return Fit(serial, MPI_COMM_WORLD, s);
+    };
+    Fitted thick = run(0.5, 0.2, 0.03); // middle grain about [0.4, 0.6]: centers 0.45, 0.55
+    ExpectLimits(thick.report, false);
+    EXPECT_EQ(thick.repair.targets->Summary().under_resolved_grains, 0);
+    EXPECT_LT(thick.report.mean_deviation, 0.6 * thick.report.initial_deviation);
+    EXPECT_NEAR(GrainVolume(*thick.pmesh, thick.labels, 2), 0.2, 0.02);
+
+    // Middle grain about [0.4, 0.5], tilted by at most 0.02: element centers 0.45 only
+    Fitted thin = run(0.45, 0.1, 0.002);
+    ExpectLimits(thin.report, false);
+    EXPECT_EQ(thin.repair.targets->Summary().under_resolved_grains, 1);
+    // The held nodes of the thin grain did not get springs: their labels hold grain 2
+    const ms::NodeLabels& nl = thin.repair.targets->Labels();
+    int held_wrong = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        const int* items = nl.Labels().HostRead() + nl.LabelOffsets()[v];
+        const bool has2 = std::find(items, items + nl.NumLabels(v), 2) != items + nl.NumLabels(v);
+        if (has2 && nl.NumLabels(v) >= 2) {
+            held_wrong += (thin.repair.targets->Reason(v) != ms::TargetReason::UNDER_RESOLVED &&
+                           thin.repair.targets->Status(v) != ms::TargetStatus::OVER_CONSTRAINED)
+                              ? 1
+                              : 0;
+        }
+    }
+    EXPECT_EQ(GlobalSum(held_wrong), 0);
 }
 
 TEST(ConformalFit, JitteredTetPolycrystal) {

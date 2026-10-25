@@ -4,6 +4,7 @@
 #include "microstructure/conformal/label_repair.hpp"
 
 #include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/util/collective_errors.hpp"
@@ -165,6 +166,49 @@ void ComputePeninsulas(const MeshAdjacency& adj, const mfem::Array<int>& label,
     adj.ExchangeLabels(state.peninsula, state.ghost_peninsula);
 }
 
+/**
+ * @brief Number of face-connected pieces of every grain 1..num_grains (index = grain; global,
+ * partition independent: LabelComponents names each piece by its smallest element key, and the
+ * distinct (grain, piece) pairs of all ranks are counted). Collective.
+ */
+std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj, const mfem::Array<int>& label,
+                                      const std::vector<std::uint64_t>& keys, int num_grains) {
+    std::vector<std::uint64_t> component;
+    LabelComponents(adj, label, keys, component);
+    std::set<std::pair<int, std::uint64_t>> mine;
+    for (int e = 0; e < label.Size(); ++e) {
+        mine.insert({label[e], component[static_cast<std::size_t>(e)]});
+    }
+    std::vector<std::uint64_t> send;
+    for (const auto& [g, c] : mine) {
+        send.push_back(static_cast<std::uint64_t>(g));
+        send.push_back(c);
+    }
+    const MPI_Comm comm = adj.GetComm();
+    int size = 1;
+    MPI_Comm_size(comm, &size);
+    int count = static_cast<int>(send.size());
+    std::vector<int> counts(static_cast<std::size_t>(size));
+    MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
+    std::vector<int> displs(static_cast<std::size_t>(size), 0);
+    for (int r = 1; r < size; ++r) {
+        displs[static_cast<std::size_t>(r)] =
+            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+    }
+    std::vector<std::uint64_t> all(static_cast<std::size_t>(displs.back() + counts.back()));
+    MPI_Allgatherv(send.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
+                   MPI_UINT64_T, comm);
+    std::set<std::pair<std::uint64_t, std::uint64_t>> pieces;
+    for (std::size_t k = 0; k + 1 < all.size(); k += 2) {
+        pieces.insert({all[k], all[k + 1]});
+    }
+    std::vector<std::int64_t> per_grain(static_cast<std::size_t>(num_grains) + 1, 0);
+    for (const auto& piece : pieces) {
+        ++per_grain[static_cast<std::size_t>(piece.first)];
+    }
+    return per_grain;
+}
+
 bool IsBad(TargetStatus s) {
     return s == TargetStatus::FAKE_JUNCTION || s == TargetStatus::OVER_CONSTRAINED;
 }
@@ -214,6 +258,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     // hide the bad nodes the repair is for); the final targets add it (options.targets)
     NodeTargetOptions pass_targets = options.targets;
     pass_targets.smoothed = false;
+    pass_targets.hold_under_resolved = false; // thin grains' bad nodes are still repaired
     const auto rebuild_targets = [&]() {
         result.targets.reset();
         result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
@@ -247,6 +292,9 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     }
     MPI_Allreduce(MPI_IN_PLACE, &num_grains, 1, MPI_INT, MPI_MAX, comm);
     std::set<std::pair<int, int>> undone_flips; // (local element, label)
+    // Face-connected pieces per grain: a flip must not split a grain (raise its count); the counts
+    // are refreshed after every pass
+    std::vector<std::int64_t> pieces = GrainPieces(adj, element_label, keys, num_grains);
     const int* en_off = field.ElementVertexOffsets().HostRead();
     const int* en = field.ElementVertices().HostRead();
 
@@ -387,7 +435,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
         }
         report.blocked += GlobalSum(blocked, comm);
 
-        // Step 5: apply, recompute, undo the flips that did not lower the local potential
+        // Step 5: apply, undo the flips that split a grain, recompute, undo the flips that did
+        // not lower the local potential
         std::vector<int> before(apply.size());
         std::vector<int> old_label(apply.size());
         for (std::size_t i = 0; i < apply.size(); ++i) {
@@ -395,6 +444,35 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
             before[i] = LocalPotential(adj, field, *result.targets, state, e);
             old_label[i] = element_label[e];
             element_label[e] = proposal[static_cast<std::size_t>(e)];
+        }
+        {
+            const std::vector<std::int64_t> pieces_after =
+                GrainPieces(adj, element_label, keys, num_grains);
+            std::vector<int> kept_apply;
+            std::vector<int> kept_before;
+            std::vector<int> kept_old;
+            std::int64_t splits = 0;
+            for (std::size_t i = 0; i < apply.size(); ++i) {
+                const int e = apply[i];
+                const auto from = static_cast<std::size_t>(old_label[i]);
+                const auto to = static_cast<std::size_t>(element_label[e]);
+                if (pieces_after[from] > pieces[from] || pieces_after[to] > pieces[to]) {
+                    undone_flips.insert({e, element_label[e]});
+                    element_label[e] = old_label[i];
+                    ++splits;
+                } else {
+                    kept_apply.push_back(e);
+                    kept_before.push_back(before[i]);
+                    kept_old.push_back(old_label[i]);
+                }
+            }
+            splits = GlobalSum(splits, comm);
+            report.split_undone += splits;
+            if (splits > 0) {
+                apply.swap(kept_apply);
+                before.swap(kept_before);
+                old_label.swap(kept_old);
+            }
         }
         result.labels->SetElementLabels(element_label);
         rebuild_targets();
@@ -420,18 +498,19 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
             rebuild_targets();
             ComputePeninsulas(adj, element_label, *result.labels, state);
         }
+        pieces = GrainPieces(adj, element_label, keys, num_grains);
         if (kept == 0 && GlobalSum(static_cast<std::int64_t>(apply.size()), comm) == 0) {
             break; // everything proposed was blocked
         }
     }
 
     report.peninsulas_after = count_peninsulas();
-    if (options.targets.smoothed) {
+    if (options.targets.smoothed || options.targets.hold_under_resolved) {
         result.targets.reset();
         result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
                                                        grain_seed, options.targets);
     }
-    report.bad_nodes_after = count_bad(); // with the smoothed fallback, when asked for
+    report.bad_nodes_after = count_bad(); // final targets: smoothed fallback, thin grains held
     return result;
 }
 

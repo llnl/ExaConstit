@@ -67,6 +67,12 @@
  * analytic boundary where it is valid and the smoothed one elsewhere. Evaluate gives a node its
  * smoothed target only for the node's own label set.
  *
+ * **Under-resolved grains.** A grain without a single interior node (a node whose only label is
+ * that grain), e.g. one element thick, cannot be fitted without squeezing its elements. With
+ * NodeTargetOptions::hold_under_resolved (default) every grain boundary node with such a label is
+ * HELD (UNDER_RESOLVED) in the constructor's result, and the grains are counted
+ * (NodeTargetSummary::under_resolved_grains). Fixed labels (passthrough parts) are not grains here.
+ *
  * **Status of every node** (TargetStatus; the target of every node that is not FIT is x itself):
  *   - NONE: one label (inside a grain, or on the outer boundary only);
  *   - FIT: a valid target;
@@ -110,6 +116,13 @@ struct NodeTargetOptions {
     bool smoothed = false;
     /** @brief Smoothing settings (with `smoothed`). */
     SmoothingParameters smoothing;
+    /**
+     * @brief Hold the grain boundary nodes of under-resolved grains: grains without a single
+     * interior node (a node of that grain only), e.g. one element thick. Fitting them would
+     * squeeze their elements; they keep their staircase (HELD, UNDER_RESOLVED) and are counted in
+     * the summary.
+     */
+    bool hold_under_resolved = true;
 };
 
 /** @brief What happens to a node (see the file comment). */
@@ -132,9 +145,10 @@ enum class TargetReason : int {
     NOT_CONVERGED = 5,   ///< the projection did not converge
     RESIDUAL = 6,        ///< an equation does not hold at the target
     TOO_FAR = 7,         ///< the target is more than max_move element sizes away
-    FOREIGN_SEED = 8     ///< another seed is closer at the target
+    FOREIGN_SEED = 8,    ///< another seed is closer at the target
+    UNDER_RESOLVED = 9   ///< HELD: a label of a grain without an interior node
 };
-inline constexpr int NUM_TARGET_REASONS = 9;
+inline constexpr int NUM_TARGET_REASONS = 10;
 
 /** @brief Global counts (each node once, on its owner). */
 struct NodeTargetSummary {
@@ -144,6 +158,8 @@ struct NodeTargetSummary {
     double max_move_ratio = 0.0;
     /** @brief FIT nodes whose target is the smoothed staircase (NodeTargetOptions::smoothed). */
     std::int64_t smoothed = 0;
+    /** @brief Grains without an interior node (NodeTargetOptions::hold_under_resolved). */
+    std::int64_t under_resolved_grains = 0;
 };
 
 /**

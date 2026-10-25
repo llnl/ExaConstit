@@ -439,6 +439,48 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
         m_status[v] = static_cast<int>(r.status);
         m_reason[v] = static_cast<int>(r.reason);
     }
+    // Under-resolved grains: interior nodes per grain (owned, one non-fixed label), summed
+    if (options.hold_under_resolved) {
+        int max_label = 0;
+        for (int k = 0; k < labels.Labels().Size(); ++k) {
+            max_label = std::max(max_label, items[k]);
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &max_label, 1, MPI_INT, MPI_MAX, comm);
+        std::vector<std::int64_t> interior(static_cast<std::size_t>(max_label) + 1, 0);
+        std::vector<std::int64_t> present(static_cast<std::size_t>(max_label) + 1, 0);
+        const int* owned = field.OwnedVertexMarker().HostRead();
+        for (int v = 0; v < nv; ++v) {
+            for (int k = off[v]; k < off[v + 1]; ++k) {
+                present[static_cast<std::size_t>(items[k])] = 1;
+            }
+            if (owned[v] != 0 && labels.NumLabels(v) == 1) {
+                ++interior[static_cast<std::size_t>(items[off[v]])];
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, interior.data(), max_label + 1, MPI_INT64_T, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, present.data(), max_label + 1, MPI_INT64_T, MPI_MAX, comm);
+        std::vector<char> thin(static_cast<std::size_t>(max_label) + 1, 0);
+        for (int g = 1; g <= max_label; ++g) {
+            const auto gs = static_cast<std::size_t>(g);
+            thin[gs] = (present[gs] != 0 && interior[gs] == 0 && !labels.IsFixedLabel(g)) ? 1 : 0;
+            m_summary.under_resolved_grains += thin[gs];
+        }
+        const double* xyz = field.Coordinates().HostRead();
+        for (int v = 0; v < nv; ++v) {
+            if (labels.NumLabels(v) < 2) {
+                continue;
+            }
+            bool any = false;
+            for (int k = off[v]; k < off[v + 1]; ++k) {
+                any = any || thin[static_cast<std::size_t>(items[k])] != 0;
+            }
+            if (any) {
+                m_status[v] = static_cast<int>(TargetStatus::HELD);
+                m_reason[v] = static_cast<int>(TargetReason::UNDER_RESOLVED);
+                std::copy(xyz + 3 * v, xyz + 3 * v + 3, target + 3 * v);
+            }
+        }
+    }
     if (options.smoothed) {
         // Smoothed(v): FIT with the smoothed target (analytic FIT nodes keep theirs)
         const double* st = m_smoothed_target.HostRead();
@@ -567,7 +609,7 @@ void NodeTargets::BuildSummary() {
     for (int k = 0; k < NUM_TARGET_REASONS; ++k) {
         m_summary.reason[static_cast<std::size_t>(k)] = counts[NUM_TARGET_STATUSES + k];
     }
-    m_summary.max_move_ratio = ratio;
+    m_summary.max_move_ratio = ratio; // under_resolved_grains was set by the constructor
     m_summary.smoothed = counts[NUM_TARGET_STATUSES + NUM_TARGET_REASONS];
 }
 
