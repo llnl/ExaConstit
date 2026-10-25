@@ -22,7 +22,8 @@
  *    MPI_COMM_SELF to the linear solver tolerance.
  *  - With CONFORMAL_DUMP_DIR set, ConformalFit.DumpSlices writes the elements of a polycrystal
  *    before and after fitting (label, quality, original center, corners) for plotting
- *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED select the case); skipped otherwise.
+ *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _SMOOTHED select the case; _SMOOTHED fits
+ *    to the smoothed staircase instead of the analytic boundaries); skipped otherwise.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
@@ -122,7 +123,7 @@ void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const m
  * set, the repaired labels on the unfitted mesh are written there first (DumpSlices).
  */
 Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
-           const std::string& dump_before = "") {
+           const std::string& dump_before = "", bool smoothed_only = false) {
     int size = 1;
     MPI_Comm_size(comm, &size);
     std::vector<int> part(static_cast<std::size_t>(serial.GetNE()));
@@ -138,8 +139,13 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
     for (std::size_t i = 0; i < seeds.Size(); ++i) {
         grain_seed[i] = static_cast<int>(i);
     }
-    f.repair =
-        ms::RepairLabels(*f.pmesh, f.labels, ms::MetricType::VORONOI, seeds, {}, grain_seed);
+    ms::LabelRepairOptions repair_options;
+    if (smoothed_only) { // the staircase as if it had no analytic description
+        repair_options.targets.analytic = false;
+        repair_options.targets.smoothed = true;
+    }
+    f.repair = ms::RepairLabels(*f.pmesh, f.labels, ms::MetricType::VORONOI, seeds, {},
+                                grain_seed, repair_options);
     if (!dump_before.empty()) {
         WriteElements(*f.pmesh, f.labels, f.x0, dump_before);
     }
@@ -442,7 +448,8 @@ TEST(ConformalFit, DumpSlices) {
             seeds.z[i] *= 1.1;
         }
     }
-    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt");
+    const bool smoothed_only = std::getenv("CONFORMAL_DUMP_SMOOTHED") != nullptr;
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only);
     if (mfem::Mpi::Root()) {
         const ms::ConformalFitReport& r = f.report;
         std::printf("DUMP %s %d^3 %d grains: deviation %.3f -> %.3f h (max %.3f), sj %.3f, rounds "

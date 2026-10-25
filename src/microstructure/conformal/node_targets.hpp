@@ -1,6 +1,7 @@
 #pragma once
 
 #include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/smoothed_targets.hpp"
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/microstructure_types.hpp"
 
@@ -55,6 +56,16 @@
  * Nodes on exactly one curved surface get their triangle patch whatever their labels, so
  * Evaluate can also answer for label sets the node does not have yet.
  *
+ * **Non-analytic boundaries.** With NodeTargetOptions::analytic = false every grain boundary node
+ * is HELD (NON_ANALYTIC) by the rules above. With NodeTargetOptions::smoothed the grain boundary
+ * nodes that are HELD for a non-analytic label or are FAKE_JUNCTION get the position of the
+ * smoothed staircase (smoothed_targets.hpp) as target and become FIT; Smoothed(v) tells which.
+ * So a labeling without analytic boundaries (voxel map, geodesic) is fitted to its smoothed
+ * staircase, and a labeling whose boundaries are analytic almost everywhere (Euclidean or
+ * connected mode, with pieces moved by the cleanup or the connected relabeling) uses the
+ * analytic boundary where it is valid and the smoothed one elsewhere. Evaluate gives a node its
+ * smoothed target only for the node's own label set.
+ *
  * **Status of every node** (TargetStatus; the target of every node that is not FIT is x itself):
  *   - NONE: one label (inside a grain, or on the outer boundary only);
  *   - FIT: a valid target;
@@ -85,6 +96,19 @@ struct NodeTargetOptions {
     int max_iterations = 25;
     /** @brief Parameter bins of the seed search (performance only). */
     int num_bins = 8;
+    /**
+     * @brief Use the analytic grain boundaries of the seeds. false: no node gets an analytic
+     * target (labels from a voxel map or a geodesic labeling, whose grains are not cells of the
+     * metric); the seed set may then be empty.
+     */
+    bool analytic = true;
+    /**
+     * @brief Give grain boundary nodes without a valid analytic target (HELD for a non-analytic
+     * label, or FAKE_JUNCTION) the smoothed staircase position instead (smoothed_targets.hpp).
+     */
+    bool smoothed = false;
+    /** @brief Smoothing settings (with `smoothed`). */
+    SmoothingParameters smoothing;
 };
 
 /** @brief What happens to a node (see the file comment). */
@@ -117,6 +141,8 @@ struct NodeTargetSummary {
     std::array<std::int64_t, NUM_TARGET_REASONS> reason{};
     /** @brief Largest |target - x| / h over the FIT nodes. */
     double max_move_ratio = 0.0;
+    /** @brief FIT nodes whose target is the smoothed staircase (NodeTargetOptions::smoothed). */
+    std::int64_t smoothed = 0;
 };
 
 /**
@@ -191,6 +217,10 @@ public:
     TargetReason Reason(int v) const {
         return static_cast<TargetReason>(m_reason[v]);
     }
+    /** @brief True when node v is FIT with a smoothed (not analytic) target. */
+    bool Smoothed(int v) const {
+        return m_smoothed[static_cast<std::size_t>(v)] != 0;
+    }
     /** @brief Mesh size h of node v (see the file comment). */
     double MeshSize(int v) const {
         return m_h(v);
@@ -214,6 +244,9 @@ private:
     const NodeLabels& m_labels;
     std::unique_ptr<SurfacePatches> m_patches;
     std::unique_ptr<Evaluator> m_evaluator;
+    NodeTargetOptions m_options;
+    std::vector<char> m_smoothed;   ///< per node: FIT with the smoothed target
+    mfem::Vector m_smoothed_target; ///< 3 per node
     mfem::Vector m_targets;
     mfem::Array<int> m_status;
     mfem::Array<int> m_reason;

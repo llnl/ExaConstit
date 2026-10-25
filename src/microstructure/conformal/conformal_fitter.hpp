@@ -10,8 +10,9 @@
 /**
  * @file conformal_fitter.hpp
  * @brief Stage 2d of conformal fitting: moves the mesh nodes so that the grain boundaries become
- * smooth surfaces close to the analytic ones (node_targets.hpp), while every element keeps a
- * usable shape.
+ * smooth surfaces close to their targets (node_targets.hpp: the analytic boundaries, or the
+ * smoothed staircase for boundaries without an analytic description), while every element keeps
+ * a usable shape.
  *
  * **Goal and trade-off.** A staircase grain boundary cannot be made exactly smooth with the same
  * elements: at every step of the staircase one element has two adjacent faces on the boundary,

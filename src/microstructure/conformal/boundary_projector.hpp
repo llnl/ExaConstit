@@ -53,9 +53,14 @@ public:
      * @param field    node numbering, coordinates and exchange (node v of the field).
      * @param selected per node: nonzero = build its patch. Must be the same on every copy of a
      *                 node (e.g. derived from the node labels), size NumVertices().
+     * @param surface_faces optional, per local face: 1 = a face of the surfaces, counted by this
+     *                 rank only (NodeLabels::SurfaceFaces: the outer boundary plus the interface
+     *                 faces of fixed labels). nullptr = the outer boundary faces (one element,
+     *                 not shared).
      * @throws std::invalid_argument on every rank if `selected` has the wrong size.
      */
-    SurfacePatches(const VertexField& field, const std::vector<char>& selected);
+    SurfacePatches(const VertexField& field, const std::vector<char>& selected,
+                   const std::vector<char>* surface_faces = nullptr);
 
     /** @brief Number of triangles of node v's patch (0 for nodes not selected). */
     int NumTriangles(int v) const {

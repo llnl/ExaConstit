@@ -659,8 +659,10 @@ struct RegionOptions {
  * change grain first (label repair, conformal/label_repair.hpp). Mesh quality comes first: the
  * fit stops before any element falls below a fixed quality floor (not an option).
  *
- * Needs a tessellation (not a voxel map) with distance = "euclidean", no periodic axes, no
- * active or passthrough attributes, and a hex or tet mesh of order 1 (straight-sided elements).
+ * Works for every grain source: cells of the seeds' metric are fitted to their analytic
+ * boundaries, other boundaries (voxel maps, geodesic labels, pieces moved by the cleanup or the
+ * connected relabeling) to a smoothed copy of the element staircase; passthrough parts keep their
+ * shape. Needs no periodic axis and a hex or tet mesh of order 1 (straight-sided elements).
  */
 struct ConformalOptions {
     /** @brief Fit the grain boundaries (TOML `enabled`, boolean, default false). */
@@ -813,9 +815,8 @@ struct MicrostructureOptions {
      * Whether a table or voxel map actually holds the needed columns or datasets is only known
      * when it is read, so the driver checks that (on every rank together).
      *
-     * Stage 2 checks: Conformal.enabled needs Source.type = "tessellation", distance =
-     * "euclidean", no periodic axis and no active or passthrough attributes (the element type
-     * and order are checked by the driver, which sees the mesh).
+     * Stage 2 checks: Conformal.enabled refuses periodic axes (the element type and order are
+     * checked by the driver, which sees the mesh).
      *
      * Stage 1e checks: distance = "connected" or "geodesic" refuses periodic axes, fit_volumes,
      * Lloyd relaxation / centroidal power and voxel maps; "geodesic" also needs metric "voronoi"

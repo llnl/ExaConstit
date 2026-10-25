@@ -247,7 +247,7 @@ ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets
 
     // Sliding nodes: their surfaces (planes with offsets at the input position, or the curved
     // surface's input faces) and the normals of the penalty (tilted planes, curved surface)
-    const SurfacePatches patches(field, on_curved);
+    const SurfacePatches patches(field, on_curved, &labels.SurfaceFaces());
     std::vector<std::array<double, 8>> planes(static_cast<std::size_t>(nv)); // n0 c0 n1 c1
     std::vector<std::array<double, 7>> penalty(static_cast<std::size_t>(nv)); // count, n0, n1
     for (int v = 0; v < nv; ++v) {

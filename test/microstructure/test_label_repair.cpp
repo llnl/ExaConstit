@@ -9,7 +9,8 @@
  *  - Stray element: an element of grain 3 inside grain 1, far from grain 3's own cell, makes its
  *    nodes fake junctions; the repair flips it to grain 1 and no bad node is left.
  *  - Guard: a grain of one element is never emptied (the flip is blocked, its nodes stay unfit).
- *  - Non-analytic grains (grain_seed = -1) are never flipped into.
+ *  - A peninsula in a non-analytic grain (grain_seed = -1, as for voxel maps) is still repaired,
+ *    but a fixed label (a passthrough part) is never flipped into or out of.
  *  - FlipToCurrentOwner: an element whose center lies past the bisector flips to the neighbor
  *    grain beyond the hysteresis, not below it.
  *  - Rank invariance and effect: a 12-grain tet mesh with perturbed labels is repaired on
@@ -165,7 +166,10 @@ TEST(LabelRepair, OneElementGrainIsNotEmptied) {
     EXPECT_EQ(result.report.bad_nodes_after, 8);
 }
 
-TEST(LabelRepair, NonAnalyticGrainsAreNotFlippedInto) {
+TEST(LabelRepair, NonAnalyticAndFixedLabels) {
+    // A stray element of grain 1 inside grain 2 (a peninsula). Grain 2 without an analytic
+    // boundary (grain_seed -1, as for voxel maps): the peninsula is still repaired. Grain 2 as a
+    // fixed label (a passthrough part): nothing is flipped into or out of it.
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
@@ -173,11 +177,20 @@ TEST(LabelRepair, NonAnalyticGrainsAreNotFlippedInto) {
     const mfem::Array<int> stray =
         WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
     mfem::Array<int> labels(stray);
-    const auto result =
+    const auto repaired =
         ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1});
+    EXPECT_EQ(Differences(labels, clean), 0);
+    EXPECT_EQ(repaired.report.flips, 1);
+    EXPECT_EQ(repaired.report.peninsulas_after, 0);
+
+    labels = stray;
+    ms::LabelRepairOptions options;
+    options.labels.fixed_labels = {2};
+    const auto fixed =
+        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1}, options);
     EXPECT_EQ(Differences(labels, stray), 0);
-    EXPECT_EQ(result.report.flips, 0);
-    EXPECT_EQ(result.report.peninsulas_before, 0); // grain 2 is not analytic
+    EXPECT_EQ(fixed.report.flips, 0);
+    EXPECT_EQ(fixed.report.peninsulas_before, 0); // a fixed label is not a peninsula grain
 }
 
 TEST(LabelRepair, FlipToCurrentOwner) {

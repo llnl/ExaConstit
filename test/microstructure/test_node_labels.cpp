@@ -17,6 +17,9 @@
  *  - Hex and tet meshes, and order-2 Nodes (every nodal point, including edge and face dofs).
  *  - The feature angle: a roof-shaped top face whose crease is 20.4 degrees is one surface with
  *    a 30-degree feature angle and two with 15 degrees.
+ *  - Fixed labels (a passthrough plate under a bicrystal): the plate's top face is a flat boundary
+ *    surface with the exact normal +-e_z for the nodes on it, the fixed label leaves their label
+ *    sets, nodes inside the plate keep it, and each interface face is counted by one rank.
  *  - Invalid input throws on every rank.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
@@ -316,6 +319,73 @@ TEST(NodeLabels, FeatureAngle) {
                              }),
                   3);
     }
+}
+
+TEST(NodeLabels, FixedLabelInterface) {
+    // Bottom quarter (z < 1/4): a fixed label (a passthrough plate); above, a bicrystal split at
+    // x = 1/2. The plate's top face is a boundary surface for the nodes above it, the fixed label
+    // leaves their label sets, and nodes inside the plate keep it as their only label.
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
+    const LabelFunction label = [](const double* x) {
+        return x[2] < 0.25 ? 3 : (x[0] < 0.5 ? 1 : 2);
+    };
+    std::unique_ptr<mfem::ParMesh> pmesh = Distribute(serial);
+    const mfem::Array<int> labels = CenterLabels(*pmesh, label);
+    ms::NodeLabelOptions options;
+    options.fixed_labels = {3};
+    const ms::NodeLabels nl(*pmesh, labels, options);
+    const double* xyz = nl.Field().Coordinates().HostRead();
+    const int* off = nl.LabelOffsets().HostRead();
+    const int* items = nl.Labels().HostRead();
+    const int* surf_off = nl.SurfaceOffsets().HostRead();
+    const double* normal = nl.SurfaceNormals().HostRead();
+    const int* planar = nl.SurfacePlanar().HostRead();
+    int mismatches = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        const double* x = xyz + 3 * v;
+        std::set<int> expect;
+        if (x[2] < 0.25 - 1e-12) {
+            expect = {3};
+        } else {
+            if (x[0] <= 0.5 + 1e-12) {
+                expect.insert(1);
+            }
+            if (x[0] >= 0.5 - 1e-12) {
+                expect.insert(2);
+            }
+        }
+        const std::set<int> got(items + off[v], items + off[v + 1]);
+        const bool on_top = std::fabs(x[2] - 0.25) < 1e-12;
+        mismatches += (got != expect) ? 1 : 0;
+        mismatches += (nl.BoundarySurfaces(v) != BoxSurfaces(x) + (on_top ? 1 : 0)) ? 1 : 0;
+        if (on_top) { // the interface surface is flat with the exact normal +-e_z
+            bool found = false;
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+                const double* m = normal + 3 * s;
+                found = found || (m[0] == 0.0 && m[1] == 0.0 && std::fabs(m[2]) == 1.0 &&
+                                  planar[s] == 1);
+            }
+            mismatches += found ? 0 : 1;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &mismatches, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    EXPECT_EQ(mismatches, 0);
+    // Each interface face is counted by one rank: 16 faces on z = 1/4
+    int faces = 0;
+    for (int f = 0; f < pmesh->GetNumFaces(); ++f) {
+        if (nl.SurfaceFaces()[static_cast<std::size_t>(f)] == 0) {
+            continue;
+        }
+        mfem::Array<int> fv;
+        pmesh->GetFaceVertices(f, fv);
+        bool top = true;
+        for (const int v : fv) {
+            top = top && std::fabs(pmesh->GetVertex(v)[2] - 0.25) < 1e-12;
+        }
+        faces += top ? 1 : 0;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    EXPECT_EQ(faces, 16);
 }
 
 TEST(NodeLabels, InvalidInputThrowsOnEveryRank) {

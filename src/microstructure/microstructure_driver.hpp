@@ -264,6 +264,10 @@ struct GenerationReport {
      * and largest distance of the grain boundary nodes from the analytic boundaries before and
      * after (in element sizes), and the mesh quality before and after. Global values. */
     ConformalFitReport conformal_fit;
+    /** @brief Fitted grain boundary nodes whose target is the smoothed staircase (no valid
+     * analytic target: voxel maps, geodesic labels, pieces moved by the cleanup or the
+     * connected relabeling). Global count. */
+    std::int64_t conformal_smoothed_nodes = 0;
 
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;
@@ -373,7 +377,12 @@ struct GenerationReport {
  *     every element stays above a fixed quality floor. This is the only step that changes
  *     `pmesh`: its node positions (a mesh without Nodes gets the fitted positions as vertices
  *     and stays without Nodes). GenerationReport::adjacency is rebuilt on the fitted geometry.
- *     Needs a hex or tet mesh of order 1; refused combinations as in validate().
+ *     Works for every grain source: grains that are cells of the metric (euclidean and connected
+ *     tessellations) are fitted to their analytic boundaries; boundaries without an analytic
+ *     description (voxel maps, geodesic labels, pieces moved by the cleanup or the connected
+ *     relabeling) to a smoothed copy of the element staircase (conformal/smoothed_targets.hpp).
+ *     Passthrough parts keep their shape: their interfaces are treated like the outer boundary.
+ *     Needs a hex or tet mesh of order 1 and no periodic axis.
  *
  * Collective over `comm`: every rank of `comm` must call it with identical `options`. The result
  * does not depend on the number of ranks: element labels of the same element are identical for
@@ -383,8 +392,9 @@ struct GenerationReport {
  *
  * @param options validated options (MicrostructureOptions::validate() returned true).
  * @param pmesh   this rank's partition of the mesh. Its geometry and attributes are not
- *                modified (except the node positions with Conformal.enabled, step 14), but MFEM builds caches on demand when element geometry is evaluated:
- *                the mesh keeps the GeometricFactors object (mesh.cpp:887-899), and the nodal
+ *                modified (except the node positions with Conformal.enabled, step 14), but
+ *                MFEM builds caches on demand when element geometry is evaluated: the mesh keeps
+ *                the GeometricFactors object (mesh.cpp:887-899), and the nodal
  *                FE space keeps a QuadratureInterpolator (its output layout set to byNODES) and
  *                an element restriction (mesh.cpp:15251-15261); the face adjacency also calls
  *                ParMesh::ExchangeFaceNbrData. Mesh::GetGeometricFactors is therefore a

@@ -136,16 +136,16 @@ std::vector<std::pair<int, int>> NeighborLabelCounts(const LabelView& view, int 
 }
 
 /**
- * @brief True when element e (analytic label) shares all but at most one of its faces with one
- * other analytic grain. Host.
+ * @brief True when element e (a label that may change, not fixed) shares all but at most one of
+ * its faces with one other such grain. Host.
  */
-bool IsPeninsula(const LabelView& view, int e, const std::vector<int>& grain_seed) {
-    if (grain_seed[static_cast<std::size_t>(view.Local(e) - 1)] < 0) {
+bool IsPeninsula(const LabelView& view, int e, const NodeLabels& labels) {
+    if (labels.IsFixedLabel(view.Local(e))) {
         return false;
     }
     const int faces = view.adj.GetParMesh().GetElement(e)->GetNFaces();
     for (const auto& [b, count] : NeighborLabelCounts(view, e)) {
-        if (grain_seed[static_cast<std::size_t>(b - 1)] >= 0 && count >= faces - 1) {
+        if (!labels.IsFixedLabel(b) && count >= faces - 1) {
             return true;
         }
     }
@@ -154,13 +154,13 @@ bool IsPeninsula(const LabelView& view, int e, const std::vector<int>& grain_see
 
 /** @brief Peninsula flags of the local elements and their ghost copies. Collective. */
 void ComputePeninsulas(const MeshAdjacency& adj, const mfem::Array<int>& label,
-                       const std::vector<int>& grain_seed, LabelState& state) {
+                       const NodeLabels& labels, LabelState& state) {
     mfem::ParMesh& pmesh = adj.GetParMesh();
     adj.ExchangeLabels(label, state.ghost_label);
     const LabelView view{adj, label, state.ghost_label};
     state.peninsula.SetSize(pmesh.GetNE());
     for (int e = 0; e < pmesh.GetNE(); ++e) {
-        state.peninsula[e] = IsPeninsula(view, e, grain_seed) ? 1 : 0;
+        state.peninsula[e] = IsPeninsula(view, e, labels) ? 1 : 0;
     }
     adj.ExchangeLabels(state.peninsula, state.ghost_peninsula);
 }
@@ -210,16 +210,20 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     LabelRepairReport& report = result.report;
     result.labels = std::make_unique<NodeLabels>(pmesh, element_label, options.labels);
     const VertexField& field = result.labels->Field();
+    // During the passes the targets follow the analytic rules only (the smoothed fallback would
+    // hide the bad nodes the repair is for); the final targets add it (options.targets)
+    NodeTargetOptions pass_targets = options.targets;
+    pass_targets.smoothed = false;
     const auto rebuild_targets = [&]() {
         result.targets.reset();
         result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
-                                                       grain_seed, options.targets);
+                                                       grain_seed, pass_targets);
     };
     rebuild_targets();
 
     const MeshAdjacency adj(pmesh);
     LabelState state;
-    ComputePeninsulas(adj, element_label, grain_seed, state);
+    ComputePeninsulas(adj, element_label, *result.labels, state);
     const auto count_bad = [&]() {
         const auto& s = result.targets->Summary();
         return s.status[static_cast<int>(TargetStatus::FAKE_JUNCTION)] +
@@ -266,7 +270,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
         std::vector<NodeLabelQuery> queries;
         for (int e = 0; e < ne; ++e) {
             const int a = element_label[e];
-            if (grain_seed[static_cast<std::size_t>(a - 1)] < 0) {
+            if (result.labels->IsFixedLabel(a)) {
                 continue;
             }
             bool bad = state.peninsula[e] != 0;
@@ -278,8 +282,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
             }
             for (const auto& [b, faces] : NeighborLabelCounts(current, e)) {
                 (void)faces;
-                if (grain_seed[static_cast<std::size_t>(b - 1)] < 0 ||
-                    undone_flips.count({e, b}) != 0) {
+                if (result.labels->IsFixedLabel(b) || undone_flips.count({e, b}) != 0) {
                     continue;
                 }
                 previews.push_back({e, b, static_cast<int>(queries.size())});
@@ -320,7 +323,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
             // The neighbors keep their flags: a ghost neighbor's other faces are not known here,
             // and treating local neighbors differently would make the gain partition dependent
             LabelView changed{adj, element_label, state.ghost_label, e, pv.label};
-            int pen = IsPeninsula(changed, e, grain_seed) ? 1 : 0;
+            int pen = IsPeninsula(changed, e, *result.labels) ? 1 : 0;
             for (int k = adj_off[e]; k < adj_off[e + 1]; ++k) {
                 const int n = adj_nbr[k];
                 pen += adj.IsGhost(n) ? state.ghost_peninsula[n - adj.NumElements()]
@@ -395,7 +398,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
         }
         result.labels->SetElementLabels(element_label);
         rebuild_targets();
-        ComputePeninsulas(adj, element_label, grain_seed, state);
+        ComputePeninsulas(adj, element_label, *result.labels, state);
         std::int64_t kept = 0;
         std::int64_t undone = 0;
         for (std::size_t i = 0; i < apply.size(); ++i) {
@@ -415,15 +418,20 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
         if (undone > 0) {
             result.labels->SetElementLabels(element_label);
             rebuild_targets();
-            ComputePeninsulas(adj, element_label, grain_seed, state);
+            ComputePeninsulas(adj, element_label, *result.labels, state);
         }
         if (kept == 0 && GlobalSum(static_cast<std::int64_t>(apply.size()), comm) == 0) {
             break; // everything proposed was blocked
         }
     }
 
-    report.bad_nodes_after = count_bad();
     report.peninsulas_after = count_peninsulas();
+    if (options.targets.smoothed) {
+        result.targets.reset();
+        result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
+                                                       grain_seed, options.targets);
+    }
+    report.bad_nodes_after = count_bad(); // with the smoothed fallback, when asked for
     return result;
 }
 

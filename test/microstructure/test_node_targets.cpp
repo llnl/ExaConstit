@@ -18,6 +18,10 @@
  *    two grains of the same seed (SAME_SEED), a grain without analytic boundary (HELD), a grain
  *    boundary along a creased top face (FIT inside the face, held on its feature edges), and the
  *    projector's singular case.
+ *  - Smoothed staircase (the same bicrystal on a finer mesh without seeds, as for a voxel map):
+ *    every boundary node is FIT on the smoothed staircase, which lies far closer to the true
+ *    bisector than the staircase nodes, keeps box face coordinates bit for bit, stays within the
+ *    move limit, and is bit for bit the same on MPI_COMM_SELF.
  *  - Rank invariance: the distributed targets and statuses equal, bit for bit, those of the same
  *    mesh on MPI_COMM_SELF (meshes distributed round robin), at np = 1, 2, 3, 4.
  *
@@ -34,6 +38,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -104,7 +109,8 @@ struct Fitted {
 Fitted Fit(mfem::Mesh& serial, MPI_Comm comm,
            const std::function<mfem::Array<int>(mfem::Mesh&)>& labels_of, ms::MetricType metric,
            const ms::SeedSet& seeds, const std::vector<int>& grain_seed,
-           const ms::NodeLabelOptions& label_options = {}) {
+           const ms::NodeLabelOptions& label_options = {},
+           const ms::NodeTargetOptions& target_options = {}) {
     int size = 1;
     MPI_Comm_size(comm, &size);
     std::vector<int> part(static_cast<std::size_t>(serial.GetNE()));
@@ -116,7 +122,7 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm,
     const mfem::Array<int> labels = labels_of(*f.pmesh);
     f.labels = std::make_unique<ms::NodeLabels>(*f.pmesh, labels, label_options);
     f.targets = std::make_unique<ms::NodeTargets>(*f.labels, metric, seeds, ms::MetricSetup{},
-                                                  grain_seed);
+                                                  grain_seed, target_options);
     return f;
 }
 
@@ -452,6 +458,71 @@ TEST(NodeTargets, CurvedTopSurface) {
     EXPECT_GT(dist.targets->Summary().reason[static_cast<int>(ms::TargetReason::CURVED_FEATURE)],
               0);
     EXPECT_EQ(dist.targets->Summary().status[FAKE], 0);
+}
+
+TEST(NodeTargets, SmoothedStaircase) {
+    // The inclined Voronoi bicrystal on a finer mesh, treated as if its boundary had no analytic
+    // description (no seeds): every boundary node gets the smoothed staircase, which must lie
+    // much closer to the true bisector than the staircase nodes, keep the box face coordinates
+    // bit for bit and be the same bits for every partition.
+    const ms::SeedSet seeds = MakeSeeds({{0.3, 0.4, 0.5}, {0.7, 0.55, 0.45}});
+    const auto labels_of = [&](mfem::Mesh& m) {
+        return SeedLabels(m, ms::MetricType::VORONOI, seeds);
+    };
+    ms::NodeTargetOptions options;
+    options.analytic = false;
+    options.smoothed = true;
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(12, 12, 12, mfem::Element::HEXAHEDRON);
+    const ms::SeedSet none;
+    Fitted dist = Fit(serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none,
+                      {-1, -1}, {}, options);
+    Fitted self = Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none,
+                      {-1, -1}, {}, options);
+    EXPECT_EQ(CompareWithSerial(dist, self), 0);
+
+    const double n[3] = {0.4, 0.15, -0.05};
+    const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const double c = 0.5 * ((0.49 + 0.3025 + 0.2025) - (0.09 + 0.16 + 0.25));
+    const auto distance = [&](const double* y) {
+        return std::fabs(n[0] * y[0] + n[1] * y[1] + n[2] * y[2] - c) / len;
+    };
+    const ms::NodeLabels& nl = *dist.labels;
+    const double* xyz = nl.Field().Coordinates().HostRead();
+    const double* t = dist.targets->Targets().HostRead();
+    const int* owned = nl.Field().OwnedVertexMarker().HostRead();
+    double sums[3] = {0.0, 0.0, 0.0}; // staircase distance, target distance, count
+    int bad = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        if (nl.NumLabels(v) != 2 || nl.OverConstrained(v)) {
+            continue;
+        }
+        const double* x = xyz + 3 * v;
+        const double* y = t + 3 * v;
+        bad += (dist.targets->Status(v) != ms::TargetStatus::FIT || !dist.targets->Smoothed(v))
+                   ? 1
+                   : 0;
+        for (int d = 0; d < 3; ++d) {
+            bad += (OnBoxFace(x[d]) && y[d] != x[d]) ? 1 : 0;
+        }
+        const double move = std::sqrt((y[0] - x[0]) * (y[0] - x[0]) +
+                                      (y[1] - x[1]) * (y[1] - x[1]) +
+                                      (y[2] - x[2]) * (y[2] - x[2]));
+        bad += (move > 2.0 * dist.targets->MeshSize(v) * (1.0 + 1e-12)) ? 1 : 0;
+        if (owned[v] != 0) {
+            sums[0] += distance(x);
+            sums[1] += distance(y);
+            sums[2] += 1.0;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, sums, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    EXPECT_EQ(GlobalSum(bad), 0);
+    EXPECT_GT(sums[2], 0.0);
+    EXPECT_LT(sums[1], 0.5 * sums[0]);
+    EXPECT_EQ(dist.targets->Summary().smoothed, dist.targets->Summary().status[FIT]);
+    if (mfem::Mpi::Root()) {
+        std::printf("smoothed staircase: mean distance to the bisector %.4f -> %.4f (h = %.4f)\n",
+                    sums[0] / sums[2], sums[1] / sums[2], 1.0 / 12.0);
+    }
 }
 
 TEST(NodeTargets, Validation) {

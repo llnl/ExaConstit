@@ -314,6 +314,33 @@ projection alternates with the closest point on the node's ring of boundary tria
 kept only if the constraints are met to a tolerance, it is at most about one element size h from
 the node, and no other seed is closer there (otherwise the node is HELD where it is).
 
+**Smoothed staircase targets.** Grains read from a voxel map, grown along paths (geodesic
+distance), cut back by the connected mode, or moved by the fragment cleanup have no analytic
+boundary. Their grain boundary nodes get the position of a smoothed copy of the staircase
+(`conformal/smoothed_targets.hpp`): only nodes with 2 or 3 labels move; a node averages over its
+neighbors along element edges that carry all of its labels (a face node over its boundary and the
+triple lines around it, a triple line node along its line) and lie on all of its outer surfaces;
+steps alternate the weights 0.5 and -0.53 (Taubin's lambda|mu smoothing: the negative step undoes
+the shrinking of plain averaging but keeps the smoothing of short wavelengths such as stair
+steps), 20 pairs, with the node put back on its outer surfaces after every step and the final
+move limited to 2 element sizes. Quad points and over-constrained nodes do not move and anchor the
+network. Every copy of a shared node merges the neighbor lists of all ranks, sorted by the
+neighbors' input positions, so the result is the same bits for any partition. On an inclined
+Voronoi bicrystal (12 elements per unit) the smoothed staircase lies on average 0.086 h from the
+true bisector, against 0.34 h for the staircase nodes.
+
+Which target a node gets: tessellations in the euclidean or connected mode use the analytic
+boundary where it is valid (the checks above) and the smoothed staircase for every other grain
+boundary node; voxel maps and geodesic labels use the smoothed staircase only (their grains are not
+cells of the metric). The fitter treats both kinds the same way.
+
+**Passthrough parts.** The grains of passthrough attributes are *fixed labels*. The faces between a
+fixed-label element and any other grain are treated like the outer boundary: their normals join
+the boundary surfaces of their nodes, their triangles the curved-surface patches, so nodes slide
+along them and never cross them; the fixed label leaves the label set of every node that has
+another label. Label repair never changes the grain of a fixed-label element, nor gives its label
+to another element.
+
 **Label repair.** Stair-step corners give nodes whose labels do not match any analytic feature
 (e.g. a node with three grains where the tessellation has only a boundary between two) and single
 elements sticking out of a grain. A few such elements are given to a face-neighboring grain, chosen
@@ -350,8 +377,9 @@ on a single curved surface, a node slides along it: a stiff normal spring (10^4 
 then an exact projection back onto the plane(s) or onto the closest point of its ring of input
 boundary triangles. Nodes where a curved surface meets another surface do not move.
 
-**Measured behavior** (test meshes, 20-50 Voronoi grains): the mean distance of the grain boundary
-nodes from the analytic boundaries drops from about 0.4 h to about 0.22-0.24 h on hex meshes with a
-smallest scaled Jacobian of about 0.4, and to about 0.3 h on tet meshes (tets made by cutting
-cubes start at a scaled Jacobian of 0.58, so the quality guard stops them sooner).
+**Measured behavior** (test meshes, 20-50 grains): the mean distance of the grain boundary nodes
+from their targets drops from about 0.4 h to about 0.21-0.24 h on hex meshes with a smallest scaled
+Jacobian of about 0.4, for analytic targets (Voronoi) and smoothed ones (a noisy voxel map, geodesic
+grains) alike, and to about 0.3 h on tet meshes (tets made by cutting cubes start at a scaled
+Jacobian of 0.58, so the quality guard stops them sooner).
 

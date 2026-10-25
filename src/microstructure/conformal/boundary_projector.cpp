@@ -81,13 +81,15 @@ void ClosestPointOnTriangle(const double y[3], const double a[3], const double b
 
 /*
  * Constructor
- *  1. Boundary faces (one element, not shared) with a selected node: triangulate (file comment)
+ *  1. Boundary faces (one element, not shared; or the faces marked in surface_faces) with a
+ *     selected node: triangulate (file comment)
  *     and append the triangles to the list of every selected node of the face.
  *  2. Exchange the lists (VertexField::ExchangeSharedLists).
  *  3. Per selected node: own and received triangles, sorted lexicographically (9 doubles) and made
  *     distinct, into the CSR arrays.
  */
-SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>& selected) {
+SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>& selected,
+                               const std::vector<char>* surface_faces) {
     const int nv = field.NumVertices();
     ThrowIfAnyRank(field.Comm(), selected.size() != static_cast<std::size_t>(nv),
                    "SurfacePatches: selected needs one entry per node");
@@ -111,7 +113,10 @@ SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>
         int e1 = -1;
         int e2 = -1;
         pmesh.GetFaceElements(f, &e1, &e2);
-        if (e2 >= 0 || shared[static_cast<std::size_t>(f)] != 0) {
+        const bool use = (surface_faces != nullptr)
+                             ? (*surface_faces)[static_cast<std::size_t>(f)] != 0
+                             : (e2 < 0 && shared[static_cast<std::size_t>(f)] == 0);
+        if (!use) {
             continue;
         }
         if (node_fes != nullptr) {

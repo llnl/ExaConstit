@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+#include <utility>
+#include <vector>
 
 /**
  * @file node_labels.hpp
@@ -58,6 +60,19 @@
  * keep nodes on flat boundaries exactly. The normals of a node are sorted before they are
  * grouped, so every copy computes the same bits.
  *
+ * **Fixed labels (passthrough parts).** Labels listed in NodeLabelOptions::fixed_labels belong to
+ * parts whose shape must not change (e.g. a build plate: a passthrough attribute of the
+ * generator). Their elements still deform with the mesh, but the faces between an element with a
+ * fixed label and an element with another label are treated exactly like the outer boundary:
+ * they are *interface faces*, they add their normals to the boundary surfaces of their nodes (and
+ * their triangles to the boundary patches, SurfaceFaces()), so nodes slide along them and never
+ * cross them. A fixed label is then dropped from the label set of every node that also has a
+ * non-fixed label; a node with fixed labels only keeps the smallest one. So a grain boundary
+ * that meets the plate is a grain boundary node on a boundary surface, and a node on the plate's
+ * top face inside one grain is a one-label node on a surface. Each interface face is counted
+ * once over all ranks: by the rank of its non-fixed element (of the smaller label when both are
+ * fixed), with the normal pointing out of that element.
+ *
  * **Constraints.** Each surface a node must stay on removes one direction in which it can move:
  *   - grain constraints = (number of labels) - 1 (0 inside a grain, 1 on a grain boundary face,
  *     2 on a triple line, 3 at a quad point);
@@ -85,6 +100,11 @@ struct NodeLabelOptions {
     double feature_angle_degrees = 30.0;
     /** @brief Which nodes (see the file comment). MESH_NODES = the nodes the fitter moves. */
     FieldNodes nodes = FieldNodes::MESH_NODES;
+    /**
+     * @brief Labels of parts whose interfaces must stay in place (passthrough parts; see the
+     * file comment), ascending. Empty: none.
+     */
+    std::vector<int> fixed_labels;
 };
 
 /** @brief How many grains meet at a node (index = number of labels - 1, capped). */
@@ -171,6 +191,29 @@ public:
     const mfem::Array<int>& LabelCounts() const {
         return m_label_counts;
     }
+    /** @brief The element labels the label sets were built from (per local element). */
+    const mfem::Array<int>& ElementLabels() const {
+        return m_element_label;
+    }
+    /** @brief Cosine of the feature angle: two normals belong to one surface above it. */
+    double FeatureCosine() const {
+        return m_feature_cosine;
+    }
+    /** @brief The fixed labels (NodeLabelOptions::fixed_labels), ascending. */
+    const std::vector<int>& FixedLabels() const {
+        return m_fixed_labels;
+    }
+    /** @brief True when label l is a fixed label. */
+    bool IsFixedLabel(int l) const;
+    /**
+     * @brief Per local face (Mesh::GetNumFaces): 1 when this rank contributes the face as a
+     * boundary surface face: an outer boundary face (one element, not shared) or an interface
+     * face of a fixed label counted by this rank (see the file comment). Used for the boundary
+     * patches (boundary_projector.hpp).
+     */
+    const std::vector<char>& SurfaceFaces() const {
+        return m_surface_faces;
+    }
     /** @brief Number of distinct labels at node v (>= 1). */
     int NumLabels(int v) const {
         return m_label_offsets[v + 1] - m_label_offsets[v];
@@ -224,10 +267,17 @@ public:
 
 private:
     void BuildLabelSets(const mfem::Array<int>& element_label);
+    void FindSurfaceFaces();
     void BuildBoundarySurfaces(double feature_angle_degrees);
     void BuildSummary();
 
     std::unique_ptr<VertexField> m_field;
+    mfem::Array<int> m_element_label;
+    std::vector<int> m_fixed_labels;
+    double m_feature_cosine = 0.0;
+    std::vector<char> m_surface_faces;
+    /** @brief Interface faces counted here: (local face, local element they point out of). */
+    std::vector<std::pair<int, int>> m_interface_faces;
     mfem::Array<int> m_label_offsets;
     mfem::Array<int> m_labels;
     mfem::Array<int> m_label_counts;

@@ -53,6 +53,59 @@ public:
 namespace {
 
 /**
+ * @brief The classification rules only (NodeTargetOptions::analytic = false): NONE,
+ * OVER_CONSTRAINED, HELD (CURVED_FEATURE), and HELD (NON_ANALYTIC) for every other grain
+ * boundary node.
+ */
+class NonAnalyticEvaluator final : public NodeTargets::Evaluator {
+public:
+    NonAnalyticEvaluator(const NodeLabels& labels, const SurfacePatches& patches)
+        : m_labels(labels), m_patches(patches) {}
+
+    void Evaluate(const std::vector<NodeLabelQuery>& queries,
+                  std::vector<NodeTargetResult>& out) const override {
+        const int* surf_off = m_labels.SurfaceOffsets().HostRead();
+        const int* surf_planar = m_labels.SurfacePlanar().HostRead();
+        out.assign(queries.size(), NodeTargetResult{});
+        for (std::size_t i = 0; i < queries.size(); ++i) {
+            const NodeLabelQuery& q = queries[i];
+            const int v = q.node;
+            NodeTargetResult& r = out[i];
+            const double* x = (q.position != nullptr)
+                                  ? q.position
+                                  : m_labels.Field().Coordinates().HostRead() + 3 * v;
+            std::copy(x, x + 3, r.target);
+            bool curved = false;
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+                curved = curved || surf_planar[s] == 0;
+            }
+            if (q.num_labels <= 1) {
+                r.status = TargetStatus::NONE;
+            } else if (q.num_labels - 1 + m_labels.BoundaryConstraints(v) > 3) {
+                r.status = TargetStatus::OVER_CONSTRAINED;
+            } else if (curved &&
+                       (m_labels.BoundarySurfaces(v) != 1 || m_patches.NumTriangles(v) == 0)) {
+                r.status = TargetStatus::HELD;
+                r.reason = TargetReason::CURVED_FEATURE;
+            } else {
+                r.status = TargetStatus::HELD;
+                r.reason = TargetReason::NON_ANALYTIC;
+            }
+        }
+    }
+
+private:
+    const NodeLabels& m_labels;
+    const SurfacePatches& m_patches;
+};
+
+/** @brief True when a node with this result may take its smoothed target instead. */
+bool SmoothedFallback(const NodeTargetResult& r) {
+    return r.status == TargetStatus::FAKE_JUNCTION ||
+           (r.status == TargetStatus::HELD && r.reason == TargetReason::NON_ANALYTIC);
+}
+
+/**
  * @brief The rules of the file comment for a batch of queries: classification, equations,
  * projection (with the patch alternation on curved surfaces), axis coordinates, residual and
  * distance checks, then one batched foreign-seed search. Holds the seed index (built once).
@@ -300,13 +353,14 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
  *  1. Collective input checks.
  *  2. Mesh size h per node (ComputeMeshSize).
  *  3. Patches of the nodes on exactly one curved surface (SurfacePatches, collective).
- *  4. The evaluator of the metric (seed index), then Evaluate on every node's own label set.
+ *  4. The evaluator of the metric (seed index; classification only without analytic targets),
+ *     the smoothed staircase when asked for, then Evaluate on every node's own label set.
  *  5. Summary.
  */
 NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const SeedSet& seeds,
                          const MetricSetup& setup, const std::vector<int>& grain_seed,
                          const NodeTargetOptions& options)
-    : m_labels(labels) {
+    : m_labels(labels), m_options(options) {
     const VertexField& field = labels.Field();
     const MPI_Comm comm = field.Comm();
     const int nv = labels.NumNodes();
@@ -318,7 +372,10 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
                        options.max_iterations < 1 || options.num_bins < 1,
                    "NodeTargets: max_move and tolerance must be > 0, max_iterations and num_bins "
                    ">= 1");
-    ThrowIfAnyRank(comm, num_seeds < 1, "NodeTargets: the seed set is empty");
+    ThrowIfAnyRank(comm, options.analytic && num_seeds < 1, "NodeTargets: the seed set is empty");
+    ThrowIfAnyRank(comm, options.smoothed && (options.smoothing.steps < 0 ||
+                                              !(options.smoothing.max_move > 0.0)),
+                   "NodeTargets: smoothing steps must be >= 0 and max_move > 0");
     bool bad_seed = false;
     for (const int s : grain_seed) {
         bad_seed = bad_seed || s < -1 || s >= num_seeds;
@@ -342,14 +399,24 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
         on_curved[static_cast<std::size_t>(v)] =
             (labels.BoundarySurfaces(v) == 1 && surf_planar[surf_off[v]] == 0) ? 1 : 0;
     }
-    m_patches = std::make_unique<SurfacePatches>(field, on_curved);
+    m_patches = std::make_unique<SurfacePatches>(field, on_curved, &labels.SurfaceFaces());
 
     // Step 4
-    DispatchMetric(metric, [&](auto metric_tag) {
-        using Metric = decltype(metric_tag);
-        m_evaluator = std::make_unique<EvaluatorImpl<Metric>>(labels, *m_patches, m_h, seeds,
-                                                              setup, grain_seed, options);
-    });
+    if (options.analytic) {
+        DispatchMetric(metric, [&](auto metric_tag) {
+            using Metric = decltype(metric_tag);
+            m_evaluator = std::make_unique<EvaluatorImpl<Metric>>(labels, *m_patches, m_h, seeds,
+                                                                  setup, grain_seed, options);
+        });
+    } else {
+        m_evaluator = std::make_unique<NonAnalyticEvaluator>(labels, *m_patches);
+    }
+    // Smoothed staircase (collective) before Evaluate, which falls back to it
+    m_smoothed.assign(static_cast<std::size_t>(nv), 0);
+    if (options.smoothed) {
+        SmoothGrainBoundaries(labels, *m_patches, m_h, options.smoothing, m_smoothed_target,
+                              m_smoothed);
+    }
     const int* off = labels.LabelOffsets().HostRead();
     std::vector<NodeLabelQuery> queries(static_cast<std::size_t>(nv));
     for (int v = 0; v < nv; ++v) {
@@ -371,6 +438,17 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
         m_status[v] = static_cast<int>(r.status);
         m_reason[v] = static_cast<int>(r.reason);
     }
+    if (options.smoothed) {
+        // Smoothed(v): FIT with the smoothed target (analytic FIT nodes keep theirs)
+        const double* st = m_smoothed_target.HostRead();
+        for (int v = 0; v < nv; ++v) {
+            const auto vs = static_cast<std::size_t>(v);
+            m_smoothed[vs] = (m_smoothed[vs] != 0 && Status(v) == TargetStatus::FIT &&
+                              std::equal(st + 3 * v, st + 3 * v + 3, target + 3 * v))
+                                 ? 1
+                                 : 0;
+        }
+    }
 
     // Step 5
     BuildSummary();
@@ -382,6 +460,26 @@ std::vector<NodeTargetResult> NodeTargets::Evaluate(
     const std::vector<NodeLabelQuery>& queries) const {
     std::vector<NodeTargetResult> out;
     m_evaluator->Evaluate(queries, out);
+    if (!m_options.smoothed) {
+        return out;
+    }
+    // Smoothed fallback, for the node's own label set only
+    const int* off = m_labels.LabelOffsets().HostRead();
+    const int* items = m_labels.Labels().HostRead();
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+        const NodeLabelQuery& q = queries[i];
+        const int v = q.node;
+        if (m_smoothed[static_cast<std::size_t>(v)] == 0 || !SmoothedFallback(out[i]) ||
+            q.num_labels != m_labels.NumLabels(v) ||
+            !std::equal(items + off[v], items + off[v] + std::min(q.num_labels, NODE_QUERY_LABELS),
+                        q.labels)) {
+            continue;
+        }
+        out[i].status = TargetStatus::FIT;
+        out[i].reason = TargetReason::NONE;
+        std::copy(m_smoothed_target.HostRead() + 3 * v, m_smoothed_target.HostRead() + 3 * v + 3,
+                  out[i].target);
+    }
     return out;
 }
 
@@ -422,7 +520,7 @@ void NodeTargets::BuildSummary() {
     const int* owned = field.OwnedVertexMarker().HostRead();
     const double* xyz = field.Coordinates().HostRead();
     const double* target = m_targets.HostRead();
-    std::int64_t counts[NUM_TARGET_STATUSES + NUM_TARGET_REASONS] = {};
+    std::int64_t counts[NUM_TARGET_STATUSES + NUM_TARGET_REASONS + 1] = {};
     double ratio = 0.0;
     for (int v = 0; v < field.NumVertices(); ++v) {
         if (owned[v] == 0) {
@@ -430,6 +528,7 @@ void NodeTargets::BuildSummary() {
         }
         ++counts[m_status[v]];
         ++counts[NUM_TARGET_STATUSES + m_reason[v]];
+        counts[NUM_TARGET_STATUSES + NUM_TARGET_REASONS] += Smoothed(v) ? 1 : 0;
         if (Status(v) == TargetStatus::FIT) {
             double d2 = 0.0;
             for (int d = 0; d < 3; ++d) {
@@ -438,8 +537,8 @@ void NodeTargets::BuildSummary() {
             ratio = std::max(ratio, std::sqrt(d2) / m_h(v));
         }
     }
-    MPI_Allreduce(MPI_IN_PLACE, counts, NUM_TARGET_STATUSES + NUM_TARGET_REASONS, MPI_INT64_T,
-                  MPI_SUM, field.Comm());
+    MPI_Allreduce(MPI_IN_PLACE, counts, NUM_TARGET_STATUSES + NUM_TARGET_REASONS + 1,
+                  MPI_INT64_T, MPI_SUM, field.Comm());
     MPI_Allreduce(MPI_IN_PLACE, &ratio, 1, MPI_DOUBLE, MPI_MAX, field.Comm());
     for (int k = 0; k < NUM_TARGET_STATUSES; ++k) {
         m_summary.status[static_cast<std::size_t>(k)] = counts[k];
@@ -448,6 +547,7 @@ void NodeTargets::BuildSummary() {
         m_summary.reason[static_cast<std::size_t>(k)] = counts[NUM_TARGET_STATUSES + k];
     }
     m_summary.max_move_ratio = ratio;
+    m_summary.smoothed = counts[NUM_TARGET_STATUSES + NUM_TARGET_REASONS];
 }
 
 } // namespace exaconstit::microstructure

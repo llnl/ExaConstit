@@ -32,9 +32,10 @@
  *
  * **Passes.** Each pass:
  *   1. computes the node labels and targets of the current labels, and the peninsulas;
- *   2. proposes at most one flip per element (owner rank). Elements of analytic grains
- *      (grain_seed >= 0) that touch a bad node or are peninsulas preview the flip to each
- *      analytic face-neighbor label b: the label sets their nodes would have (a label leaves a
+ *   2. proposes at most one flip per element (owner rank). Elements of grains that may change
+ *      (every label except the fixed labels of passthrough parts, NodeLabelOptions::fixed_labels)
+ *      that touch a bad node or are peninsulas preview the flip to each such face-neighbor label
+ *      b: the label sets their nodes would have (a label leaves a
  *      node when the element was the node's only element with it; NodeLabels::LabelCounts) are
  *      evaluated with the target rules (NodeTargets::Evaluate), and the element's own peninsula
  *      flag is recomputed (its face neighbors keep theirs in the preview: a neighbor on another
@@ -53,6 +54,11 @@
  *      Potential = 8 x (bad nodes among the element's nodes) + (peninsulas among the element and
  *      its face neighbors), so removing a bad node outweighs any change of peninsulas (at most 7
  *      elements). Undone flips are remembered and never proposed again.
+ * During the passes the targets use the analytic rules only; with NodeTargetOptions::smoothed
+ * in `options.targets` the returned targets are rebuilt once more with the smoothed fallback.
+ * Without analytic boundaries (NodeTargetOptions::analytic = false: voxel maps, geodesic labels)
+ * only over-constrained nodes count as bad, so the repair removes peninsulas and
+ * over-constrained nodes.
  * The passes stop when no flip is proposed or kept, or after max_passes. The total potential
  * decreases strictly with every kept flip, so the repair cannot cycle. Nodes still bad at the end
  * stay FAKE_JUNCTION / OVER_CONSTRAINED ("unfit"): the fitter leaves them in place; they are
@@ -92,7 +98,7 @@ struct LabelRepairReport {
     std::int64_t undone = 0;            ///< flips applied and undone (no decrease)
     std::int64_t blocked = 0;           ///< flips dropped by min_grain_elements
     std::int64_t bad_nodes_before = 0;  ///< FAKE_JUNCTION + OVER_CONSTRAINED nodes, before
-    std::int64_t bad_nodes_after = 0;   ///< ... after (unfit nodes)
+    std::int64_t bad_nodes_after = 0;   ///< ... after, with the final targets (unfit nodes)
     std::int64_t peninsulas_before = 0; ///< peninsula elements before
     std::int64_t peninsulas_after = 0;  ///< ... after
 };

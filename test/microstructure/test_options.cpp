@@ -1433,19 +1433,22 @@ TEST(MicrostructureOptions, ConformalParseAndValidation) {
     EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.metric = ms::MetricType::LAGUERRE;
     }));
-    // Refused: no analytic boundaries between seed cells, periodic images, masked parts
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+    // Every Phase 1 grain source is accepted (non-analytic boundaries use the smoothed
+    // staircase, passthrough interfaces stay in place); only periodic axes are refused
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.distance = ms::DistanceMode::CONNECTED;
     }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
-        o.tessellation.periodic = {true, false, false};
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.distance = ms::DistanceMode::GEODESIC;
     }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.active_attributes = {1}; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.seeds.num_seeds = 0;
         o.source.type = "voxel_map";
         o.voxel_map.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.periodic = {true, false, false};
     }));
 }
 

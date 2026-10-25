@@ -2259,23 +2259,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     }
 
     // --- [Conformal] ------------------------------------------------------------------------
-    // The fit needs analytic grain boundaries between the seeds' cells (straight-line metric,
-    // no periodic images) and a mesh whose every element belongs to the tessellation.
-    if (conformal.enabled) {
-        if (voxel_source) {
-            report_error(valid, "Conformal.enabled needs Source.type = \"tessellation\" (voxel "
-                                "maps have no analytic grain boundaries)");
-        }
-        if (tessellation.distance != DistanceMode::EUCLIDEAN) {
-            report_error(valid, "Conformal.enabled needs Tessellation.distance = \"euclidean\"");
-        }
-        if (any_periodic_axis) {
-            report_error(valid, "Conformal.enabled cannot be combined with Tessellation.periodic");
-        }
-        if (passthrough || !mesh.active_attributes.empty()) {
-            report_error(valid, "Conformal.enabled cannot be combined with "
-                                "Mesh.active_attributes or Mesh.passthrough_attributes");
-        }
+    // A periodic microstructure would need the fitted boundaries to match on opposite box faces
+    if (conformal.enabled && any_periodic_axis) {
+        report_error(valid, "Conformal.enabled cannot be combined with Tessellation.periodic");
     }
 
     // --- [Output] ---------------------------------------------------------------------------

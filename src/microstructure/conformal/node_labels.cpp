@@ -3,6 +3,7 @@
  */
 #include "microstructure/conformal/node_labels.hpp"
 
+#include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
 #include <algorithm>
@@ -146,10 +147,76 @@ NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_lab
     ThrowIfAnyRank(comm, !(angle > 0.0 && angle < 90.0),
                    "NodeLabels: feature_angle_degrees must be in (0, 90)");
 
+    m_feature_cosine = std::cos(angle * PI / 180.0);
+    m_fixed_labels = options.fixed_labels;
+    ThrowIfAnyRank(comm, !std::is_sorted(m_fixed_labels.begin(), m_fixed_labels.end()),
+                   "NodeLabels: fixed_labels must be ascending");
+
     m_field = std::make_unique<VertexField>(pmesh, options.nodes);
+    m_element_label = element_label;
+    FindSurfaceFaces();
     BuildLabelSets(element_label);
     BuildBoundarySurfaces(angle);
     BuildSummary();
+}
+
+bool NodeLabels::IsFixedLabel(int l) const {
+    return std::binary_search(m_fixed_labels.begin(), m_fixed_labels.end(), l);
+}
+
+/*
+ * FindSurfaceFaces
+ *  1. Outer boundary faces: one element and not shared with another rank.
+ *  2. With fixed labels: interface faces from the face adjacency (ghost labels exchanged,
+ *     MeshAdjacency, collective): a face between labels a != b with at least one fixed is counted
+ *     by the side of the non-fixed label, or of the smaller label when both are fixed, and only
+ *     when that side is a local element (a shared face is therefore counted on one rank).
+ */
+void NodeLabels::FindSurfaceFaces() {
+    mfem::ParMesh& pmesh = m_field->Mesh();
+    const int nf = pmesh.GetNumFaces();
+
+    // Step 1
+    std::vector<char> shared(static_cast<std::size_t>(nf), 0);
+    for (int i = 0; i < pmesh.GetNSharedFaces(); ++i) {
+        shared[static_cast<std::size_t>(pmesh.GetSharedFace(i))] = 1;
+    }
+    m_surface_faces.assign(static_cast<std::size_t>(nf), 0);
+    for (int f = 0; f < nf; ++f) {
+        int e1 = -1;
+        int e2 = -1;
+        pmesh.GetFaceElements(f, &e1, &e2);
+        m_surface_faces[static_cast<std::size_t>(f)] =
+            (e2 < 0 && shared[static_cast<std::size_t>(f)] == 0) ? 1 : 0;
+    }
+
+    // Step 2
+    m_interface_faces.clear();
+    if (m_fixed_labels.empty()) {
+        return;
+    }
+    const MeshAdjacency adj(pmesh);
+    mfem::Array<int> ghost;
+    adj.ExchangeLabels(m_element_label, ghost);
+    const int* off = adj.Offsets().HostRead();
+    const int* nbr = adj.Neighbors().HostRead();
+    const int* face = adj.FaceIndices().HostRead();
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        const int a = m_element_label[e];
+        for (int k = off[e]; k < off[e + 1]; ++k) {
+            const int n = nbr[k];
+            const int b = adj.IsGhost(n) ? ghost[n - adj.NumElements()] : m_element_label[n];
+            const bool fa = IsFixedLabel(a);
+            const bool fb = IsFixedLabel(b);
+            if (a == b || !(fa || fb)) {
+                continue;
+            }
+            if ((!fa && fb) || (fa && fb && a < b)) {
+                m_surface_faces[static_cast<std::size_t>(face[k])] = 1;
+                m_interface_faces.emplace_back(face[k], e);
+            }
+        }
+    }
 }
 
 NodeLabels::~NodeLabels() = default;
@@ -160,6 +227,15 @@ NodeLabels::~NodeLabels() = default;
  */
 void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
     CheckElementLabels(m_field->Mesh(), element_label);
+    bool moved_fixed = false;
+    for (int e = 0; e < element_label.Size(); ++e) {
+        moved_fixed = moved_fixed || (element_label[e] != m_element_label[e] &&
+                                      (IsFixedLabel(element_label[e]) ||
+                                       IsFixedLabel(m_element_label[e])));
+    }
+    ThrowIfAnyRank(m_field->Comm(), moved_fixed,
+                   "NodeLabels::SetElementLabels: elements of fixed labels cannot change");
+    m_element_label = element_label;
     BuildLabelSets(element_label);
     BuildSummary();
 }
@@ -225,7 +301,16 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
             add(list, static_cast<int>(recv[static_cast<std::size_t>(k)]),
                 static_cast<int>(recv[static_cast<std::size_t>(k) + 1]));
         }
+        // Fixed labels leave the set when the node has another label (their interfaces are
+        // boundary surfaces); a node with fixed labels only keeps the smallest
+        bool other = false;
+        for (const auto& entry : list) {
+            other = other || !IsFixedLabel(entry.first);
+        }
         for (const auto& [label, count] : list) {
+            if (IsFixedLabel(label) && (other || label != list.front().first)) {
+                continue;
+            }
             items.push_back(label);
             item_counts.push_back(count);
         }
@@ -239,10 +324,11 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
 
 /*
  * BuildBoundarySurfaces
- *  1. Boundary faces: local faces with one element that are not shared with another rank
- *     (ParMesh::GetSharedFace lists the shared ones).
+ *  1. Boundary surface faces (SurfaceFaces(): outer boundary faces and the interface faces of
+ *     fixed labels counted by this rank, FindSurfaceFaces).
  *  2. Unit normal at the face center: CalcOrtho of the face transformation's Jacobian (Nodes when
- *     the mesh has them), which points out of the face's element. Each node of the face (its
+ *     the mesh has them), which points out of the face's first element (for an interface face:
+ *     out of the element that counts it). Each node of the face (its
  *     vertices for the corner field, its Nodes dofs for the nodal field) records the normal
  *     unless the same bits are already recorded.
  *  3. The lists go to the other copies (VertexField::ExchangeSharedLists).
@@ -254,10 +340,10 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     mfem::ParMesh& pmesh = field.Mesh();
     const int nv = field.NumVertices();
 
-    // Step 1
-    std::vector<char> shared(static_cast<std::size_t>(pmesh.GetNumFaces()), 0);
-    for (int i = 0; i < pmesh.GetNSharedFaces(); ++i) {
-        shared[static_cast<std::size_t>(pmesh.GetSharedFace(i))] = 1;
+    // Step 1 (interface faces point out of the element that counts them)
+    std::vector<int> out_of(static_cast<std::size_t>(pmesh.GetNumFaces()), -1);
+    for (const auto& [f, e] : m_interface_faces) {
+        out_of[static_cast<std::size_t>(f)] = e;
     }
 
     // Step 2
@@ -268,17 +354,21 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     mfem::Array<int> face_nodes;
     mfem::Vector ortho(3);
     for (int f = 0; f < pmesh.GetNumFaces(); ++f) {
+        if (m_surface_faces[static_cast<std::size_t>(f)] == 0) {
+            continue;
+        }
         int e1 = -1;
         int e2 = -1;
         pmesh.GetFaceElements(f, &e1, &e2);
-        if (e2 >= 0 || shared[static_cast<std::size_t>(f)] != 0) {
-            continue;
-        }
         pmesh.GetFaceTransformation(f, &trans);
         const mfem::IntegrationPoint& center =
             mfem::Geometries.GetCenter(pmesh.GetFaceGeometry(f));
         trans.SetIntPoint(&center);
-        mfem::CalcOrtho(trans.Jacobian(), ortho);
+        mfem::CalcOrtho(trans.Jacobian(), ortho); // points out of e1
+        const int from = out_of[static_cast<std::size_t>(f)];
+        if (from >= 0 && from != e1) {
+            ortho.Neg();
+        }
         const double len = ortho.Norml2();
         const double n[3] = {ortho(0) / len, ortho(1) / len, ortho(2) / len};
         if (node_fes != nullptr) {

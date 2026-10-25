@@ -199,13 +199,10 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
         refuse("Tessellation.periodic cannot be combined with Mesh.passthrough_attributes");
     }
 
-    // Conformal grain boundaries need analytic boundaries between seed cells (straight-line
-    // distance, no periodic images) and every element in the tessellation
-    if (options.conformal.enabled &&
-        (voxel || tess.distance != DistanceMode::EUCLIDEAN || AnyPeriodic(tess) || passthrough ||
-         !options.mesh.active_attributes.empty())) {
-        refuse("Conformal.enabled needs Source.type = \"tessellation\", Tessellation.distance = "
-               "\"euclidean\", no periodic axis and no active or passthrough attributes");
+    // Conformal grain boundaries: a periodic microstructure would need the fit to match on
+    // opposite faces of the box, which is not implemented
+    if (options.conformal.enabled && AnyPeriodic(tess)) {
+        refuse("Conformal.enabled cannot be combined with Tessellation.periodic");
     }
 
     // Seed tables: measured positions must not move, and the ROI options need a table
@@ -1654,16 +1651,22 @@ namespace {
  * FitConformalBoundaries (step 14, Conformal.enabled; collective)
  *  1. Checks: hex or tet elements, geometry of order 1 (no Nodes, or order-1 Nodes).
  *  2. A mesh without Nodes gets order-1 Nodes (the fitter moves the Nodes).
- *  3. Label repair against the analytic boundaries of the labeling's seeds and metric
- *     (conformal/label_repair.hpp; the smallest grain is Cleanup.min_grain_elements, at least 1),
- *     in place on result.element_grain.
+ *  3. Label repair (conformal/label_repair.hpp; the smallest grain is
+ *     Cleanup.min_grain_elements, at least 1), in place on result.element_grain. Targets:
+ *     analytic boundaries of the labeling's seeds and metric where the grains are cells of the
+ *     metric (tessellation in the euclidean or connected mode), with the smoothed staircase for
+ *     every node without a valid analytic target (pieces moved by the cleanup or the connected
+ *     relabeling); the smoothed staircase only for voxel maps and geodesic labels. The
+ *     passthrough grains are fixed labels: their interfaces stay in place like the outer
+ *     boundary, and their elements never change grain.
  *  4. The fit (conformal/conformal_fitter.hpp).
  *  5. A mesh that had no Nodes gets the fitted positions as its vertices and loses the Nodes
  *     again, so the caller's mesh keeps its kind (order-1 H1 Nodes: dof v is vertex v).
  */
 void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
                             MPI_Comm comm, const std::vector<int>& grain_seed,
-                            GenerationReport& report, MicrostructureResult& result) {
+                            int num_passthrough, GenerationReport& report,
+                            MicrostructureResult& result) {
     // Step 1
     bool bad_type = false;
     for (int e = 0; e < pmesh.GetNE(); ++e) {
@@ -1689,11 +1692,18 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
     setup.per_seed_shape = !report.seeds.shape.empty();
     LabelRepairOptions repair_options;
     repair_options.min_grain_elements = std::max(1, options.cleanup.min_grain_elements);
+    repair_options.targets.analytic =
+        !UsesVoxelMap(options) && options.tessellation.distance != DistanceMode::GEODESIC;
+    repair_options.targets.smoothed = true;
+    for (int g = result.num_grains - num_passthrough + 1; g <= result.num_grains; ++g) {
+        repair_options.labels.fixed_labels.push_back(g); // the passthrough grains come last
+    }
     LabelRepairResult repair =
         RepairLabels(pmesh, result.element_grain, options.tessellation.metric, report.seeds,
                      setup, grain_seed, repair_options);
 
     // Step 4
+    report.conformal_smoothed_nodes = repair.targets->Summary().smoothed;
     report.conformal_fit = FitConformal(pmesh, *repair.targets);
     report.conformal_repair = repair.report;
     report.ran_conformal = true;
@@ -1835,7 +1845,8 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
 
     // Step 14: conformal grain boundaries (moves the mesh nodes; may flip a few elements)
     if (options.conformal.enabled) {
-        FitConformalBoundaries(options, pmesh, comm, grain_seed, report, result);
+        FitConformalBoundaries(options, pmesh, comm, grain_seed,
+                               static_cast<int>(passthrough_attributes.size()), report, result);
         // Face areas of the fitted geometry (no periodic axes with Conformal.enabled)
         adjacency = std::make_shared<const MeshAdjacency>(pmesh);
     }

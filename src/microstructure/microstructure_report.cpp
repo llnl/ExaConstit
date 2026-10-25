@@ -146,8 +146,9 @@ std::string ConformalText(const GenerationReport& report) {
     os << "conformal grain boundaries: label repair changed the grain of " << repair.flips
        << " element(s) (" << repair.passes << " pass(es)); unfit grain boundary nodes "
        << repair.bad_nodes_before << " -> " << repair.bad_nodes_after << "\n";
-    os << "  fit: " << fit.fit_nodes << " grain boundary nodes, distance from the analytic "
-       << "boundaries (element sizes h) mean " << fit.initial_deviation << " -> "
+    os << "  fit: " << fit.fit_nodes << " grain boundary nodes (" << report.conformal_smoothed_nodes
+       << " of them on the smoothed staircase, the others on the analytic boundaries), distance "
+       << "from their targets (element sizes h) mean " << fit.initial_deviation << " -> "
        << fit.mean_deviation << ", largest after " << fit.max_deviation << "; " << fit.rounds
        << " round(s), " << fit.solves << " elastic solve(s)\n";
     os << "  mesh quality: smallest scaled Jacobian " << fit.quality_before.min_scaled_jacobian

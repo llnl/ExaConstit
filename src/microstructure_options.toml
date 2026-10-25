@@ -1172,10 +1172,19 @@ exec = "cpu"
 # =====================================
 # Every element belongs to exactly one grain, so grain boundaries follow element faces and look
 # like stair steps. With enabled = true the generator then moves the mesh nodes (the corner
-# points of the elements) so that each grain boundary becomes a smooth, slightly wavy surface
-# close to the boundary the tessellation describes. The number of elements, how they connect
-# and the element type stay the same; before the move a few elements next to a grain boundary
-# may switch to the neighboring grain, where that gives a cleaner boundary.
+# points of the elements) so that each grain boundary becomes a smooth, slightly wavy surface.
+# The number of elements, how they connect and the element type stay the same; before the move a
+# few elements next to a grain boundary may switch to the neighboring grain, where that gives a
+# cleaner boundary (for example a single element sticking out of its grain).
+#
+# Where the boundaries go depends on where the grains came from; it works for every grain source:
+#   - grains grown from seeds in straight lines (Tessellation.distance = "euclidean", every
+#     metric) go to the exact boundary between the seeds' cells;
+#   - with distance = "connected" the same, except where grains were cut back to what connects
+#     to their seed, and pieces the fragment cleanup moved to another grain: there, as below;
+#   - grains read from a voxel map, grown along paths (distance = "geodesic"), and the cases
+#     above go to a smoothed copy of the stair steps themselves (the steps are averaged away
+#     over a few elements, so the boundary keeps its course but loses its corners).
 #
 # Mesh quality always comes first. The shape of an element is measured by its scaled Jacobian,
 # computed at each corner: 1 for a perfect cube corner (or a regular tetrahedron), 0 for a corner
@@ -1185,20 +1194,22 @@ exec = "cpu"
 # it, a boundary stays partly stepped.
 #
 # How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
-# guarantee): grain boundary nodes start on average about 0.4 element sizes from the
-# tessellation's boundaries and end about 0.2-0.25 on hex meshes, about 0.3 on tet meshes (tets
-# start with worse shapes, so the quality limits stop them sooner). The log prints these
-# distances and the smallest scaled Jacobian before and after, so check them for your mesh.
+# guarantee): grain boundary nodes start on average about 0.4 element sizes from where they
+# should go and end about 0.2-0.25 on hex meshes, for analytic and smoothed boundaries alike,
+# and about 0.3 on tet meshes (tets start with worse shapes, so the quality limits stop them
+# sooner). The log prints these distances, how many nodes used the smoothed staircase, and the
+# smallest scaled Jacobian before and after, so check them for your mesh.
 #
 # Outer surfaces stay where they are: nodes on a flat face of the part slide along that face; on
 # a curved surface they slide along the surface's original elements; nodes on edges and corners
-# where a curved surface meets another surface do not move. Grain volumes change a little,
-# since the boundaries move.
+# where a curved surface meets another surface do not move. Passthrough parts ([Mesh]
+# passthrough_attributes, e.g. a build plate) keep their shape: the faces between a passthrough
+# part and the grains are treated like the outer surface, so nodes slide along them, and
+# passthrough elements never change grain (they may still deform a little inside). Grain volumes
+# change a little, since the boundaries move.
 #
-# Needs: Source.type = "tessellation" with Tessellation.distance = "euclidean"; no periodic
-# axes; no active_attributes or passthrough_attributes; a hex or tet mesh with straight-sided
-# (first-order) elements. Inside ExaConstit that means [Mesh] order = 1. Any other combination
-# is refused with a message.
+# Needs: no periodic axes, and a hex or tet mesh with straight-sided (first-order) elements.
+# Inside ExaConstit that means [Mesh] order = 1. Other combinations are refused with a message.
 #
 # Files: the mesh file and the ParaView view hold the moved nodes. An auto mesh ([Mesh] type =
 # "auto") is rebuilt by ExaConstit from its box size, which would undo the move, so after a fit
