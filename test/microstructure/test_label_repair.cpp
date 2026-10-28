@@ -24,14 +24,7 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
-#include "microstructure/conformal/label_repair.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -43,6 +36,12 @@
 #include <mpi.h>
 #include <set>
 #include <vector>
+
+#include "microstructure/conformal/label_repair.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -98,8 +97,8 @@ std::unique_ptr<mfem::ParMesh> Distribute(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** The labels `base`, with the element whose center is `stray` set to `stray_label`. */
-mfem::Array<int> WithStray(mfem::Mesh& mesh, const mfem::Array<int>& base, const Key& stray,
-                           int stray_label) {
+mfem::Array<int>
+WithStray(mfem::Mesh& mesh, const mfem::Array<int>& base, const Key& stray, int stray_label) {
     mfem::Array<int> labels(base);
     for (int e = 0; e < mesh.GetNE(); ++e) {
         if (CenterKey(mesh, e) == stray) {
@@ -147,12 +146,18 @@ int Pieces(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int grain) {
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
     std::vector<int> displs(static_cast<std::size_t>(size), 0);
     for (int r = 1; r < size; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r) - 1] +
+                                              counts[static_cast<std::size_t>(r) - 1];
     }
     std::vector<std::uint64_t> all(static_cast<std::size_t>(displs.back() + counts.back()));
-    MPI_Allgatherv(send.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_UINT64_T, MPI_COMM_WORLD);
+    MPI_Allgatherv(send.data(),
+                   count,
+                   MPI_UINT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_UINT64_T,
+                   MPI_COMM_WORLD);
     return static_cast<int>(std::set<std::uint64_t>(all.begin(), all.end()).size());
 }
 
@@ -178,8 +183,8 @@ TEST(LabelRepair, FlipsNeverSplitAGrain) {
         labels[e] = (k == 3 && (arm || bottom)) ? 3 : 1;
     }
     EXPECT_EQ(Pieces(*pmesh, labels, 3), 1);
-    const auto result =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 0, 1});
+    const auto result = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 0, 1});
     EXPECT_GT(result.report.split_undone, 0);
     EXPECT_EQ(Pieces(*pmesh, labels, 3), 1);
     if (mfem::Mpi::Root()) {
@@ -203,8 +208,8 @@ TEST(LabelRepair, PinchesAreRemoved) {
     ms::LabelRepairOptions options;
     options.targets.analytic = false;
     const ms::SeedSet none;
-    const auto result = ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, none, {},
-                                         {-1, -1}, options);
+    const auto result = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, none, {}, {-1, -1}, options);
     // 7 nodes pinch at first; single flips remove most of the pinches (where two grains are
     // stacked in a checkerboard on both sides of a node it takes two flips at once, which the
     // greedy repair does not try); the remaining ones are held, none is left unfit
@@ -222,8 +227,8 @@ TEST(LabelRepair, PeninsulaFlipsBack) {
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
     const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
     mfem::Array<int> labels = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
-    const auto result =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1});
+    const auto result = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1});
     EXPECT_EQ(Differences(labels, clean), 0);
     EXPECT_EQ(result.report.flips, 1);
     EXPECT_EQ(result.report.peninsulas_before, 1);
@@ -237,8 +242,8 @@ TEST(LabelRepair, StrayElementFlipsToItsSurroundings) {
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
     const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
     mfem::Array<int> labels = WithStray(*pmesh, clean, KeyOf(3.0 / 12, 3.0 / 12, 3.0 / 12), 3);
-    const auto result =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1, 2});
+    const auto result = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1, 2});
     EXPECT_GT(result.report.bad_nodes_before, 0);
     EXPECT_EQ(result.report.bad_nodes_after, 0);
     EXPECT_EQ(Differences(labels, clean), 0);
@@ -250,11 +255,10 @@ TEST(LabelRepair, OneElementGrainIsNotEmptied) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
     const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
-    const mfem::Array<int> stray =
-        WithStray(*pmesh, clean, KeyOf(3.0 / 12, 3.0 / 12, 3.0 / 12), 3);
+    const mfem::Array<int> stray = WithStray(*pmesh, clean, KeyOf(3.0 / 12, 3.0 / 12, 3.0 / 12), 3);
     mfem::Array<int> labels(stray);
-    const auto result =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1, 2});
+    const auto result = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1, 2});
     EXPECT_EQ(Differences(labels, stray), 0);
     EXPECT_GT(result.report.blocked, 0);
     EXPECT_EQ(result.report.flips, 0);
@@ -275,11 +279,10 @@ TEST(LabelRepair, NonAnalyticAndFixedLabels) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
     const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
-    const mfem::Array<int> stray =
-        WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
+    const mfem::Array<int> stray = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
     mfem::Array<int> labels(stray);
-    const auto repaired =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1});
+    const auto repaired = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1});
     EXPECT_EQ(Differences(labels, clean), 0);
     EXPECT_EQ(repaired.report.flips, 1);
     EXPECT_EQ(repaired.report.peninsulas_after, 0);
@@ -287,8 +290,8 @@ TEST(LabelRepair, NonAnalyticAndFixedLabels) {
     labels = stray;
     ms::LabelRepairOptions options;
     options.labels.fixed_labels = {2};
-    const auto fixed =
-        ms::RepairLabels(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1}, options);
+    const auto fixed = ms::RepairLabels(
+        *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, -1}, options);
     EXPECT_EQ(Differences(labels, stray), 0);
     EXPECT_EQ(fixed.report.flips, 0);
     EXPECT_EQ(fixed.report.peninsulas_before, 0); // a fixed label is not a peninsula grain
@@ -303,15 +306,15 @@ TEST(LabelRepair, FlipToCurrentOwner) {
     const mfem::Array<int> clean = VoronoiLabels(*pmesh, seeds);
     mfem::Array<int> labels = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
     std::vector<char> flipped;
-    EXPECT_EQ(ms::FlipToCurrentOwner(*pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1},
-                                     0.2, flipped),
+    EXPECT_EQ(ms::FlipToCurrentOwner(
+                  *pmesh, labels, ms::MetricType::VORONOI, seeds, {}, {0, 1}, 0.2, flipped),
               1);
     EXPECT_EQ(Differences(labels, clean), 0);
     // A hysteresis beyond the element's offset (0.5 h) flips nothing
     mfem::Array<int> again = WithStray(*pmesh, clean, KeyOf(7.0 / 12, 5.0 / 12, 5.0 / 12), 1);
     std::vector<char> fresh;
-    EXPECT_EQ(ms::FlipToCurrentOwner(*pmesh, again, ms::MetricType::VORONOI, seeds, {}, {0, 1},
-                                     0.6, fresh),
+    EXPECT_EQ(ms::FlipToCurrentOwner(
+                  *pmesh, again, ms::MetricType::VORONOI, seeds, {}, {0, 1}, 0.6, fresh),
               0);
 }
 

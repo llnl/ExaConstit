@@ -1,12 +1,12 @@
 #include "microstructure/mesh/straight_sided.hpp"
 
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <stdexcept>
+
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -65,7 +65,8 @@ void ElementCornerPoints(const mfem::Mesh& mesh, int e, mfem::DenseMatrix& corne
  * StraightElementTransformation: the same steps as Mesh::GetElementTransformation for a mesh
  * without Nodes (mesh.cpp:361-373), with the corner points taken from ElementCornerPoints.
  */
-void StraightElementTransformation(const mfem::Mesh& mesh, int e,
+void StraightElementTransformation(const mfem::Mesh& mesh,
+                                   int e,
                                    mfem::IsoparametricTransformation& trans) {
     trans.Attribute = mesh.GetAttribute(e);
     trans.ElementNo = e;
@@ -103,7 +104,8 @@ void VertexPoint(const mfem::Mesh& mesh, int v, double* x) {
  * (face number, FACE type, the corner point matrix from GetFaceVertices, and the
  * order-1 element of the face type), with the corners from VertexPoint.
  */
-void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
+void StraightFaceTransformation(const mfem::Mesh& mesh,
+                                int f,
                                 mfem::IsoparametricTransformation& trans) {
     // MFEM copies the face element's attribute, which is not reachable through the public Mesh
     // interface; it plays no part in the geometry, so the default face attribute 1 is used
@@ -132,7 +134,9 @@ void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
  * with corner j of the face read from coords.Vertex(vertex j) (first SpaceDimension() of its
  * three stored components).
  */
-void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
+void StraightFaceTransformation(const mfem::Mesh& mesh,
+                                const VertexCoordinates& coords,
+                                int f,
                                 mfem::IsoparametricTransformation& trans) {
     trans.Attribute = 1; // geometry only, as in the overload above
     trans.ElementNo = f;
@@ -226,8 +230,8 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask, double 
         // Reference positions of the element's dofs and the corner-map shape functions
         const mfem::FiniteElement* fe = fes->GetFE(e);
         const mfem::IntegrationRule& ref_nodes = fe->GetNodes();
-        const mfem::FiniteElement* linear =
-            mfem::Mesh::GetTransformationFEforElementType(mesh.GetElementType(e));
+        const mfem::FiniteElement* linear = mfem::Mesh::GetTransformationFEforElementType(
+            mesh.GetElementType(e));
         shape.SetSize(linear->GetDof());
         fes->GetElementVDofs(e, vdofs);
         const int num_dofs = vdofs.Size() / sdim;
@@ -254,11 +258,14 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask, double 
  * MPI_Allreduce(MIN) over 0/1 so that one curved (active) element anywhere makes every rank
  * answer false.
  */
-bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, const ElementMask* mask,
+bool IsStraightSided(const mfem::Mesh& mesh,
+                     MPI_Comm comm,
+                     const ElementMask* mask,
                      double rel_tol) {
-    const bool bad_mask =
-        mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != mesh.GetNE();
-    ThrowIfAnyRank<std::invalid_argument>(comm, bad_mask,
+    const bool bad_mask = mask != nullptr && mask->active.Size() != 0 &&
+                          mask->active.Size() != mesh.GetNE();
+    ThrowIfAnyRank<std::invalid_argument>(comm,
+                                          bad_mask,
                                           "IsStraightSided: the element mask needs one entry "
                                           "per local element");
     const int local = StraightSidedLocal(mesh, mask, rel_tol) ? 1 : 0;
@@ -268,4 +275,3 @@ bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, const ElementMask* m
 }
 
 } // namespace exaconstit::microstructure
-

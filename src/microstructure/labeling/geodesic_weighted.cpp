@@ -13,10 +13,6 @@
  */
 #include "microstructure/labeling/geodesic_weighted.hpp"
 
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-#include "microstructure/labeling/fim_scan.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -27,6 +23,10 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/fim_scan.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -218,8 +218,12 @@ MFEM_HOST_DEVICE inline double ListValue(const int* ls, const double* lt, int K,
  * in the values but do not count (stopping tolerance, geodesic_weighted.hpp). Lists are sorted by
  * (f, seed), but a lowered T can reorder them, so seeds are matched by search. Host and device.
  */
-MFEM_HOST_DEVICE inline bool ListChanged(const int* old_s, const double* old_t, const int* new_s,
-                                         const double* new_t, int K, double tol) {
+MFEM_HOST_DEVICE inline bool ListChanged(const int* old_s,
+                                         const double* old_t,
+                                         const int* new_s,
+                                         const double* new_t,
+                                         int K,
+                                         double tol) {
     int n_old = 0;
     int n_new = 0;
     while (n_old < K && old_s[n_old] >= 0) {
@@ -266,10 +270,16 @@ MFEM_HOST_DEVICE inline void StoreList(const WorkList& list, int K, int v, int* 
  * working list. Other nodes copy their list. new_overflow[v] = 1 when a merge cut a seed. Reads
  * only the previous round's lists. One mfem::forall iteration per node. Not collective.
  */
-void ListSweep(const VertexField& field, int K, const mfem::Array<int>& changed,
-               const mfem::Vector& weights, const mfem::Vector& seed_stretch,
-               const mfem::Vector& tensors, const mfem::Array<int>& old_seed,
-               const mfem::Vector& old_t, mfem::Array<int>& new_seed, mfem::Vector& new_t,
+void ListSweep(const VertexField& field,
+               int K,
+               const mfem::Array<int>& changed,
+               const mfem::Vector& weights,
+               const mfem::Vector& seed_stretch,
+               const mfem::Vector& tensors,
+               const mfem::Array<int>& old_seed,
+               const mfem::Vector& old_t,
+               mfem::Array<int>& new_seed,
+               mfem::Vector& new_t,
                mfem::Array<int>& new_overflow) {
     const int nv = field.NumVertices();
     if (nv == 0) {
@@ -319,56 +329,56 @@ void ListSweep(const VertexField& field, int K, const mfem::Array<int>& changed,
         const double* xv = &xyz[3 * v];
         for (int k = ve_offsets[v]; k < ve_offsets[v + 1]; ++k) {
             const int e = ve_items[k];
-            view.ForEachCellOfIncidence(v, e, view.LatticeOfIncidence(k),
-                                        [&](const int* others, const int* bits, int n) {
-                const double* xo[MAX_ELEMENT_VERTICES - 1];
-                for (int i = 0; i < n; ++i) {
-                    xo[i] = &xyz[3 * others[i]];
-                }
-                int far[MAX_ELEMENT_VERTICES - 1];
-                const bool hex = CellFarMasks(curved, bits, n, far);
-                // Every seed of the corners' lists, once per cell (first occurrence only)
-                for (int i = 0; i < n; ++i) {
-                    for (int q = 0; q < K; ++q) {
-                        const int s = ls[K * others[i] + q];
-                        if (s < 0) {
-                            break;
-                        }
-                        bool seen = false;
-                        for (int i2 = 0; i2 < i && !seen; ++i2) {
-                            seen = ListValue(ls, lt, K, others[i2], s) < EikonalInfinity();
-                        }
-                        for (int q2 = 0; q2 < q && !seen; ++q2) {
-                            seen = ls[K * others[i] + q2] == s;
-                        }
-                        if (seen) {
-                            continue;
-                        }
-                        double to[MAX_ELEMENT_VERTICES - 1];
-                        for (int i2 = 0; i2 < n; ++i2) {
-                            to[i2] = ListValue(ls, lt, K, others[i2], s);
-                        }
-                        int mask = 0;
-                        double value;
-                        if (sst != nullptr) {
-                            // Seed s's own metric: map v and the corners with S_s
-                            const double* m = &sst[9 * s];
-                            double yv[3];
-                            double yo[MAX_ELEMENT_VERTICES - 1][3];
-                            const double* yp[MAX_ELEMENT_VERTICES - 1];
-                            MapPoint(m, xv, yv);
-                            for (int i2 = 0; i2 < n; ++i2) {
-                                MapPoint(m, xo[i2], yo[i2]);
-                                yp[i2] = yo[i2];
-                            }
-                            value = ScanCell(yv, yp, to, bits, hex ? far : nullptr, n, &mask);
-                        } else {
-                            value = ScanCell(xv, xo, to, bits, hex ? far : nullptr, n, &mask);
-                        }
-                        list.Insert(s, value, w);
+            view.ForEachCellOfIncidence(
+                v, e, view.LatticeOfIncidence(k), [&](const int* others, const int* bits, int n) {
+                    const double* xo[MAX_ELEMENT_VERTICES - 1];
+                    for (int i = 0; i < n; ++i) {
+                        xo[i] = &xyz[3 * others[i]];
                     }
-                }
-            });
+                    int far[MAX_ELEMENT_VERTICES - 1];
+                    const bool hex = CellFarMasks(curved, bits, n, far);
+                    // Every seed of the corners' lists, once per cell (first occurrence only)
+                    for (int i = 0; i < n; ++i) {
+                        for (int q = 0; q < K; ++q) {
+                            const int s = ls[K * others[i] + q];
+                            if (s < 0) {
+                                break;
+                            }
+                            bool seen = false;
+                            for (int i2 = 0; i2 < i && !seen; ++i2) {
+                                seen = ListValue(ls, lt, K, others[i2], s) < EikonalInfinity();
+                            }
+                            for (int q2 = 0; q2 < q && !seen; ++q2) {
+                                seen = ls[K * others[i] + q2] == s;
+                            }
+                            if (seen) {
+                                continue;
+                            }
+                            double to[MAX_ELEMENT_VERTICES - 1];
+                            for (int i2 = 0; i2 < n; ++i2) {
+                                to[i2] = ListValue(ls, lt, K, others[i2], s);
+                            }
+                            int mask = 0;
+                            double value;
+                            if (sst != nullptr) {
+                                // Seed s's own metric: map v and the corners with S_s
+                                const double* m = &sst[9 * s];
+                                double yv[3];
+                                double yo[MAX_ELEMENT_VERTICES - 1][3];
+                                const double* yp[MAX_ELEMENT_VERTICES - 1];
+                                MapPoint(m, xv, yv);
+                                for (int i2 = 0; i2 < n; ++i2) {
+                                    MapPoint(m, xo[i2], yo[i2]);
+                                    yp[i2] = yo[i2];
+                                }
+                                value = ScanCell(yv, yp, to, bits, hex ? far : nullptr, n, &mask);
+                            } else {
+                                value = ScanCell(xv, xo, to, bits, hex ? far : nullptr, n, &mask);
+                            }
+                            list.Insert(s, value, w);
+                        }
+                    }
+                });
         }
         list.Sort();
         StoreList(list, K, v, ns, nt);
@@ -381,9 +391,13 @@ void ListSweep(const VertexField& field, int K, const mfem::Array<int>& changed,
  * the same order-independent merge on every rank). Returns, per node, whether a merge cut a seed
  * (overflow) through `overflow` (OR-ed in). Collective. Host.
  */
-void MergeSharedLists(const VertexField& field, int K, const std::vector<double>& weights,
-                      const std::vector<double>& tensors, mfem::Array<int>& seeds,
-                      mfem::Vector& dist, mfem::Array<int>& overflow) {
+void MergeSharedLists(const VertexField& field,
+                      int K,
+                      const std::vector<double>& weights,
+                      const std::vector<double>& tensors,
+                      mfem::Array<int>& seeds,
+                      mfem::Vector& dist,
+                      mfem::Array<int>& overflow) {
     const int nv = field.NumVertices();
     const int width = 2 * K;
     int* ls = seeds.HostReadWrite();
@@ -401,8 +415,8 @@ void MergeSharedLists(const VertexField& field, int K, const std::vector<double>
     std::vector<int> offsets;
     field.ExchangeSharedPayload(width, send, recv, offsets);
     for (int v = 0; v < nv; ++v) {
-        if (shared[v] == 0 || offsets[static_cast<std::size_t>(v) + 1] ==
-                                  offsets[static_cast<std::size_t>(v)]) {
+        if (shared[v] == 0 ||
+            offsets[static_cast<std::size_t>(v) + 1] == offsets[static_cast<std::size_t>(v)]) {
             continue;
         }
         WorkList list;
@@ -412,7 +426,8 @@ void MergeSharedLists(const VertexField& field, int K, const std::vector<double>
             list.Insert(ls[K * v + q], lt[K * v + q], weights.data());
         }
         for (int c = offsets[static_cast<std::size_t>(v)];
-             c < offsets[static_cast<std::size_t>(v) + 1]; ++c) {
+             c < offsets[static_cast<std::size_t>(v) + 1];
+             ++c) {
             const double* copy = &recv[static_cast<std::size_t>(c) * width];
             for (int q = 0; q < K; ++q) {
                 const int s = static_cast<int>(copy[2 * q]);
@@ -470,7 +485,9 @@ double MetricDiameter(const VertexField& field, MPI_Comm comm) {
  *  4. Labels: the first entry of each list (T and seed into the VertexField), SetSeedLists, element
  *     labels (centroid or vote) and the statistics.
  */
-GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
+GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh,
+                                     MPI_Comm comm,
+                                     const SeedSet& seeds,
                                      const std::vector<double>& weights,
                                      const GeodesicParameters& params) {
     // Step 1: parameters
@@ -541,14 +558,15 @@ GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const 
                                 pmesh.GetElement(e)->GetNVertices() > MAX_ELEMENT_VERTICES;
         }
         ThrowIfAnyRank<std::runtime_error>(
-            comm, too_many_vertices,
+            comm,
+            too_many_vertices,
             "LabelGeodesicWeighted: elements with more than 8 vertices are not supported");
     }
 
     // Step 2: field, sources, source lists
     GeodesicLabels result;
-    result.field =
-        std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
+    result.field = std::make_unique<VertexField>(
+        pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
     field.SetMetricStretch(params.stretch);
     result.sources = field.InitializeSources(seeds, {}, params.context);
@@ -654,8 +672,17 @@ GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const 
     new_t.UseDevice(true);
     mfem::Array<int> new_overflow(nv);
     for (int round = 1;; ++round) {
-        ListSweep(field, K, changed, weight_vec, stretch_vec, tensor_vec, list_seed, list_t,
-                  new_seed, new_t, new_overflow);
+        ListSweep(field,
+                  K,
+                  changed,
+                  weight_vec,
+                  stretch_vec,
+                  tensor_vec,
+                  list_seed,
+                  list_t,
+                  new_seed,
+                  new_t,
+                  new_overflow);
         {
             const int* no = new_overflow.HostRead();
             int* ovf = overflow.HostReadWrite();
@@ -672,8 +699,8 @@ GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const 
             const double* nt = new_t.HostRead();
             int* chg = changed.HostWrite();
             for (int v = 0; v < nv; ++v) {
-                const bool c = ListChanged(&os[K * v], &ot[K * v], &ns[K * v], &nt[K * v], K,
-                                           tolerance);
+                const bool c = ListChanged(
+                    &os[K * v], &ot[K * v], &ns[K * v], &nt[K * v], K, tolerance);
                 chg[v] = c ? 1 : 0;
                 local_change = local_change || c;
             }
@@ -685,7 +712,8 @@ GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const 
             break;
         }
         ThrowIfAnyRank<std::runtime_error>(
-            comm, round >= params.max_rounds,
+            comm,
+            round >= params.max_rounds,
             "LabelGeodesicWeighted: max_rounds exceeded in the distance rounds");
     }
 
@@ -721,8 +749,8 @@ GeodesicLabels LabelGeodesicWeighted(mfem::ParMesh& pmesh, MPI_Comm comm, const 
     field.SetSeedLists(K, list_seed, list_t, w, params.seed_stretch);
     std::int64_t split = 0;
     if (params.sampling == SamplingMode::QUADRATURE_VOTE) {
-        split = field.LabelElementsByVote(params.vote_levels, params.max_points_per_chunk,
-                                          result.element_seed);
+        split = field.LabelElementsByVote(
+            params.vote_levels, params.max_points_per_chunk, result.element_seed);
     } else {
         field.LabelElementCentroids(result.element_seed);
     }

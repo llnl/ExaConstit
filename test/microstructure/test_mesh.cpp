@@ -1,16 +1,15 @@
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/preflight.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <cmath>
 #include <memory>
 #include <mpi.h>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include <gtest/gtest.h>
 
 /*
  * Tests for the mesh module: serial-order bookkeeping for distributed meshes, the element and
@@ -391,8 +390,7 @@ TEST(MicrostructureMesh, QuadraturePointSamples) {
         EXPECT_NEAR(mz / wsum, h.cz[e], 1e-14);
     }
 
-    EXPECT_THROW(ms::ComputeQuadraturePointSamples(*d.pmesh, 3, 0, ne + 1, qp),
-                 std::runtime_error);
+    EXPECT_THROW(ms::ComputeQuadraturePointSamples(*d.pmesh, 3, 0, ne + 1, qp), std::runtime_error);
 }
 
 /*
@@ -531,8 +529,8 @@ TEST(MicrostructureMesh, PreflightFlagsNonconformingAndPeriodic) {
     std::vector<mfem::Vector> translations = {mfem::Vector({1.0, 0.0, 0.0}),
                                               mfem::Vector({0.0, 1.0, 0.0}),
                                               mfem::Vector({0.0, 0.0, 1.0})};
-    mfem::Mesh periodic =
-        mfem::Mesh::MakePeriodic(base, base.CreatePeriodicVertexMapping(translations));
+    mfem::Mesh periodic = mfem::Mesh::MakePeriodic(base,
+                                                   base.CreatePeriodicVertexMapping(translations));
     const ms::PreflightReport p_report = ms::CheckMesh(periodic, MPI_COMM_SELF);
     EXPECT_FALSE(p_report.continuous_nodes);
     EXPECT_TRUE(p_report.conforming);

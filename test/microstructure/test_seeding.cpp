@@ -1,10 +1,4 @@
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/min_distance_grid.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +7,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/seeding/min_distance_grid.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include <gtest/gtest.h>
 
 /*
  * Tests for seed generation. Every test runs on all ranks (GenerateSeeds is collective).
@@ -48,8 +47,12 @@ mfem::Mesh LShape(int n, bool tets) {
     const int nx = 2 * n;
     const int ny = 2 * n;
     const int nz = n;
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
-    auto kept = [&](int i, int j) { return !(i >= n && j >= n); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
+    auto kept = [&](int i, int j) {
+        return !(i >= n && j >= n);
+    };
 
     int num_cells = 0;
     for (int j = 0; j < ny; j++) {
@@ -81,8 +84,8 @@ mfem::Mesh LShape(int n, bool tets) {
                     mesh.AddHex(hex);
                 } else {
                     // Kuhn split: one tet per axis order (a, b, c) of the path 000 -> 111
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -337,8 +340,8 @@ TEST(Seeding, RsaMinimumPairDistance) {
 
         // Same distance function as the grid (minimum image when periodic)
         const double hi = periodic ? 1.0 : 2.0;
-        const ms::MinDistanceGrid metric({0.0, 0.0, 0.0}, {hi, hi, 1.0}, report.min_distance,
-                                         params.periodic);
+        const ms::MinDistanceGrid metric(
+            {0.0, 0.0, 0.0}, {hi, hi, 1.0}, report.min_distance, params.periodic);
         double min_pair = 1e300;
         for (std::size_t i = 0; i < seeds.Size(); i++) {
             for (std::size_t j = i + 1; j < seeds.Size(); j++) {
@@ -574,8 +577,7 @@ TEST(Seeding, HcpLatticeNeighbors) {
             if (j == i) {
                 continue;
             }
-            const double dx = seeds.x[j] - xi[0], dy = seeds.y[j] - xi[1],
-                         dz = seeds.z[j] - xi[2];
+            const double dx = seeds.x[j] - xi[0], dy = seeds.y[j] - xi[1], dz = seeds.z[j] - xi[2];
             const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
             EXPECT_GE(dist, a * (1.0 - 1e-9));
             neighbors += (dist < a * (1.0 + 1e-9)) ? 1 : 0;
@@ -695,9 +697,8 @@ TEST(Seeding, UserSamplingBoxRejection) {
 TEST(Seeding, LocalSetupFailureThrowsOnAllRanks) {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    mfem::Mesh local = (rank == 0)
-                           ? mfem::Mesh::MakeCartesian2D(2, 2, mfem::Element::QUADRILATERAL)
-                           : UnitCube(2, mfem::Element::HEXAHEDRON);
+    mfem::Mesh local = (rank == 0) ? mfem::Mesh::MakeCartesian2D(2, 2, mfem::Element::QUADRILATERAL)
+                                   : UnitCube(2, mfem::Element::HEXAHEDRON);
     std::string message;
     try {
         ms::GenerateSeeds(local, MPI_COMM_WORLD, RandomParams(10, 0));

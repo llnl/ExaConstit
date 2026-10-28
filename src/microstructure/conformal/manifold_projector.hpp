@@ -70,8 +70,8 @@ enum class ProjectionResult : int {
  * @brief Value and gradient of row r at y. Host and device.
  */
 template <typename Metric>
-MFEM_HOST_DEVICE inline double EvalManifoldRow(const Metric& metric, const ManifoldRow& r,
-                                               const double y[3], double grad[3]) {
+MFEM_HOST_DEVICE inline double
+EvalManifoldRow(const Metric& metric, const ManifoldRow& r, const double y[3], double grad[3]) {
     if (r.kind == ManifoldRow::PLANE) {
         grad[0] = r.normal[0];
         grad[1] = r.normal[1];
@@ -100,10 +100,14 @@ MFEM_HOST_DEVICE inline double EvalManifoldRow(const Metric& metric, const Manif
  * @param iterations     out (optional): steps taken.
  */
 template <typename Metric>
-MFEM_HOST_DEVICE inline ProjectionResult
-ProjectOntoManifold(const Metric& metric, const ManifoldRow* rows, int num_rows,
-                    const double x[3], double tolerance, int max_iterations, double y[3],
-                    int* iterations = nullptr) {
+MFEM_HOST_DEVICE inline ProjectionResult ProjectOntoManifold(const Metric& metric,
+                                                             const ManifoldRow* rows,
+                                                             int num_rows,
+                                                             const double x[3],
+                                                             double tolerance,
+                                                             int max_iterations,
+                                                             double y[3],
+                                                             int* iterations = nullptr) {
     y[0] = x[0];
     y[1] = x[1];
     y[2] = x[2];

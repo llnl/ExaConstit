@@ -21,21 +21,20 @@
  * than one grain, compact ids, every element labeled, and for the passthrough case the plate
  * elements carry the last grain id.
  */
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <cmath>
 #include <memory>
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -74,8 +73,8 @@ mfem::Mesh CurvedBox(mfem::Element::Type type, int order, int basis) {
 }
 
 /** Per-element values gathered into serial element order and broadcast to every rank. */
-std::vector<int> GatherToAll(MPI_Comm comm, const ms::SerialOrder& order,
-                             const mfem::Array<int>& local) {
+std::vector<int>
+GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>& local) {
     local.HostRead();
     std::vector<int> all = ms::GatherToSerial(comm, order, local, 0);
     int size = static_cast<int>(all.size());
@@ -106,9 +105,8 @@ DriverRun RunDriver(mfem::Mesh& serial, const ms::MicrostructureOptions& options
     run.result = ms::GenerateMicrostructure(options, *pmesh, comm, &report);
     run.labels = GatherToAll(comm, order, run.result.element_grain);
     run.attributes = GatherToAll(comm, order, attributes);
-    const ms::GrainStatistics stats =
-        ms::ComputeGrainStatistics(*report.adjacency, run.result.element_grain,
-                                   run.result.num_grains);
+    const ms::GrainStatistics stats = ms::ComputeGrainStatistics(
+        *report.adjacency, run.result.element_grain, run.result.num_grains);
     run.grain_volume = stats.volume;
     return run;
 }

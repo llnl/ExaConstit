@@ -24,6 +24,17 @@
  * only the plate warped, the active elements are straight, so the masked run takes the corner
  * field exactly like the straight reference (the straightness test looks at active elements).
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mpi.h>
+#include <string>
+#include <vector>
+
 #include "microstructure/labeling/connected_labeler.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
@@ -37,19 +48,7 @@
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <map>
-#include <memory>
-#include <mpi.h>
-#include <string>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -79,7 +78,9 @@ mfem::Mesh BuildMesh(bool reference, bool tets) {
     auto kept = [&](int i, int j, int k) {
         return IsActive(i, j, k) || (!reference && IsPlate(i, j, k));
     };
-    auto vid = [](int i, int j, int k) { return i + (NX + 1) * (j + (NY + 1) * k); };
+    auto vid = [](int i, int j, int k) {
+        return i + (NX + 1) * (j + (NY + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < NZ; k++) {
         for (int j = 0; j < NY; j++) {
@@ -111,8 +112,8 @@ mfem::Mesh BuildMesh(bool reference, bool tets) {
                     const int hex[8] = {c[0], c[1], c[3], c[2], c[4], c[5], c[7], c[6]};
                     mesh.AddHex(hex, attribute);
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet, attribute);
@@ -153,8 +154,8 @@ std::unique_ptr<Run> Distribute(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** Labels of the active elements keyed by element key, over all ranks (collective). */
-std::map<std::uint64_t, int> ByKey(const Run& run, const mfem::Array<int>& labels,
-                                   const ms::ElementMask* mask) {
+std::map<std::uint64_t, int>
+ByKey(const Run& run, const mfem::Array<int>& labels, const ms::ElementMask* mask) {
     const std::vector<std::uint64_t> keys = ms::ComputeElementKeys(*run.pmesh);
     std::vector<std::uint64_t> pairs;
     const int* l = labels.HostRead();
@@ -176,8 +177,14 @@ std::map<std::uint64_t, int> ByKey(const Run& run, const mfem::Array<int>& label
         total += counts[static_cast<std::size_t>(r)];
     }
     std::vector<std::uint64_t> all(static_cast<std::size_t>(total));
-    MPI_Allgatherv(pairs.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_UINT64_T, run.comm);
+    MPI_Allgatherv(pairs.data(),
+                   count,
+                   MPI_UINT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_UINT64_T,
+                   run.comm);
     std::map<std::uint64_t, int> out;
     for (std::size_t i = 0; i + 1 < all.size(); i += 2) {
         out[all[i]] = static_cast<int>(static_cast<std::int64_t>(all[i + 1]));
@@ -266,10 +273,10 @@ TEST(MaskLabeling, EuclideanLabelsAndCleanupEqualActiveOnlyMesh) {
                 tess.sampling = ms::SamplingMode::QUADRATURE_VOTE;
                 tess.vote_levels = 1;
             }
-            const ms::TessellationLabels a =
-                ms::LabelTessellation(*masked->pmesh, MPI_COMM_WORLD, seeds, tess, &masked->mask);
-            const ms::TessellationLabels b =
-                ms::LabelTessellation(*reference->pmesh, MPI_COMM_SELF, seeds, tess);
+            const ms::TessellationLabels a = ms::LabelTessellation(
+                *masked->pmesh, MPI_COMM_WORLD, seeds, tess, &masked->mask);
+            const ms::TessellationLabels b = ms::LabelTessellation(
+                *reference->pmesh, MPI_COMM_SELF, seeds, tess);
             EXPECT_EQ(ByKey(*masked, a.element_seed, &masked->mask),
                       ByKey(*reference, b.element_seed, nullptr));
             EXPECT_EQ(a.num_grains, b.num_grains);
@@ -319,10 +326,16 @@ TEST(MaskLabeling, ConnectedAndGeodesicPathsAvoidThePlate) {
         ms::SetInactiveValues(&masked->mask, sa, -1);
         ms::LabelElementsWithSeeds(*reference->pmesh, seeds, tess, sb);
         ms::ConnectedLabelParameters connected;
-        ms::ConstrainToConnectedCells(*masked->pmesh, MPI_COMM_WORLD, *masked->adjacency, seeds,
-                                      tess, sa, connected, &context);
-        ms::ConstrainToConnectedCells(*reference->pmesh, MPI_COMM_SELF, *reference->adjacency,
-                                      seeds, tess, sb, connected);
+        ms::ConstrainToConnectedCells(*masked->pmesh,
+                                      MPI_COMM_WORLD,
+                                      *masked->adjacency,
+                                      seeds,
+                                      tess,
+                                      sa,
+                                      connected,
+                                      &context);
+        ms::ConstrainToConnectedCells(
+            *reference->pmesh, MPI_COMM_SELF, *reference->adjacency, seeds, tess, sb, connected);
         const auto connected_a = ByKey(*masked, sa, &masked->mask);
         EXPECT_EQ(connected_a, ByKey(*reference, sb, nullptr)) << (tets ? "tet" : "hex");
         EXPECT_EQ(connected_a.at(right_bottom), 1) << "connected";
@@ -359,19 +372,19 @@ TEST(MaskLabeling, EmptyMaskChangesNothing) {
     const ms::SeedSet seeds = TwoSeeds();
     ms::ElementMask empty;
     const ms::TessellationOptions tess;
-    const ms::TessellationLabels a =
-        ms::LabelTessellation(*run->pmesh, MPI_COMM_WORLD, seeds, tess);
-    const ms::TessellationLabels b =
-        ms::LabelTessellation(*run->pmesh, MPI_COMM_WORLD, seeds, tess, &empty);
+    const ms::TessellationLabels a = ms::LabelTessellation(
+        *run->pmesh, MPI_COMM_WORLD, seeds, tess);
+    const ms::TessellationLabels b = ms::LabelTessellation(
+        *run->pmesh, MPI_COMM_WORLD, seeds, tess, &empty);
     EXPECT_EQ(ByKey(*run, a.element_grain, nullptr), ByKey(*run, b.element_grain, nullptr));
     ms::MaterialContext context;
     context.mask = &empty;
     ms::GeodesicParameters params;
     params.context = &context;
-    const ms::GeodesicLabels ga = ms::LabelGeodesicFim(*run->pmesh, MPI_COMM_WORLD, seeds, false,
-                                                       ms::GeodesicParameters{});
-    const ms::GeodesicLabels gb =
-        ms::LabelGeodesicFim(*run->pmesh, MPI_COMM_WORLD, seeds, false, params);
+    const ms::GeodesicLabels ga = ms::LabelGeodesicFim(
+        *run->pmesh, MPI_COMM_WORLD, seeds, false, ms::GeodesicParameters{});
+    const ms::GeodesicLabels gb = ms::LabelGeodesicFim(
+        *run->pmesh, MPI_COMM_WORLD, seeds, false, params);
     EXPECT_EQ(ByKey(*run, ga.element_seed, nullptr), ByKey(*run, gb.element_seed, nullptr));
 }
 
@@ -399,16 +412,16 @@ TEST(MaskLabeling, CurvedMaterialUsesTheNodalField) {
         const std::uint64_t right_bottom = KeyNear(*reference, 0.875, 0.25, 0.625);
 
         const ms::TessellationOptions tess;
-        const ms::TessellationLabels a =
-            ms::LabelTessellation(*masked->pmesh, MPI_COMM_WORLD, seeds, tess, &masked->mask);
-        const ms::TessellationLabels b =
-            ms::LabelTessellation(*reference->pmesh, MPI_COMM_SELF, seeds, tess);
+        const ms::TessellationLabels a = ms::LabelTessellation(
+            *masked->pmesh, MPI_COMM_WORLD, seeds, tess, &masked->mask);
+        const ms::TessellationLabels b = ms::LabelTessellation(
+            *reference->pmesh, MPI_COMM_SELF, seeds, tess);
         EXPECT_EQ(ByKey(*masked, a.element_seed, &masked->mask),
                   ByKey(*reference, b.element_seed, nullptr));
 
         for (const bool graph : {false, true}) {
-            const std::string what =
-                std::string(tets ? "tet " : "hex ") + (graph ? "graph" : "FIM");
+            const std::string what = std::string(tets ? "tet " : "hex ") +
+                                     (graph ? "graph" : "FIM");
             ms::GeodesicParameters params;
             params.context = &context;
             const ms::GeodesicParameters plain;

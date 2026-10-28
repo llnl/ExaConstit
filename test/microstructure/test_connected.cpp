@@ -29,6 +29,23 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cfloat>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <memory>
+#include <mpi.h>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
+
+#include "axom/core/execution/execution_space.hpp"
 #include "microstructure/geometry/seed_index.hpp"
 #include "microstructure/labeling/connected_labeler.hpp"
 #include "microstructure/labeling/quadrature_vote.hpp"
@@ -37,28 +54,9 @@
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
 #include "microstructure/microstructure_options.hpp"
-
-#include "mfem.hpp"
-
-#include "axom/core/execution/execution_space.hpp"
-
+#include "microstructure/seeding/seed_element_locator.hpp"
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <array>
-#include <cfloat>
-#include <cmath>
-#include <cstdio>
-#include <cstdint>
-#include <limits>
-#include <memory>
-#include <mpi.h>
-#include <queue>
-#include <random>
-#include <string>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -76,7 +74,9 @@ const std::string data_dir = MS_CONNECTED_DATA_DIR;
  */
 template <typename Kept>
 mfem::Mesh BuildGrid(int nx, int ny, int nz, double h, Kept kept) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -162,8 +162,8 @@ Distributed DistributeWithEmptyLastRank(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** Per-element values gathered into serial order on every rank. Collective. */
-std::vector<int> GatherAll(MPI_Comm comm, const Distributed& d, const mfem::Array<int>& local,
-                           int serial_ne) {
+std::vector<int>
+GatherAll(MPI_Comm comm, const Distributed& d, const mfem::Array<int>& local, int serial_ne) {
     std::vector<int> out = ms::GatherToSerial(comm, d.order, local, 0);
     out.resize(static_cast<std::size_t>(serial_ne));
     MPI_Bcast(out.data(), serial_ne, MPI_INT, 0, comm);
@@ -185,9 +185,12 @@ struct RunResult {
  * Euclidean labels (centroid, or the quadrature vote when params.sampling asks for it) followed
  * by ConstrainToConnectedCells, on `serial` distributed over `comm`. Collective.
  */
-RunResult RunConnected(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
+RunResult RunConnected(mfem::Mesh& serial,
+                       MPI_Comm comm,
+                       const ms::SeedSet& seeds,
                        const ms::TessellationOptions& tess,
-                       const ms::ConnectedLabelParameters& params, bool empty_last_rank) {
+                       const ms::ConnectedLabelParameters& params,
+                       bool empty_last_rank) {
     Distributed d = empty_last_rank ? DistributeWithEmptyLastRank(serial, comm)
                                     : Distribute(serial, comm);
     mfem::Array<int> element_seed;
@@ -204,8 +207,8 @@ RunResult RunConnected(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& see
     RunResult r;
     r.input = GatherAll(comm, d, element_seed, serial.GetNE());
     const ms::MeshAdjacency adjacency(*d.pmesh);
-    r.report = ms::ConstrainToConnectedCells(*d.pmesh, comm, adjacency, seeds, tess, element_seed,
-                                             params);
+    r.report = ms::ConstrainToConnectedCells(
+        *d.pmesh, comm, adjacency, seeds, tess, element_seed, params);
     r.output = GatherAll(comm, d, element_seed, serial.GetNE());
     return r;
 }
@@ -214,7 +217,8 @@ RunResult RunConnected(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& see
  * RunConnected over MPI_COMM_WORLD (METIS and round-robin with an empty last rank) and over
  * MPI_COMM_SELF (the np = 1 reference); all three must agree exactly. Returns the world result.
  */
-RunResult RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds,
+RunResult RunAndCompare(mfem::Mesh& serial,
+                        const ms::SeedSet& seeds,
                         const ms::TessellationOptions& tess,
                         const ms::ConnectedLabelParameters& params) {
     const RunResult world = RunConnected(serial, MPI_COMM_WORLD, seeds, tess, params, false);
@@ -284,7 +288,8 @@ std::vector<int> Components(const std::vector<std::vector<int>>& nbrs,
 
 /** Number of face-connected pieces of every label (label -> count). */
 std::vector<int> PiecesPerLabel(const std::vector<std::vector<int>>& nbrs,
-                                const std::vector<int>& label, int num_labels) {
+                                const std::vector<int>& label,
+                                int num_labels) {
     const std::vector<int> comp = Components(nbrs, label);
     std::vector<std::vector<int>> seen(static_cast<std::size_t>(num_labels));
     for (std::size_t e = 0; e < label.size(); ++e) {
@@ -335,8 +340,8 @@ SerialSamples MakeSamples(mfem::Mesh& mesh, const ms::ConnectedLabelParameters& 
 }
 
 /** Voronoi (d^2) or Laguerre (d^2 - w) metric value of seed s at a point, written out here. */
-double RefMetric(ms::MetricType metric, const ms::SeedSet& seeds, int s, double x, double y,
-                 double z) {
+double
+RefMetric(ms::MetricType metric, const ms::SeedSet& seeds, int s, double x, double y, double z) {
     const auto us = static_cast<std::size_t>(s);
     const double dx = x - seeds.x[us];
     const double dy = y - seeds.y[us];
@@ -353,7 +358,10 @@ double RefMetric(ms::MetricType metric, const ms::SeedSet& seeds, int s, double 
  * (f, index); then (vote) the label with the largest total point weight, summed in point order,
  * ties to the lower index. -1 when every seed is excluded.
  */
-int RefLabel(ms::MetricType metric, const ms::SeedSet& seeds, const SerialSamples& samples, int e,
+int RefLabel(ms::MetricType metric,
+             const ms::SeedSet& seeds,
+             const SerialSamples& samples,
+             int e,
              const std::vector<int>& excluded) {
     const int n = static_cast<int>(seeds.Size());
     std::vector<int> point_label(static_cast<std::size_t>(samples.nq), -1);
@@ -424,8 +432,10 @@ struct RefResult {
  * Also returns the label-independent anchors (containing element, else nearest centroid) for the
  * SeedAnchorElementKeys check.
  */
-RefResult RoundsReference(mfem::Mesh& mesh, const ms::SeedSet& seeds, ms::MetricType metric,
-                    const ms::ConnectedLabelParameters& params) {
+RefResult RoundsReference(mfem::Mesh& mesh,
+                          const ms::SeedSet& seeds,
+                          ms::MetricType metric,
+                          const ms::ConnectedLabelParameters& params) {
     const int ne = mesh.GetNE();
     const int n = static_cast<int>(seeds.Size());
     const auto nbrs = FaceGraph(mesh);
@@ -509,17 +519,16 @@ RefResult RoundsReference(mfem::Mesh& mesh, const ms::SeedSet& seeds, ms::Metric
                 const double dz = cz[e] - p[2];
                 const double d2 = dx * dx + dy * dy + dz * dz;
                 if (a < 0 || d2 < best ||
-                    (d2 == best && keys[static_cast<std::size_t>(e)] <
-                                       keys[static_cast<std::size_t>(a)])) {
+                    (d2 == best &&
+                     keys[static_cast<std::size_t>(e)] < keys[static_cast<std::size_t>(a)])) {
                     best = d2;
                     a = e;
                 }
             }
         }
         anchor[us] = a;
-        ref.connected_anchor_key.push_back(
-            (a >= 0) ? keys[static_cast<std::size_t>(a)]
-                     : std::numeric_limits<std::uint64_t>::max());
+        ref.connected_anchor_key.push_back((a >= 0) ? keys[static_cast<std::size_t>(a)]
+                                                    : std::numeric_limits<std::uint64_t>::max());
     }
 
     // Exempt bodies
@@ -595,9 +604,11 @@ RefResult RoundsReference(mfem::Mesh& mesh, const ms::SeedSet& seeds, ms::Metric
 }
 
 /** Library run (all partitions) and serial reference must agree in every label and count. */
-RefResult ExpectMatchesReference(mfem::Mesh& mesh, const ms::SeedSet& seeds,
+RefResult ExpectMatchesReference(mfem::Mesh& mesh,
+                                 const ms::SeedSet& seeds,
                                  const ms::TessellationOptions& tess,
-                                 const ms::ConnectedLabelParameters& params, RunResult* run_out) {
+                                 const ms::ConnectedLabelParameters& params,
+                                 RunResult* run_out) {
     const RunResult run = RunAndCompare(mesh, seeds, tess, params);
     const RefResult ref = RoundsReference(mesh, seeds, tess.metric, params);
     EXPECT_EQ(run.input, ref.input) << "Euclidean input labels differ from the reference";
@@ -650,8 +661,8 @@ void ArmMembership(mfem::Mesh& mesh, std::vector<char>& left, std::vector<char>&
  * Brute force: smallest (f, index) over the seeds not on `list`; {-1, DBL_MAX} if all are listed.
  */
 template <typename Metric>
-std::pair<int, double> BruteExcluding(const Metric& metric, int n, double x, double y, double z,
-                                      const std::vector<int>& list) {
+std::pair<int, double> BruteExcluding(
+    const Metric& metric, int n, double x, double y, double z, const std::vector<int>& list) {
     int best = -1;
     double best_f = DBL_MAX;
     for (int s = 0; s < n; ++s) {
@@ -675,7 +686,8 @@ std::pair<int, double> BruteExcluding(const Metric& metric, int n, double x, dou
  * must report -1.
  */
 template <typename Metric>
-void ExpectExcludingMatchesBrute(const ms::SeedSet& seeds, const ms::MetricSetup& setup,
+void ExpectExcludingMatchesBrute(const ms::SeedSet& seeds,
+                                 const ms::MetricSetup& setup,
                                  const std::string& tag) {
     const int n = static_cast<int>(seeds.Size());
     ms::SeedIndex<axom::SEQ_EXEC, Metric> index;
@@ -698,9 +710,9 @@ void ExpectExcludingMatchesBrute(const ms::SeedSet& seeds, const ms::MetricSetup
         std::sort(order.begin(), order.end());
         const int len = q % 7;
         for (int k = 0; k < len; ++k) {
-            const int pick = (k % 2 == 0) ? order[static_cast<std::size_t>(
-                                                std::min(k, n - 1))].second
-                                          : static_cast<int>(gen() % static_cast<unsigned>(n));
+            const int pick = (k % 2 == 0)
+                                 ? order[static_cast<std::size_t>(std::min(k, n - 1))].second
+                                 : static_cast<int>(gen() % static_cast<unsigned>(n));
             lists[static_cast<std::size_t>(q)].push_back(pick);
         }
     }
@@ -773,14 +785,14 @@ TEST(SeedIndex, FindBestExcludingMatchesBruteForce) {
         for (int i = 0; i < n; ++i) {
             weighted.weight.push_back(h * h * uni(gen));
         }
-        ExpectExcludingMatchesBrute<ms::LaguerreMetric>(weighted, ms::MetricSetup{},
-                                                        "Laguerre " + tag);
+        ExpectExcludingMatchesBrute<ms::LaguerreMetric>(
+            weighted, ms::MetricSetup{}, "Laguerre " + tag);
         ms::SeedSet additive = seeds;
         for (int i = 0; i < n; ++i) {
             additive.weight.push_back(h * uni(gen));
         }
-        ExpectExcludingMatchesBrute<ms::AdditiveMetric>(additive, ms::MetricSetup{},
-                                                        "Additive " + tag);
+        ExpectExcludingMatchesBrute<ms::AdditiveMetric>(
+            additive, ms::MetricSetup{}, "Additive " + tag);
 
         ms::MetricSetup global;
         global.global_tensor = {2.0, 1.0, 0.5, 0.1, 0.0, 0.2};
@@ -807,8 +819,7 @@ TEST(SeedIndex, FindBestExcludingMatchesBruteForce) {
 // and counts must match the serial reference exactly.
 TEST(ConnectedLabeler, UShapeArmCrossingMatchesReference) {
     mfem::Mesh mesh = LoadUShape();
-    const ms::SeedSet seeds =
-        MakeSeedSet({{0.9, 1.9, 0.45}, {1.55, 0.2, 0.45}, {0.3, 0.3, 0.45}});
+    const ms::SeedSet seeds = MakeSeedSet({{0.9, 1.9, 0.45}, {1.55, 0.2, 0.45}, {0.3, 0.3, 0.45}});
     ms::TessellationOptions tess;
     ms::ConnectedLabelParameters params;
     RunResult run;
@@ -846,8 +857,7 @@ TEST(ConnectedLabeler, UShapeArmCrossingMatchesReference) {
 // both must match the reference with the same cap.
 TEST(ConnectedLabeler, MaxRoundsCapLeavesCountedOrphans) {
     mfem::Mesh mesh = LoadUShape();
-    const ms::SeedSet seeds =
-        MakeSeedSet({{0.9, 1.9, 0.45}, {0.9, 1.4, 0.45}, {1.55, 0.2, 0.45}});
+    const ms::SeedSet seeds = MakeSeedSet({{0.9, 1.9, 0.45}, {0.9, 1.4, 0.45}, {1.55, 0.2, 0.45}});
     ms::TessellationOptions tess;
     ms::ConnectedLabelParameters params;
 
@@ -876,7 +886,9 @@ TEST(ConnectedLabeler, MaxRoundsCapLeavesCountedOrphans) {
 // Euclidean labels and are counted as unanchored, and the left box is constrained as usual.
 TEST(ConnectedLabeler, BodyWithoutSeedIsExempt) {
     const double h = 1.0 / 3.0;
-    mfem::Mesh mesh = BuildGrid(9, 3, 3, h, [](int i, int, int) { return i != 4; });
+    mfem::Mesh mesh = BuildGrid(9, 3, 3, h, [](int i, int, int) {
+        return i != 4;
+    });
     const ms::SeedSet seeds = MakeSeedSet({{0.2, 0.5, 0.55}, {1.1, 0.4, 0.6}});
     ms::TessellationOptions tess;
     ms::ConnectedLabelParameters params;
@@ -914,7 +926,9 @@ std::vector<int> CountLabels(const std::vector<int>& label, int num_labels) {
 // - Seed 4 at (0.6)^3 with weight 0 never wins anywhere: f_4 - f_1 = 0.05 (x + y + z) + 0.108 > 0
 //   for every point of the box, so it labels no element and is the one seed without a cell.
 TEST(ConnectedLabeler, LaguerreDominatedSeedHasNoCell) {
-    mfem::Mesh mesh = BuildGrid(4, 4, 4, 0.25, [](int, int, int) { return true; });
+    mfem::Mesh mesh = BuildGrid(4, 4, 4, 0.25, [](int, int, int) {
+        return true;
+    });
     const ms::SeedSet seeds = MakeSeedSet({{0.375, 0.375, 0.375},
                                            {0.625, 0.625, 0.625},
                                            {0.125, 0.875, 0.125},
@@ -941,7 +955,9 @@ TEST(ConnectedLabeler, LaguerreDominatedSeedHasNoCell) {
 // elements on the far side (e.g. centroid (-0.5)^3: d^2 = 0.9075 to s, 4.89 to t). s must be
 // anchored to its nearest own element and keep every one of them: nothing is relabeled.
 TEST(ConnectedLabeler, CornerSeedKeepsFarSideElements) {
-    mfem::Mesh mesh = BuildGrid(4, 4, 4, 1.0, [](int, int, int) { return true; });
+    mfem::Mesh mesh = BuildGrid(4, 4, 4, 1.0, [](int, int, int) {
+        return true;
+    });
     for (int v = 0; v < mesh.GetNV(); ++v) {
         double* x = mesh.GetVertex(v);
         for (int d = 0; d < 3; ++d) {
@@ -979,8 +995,8 @@ TEST(ConnectedLabeler, OutsideSeedSnapsToNearestElement) {
         ms::ElementSamples c;
         ms::ComputeElementSamples(*d.pmesh, -1, c);
         const std::vector<std::uint64_t> keys = ms::ComputeElementKeys(*d.pmesh);
-        const std::vector<std::uint64_t> anchors =
-            ms::SeedAnchorElementKeys(*d.pmesh, MPI_COMM_WORLD, seeds, keys, c.cx, c.cy, c.cz);
+        const std::vector<std::uint64_t> anchors = ms::SeedAnchorElementKeys(
+            *d.pmesh, MPI_COMM_WORLD, seeds, keys, c.cx, c.cy, c.cz);
         EXPECT_EQ(anchors, ref.anchor_key);
 
         // Label-aware anchors from the Euclidean labels
@@ -999,8 +1015,8 @@ TEST(ConnectedLabeler, OutsideSeedSnapsToNearestElement) {
 namespace {
 
 /** Brute-force smallest key of an element whose vertex box contains p (serial, axis-aligned). */
-std::uint64_t BruteContaining(const mfem::Mesh& mesh, const std::vector<std::uint64_t>& keys,
-                              const double p[3]) {
+std::uint64_t
+BruteContaining(const mfem::Mesh& mesh, const std::vector<std::uint64_t>& keys, const double p[3]) {
     std::uint64_t best = std::numeric_limits<std::uint64_t>::max();
     for (int e = 0; e < mesh.GetNE(); ++e) {
         mfem::Array<int> v;
@@ -1035,13 +1051,15 @@ std::uint64_t BruteContaining(const mfem::Mesh& mesh, const std::vector<std::uin
 // vertices of the bottom face of a corner element, with exactly representable coordinates), so
 // the (distance, key) tie-break is exercised.
 TEST(SeedElementLocator, MatchesBruteForceWithTiesAndEmptyRank) {
-    mfem::Mesh mesh = BuildGrid(4, 4, 4, 0.25, [](int, int, int) { return true; });
-    const ms::SeedSet seeds = MakeSeedSet({{0.3, 0.6, 0.7},     // interior
-                                           {0.5, 0.33, 0.61},   // on a shared face (x = 0.5)
-                                           {0.25, 0.75, 0.4},   // on a shared edge
+    mfem::Mesh mesh = BuildGrid(4, 4, 4, 0.25, [](int, int, int) {
+        return true;
+    });
+    const ms::SeedSet seeds = MakeSeedSet({{0.3, 0.6, 0.7},      // interior
+                                           {0.5, 0.33, 0.61},    // on a shared face (x = 0.5)
+                                           {0.25, 0.75, 0.4},    // on a shared edge
                                            {0.125, 0.125, -0.5}, // outside, vertex tie
-                                           {0.5, 0.5, 1.3},     // outside, centroid tie
-                                           {-0.2, 1.4, 0.55}}); // outside
+                                           {0.5, 0.5, 1.3},      // outside, centroid tie
+                                           {-0.2, 1.4, 0.55}});  // outside
     const int n = static_cast<int>(seeds.Size());
     const std::vector<std::uint64_t> serial_keys = ms::ComputeElementKeys(mesh);
     ms::ElementSamples sc;
@@ -1126,21 +1144,21 @@ TEST(SeedElementLocator, MatchesBruteForceWithTiesAndEmptyRank) {
                                    : Distribute(mesh, MPI_COMM_WORLD);
         EXPECT_EQ(ms::ContainingElementKeys(*d.pmesh, MPI_COMM_WORLD, seeds), ref_contain);
 
-        const ms::NearestKeys nc =
-            ms::NearestElementCentroidKeys(*d.pmesh, MPI_COMM_WORLD, seeds, all_ids);
+        const ms::NearestKeys nc = ms::NearestElementCentroidKeys(
+            *d.pmesh, MPI_COMM_WORLD, seeds, all_ids);
         EXPECT_EQ(nc.key, ref_centroid_key);
         EXPECT_EQ(nc.distance_squared, ref_centroid_d2);
 
-        const ms::NearestVertexResult nv =
-            ms::NearestVertex(*d.pmesh, MPI_COMM_WORLD, seeds, all_ids);
+        const ms::NearestVertexResult nv = ms::NearestVertex(
+            *d.pmesh, MPI_COMM_WORLD, seeds, all_ids);
         EXPECT_EQ(nv.key, ref_vertex_key);
         EXPECT_EQ(nv.distance_squared, ref_vertex_d2);
         EXPECT_EQ(nv.position, ref_vertex_pos);
 
         // A sub-list in another order gives the matching entries
         const std::vector<int> some = {5, 3};
-        const ms::NearestKeys part =
-            ms::NearestElementCentroidKeys(*d.pmesh, MPI_COMM_WORLD, seeds, some);
+        const ms::NearestKeys part = ms::NearestElementCentroidKeys(
+            *d.pmesh, MPI_COMM_WORLD, seeds, some);
         EXPECT_EQ(part.key[0], ref_centroid_key[5]);
         EXPECT_EQ(part.key[1], ref_centroid_key[3]);
     }
@@ -1148,7 +1166,8 @@ TEST(SeedElementLocator, MatchesBruteForceWithTiesAndEmptyRank) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if (rank == 0) {
         std::printf("[ locator ] seeds with exact centroid ties: %d, exact vertex ties: %d\n",
-                    centroid_ties, vertex_ties);
+                    centroid_ties,
+                    vertex_ties);
     }
 }
 
@@ -1187,19 +1206,19 @@ TEST(ConnectedLabeler, InvalidInputThrowsOnAllRanks) {
     if (rank == 0 && ne > 0) {
         labels[0] = 7;
     }
-    EXPECT_THROW(ms::ConstrainToConnectedCells(*d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess,
-                                               labels, params),
+    EXPECT_THROW(ms::ConstrainToConnectedCells(
+                     *d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess, labels, params),
                  std::invalid_argument);
 
     params.max_rounds = -1;
     labels = 0;
-    EXPECT_THROW(ms::ConstrainToConnectedCells(*d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess,
-                                               labels, params),
+    EXPECT_THROW(ms::ConstrainToConnectedCells(
+                     *d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess, labels, params),
                  std::invalid_argument);
 
     params.max_rounds = ms::CONNECTED_MAX_ROUNDS_LIMIT + 1;
-    EXPECT_THROW(ms::ConstrainToConnectedCells(*d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess,
-                                               labels, params),
+    EXPECT_THROW(ms::ConstrainToConnectedCells(
+                     *d.pmesh, MPI_COMM_WORLD, adjacency, seeds, tess, labels, params),
                  std::invalid_argument);
 
     params.max_rounds = 4;

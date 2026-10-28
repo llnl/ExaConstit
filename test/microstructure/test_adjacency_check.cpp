@@ -16,13 +16,7 @@
  *    and example on MPI_COMM_WORLD equals the MPI_COMM_SELF run (meshes distributed round robin),
  *    at np = 1, 2, 3, 4.
  */
-#include "microstructure/conformal/adjacency_check.hpp"
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <array>
 #include <functional>
@@ -30,6 +24,11 @@
 #include <mpi.h>
 #include <random>
 #include <vector>
+
+#include "microstructure/conformal/adjacency_check.hpp"
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -54,8 +53,7 @@ mfem::Array<int> NearestSeed(mfem::Mesh& mesh, const ms::SeedSet& s) {
         int best = 0;
         double best_d = HUGE_VAL;
         for (int i = 0; i < static_cast<int>(s.Size()); ++i) {
-            const double d = (c(0) - s.x[i]) * (c(0) - s.x[i]) +
-                             (c(1) - s.y[i]) * (c(1) - s.y[i]) +
+            const double d = (c(0) - s.x[i]) * (c(0) - s.x[i]) + (c(1) - s.y[i]) * (c(1) - s.y[i]) +
                              (c(2) - s.z[i]) * (c(2) - s.z[i]);
             if (d < best_d) {
                 best_d = d;
@@ -68,9 +66,11 @@ mfem::Array<int> NearestSeed(mfem::Mesh& mesh, const ms::SeedSet& s) {
 }
 
 /** Distributes `serial` round robin on `comm`, labels it and compares the adjacency. */
-ms::AdjacencyComparison Compare(mfem::Mesh& serial, MPI_Comm comm,
+ms::AdjacencyComparison Compare(mfem::Mesh& serial,
+                                MPI_Comm comm,
                                 const std::function<mfem::Array<int>(mfem::Mesh&)>& labels_of,
-                                const ms::SeedSet& seeds, const std::vector<int>& grain_seed,
+                                const ms::SeedSet& seeds,
+                                const std::vector<int>& grain_seed,
                                 bool analytic = true) {
     int size = 1;
     MPI_Comm_size(comm, &size);
@@ -83,14 +83,14 @@ ms::AdjacencyComparison Compare(mfem::Mesh& serial, MPI_Comm comm,
     ms::NodeLabels node_labels(pmesh, labels);
     ms::NodeTargetOptions options;
     options.analytic = analytic;
-    ms::NodeTargets targets(node_labels, ms::MetricType::VORONOI, seeds, ms::MetricSetup{},
-                            grain_seed, options);
+    ms::NodeTargets targets(
+        node_labels, ms::MetricType::VORONOI, seeds, ms::MetricSetup{}, grain_seed, options);
     return ms::CompareAdjacency(targets, grain_seed);
 }
 
 const ms::SeedSet& Slabs() {
-    static const ms::SeedSet s =
-        MakeSeeds({{0.125, 0.5, 0.5}, {0.375, 0.5, 0.5}, {0.625, 0.5, 0.5}, {0.875, 0.5, 0.5}});
+    static const ms::SeedSet s = MakeSeeds(
+        {{0.125, 0.5, 0.5}, {0.375, 0.5, 0.5}, {0.625, 0.5, 0.5}, {0.875, 0.5, 0.5}});
     return s;
 }
 
@@ -98,9 +98,10 @@ const ms::SeedSet& Slabs() {
 
 TEST(AdjacencyCheck, SlabsAgree) {
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(8, 3, 3, mfem::Element::HEXAHEDRON);
-    const auto labels = [](mfem::Mesh& m) { return NearestSeed(m, Slabs()); };
-    const ms::AdjacencyComparison c =
-        Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3});
+    const auto labels = [](mfem::Mesh& m) {
+        return NearestSeed(m, Slabs());
+    };
+    const ms::AdjacencyComparison c = Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3});
     EXPECT_EQ(c.discrete, 3);
     EXPECT_EQ(c.analytic, 3);
     EXPECT_EQ(c.fake, 0);
@@ -124,8 +125,7 @@ TEST(AdjacencyCheck, FakeAndMissingPair) {
         }
         return l;
     };
-    const ms::AdjacencyComparison c =
-        Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3});
+    const ms::AdjacencyComparison c = Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3});
     EXPECT_EQ(c.discrete, 3); // (0, 1), (1, 3), (2, 3)
     EXPECT_EQ(c.analytic, 3); // (0, 1), (1, 2), (2, 3)
     EXPECT_EQ(c.fake, 1);
@@ -138,7 +138,9 @@ TEST(AdjacencyCheck, FakeAndMissingPair) {
 
 TEST(AdjacencyCheck, GrainsWithoutSeedAreUnchecked) {
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(8, 3, 3, mfem::Element::HEXAHEDRON);
-    const auto labels = [](mfem::Mesh& m) { return NearestSeed(m, Slabs()); };
+    const auto labels = [](mfem::Mesh& m) {
+        return NearestSeed(m, Slabs());
+    };
     // Grain 4 has no seed: its pair with grain 3 is unchecked
     const ms::AdjacencyComparison c = Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, -1});
     EXPECT_EQ(c.discrete, 2);
@@ -146,8 +148,8 @@ TEST(AdjacencyCheck, GrainsWithoutSeedAreUnchecked) {
     EXPECT_EQ(c.fake, 0);
     EXPECT_EQ(c.missing, 0);
     // Without analytic targets nothing is compared
-    const ms::AdjacencyComparison n =
-        Compare(mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3}, false);
+    const ms::AdjacencyComparison n = Compare(
+        mesh, MPI_COMM_WORLD, labels, Slabs(), {0, 1, 2, 3}, false);
     EXPECT_EQ(n.discrete, 0);
     EXPECT_EQ(n.analytic, 0);
     EXPECT_EQ(n.unchecked, 3);
@@ -166,7 +168,9 @@ TEST(AdjacencyCheck, PolycrystalIsPartitionIndependent) {
         grain_seed[static_cast<std::size_t>(g)] = g;
     }
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(10, 10, 10, mfem::Element::HEXAHEDRON);
-    const auto labels = [&](mfem::Mesh& m) { return NearestSeed(m, seeds); };
+    const auto labels = [&](mfem::Mesh& m) {
+        return NearestSeed(m, seeds);
+    };
     const ms::AdjacencyComparison w = Compare(mesh, MPI_COMM_WORLD, labels, seeds, grain_seed);
     const ms::AdjacencyComparison s = Compare(mesh, MPI_COMM_SELF, labels, seeds, grain_seed);
     EXPECT_GT(w.discrete, 30);
@@ -181,8 +185,10 @@ TEST(AdjacencyCheck, PolycrystalIsPartitionIndependent) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if (rank == 0) {
         std::printf("polycrystal 10^3: discrete %lld analytic %lld fake %lld missing %lld\n",
-                    static_cast<long long>(w.discrete), static_cast<long long>(w.analytic),
-                    static_cast<long long>(w.fake), static_cast<long long>(w.missing));
+                    static_cast<long long>(w.discrete),
+                    static_cast<long long>(w.analytic),
+                    static_cast<long long>(w.fake),
+                    static_cast<long long>(w.missing));
     }
 }
 

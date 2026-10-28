@@ -13,20 +13,7 @@
  * projected with SetCurvature. Every test compares the MPI_COMM_WORLD run (np = 1-4) with a
  * single-rank reference computed in the same executable on MPI_COMM_SELF.
  */
-#include "microstructure/geometry/periodic_images.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
@@ -39,6 +26,18 @@
 #include <mpi.h>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/geometry/periodic_images.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -70,8 +69,7 @@ void Skew(const mfem::Vector& x, mfem::Vector& y) {
 void PeriodicWarp(const mfem::Vector& x, mfem::Vector& y) {
     y = x;
     const double a = 0.03;
-    const double c[3] = {std::cos(2 * PI * x(0)), std::cos(2 * PI * x(1)),
-                         std::cos(2 * PI * x(2))};
+    const double c[3] = {std::cos(2 * PI * x(0)), std::cos(2 * PI * x(1)), std::cos(2 * PI * x(2))};
     y(0) += a * std::sin(2 * PI * x(0)) * (1.0 + 0.5 * c[1] * c[2]);
     y(1) += a * std::sin(2 * PI * x(1)) * (1.0 + 0.5 * c[0] * c[2]);
     y(2) += a * std::sin(2 * PI * x(2)) * (1.0 + 0.5 * c[0] * c[1]);
@@ -127,8 +125,14 @@ std::vector<std::uint64_t> GlobalSortedKeys(const std::vector<std::uint64_t>& lo
         total += counts[static_cast<std::size_t>(r)];
     }
     std::vector<std::uint64_t> all(static_cast<std::size_t>(total));
-    MPI_Allgatherv(local.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_UINT64_T, comm);
+    MPI_Allgatherv(local.data(),
+                   count,
+                   MPI_UINT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_UINT64_T,
+                   comm);
     std::sort(all.begin(), all.end());
     return all;
 }
@@ -213,8 +217,8 @@ PipelineResult RunPipeline(mfem::Mesh& serial, MPI_Comm comm) {
     for (std::size_t i = 0; i < source.size(); i++) {
         source[i] = static_cast<std::int64_t>(i);
     }
-    const ms::FragmentCleanupResult result =
-        ms::CleanupFragments(adjacency, label, static_cast<int>(out.seeds.Size()), source, cleanup);
+    const ms::FragmentCleanupResult result = ms::CleanupFragments(
+        adjacency, label, static_cast<int>(out.seeds.Size()), source, cleanup);
     out.labels = ms::GatherToSerial(comm, d.order, result.element_grain, 0);
     out.labels.resize(static_cast<std::size_t>(serial.GetNE()));
     MPI_Bcast(out.labels.data(), serial.GetNE(), MPI_INT, 0, comm);
@@ -299,8 +303,9 @@ TEST(VertexCoordinates, NodesSourceAndIdenticalCopiesAfterParallelRefinement) {
 
 // Element keys round coordinates to a grid of about 2^-20 of the element's length scale: moving
 // every Nodes value by a few units in the last place leaves every key unchanged, while moving one
-// corner by 1e-3 of the element size (far above the grid spacing) changes that element's key. The key of a straight mesh with
-// projected Nodes equals the key of the same mesh without Nodes (both read the same corners).
+// corner by 1e-3 of the element size (far above the grid spacing) changes that element's key. The
+// key of a straight mesh with projected Nodes equals the key of the same mesh without Nodes (both
+// read the same corners).
 TEST(ElementKey, QuantizedAgainstLastBitNoise) {
     for (const auto type : {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON}) {
         mfem::Mesh plain = mfem::Mesh::MakeCartesian3D(3, 3, 2, type, 1.0, 1.0, 1.0, false);
@@ -363,8 +368,8 @@ namespace {
 std::size_t KeyMismatches(const std::vector<std::uint64_t>& m,
                           const std::vector<std::uint64_t>& reference) {
     std::vector<std::uint64_t> diff;
-    std::set_symmetric_difference(m.begin(), m.end(), reference.begin(), reference.end(),
-                                  std::back_inserter(diff));
+    std::set_symmetric_difference(
+        m.begin(), m.end(), reference.begin(), reference.end(), std::back_inserter(diff));
     return diff.size();
 }
 
@@ -383,8 +388,8 @@ std::size_t SeedMismatches(const ms::SeedSet& a, const ms::SeedSet& b) {
  * Element label = nearest seed to the element centroid, as a map key -> label over all ranks.
  * Collective over comm.
  */
-std::map<std::uint64_t, std::uint64_t> LabelsByKey(mfem::ParMesh& m, const ms::SeedSet& seeds,
-                                                   MPI_Comm comm) {
+std::map<std::uint64_t, std::uint64_t>
+LabelsByKey(mfem::ParMesh& m, const ms::SeedSet& seeds, MPI_Comm comm) {
     const int ne = m.GetNE();
     const std::vector<std::uint64_t> keys = ms::ComputeElementKeys(m);
     std::vector<std::uint64_t> pairs; // key, label, key, label, ...
@@ -421,8 +426,14 @@ std::map<std::uint64_t, std::uint64_t> LabelsByKey(mfem::ParMesh& m, const ms::S
             total += counts[static_cast<std::size_t>(r)];
         }
         std::vector<std::uint64_t> gathered(static_cast<std::size_t>(total));
-        MPI_Allgatherv(pairs.data(), count, MPI_UINT64_T, gathered.data(), counts.data(),
-                       displs.data(), MPI_UINT64_T, comm);
+        MPI_Allgatherv(pairs.data(),
+                       count,
+                       MPI_UINT64_T,
+                       gathered.data(),
+                       counts.data(),
+                       displs.data(),
+                       MPI_UINT64_T,
+                       comm);
         return gathered;
     }();
     std::map<std::uint64_t, std::uint64_t> out;
@@ -440,7 +451,9 @@ std::map<std::uint64_t, std::uint64_t> LabelsByKey(mfem::ParMesh& m, const ms::S
  * says how far off it is. Nearest-seed labels are compared by key and must agree on at least
  * 99.9% of the elements (a centroid within round-off of a bisector may go either way).
  */
-void CompareRefinedRuns(const mfem::Mesh& serial, int refinements, int num_seeds,
+void CompareRefinedRuns(const mfem::Mesh& serial,
+                        int refinements,
+                        int num_seeds,
                         const char* name) {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -453,8 +466,8 @@ void CompareRefinedRuns(const mfem::Mesh& serial, int refinements, int num_seeds
     }
 
     // Keys as a multiset
-    const std::vector<std::uint64_t> world_keys =
-        GlobalSortedKeys(ms::ComputeElementKeys(world), MPI_COMM_WORLD);
+    const std::vector<std::uint64_t> world_keys = GlobalSortedKeys(ms::ComputeElementKeys(world),
+                                                                   MPI_COMM_WORLD);
     std::vector<std::uint64_t> self_keys = ms::ComputeElementKeys(self);
     std::sort(self_keys.begin(), self_keys.end());
     const std::size_t key_mismatch = KeyMismatches(world_keys, self_keys);
@@ -473,8 +486,8 @@ void CompareRefinedRuns(const mfem::Mesh& serial, int refinements, int num_seeds
         const ms::SeedSet a = ms::GenerateSeeds(world, params);
         const ms::SeedSet b = ms::GenerateSeeds(self, params);
         const std::size_t seed_mismatch = SeedMismatches(a, b);
-        const char* kind =
-            (placement == ms::SeedPlacement::REJECTION) ? "rejection" : "element-weighted";
+        const char* kind = (placement == ms::SeedPlacement::REJECTION) ? "rejection"
+                                                                       : "element-weighted";
         if (rank == 0) {
             std::cout << "[ info ] " << name << ": " << seed_mismatch << " of " << b.Size() << " "
                       << kind << " seeds differ from np 1" << std::endl;
@@ -489,8 +502,9 @@ void CompareRefinedRuns(const mfem::Mesh& serial, int refinements, int num_seeds
             const auto it = ls.find(entry.first);
             agree += (it != ls.end() && it->second == entry.second) ? 1 : 0;
         }
-        const double fraction =
-            ls.empty() ? 1.0 : static_cast<double>(agree) / static_cast<double>(ls.size());
+        const double fraction = ls.empty()
+                                    ? 1.0
+                                    : static_cast<double>(agree) / static_cast<double>(ls.size());
         EXPECT_GE(fraction, 0.999) << name << " " << kind;
         if (rank == 0) {
             std::cout << "[ info ] " << name << ": " << kind << " label agreement " << agree
@@ -501,8 +515,8 @@ void CompareRefinedRuns(const mfem::Mesh& serial, int refinements, int num_seeds
 
 /** Skew, then shift every coordinate by `offset` (a domain far from the origin). */
 mfem::Mesh SkewedBox(int nx, int ny, int nz, double offset, int order) {
-    mfem::Mesh mesh =
-        mfem::Mesh::MakeCartesian3D(nx, ny, nz, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(
+        nx, ny, nz, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
     mesh.Transform(Skew);
     if (offset != 0.0) {
         mesh.Transform([offset](const mfem::Vector& x, mfem::Vector& y) {
@@ -552,13 +566,14 @@ TEST(CurvedDeterminism, WarpedParallelRefinement) {
 // plane faces and form 3 n^2 pairs.
 TEST(PeriodicPairing, CurvedPeriodicBox) {
     const int n = 3;
-    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::HEXAHEDRON, 1.0, 1.0,
-                                                    1.0, false);
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
+        n, n, n, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
     serial.SetCurvature(2);
     serial.Transform(PeriodicWarp);
     ASSERT_FALSE(ms::StraightSidedLocal(serial));
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
-    const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(*d.pmesh, MPI_COMM_WORLD, {true, true, true});
+    const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(
+        *d.pmesh, MPI_COMM_WORLD, {true, true, true});
     ms::PeriodicFaceParameters pairing;
     pairing.periodic = box.periodic;
     pairing.lo = box.lo;
@@ -591,8 +606,8 @@ TEST(PeriodicPairing, StaleVertexArray) {
         } else {
             const ms::VertexCoordinates coords(*d.pmesh); // collective: every rank builds it
         }
-        const ms::PeriodicBox box =
-            ms::PeriodicBoxFromMesh(*d.pmesh, MPI_COMM_WORLD, {true, true, false});
+        const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(
+            *d.pmesh, MPI_COMM_WORLD, {true, true, false});
         EXPECT_DOUBLE_EQ(box.lo[0], 0.5);
         EXPECT_DOUBLE_EQ(box.hi[0], 2.5);
         ms::PeriodicFaceParameters pairing;
@@ -612,8 +627,8 @@ TEST(PeriodicPairing, StaleVertexArray) {
 // partner on x = 0 is unmatched.
 TEST(PeriodicPairing, ZeroPlaneFacesAndBulgedFaceThrow) {
     const int n = 2;
-    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::HEXAHEDRON, 1.0, 1.0,
-                                                    1.0, false);
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
+        n, n, n, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
     serial.SetCurvature(2);
     {
         Distributed d = Distribute(serial, MPI_COMM_WORLD);

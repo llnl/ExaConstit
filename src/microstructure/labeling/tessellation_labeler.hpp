@@ -1,9 +1,5 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
@@ -11,6 +7,10 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file tessellation_labeler.hpp

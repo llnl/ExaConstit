@@ -1,18 +1,17 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-
 #include "mfem.hpp"
-
-#include <math.h> // HUGE_VAL in device code (C math library)
 
 #include <array>
 #include <cstdint>
+#include <math.h> // HUGE_VAL in device code (C math library)
 #include <memory>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file vertex_field.hpp
@@ -220,9 +219,9 @@ enum class FieldNodes {
  * Reference lattice offsets per type are in `type_offset` (see vertex_field.cpp for the tables).
  */
 struct FieldCellView {
-    static constexpr int MAX_CELL_NODES = 8;      ///< corners of a cell (hex)
-    static constexpr int MAX_CELL_TYPES = 6;      ///< cell types (tet lattice)
-    static constexpr int NUM_LATTICE_BITS = 27;   ///< neighbor bits of the nodal field
+    static constexpr int MAX_CELL_NODES = 8;    ///< corners of a cell (hex)
+    static constexpr int MAX_CELL_TYPES = 6;    ///< cell types (tet lattice)
+    static constexpr int NUM_LATTICE_BITS = 27; ///< neighbor bits of the nodal field
 
     int curved = 0;         ///< 0: corner field, 1: nodal field
     int order = 1;          ///< p, the order of the nodal lattice (1 for the corner field)
@@ -337,8 +336,8 @@ struct FieldCellView {
         const int b = (anchor / stride) % stride;
         const int c = anchor / (stride * stride);
         for (int s = 0; s < nodes_per_cell; ++s) {
-            const int u = NodeAt(e, a + type_offset[t][s][0], b + type_offset[t][s][1],
-                                 c + type_offset[t][s][2]);
+            const int u = NodeAt(
+                e, a + type_offset[t][s][0], b + type_offset[t][s][1], c + type_offset[t][s][2]);
             if (u < 0) {
                 return 0;
             }
@@ -471,10 +470,9 @@ struct FieldCellView {
                             m[d][2] = r[3][d] - r[0][d];
                         }
                         const double rhs[3] = {x - r[0][0], y - r[0][1], z - r[0][2]};
-                        const double det =
-                            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
-                            m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
-                            m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                        const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+                                           m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                                           m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
                         if (det == 0.0) {
                             continue;
                         }
@@ -575,7 +573,8 @@ public:
      *         has discontinuous Nodes, or, for the nodal field, if the Nodes space is not a
      *         fixed-order ParFiniteElementSpace or the mesh is not all hexes or all tets.
      */
-    explicit VertexField(mfem::ParMesh& pmesh, FieldNodes nodes = FieldNodes::AUTO,
+    explicit VertexField(mfem::ParMesh& pmesh,
+                         FieldNodes nodes = FieldNodes::AUTO,
                          const ElementMask* mask = nullptr);
     ~VertexField();
     VertexField(const VertexField&) = delete;
@@ -852,8 +851,10 @@ public:
      * @throws std::invalid_argument for width < 1 or a send array of the wrong size (on the
      *         calling rank, before any communication).
      */
-    void ExchangeSharedPayload(int width, const std::vector<double>& send,
-                               std::vector<double>& recv, std::vector<int>& offsets) const;
+    void ExchangeSharedPayload(int width,
+                               const std::vector<double>& send,
+                               std::vector<double>& recv,
+                               std::vector<int>& offsets) const;
 
     /**
      * @brief The variable-length form of ExchangeSharedPayload: node v sends its list
@@ -872,7 +873,8 @@ public:
      *         at send_items.size() (on the calling rank, before any communication).
      */
     void ExchangeSharedLists(const std::vector<int>& send_offsets,
-                             const std::vector<double>& send_items, std::vector<int>& recv_offsets,
+                             const std::vector<double>& send_items,
+                             std::vector<int>& recv_offsets,
                              std::vector<double>& recv_items) const;
 
     /**
@@ -891,7 +893,9 @@ public:
      *         capacity * NV; weights: one per seed of the seed set, so every seed index stored in
      *         the lists or in the source cells is a valid index into it).
      */
-    void SetSeedLists(int capacity, const mfem::Array<int>& seeds, const mfem::Vector& dist,
+    void SetSeedLists(int capacity,
+                      const mfem::Array<int>& seeds,
+                      const mfem::Vector& dist,
                       const std::vector<double>& weights,
                       const std::vector<double>& seed_stretch = {});
     /** @brief True after SetSeedLists (point labeling uses the lists). */
@@ -992,67 +996,78 @@ private:
      * range of elements: the element map is inverted (host) and the reference point located with
      * FieldCellView::LocateCell. Same point layout as LabelPoints.
      */
-    void PointCells(int elem_begin, int elem_end, int points_per_element, const mfem::Vector& x,
-                    const mfem::Vector& y, const mfem::Vector& z, mfem::Array<int>& cells) const;
+    void PointCells(int elem_begin,
+                    int elem_end,
+                    int points_per_element,
+                    const mfem::Vector& x,
+                    const mfem::Vector& y,
+                    const mfem::Vector& z,
+                    mfem::Array<int>& cells) const;
     /**
      * @brief LabelPoints with given sub-cells: `cells` holds point i's cell at index i, or at
      * i % points_per_element when `cells_repeat` (one rule for all elements); null = cell 0 (the
      * corner field's only cell).
      */
-    void LabelPointsImpl(int elem_begin, int elem_end, int points_per_element,
-                         const mfem::Vector& x, const mfem::Vector& y, const mfem::Vector& z,
-                         const mfem::Array<int>* cells, bool cells_repeat,
-                         mfem::Array<int>& label, mfem::Vector* distance) const;
+    void LabelPointsImpl(int elem_begin,
+                         int elem_end,
+                         int points_per_element,
+                         const mfem::Vector& x,
+                         const mfem::Vector& y,
+                         const mfem::Vector& z,
+                         const mfem::Array<int>* cells,
+                         bool cells_repeat,
+                         mfem::Array<int>& label,
+                         mfem::Vector* distance) const;
     /** @brief Shared implementation of the three ReduceShared variants. */
     bool ReduceSharedImpl(bool reduce_T, bool reduce_labels, mfem::Array<int>* changed);
 
-    mfem::ParMesh& m_pmesh;                          ///< the mesh (not owned)
-    bool m_curved = false;                           ///< nodal field?
-    int m_order = 1;                                 ///< lattice order p
-    mfem::ParFiniteElementSpace* m_node_fes = nullptr;  ///< nodal field: the mesh's Nodes space
+    mfem::ParMesh& m_pmesh;                            ///< the mesh (not owned)
+    bool m_curved = false;                             ///< nodal field?
+    int m_order = 1;                                   ///< lattice order p
+    mfem::ParFiniteElementSpace* m_node_fes = nullptr; ///< nodal field: the mesh's Nodes space
     /** @brief Exchange communicator: corner field, built over the mesh's shared-vertex groups;
      * nodal field, ScalarGroupComm() of the Nodes space. */
     std::unique_ptr<mfem::GroupCommunicator> m_owned_gcomm;
     const mfem::GroupCommunicator* m_gcomm = nullptr; ///< communicator used by the exchanges
-    int m_num_vertices = 0;                          ///< NV
-    int m_num_elements = 0;                          ///< NE
-    mfem::Array<int> m_elem_vert_offsets;            ///< element -> node CSR offsets (NE+1)
-    mfem::Array<int> m_elem_verts;                   ///< element -> node CSR items
-    mfem::Array<int> m_vert_elem_offsets;            ///< node -> element CSR offsets (NV+1)
-    mfem::Array<int> m_vert_elems;                   ///< node -> element CSR items
-    mfem::Array<int> m_vert_elem_lattice;            ///< nodal field: lattice point per incidence
-    mfem::Vector m_coords;                           ///< xyz[3*v + d]
-    bool m_has_metric = false;                       ///< non-identity stretch set?
+    int m_num_vertices = 0;                           ///< NV
+    int m_num_elements = 0;                           ///< NE
+    mfem::Array<int> m_elem_vert_offsets;             ///< element -> node CSR offsets (NE+1)
+    mfem::Array<int> m_elem_verts;                    ///< element -> node CSR items
+    mfem::Array<int> m_vert_elem_offsets;             ///< node -> element CSR offsets (NV+1)
+    mfem::Array<int> m_vert_elems;                    ///< node -> element CSR items
+    mfem::Array<int> m_vert_elem_lattice;             ///< nodal field: lattice point per incidence
+    mfem::Vector m_coords;                            ///< xyz[3*v + d]
+    bool m_has_metric = false;                        ///< non-identity stretch set?
     std::array<double, 9> m_stretch = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}; ///< S
-    mfem::Vector m_metric_coords;                    ///< S x per node (metric only)
-    mfem::Array<int> m_shared;                       ///< 1 = node also on another rank
-    mfem::Array<int> m_owned;                        ///< 1 = this rank is the node's master
-    ElementMask m_mask;                              ///< copy of the mask (empty = all active)
+    mfem::Vector m_metric_coords; ///< S x per node (metric only)
+    mfem::Array<int> m_shared;    ///< 1 = node also on another rank
+    mfem::Array<int> m_owned;     ///< 1 = this rank is the node's master
+    ElementMask m_mask;           ///< copy of the mask (empty = all active)
 
     /** The stored mask, or nullptr without one (the convention of mesh/element_mask.hpp). */
     const ElementMask* MaskOrNull() const {
         return HasMask() ? &m_mask : nullptr;
     }
-    mfem::Array<int> m_node_used;                    ///< 1 = node of an active element (global)
-    mfem::Vector m_T;                                ///< T(v)
-    mfem::Array<int> m_label;                        ///< label(v)
-    mfem::Vector m_source_T;                         ///< T0(v)
-    mfem::Array<int> m_source_label;                 ///< seed of T0(v)
-    mfem::Array<int> m_elem_src_offsets;             ///< element -> own seeds CSR offsets (NE+1)
-    mfem::Array<int> m_elem_src_seeds;               ///< seed index of each entry
-    mfem::Array<int> m_elem_src_cell;                ///< source cell id of each entry
-    mfem::Vector m_elem_src_data;                    ///< per entry: x, y, z (in the metric), a_j
-    int m_list_capacity = 0;                         ///< seed lists: entries per node (0 = off)
-    mfem::Array<int> m_list_seed;                    ///< seed lists: seed per slot (-1 empty)
-    mfem::Vector m_list_dist;                        ///< seed lists: T_i per slot
-    mfem::Vector m_list_weight;                      ///< seed lists: w_i per seed
-    mfem::Vector m_list_stretch;                     ///< seed lists: S_i per seed (or empty)
+    mfem::Array<int> m_node_used;        ///< 1 = node of an active element (global)
+    mfem::Vector m_T;                    ///< T(v)
+    mfem::Array<int> m_label;            ///< label(v)
+    mfem::Vector m_source_T;             ///< T0(v)
+    mfem::Array<int> m_source_label;     ///< seed of T0(v)
+    mfem::Array<int> m_elem_src_offsets; ///< element -> own seeds CSR offsets (NE+1)
+    mfem::Array<int> m_elem_src_seeds;   ///< seed index of each entry
+    mfem::Array<int> m_elem_src_cell;    ///< source cell id of each entry
+    mfem::Vector m_elem_src_data;        ///< per entry: x, y, z (in the metric), a_j
+    int m_list_capacity = 0;             ///< seed lists: entries per node (0 = off)
+    mfem::Array<int> m_list_seed;        ///< seed lists: seed per slot (-1 empty)
+    mfem::Vector m_list_dist;            ///< seed lists: T_i per slot
+    mfem::Vector m_list_weight;          ///< seed lists: w_i per seed
+    mfem::Vector m_list_stretch;         ///< seed lists: S_i per seed (or empty)
     // Nodal field lookup tables (FieldCellView); empty for the corner field
-    int m_tet = 0;                                   ///< 1 = tet lattice
-    mfem::Array<int> m_lattice_to_local;             ///< (p+1)^3, -1 = not a lattice point
-    mfem::Array<int> m_local_to_lattice;             ///< per native index
-    mfem::Vector m_axis_points;                      ///< hex: 3*(p+1) reference coordinates
-    mfem::Vector m_ref_nodes;                        ///< 3 * nodes per element
+    int m_tet = 0;                       ///< 1 = tet lattice
+    mfem::Array<int> m_lattice_to_local; ///< (p+1)^3, -1 = not a lattice point
+    mfem::Array<int> m_local_to_lattice; ///< per native index
+    mfem::Vector m_axis_points;          ///< hex: 3*(p+1) reference coordinates
+    mfem::Vector m_ref_nodes;            ///< 3 * nodes per element
 };
 
 } // namespace exaconstit::microstructure

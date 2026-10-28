@@ -115,9 +115,8 @@ inline std::string BroadcastString(const std::string& text, int root, MPI_Comm c
  * @param local_error this rank's error message; empty means "no error on this rank".
  * @param append_rank append the failing rank's number to the message.
  */
-inline void ThrowIfAnyRankFailed(MPI_Comm comm,
-                                 const std::string& local_error,
-                                 bool append_rank = true) {
+inline void
+ThrowIfAnyRankFailed(MPI_Comm comm, const std::string& local_error, bool append_rank = true) {
     // Step 1: lowest failing rank, or none
     const int failing_rank = LowestRankWith(!local_error.empty(), comm);
     if (failing_rank < 0) {

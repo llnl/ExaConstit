@@ -1,15 +1,15 @@
 #pragma once
 
+#include "mfem.hpp"
+
+#include <mpi.h>
+#include <vector>
+
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
 #include "microstructure/morphology/weight_fit.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
-
-#include "mfem.hpp"
-
-#include <mpi.h>
-#include <vector>
 
 /**
  * @file lloyd.hpp
@@ -126,9 +126,13 @@ void ValidateLloydParameters(const LloydParameters& params);
  *         centroidal power mode, and the errors of LabelSamples / CellMeasureAccumulator /
  *         FitWeights.
  */
-SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamples& samples,
-                 const SeedSet& seeds, const LloydParameters& params,
-                 const std::vector<double>& target_volume, LloydReport* report = nullptr,
+SeedSet RunLloyd(const mfem::Mesh& local_mesh,
+                 MPI_Comm comm,
+                 const WeightedSamples& samples,
+                 const SeedSet& seeds,
+                 const LloydParameters& params,
+                 const std::vector<double>& target_volume,
+                 LloydReport* report = nullptr,
                  const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

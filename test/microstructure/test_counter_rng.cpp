@@ -5,17 +5,16 @@
  * internal state. Seed positions and orientations therefore do not depend on call order, thread
  * schedule or MPI rank count. These tests are serial (they run identically on every rank).
  */
-#include "microstructure/util/counter_rng.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <numeric>
 #include <random>
 #include <vector>
+
+#include "microstructure/util/counter_rng.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -131,10 +130,9 @@ TEST(CounterRng, StreamsAreIndependentOfCallOrder) {
     EXPECT_NE(
         base.UniformDouble(0u),
         ms::CounterRng(seed, ms::RngPurpose::ELEMENT_WEIGHTED_POSITION, 5u).UniformDouble(0u));
-    EXPECT_NE(
-        ms::CounterRng(seed, ms::RngPurpose::SEED_POSITION, top_bit_id).UniformDouble(0u),
-        ms::CounterRng(seed, ms::RngPurpose::ELEMENT_WEIGHTED_POSITION, top_bit_id)
-            .UniformDouble(0u));
+    EXPECT_NE(ms::CounterRng(seed, ms::RngPurpose::SEED_POSITION, top_bit_id).UniformDouble(0u),
+              ms::CounterRng(seed, ms::RngPurpose::ELEMENT_WEIGHTED_POSITION, top_bit_id)
+                  .UniformDouble(0u));
     EXPECT_NE(
         base.UniformDouble(0u),
         ms::CounterRng(seed, ms::RngPurpose::SEED_POSITION, 5u + (1ull << 32)).UniformDouble(0u));

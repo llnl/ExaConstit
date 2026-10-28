@@ -86,8 +86,7 @@ struct PreflightReport {
 
     /** @brief True when every check passed. Same value on every rank. */
     bool Passed() const {
-        return is_3d && single_geometry && conforming && continuous_nodes &&
-               num_bad_elements == 0;
+        return is_3d && single_geometry && conforming && continuous_nodes && num_bad_elements == 0;
     }
 };
 

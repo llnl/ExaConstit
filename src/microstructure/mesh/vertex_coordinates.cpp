@@ -37,8 +37,8 @@ VertexCoordinates::VertexCoordinates(const mfem::Mesh& mesh) {
     m_num_vertices = mesh.GetNV();
     const int sdim = mesh.SpaceDimension();
     const mfem::GridFunction* nodes = mesh.GetNodes();
-    if (nodes != nullptr && nodes->FESpace()->FEColl()->GetContType() ==
-                                mfem::FiniteElementCollection::CONTINUOUS) {
+    if (nodes != nullptr &&
+        nodes->FESpace()->FEColl()->GetContType() == mfem::FiniteElementCollection::CONTINUOUS) {
         m_from_nodes = true;
     }
 

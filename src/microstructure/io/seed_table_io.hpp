@@ -1,13 +1,13 @@
 #pragma once
 
-#include "microstructure/microstructure_types.hpp"
-
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file seed_table_io.hpp
@@ -42,9 +42,10 @@
  * **Columns** (table units are the units of the file, s = units_scale, t = translate):
  * - `x, y, z` (required): position; mesh position = s * x + t.
  * - `id` (optional): int64 in [1, 2^63 - 1], unique; becomes SeedSet::source_id. Default: the
- *   1-based row number (first seed row = 1). Ids start at 1 as in the microstructure file. Limit with ROI filler grains (seeding/roi_filler.hpp): the filler ids
- *   start at max id + 1 and add the generator's candidate index (< 2^40), so every id must then
- *   be below 2^63 - 1 - 2^40 (FillOutsideRoi throws otherwise).
+ *   1-based row number (first seed row = 1). Ids start at 1 as in the microstructure file. Limit
+ * with ROI filler grains (seeding/roi_filler.hpp): the filler ids start at max id + 1 and add the
+ * generator's candidate index (< 2^40), so every id must then be below 2^63 - 1 - 2^40
+ * (FillOutsideRoi throws otherwise).
  * - `qw, qx, qy, qz` (optional, all four or none): crystal-to-sample passive orientation. The
  *   reader returns the stored values unchanged (never reordered or sign-flipped); the generator
  *   normalizes the orientations it writes to unit length (q / |q|, convention, sign and order
@@ -179,8 +180,7 @@ bool InvertShapeTensorPublic(const double m[6], double a[6]);
  *
  * @return the number of seeds removed.
  */
-std::int64_t KeepSeedsInBox(SeedTable& table,
-                            const std::array<double, 3>& lo,
-                            const std::array<double, 3>& hi);
+std::int64_t
+KeepSeedsInBox(SeedTable& table, const std::array<double, 3>& lo, const std::array<double, 3>& hi);
 
 } // namespace exaconstit::microstructure

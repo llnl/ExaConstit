@@ -1,9 +1,5 @@
 #pragma once
 
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
@@ -11,6 +7,10 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file seed_generators.hpp
@@ -235,24 +235,24 @@ void RoundBoxOutward(std::array<double, 3>& lo, std::array<double, 3>& hi);
  * @brief What GenerateSeeds did: identical on every rank. Counts are global.
  */
 struct SeedingReport {
-    std::int64_t requested = 0;           ///< SeedingParameters::num_seeds
-    std::int64_t achieved = 0;            ///< seeds returned
+    std::int64_t requested = 0;                              ///< SeedingParameters::num_seeds
+    std::int64_t achieved = 0;                               ///< seeds returned
     SeedPlacement placement_used = SeedPlacement::REJECTION; ///< after any fallback
-    bool used_fallback = false;           ///< rejection switched to element-weighted
-    bool stalled = false;                 ///< the stall cap was reached before N seeds
-    std::int64_t candidates_generated = 0;  ///< candidates/lattice points/arrivals examined
-    std::int64_t candidates_in_domain = 0;  ///< of those, inside the material (or box)
-    std::int64_t rejected_by_clearance = 0; ///< in domain but closer than the clearance
-    std::int64_t rejected_by_distance = 0;  ///< in domain but closer than d to a seed (RSA)
+    bool used_fallback = false;               ///< rejection switched to element-weighted
+    bool stalled = false;                     ///< the stall cap was reached before N seeds
+    std::int64_t candidates_generated = 0;    ///< candidates/lattice points/arrivals examined
+    std::int64_t candidates_in_domain = 0;    ///< of those, inside the material (or box)
+    std::int64_t rejected_by_clearance = 0;   ///< in domain but closer than the clearance
+    std::int64_t rejected_by_distance = 0;    ///< in domain but closer than d to a seed (RSA)
     std::int64_t rejected_by_exclude_box = 0; ///< strictly inside the exclusion box (not in domain)
-    double material_volume = 0.0;         ///< V of the whole mesh (fixed-point sum, length^3)
-    double min_distance = 0.0;            ///< d actually used (0: no RSA)
-    double lattice_parameter = 0.0;       ///< a (lattices only)
-    std::array<double, 3> bbox_lo = {0, 0, 0};     ///< exact global mesh bounding box
+    double material_volume = 0.0;             ///< V of the whole mesh (fixed-point sum, length^3)
+    double min_distance = 0.0;                ///< d actually used (0: no RSA)
+    double lattice_parameter = 0.0;           ///< a (lattices only)
+    std::array<double, 3> bbox_lo = {0, 0, 0}; ///< exact global mesh bounding box
     std::array<double, 3> bbox_hi = {0, 0, 0};
     std::array<double, 3> sampling_lo = {0, 0, 0}; ///< box the candidates were drawn from
     std::array<double, 3> sampling_hi = {0, 0, 0};
-    std::vector<std::string> notes;       ///< human-readable remarks (fallback, partial result)
+    std::vector<std::string> notes; ///< human-readable remarks (fallback, partial result)
 
     /** @brief Multi-line summary for the rank-0 log. Host only. */
     std::string Summary() const;
@@ -286,11 +286,16 @@ struct SeedingReport {
  *         are caught on the failing rank and broadcast, and every other condition is decided from
  *         globally reduced data, so all ranks throw together with the same message.
  */
-SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParameters& params,
-                      SeedingReport* report = nullptr, const MaterialContext* context = nullptr);
+SeedSet GenerateSeeds(mfem::Mesh& local_mesh,
+                      MPI_Comm comm,
+                      const SeedingParameters& params,
+                      SeedingReport* report = nullptr,
+                      const MaterialContext* context = nullptr);
 
 /** @brief GenerateSeeds over the ParMesh's own communicator. Collective. */
-SeedSet GenerateSeeds(mfem::ParMesh& pmesh, const SeedingParameters& params,
-                      SeedingReport* report = nullptr, const MaterialContext* context = nullptr);
+SeedSet GenerateSeeds(mfem::ParMesh& pmesh,
+                      const SeedingParameters& params,
+                      SeedingReport* report = nullptr,
+                      const MaterialContext* context = nullptr);
 
 } // namespace exaconstit::microstructure

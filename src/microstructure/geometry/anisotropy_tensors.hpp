@@ -67,8 +67,12 @@ inline std::array<double, 3> UnitDirection(const std::array<double, 3>& v, const
 inline std::array<double, 6> MakeColumnarTensor(const std::array<double, 3>& axis) {
     const std::array<double, 3> a = detail::UnitDirection(axis, "MakeColumnarTensor");
     // A(r, c) = delta_rc - a_r a_c, stored in the Voigt-like order of MetricSetup
-    return {1.0 - a[0] * a[0], 1.0 - a[1] * a[1], 1.0 - a[2] * a[2],
-            -a[1] * a[2],      -a[0] * a[2],      -a[0] * a[1]};
+    return {1.0 - a[0] * a[0],
+            1.0 - a[1] * a[1],
+            1.0 - a[2] * a[2],
+            -a[1] * a[2],
+            -a[0] * a[2],
+            -a[0] * a[1]};
 }
 
 /**
@@ -167,7 +171,8 @@ inline std::array<double, 9> ColumnarStretch(const std::array<double, 3>& axis, 
  * @param elongation k >= 1 (1 = Voronoi).
  * @throws std::invalid_argument for a zero or non-finite normal or k < 1 / not finite.
  */
-inline std::array<double, 9> LamellarStretch(const std::array<double, 3>& normal, double elongation) {
+inline std::array<double, 9> LamellarStretch(const std::array<double, 3>& normal,
+                                             double elongation) {
     const std::array<double, 3> n = detail::UnitDirection(normal, "LamellarStretch");
     if (!std::isfinite(elongation) || !(elongation >= 1.0)) {
         throw std::invalid_argument("LamellarStretch: elongation must be finite and >= 1");

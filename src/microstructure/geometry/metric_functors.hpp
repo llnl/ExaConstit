@@ -1,7 +1,5 @@
 #pragma once
 
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -11,6 +9,8 @@
 #include <math.h>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file metric_functors.hpp
@@ -189,8 +189,8 @@ struct MetricSetup {
  *         eigenvalue below -1e-12 * lambda_max (A is indefinite, so "distance" could be
  *         negative and grains would not be well defined).
  */
-inline void ComputeQuadricFactor(const double tensor[6], double factor[9], double& mu_min,
-                                 double& mu_max) {
+inline void
+ComputeQuadricFactor(const double tensor[6], double factor[9], double& mu_min, double& mu_max) {
     for (int k = 0; k < 6; ++k) {
         if (!std::isfinite(tensor[k])) {
             throw std::invalid_argument("ComputeQuadricFactor: tensor entry is not finite");
@@ -310,8 +310,10 @@ struct VoronoiMetric {
      * @brief Box form used by the seed search; the box corners are not needed for Voronoi, so
      * this returns LowerBound(sqdist_point_box, bound). @param p, box_lo, box_hi unused.
      */
-    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
-                                       const double box_hi[3], double sqdist_point_box,
+    MFEM_HOST_DEVICE double LowerBound(const double p[3],
+                                       const double box_lo[3],
+                                       const double box_hi[3],
+                                       double sqdist_point_box,
                                        const BinBound& bound) const {
         (void)p;
         (void)box_lo;
@@ -368,8 +370,10 @@ struct LaguerreMetric {
      * @brief Box form used by the seed search; returns LowerBound(sqdist_point_box, bound)
      * (the box corners add nothing for an isotropic metric). @param p, box_lo, box_hi unused.
      */
-    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
-                                       const double box_hi[3], double sqdist_point_box,
+    MFEM_HOST_DEVICE double LowerBound(const double p[3],
+                                       const double box_lo[3],
+                                       const double box_hi[3],
+                                       double sqdist_point_box,
                                        const BinBound& bound) const {
         (void)p;
         (void)box_lo;
@@ -510,8 +514,10 @@ struct QuadricMetric {
      * @param sqdist_point_box squared distance from p to the box (>= 0), for the eigenvalue bound.
      * @param bound            weight and eigenvalue summary of the seeds in the box's bin.
      */
-    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
-                                       const double box_hi[3], double sqdist_point_box,
+    MFEM_HOST_DEVICE double LowerBound(const double p[3],
+                                       const double box_lo[3],
+                                       const double box_hi[3],
+                                       double sqdist_point_box,
                                        const BinBound& bound) const {
         // Bound from the smallest eigenvalue (the only one valid for per-seed tensors)
         const double eigen_bound = LowerBound(sqdist_point_box, bound);
@@ -524,10 +530,10 @@ struct QuadricMetric {
         double sum_gap_sq = 0.0;
         for (int k = 0; k < 3; ++k) {
             const double* row = m + 3 * k;
-            double proj_point = 0.0;  // m_k . x
-            double proj_lo = 0.0;     // smallest m_k . s over the box corners
-            double proj_hi = 0.0;     // largest m_k . s over the box corners
-            double scale = 0.0;       // size of the terms, for the round-off margin
+            double proj_point = 0.0; // m_k . x
+            double proj_lo = 0.0;    // smallest m_k . s over the box corners
+            double proj_hi = 0.0;    // largest m_k . s over the box corners
+            double scale = 0.0;      // size of the terms, for the round-off margin
             for (int c = 0; c < 3; ++c) {
                 const double mc = row[c];
                 proj_point += mc * p[c];
@@ -622,8 +628,10 @@ struct AdditiveMetric {
      * @brief Box form used by the seed search; returns LowerBound(sqdist_point_box, bound).
      * @param p, box_lo, box_hi unused.
      */
-    MFEM_HOST_DEVICE double LowerBound(const double p[3], const double box_lo[3],
-                                       const double box_hi[3], double sqdist_point_box,
+    MFEM_HOST_DEVICE double LowerBound(const double p[3],
+                                       const double box_lo[3],
+                                       const double box_hi[3],
+                                       double sqdist_point_box,
                                        const BinBound& bound) const {
         (void)p;
         (void)box_lo;

@@ -27,15 +27,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_graph.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +40,13 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_graph.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -67,7 +66,9 @@ int WorldRank() {
  * Kuhn split of every cell (same construction as test_geodesic_fim.cpp's BuildGrid).
  */
 mfem::Mesh BuildBox(int nx, int ny, int nz, const double lo[3], const double h[3], bool tets) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     const int num_cells = nx * ny * nz;
     mfem::Mesh mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells, 0, 3);
     for (int k = 0; k <= nz; k++) {
@@ -88,8 +89,8 @@ mfem::Mesh BuildBox(int nx, int ny, int nz, const double lo[3], const double h[3
                     const int hex[8] = {c[0], c[1], c[3], c[2], c[4], c[5], c[7], c[6]};
                     mesh.AddHex(hex);
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -136,8 +137,8 @@ constexpr double ANNULUS_H = 0.5;
  * every nodal point lies exactly on its circle: the elements are genuinely curved for p >= 2
  * (p = 1: straight chords between the vertices).
  */
-mfem::Mesh HalfAnnulus(int nr, int nth, int nz, int p, bool tets,
-                       int btype = mfem::BasisType::GaussLobatto) {
+mfem::Mesh
+HalfAnnulus(int nr, int nth, int nz, int p, bool tets, int btype = mfem::BasisType::GaussLobatto) {
     const double lo[3] = {ANNULUS_A, 0.0, 0.0};
     const double h[3] = {(ANNULUS_B - ANNULUS_A) / nr, PI / nth, ANNULUS_H / nz};
     mfem::Mesh mesh = BuildBox(nr, nth, nz, lo, h, tets);
@@ -239,12 +240,30 @@ NodeValues GatherNodeValues(const ms::VertexField& field, MPI_Comm comm) {
     NodeValues out;
     out.T.resize(static_cast<std::size_t>(total));
     out.label.resize(static_cast<std::size_t>(total));
-    MPI_Allgatherv(local_xyz.data(), 3 * n, MPI_DOUBLE, all_xyz.data(), counts3.data(),
-                   displs3.data(), MPI_DOUBLE, comm);
-    MPI_Allgatherv(local.T.data(), n, MPI_DOUBLE, out.T.data(), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
-    MPI_Allgatherv(local.label.data(), n, MPI_INT, out.label.data(), counts.data(),
-                   displs.data(), MPI_INT, comm);
+    MPI_Allgatherv(local_xyz.data(),
+                   3 * n,
+                   MPI_DOUBLE,
+                   all_xyz.data(),
+                   counts3.data(),
+                   displs3.data(),
+                   MPI_DOUBLE,
+                   comm);
+    MPI_Allgatherv(local.T.data(),
+                   n,
+                   MPI_DOUBLE,
+                   out.T.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_DOUBLE,
+                   comm);
+    MPI_Allgatherv(local.label.data(),
+                   n,
+                   MPI_INT,
+                   out.label.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_INT,
+                   comm);
     for (int k = 0; k < total; ++k) {
         const auto uk = static_cast<std::size_t>(k);
         out.xyz.push_back({all_xyz[3 * uk], all_xyz[3 * uk + 1], all_xyz[3 * uk + 2]});
@@ -253,8 +272,10 @@ NodeValues GatherNodeValues(const ms::VertexField& field, MPI_Comm comm) {
 }
 
 /** Element values gathered into serial order on every rank (GatherToSerial + MPI_Bcast). */
-std::vector<int> GatherElements(MPI_Comm comm, const ms::SerialOrder& order,
-                                const mfem::Array<int>& local, int serial_ne) {
+std::vector<int> GatherElements(MPI_Comm comm,
+                                const ms::SerialOrder& order,
+                                const mfem::Array<int>& local,
+                                int serial_ne) {
     std::vector<int> values = ms::GatherToSerial(comm, order, local, 0);
     values.resize(static_cast<std::size_t>(serial_ne));
     MPI_Bcast(values.data(), serial_ne, MPI_INT, 0, comm);
@@ -317,8 +338,12 @@ struct GeodesicRun {
 };
 
 /** A labeler run (FIM or graph) on `serial` distributed per `layout`, gathered. Collective. */
-GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& seeds, bool additive,
-                const ms::GeodesicParameters& params, bool graph) {
+GeodesicRun RunGeodesic(mfem::Mesh& serial,
+                        Layout layout,
+                        const ms::SeedSet& seeds,
+                        bool additive,
+                        const ms::GeodesicParameters& params,
+                        bool graph) {
     const MPI_Comm comm = (layout == Layout::SELF) ? MPI_COMM_SELF : MPI_COMM_WORLD;
     Distributed d = Distribute(serial, layout);
     ms::GeodesicLabels g = graph ? ms::LabelGeodesicGraph(*d.pmesh, comm, seeds, additive, params)
@@ -340,8 +365,11 @@ GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& se
  * coordinates (owner-broadcast coordinates, identical on all copies); sources; FIM round counts.
  * Returns the single-rank run. Collective over MPI_COMM_WORLD.
  */
-GeodesicRun RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds, bool additive,
-                  const ms::GeodesicParameters& params, bool graph) {
+GeodesicRun RunAndCompare(mfem::Mesh& serial,
+                          const ms::SeedSet& seeds,
+                          bool additive,
+                          const ms::GeodesicParameters& params,
+                          bool graph) {
     const GeodesicRun self = RunGeodesic(serial, Layout::SELF, seeds, additive, params, graph);
     std::map<std::array<double, 3>, std::size_t> index;
     for (std::size_t k = 0; k < self.nodes.xyz.size(); ++k) {
@@ -409,12 +437,14 @@ double CellVolume(const std::vector<const double*>& c) {
     if (c.size() == 4) {
         return TetVolume(c[0], c[1], c[2], c[3]);
     }
-    const int tets[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
-                            {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
+    const int tets[6][4] = {
+        {0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6}, {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
     double vol = 0.0;
     for (const auto& t : tets) {
-        vol += TetVolume(c[static_cast<std::size_t>(t[0])], c[static_cast<std::size_t>(t[1])],
-                         c[static_cast<std::size_t>(t[2])], c[static_cast<std::size_t>(t[3])]);
+        vol += TetVolume(c[static_cast<std::size_t>(t[0])],
+                         c[static_cast<std::size_t>(t[1])],
+                         c[static_cast<std::size_t>(t[2])],
+                         c[static_cast<std::size_t>(t[3])]);
     }
     return vol;
 }
@@ -433,8 +463,15 @@ struct ErrorStats {
  * coordinates, exact distance, blocked)`.
  */
 template <typename Use>
-ErrorStats AnnulusError(int nr, int nth, int nz, int p, bool tets, ms::FieldNodes field_nodes,
-                        const double* s, Use use, int btype = mfem::BasisType::GaussLobatto,
+ErrorStats AnnulusError(int nr,
+                        int nth,
+                        int nz,
+                        int p,
+                        bool tets,
+                        ms::FieldNodes field_nodes,
+                        const double* s,
+                        Use use,
+                        int btype = mfem::BasisType::GaussLobatto,
                         bool* used_nodes = nullptr) {
     mfem::Mesh serial = HalfAnnulus(nr, nth, nz, p, tets, btype);
     Distributed d = Distribute(serial, Layout::SELF);
@@ -442,8 +479,8 @@ ErrorStats AnnulusError(int nr, int nth, int nz, int p, bool tets, ms::FieldNode
     AddSeed(seeds, s[0], s[1], s[2]);
     ms::GeodesicParameters params;
     params.field_nodes = field_nodes;
-    const ms::GeodesicLabels g = ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_SELF, seeds, false,
-                                                      params);
+    const ms::GeodesicLabels g = ms::LabelGeodesicFim(
+        *d.pmesh, MPI_COMM_SELF, seeds, false, params);
     if (used_nodes != nullptr) {
         *used_nodes = g.field->UsesMeshNodes();
     }
@@ -481,7 +518,8 @@ ErrorStats AnnulusError(int nr, int nth, int nz, int p, bool tets, ms::FieldNode
 // sub-cell volumes sum to the element volume to round-off.
 TEST(CurvedLattice, SubCellsTileTheElement) {
     for (const bool tets : {false, true}) {
-        for (const int btype : {mfem::BasisType::GaussLobatto, mfem::BasisType::ClosedUniform,
+        for (const int btype : {mfem::BasisType::GaussLobatto,
+                                mfem::BasisType::ClosedUniform,
                                 mfem::BasisType::Positive}) {
             double previous_volume_error = INF;
             for (const int p : {2, 3}) {
@@ -517,8 +555,8 @@ TEST(CurvedLattice, SubCellsTileTheElement) {
                             const int i = lat % (p + 1);
                             const int j = (lat / (p + 1)) % (p + 1);
                             const int kk = lat / ((p + 1) * (p + 1));
-                            ref.push_back(&view.ref_nodes[3 * view.lattice_to_local[view.Pack(
-                                                                  i, j, kk)]]);
+                            ref.push_back(
+                                &view.ref_nodes[3 * view.lattice_to_local[view.Pack(i, j, kk)]]);
                             phys.push_back(&xyz[3 * corners[k]]);
                         }
                         const double rv = CellVolume(ref);
@@ -535,7 +573,9 @@ TEST(CurvedLattice, SubCellsTileTheElement) {
                     const int* ev_off = field.ElementVertexOffsets().HostRead();
                     const int* ev = field.ElementVertices().HostRead();
                     for (int k = ev_off[e]; k < ev_off[e + 1]; ++k) {
-                        view.ForEachCellOfIncidence(ev[k], e, view.IncidenceLattice(ev[k], e),
+                        view.ForEachCellOfIncidence(ev[k],
+                                                    e,
+                                                    view.IncidenceLattice(ev[k], e),
                                                     [&](const int*, const int*, int n) {
                                                         visits += 1;
                                                         incidence_ok = incidence_ok &&
@@ -544,9 +584,8 @@ TEST(CurvedLattice, SubCellsTileTheElement) {
                     }
                     incidence_ok = incidence_ok && visits == num_cells * view.nodes_per_cell;
                     const double elem_volume = d.pmesh->GetElementVolume(e);
-                    worst_volume_error = std::max(worst_volume_error,
-                                                  std::fabs(phys_volume - elem_volume) /
-                                                      elem_volume);
+                    worst_volume_error = std::max(
+                        worst_volume_error, std::fabs(phys_volume - elem_volume) / elem_volume);
                 }
                 EXPECT_TRUE(counts_ok);
                 EXPECT_TRUE(reference_ok);
@@ -583,7 +622,8 @@ TEST(CurvedLattice, SubCellsTileTheElement) {
                     if (!tets) {
                         // The hex cell's reference box holds the point
                         const int anchor = cell % lattice_size;
-                        const int a[3] = {anchor % (p + 1), (anchor / (p + 1)) % (p + 1),
+                        const int a[3] = {anchor % (p + 1),
+                                          (anchor / (p + 1)) % (p + 1),
                                           anchor / ((p + 1) * (p + 1))};
                         const double xi[3] = {x, y, z};
                         for (int dd = 0; dd < 3; ++dd) {
@@ -650,8 +690,8 @@ TEST(CurvedGeodesic, ConcaveWallErrorFallsWithOrder) {
             double previous = INF;
             for (const int p : {1, 2, 3}) {
                 bool used_nodes = false;
-                const ErrorStats e = AnnulusError(3, 12, 1, p, tets, ms::FieldNodes::AUTO, s,
-                                                  behind_hole, btype, &used_nodes);
+                const ErrorStats e = AnnulusError(
+                    3, 12, 1, p, tets, ms::FieldNodes::AUTO, s, behind_hole, btype, &used_nodes);
                 EXPECT_GT(e.count, 10);
                 EXPECT_EQ(used_nodes, p >= 2); // p = 1 is straight-sided: the corner field
                 EXPECT_LT(e.max_abs_rel, previous);
@@ -659,22 +699,20 @@ TEST(CurvedGeodesic, ConcaveWallErrorFallsWithOrder) {
                 if (WorldRank() == 0) {
                     std::cout << "  [concave wall, behind the hole] " << (tets ? "tet" : "hex")
                               << " basis " << btype << " p=" << p << " ("
-                              << (used_nodes ? "nodal" : "corner")
-                              << " field): max |rel err| " << e.max_abs_rel
-                              << ", min signed rel err " << e.min_signed_rel << " over "
-                              << e.count << " nodes\n";
+                              << (used_nodes ? "nodal" : "corner") << " field): max |rel err| "
+                              << e.max_abs_rel << ", min signed rel err " << e.min_signed_rel
+                              << " over " << e.count << " nodes\n";
                 }
             }
             // The corner field on the same p = 3 mesh sees only the chords: same as p = 1
-            const ErrorStats corners =
-                AnnulusError(3, 12, 1, 3, tets, ms::FieldNodes::CORNERS, s, behind_hole, btype);
-            const ErrorStats nodal =
-                AnnulusError(3, 12, 1, 3, tets, ms::FieldNodes::MESH_NODES, s, behind_hole, btype);
+            const ErrorStats corners = AnnulusError(
+                3, 12, 1, 3, tets, ms::FieldNodes::CORNERS, s, behind_hole, btype);
+            const ErrorStats nodal = AnnulusError(
+                3, 12, 1, 3, tets, ms::FieldNodes::MESH_NODES, s, behind_hole, btype);
             if (WorldRank() == 0) {
                 std::cout << "  [concave wall, behind the hole] " << (tets ? "tet" : "hex")
                           << " basis " << btype << " p=3 mesh: corner-only field max |rel err| "
-                          << corners.max_abs_rel << " vs nodal field " << nodal.max_abs_rel
-                          << "\n";
+                          << corners.max_abs_rel << " vs nodal field " << nodal.max_abs_rel << "\n";
             }
             EXPECT_LT(nodal.max_abs_rel, corners.max_abs_rel);
         }
@@ -701,10 +739,10 @@ TEST(CurvedGeodesic, WallChordsCutThroughTheHole) {
     const double half = 0.5 * PI / 8.0;
     const double chord_cut = std::sin(half) / half - 1.0; // -0.0064
     for (const bool tets : {false, true}) {
-        const ErrorStats corners =
-            AnnulusError(2, 8, 2, 3, tets, ms::FieldNodes::CORNERS, s, wall_same_height);
-        const ErrorStats nodal =
-            AnnulusError(2, 8, 2, 3, tets, ms::FieldNodes::MESH_NODES, s, wall_same_height);
+        const ErrorStats corners = AnnulusError(
+            2, 8, 2, 3, tets, ms::FieldNodes::CORNERS, s, wall_same_height);
+        const ErrorStats nodal = AnnulusError(
+            2, 8, 2, 3, tets, ms::FieldNodes::MESH_NODES, s, wall_same_height);
         if (WorldRank() == 0) {
             std::cout << "  [inner wall, chord cut] " << (tets ? "tet" : "hex")
                       << " p=3: corner field min signed rel err " << corners.min_signed_rel
@@ -748,8 +786,8 @@ TEST(CurvedGeodesic, ConvexCylinderMatchesEuclidean) {
             AddSeed(seeds, s[0], s[1], s[2]);
             ms::GeodesicParameters params;
             params.field_nodes = mode;
-            const ms::GeodesicLabels g =
-                ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_SELF, seeds, false, params);
+            const ms::GeodesicLabels g = ms::LabelGeodesicFim(
+                *d.pmesh, MPI_COMM_SELF, seeds, false, params);
             EXPECT_EQ(g.field->UsesMeshNodes(), mode == ms::FieldNodes::AUTO);
             const NodeValues nodes = LocalNodeValues(*g.field);
             double worst = 0.0;
@@ -800,7 +838,7 @@ TEST(CurvedGeodesic, RankCountIndependent) {
                     const GeodesicRun run = RunAndCompare(serial, seeds, !vote, params, graph);
                     EXPECT_TRUE(run.curved);
                     EXPECT_EQ(run.order, p);
-                    EXPECT_EQ(run.seed_outside, (std::vector<char> {0, 0, 0, 1}));
+                    EXPECT_EQ(run.seed_outside, (std::vector<char>{0, 0, 0, 1}));
                     // Every element is labeled, and each seed owns at least one element
                     std::vector<int> owned(4, 0);
                     bool all_labeled = true;
@@ -826,9 +864,8 @@ namespace {
  * Element labels keyed by element key over all ranks of comm (MPI_Allgatherv of (key, label)
  * pairs). Collective.
  */
-std::map<std::uint64_t, int> LabelsByElementKey(mfem::ParMesh& pmesh,
-                                                const mfem::Array<int>& element_seed,
-                                                MPI_Comm comm) {
+std::map<std::uint64_t, int>
+LabelsByElementKey(mfem::ParMesh& pmesh, const mfem::Array<int>& element_seed, MPI_Comm comm) {
     const std::vector<std::uint64_t> keys = ms::ComputeElementKeys(pmesh);
     std::vector<std::uint64_t> pairs;
     for (int e = 0; e < pmesh.GetNE(); ++e) {
@@ -847,8 +884,14 @@ std::map<std::uint64_t, int> LabelsByElementKey(mfem::ParMesh& pmesh,
         total += counts[static_cast<std::size_t>(r)];
     }
     std::vector<std::uint64_t> all(static_cast<std::size_t>(total));
-    MPI_Allgatherv(pairs.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_UINT64_T, comm);
+    MPI_Allgatherv(pairs.data(),
+                   count,
+                   MPI_UINT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_UINT64_T,
+                   comm);
     std::map<std::uint64_t, int> out;
     for (std::size_t i = 0; i + 1 < all.size(); i += 2) {
         out[all[i]] = static_cast<int>(static_cast<std::int64_t>(all[i + 1]));
@@ -886,8 +929,8 @@ TEST(CurvedGeodesic, RankCountIndependentAfterParallelRefinement) {
                           : ms::LabelGeodesicFim(*d.pmesh, comm, seeds, false, params);
                 EXPECT_TRUE(g.field->UsesMeshNodes());
                 EXPECT_EQ(g.report.unlabeled_elements, 0);
-                labels[layout == Layout::SELF ? 0 : 1] =
-                    LabelsByElementKey(*d.pmesh, g.element_seed, comm);
+                labels[layout == Layout::SELF ? 0 : 1] = LabelsByElementKey(
+                    *d.pmesh, g.element_seed, comm);
             }
             EXPECT_EQ(labels[0].size(), static_cast<std::size_t>(8 * serial.GetNE()));
             EXPECT_EQ(labels[1].size(), labels[0].size()); // same key multiset, no collisions
@@ -973,14 +1016,13 @@ TEST(CurvedGeodesic, StraightMeshesKeepTheCornerField) {
             AddSeed(one, 0.5, 0.5, 0.0);
             ms::GeodesicParameters params;
             params.field_nodes = mode;
-            const ms::GeodesicLabels g =
-                ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_SELF, one, false, params);
+            const ms::GeodesicLabels g = ms::LabelGeodesicFim(
+                *d.pmesh, MPI_COMM_SELF, one, false, params);
             const NodeValues nodes = LocalNodeValues(*g.field);
             for (std::size_t k = 0; k < nodes.T.size(); ++k) {
                 const double* v = nodes.xyz[k].data();
-                const double exact =
-                    std::sqrt((v[0] - 0.5) * (v[0] - 0.5) + (v[1] - 0.5) * (v[1] - 0.5) +
-                              v[2] * v[2]);
+                const double exact = std::sqrt((v[0] - 0.5) * (v[0] - 0.5) +
+                                               (v[1] - 0.5) * (v[1] - 0.5) + v[2] * v[2]);
                 if (exact > 2.0) {
                     const std::size_t m = (mode == ms::FieldNodes::MESH_NODES) ? 1 : 0;
                     worst[m] = std::max(worst[m], std::fabs(nodes.T[k] - exact) / exact);

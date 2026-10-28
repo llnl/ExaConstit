@@ -1,12 +1,12 @@
 #pragma once
 
-#include "microstructure/labeling/geodesic_common.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <mpi.h>
+
+#include "microstructure/labeling/geodesic_common.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file geodesic_fim.hpp
@@ -57,10 +57,10 @@
  *     h/p on the true geometry (a sub-hex uses its 12 far-face triangles, a sub-tet its opposite
  *     face, as above). The candidates of node v in element e are those of every sub-cell of e
  *     having v as a corner, combined exactly like the candidates of one scan (smallest value; on
- *     exact ties the union of the supports), and stored per (v, e) incidence as before; the supports are stored
- *     as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is built. With
- *     field_nodes = CORNERS a curved element is replaced by the convex hull of its corners (paths
- *     on chords of length h, which may cut through a concave curved wall by the chord sag).
+ *     exact ties the union of the supports), and stored per (v, e) incidence as before; the
+ * supports are stored as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is
+ * built. With field_nodes = CORNERS a curved element is replaced by the convex hull of its corners
+ * (paths on chords of length h, which may cut through a concave curved wall by the chord sag).
  *   - Paths go from element to element through every shared vertex, edge or face. Two elements
  *     touching only along an edge or at a vertex are therefore connected for the geodesic solvers
  *     (a front passes through the shared edge), whereas the face-based fragment cleanup

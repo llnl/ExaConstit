@@ -1,10 +1,10 @@
 #pragma once
 
+#include "mfem.hpp"
+
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
-
-#include "mfem.hpp"
 
 /**
  * @file sample_labels.hpp
@@ -39,8 +39,12 @@ namespace exaconstit::microstructure {
  *                    (metric units: length^2 for Voronoi/Laguerre/Quadric, length for Additive).
  * @throws std::invalid_argument for an empty or invalid seed set (SeedIndex::Build).
  */
-void LabelSamples(const WeightedSamples& samples, const SeedSet& seeds, MetricType metric,
-                  MetricSetup setup, int num_bins, mfem::Array<int>& sample_seed,
+void LabelSamples(const WeightedSamples& samples,
+                  const SeedSet& seeds,
+                  MetricType metric,
+                  MetricSetup setup,
+                  int num_bins,
+                  mfem::Array<int>& sample_seed,
                   mfem::Vector* sample_f);
 
 } // namespace exaconstit::microstructure

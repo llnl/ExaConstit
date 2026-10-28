@@ -1,17 +1,4 @@
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/johnson_mehl.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
-
 #include "mfem.hpp"
-
-#include "axom/core/execution/execution_space.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -24,6 +11,17 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "axom/core/execution/execution_space.hpp"
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/johnson_mehl.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+#include <gtest/gtest.h>
 
 /*
  * Tests of Stage 1c morphology control:
@@ -72,8 +70,12 @@ mfem::Mesh LShape(int n, bool tets) {
     const int nx = 2 * n;
     const int ny = 2 * n;
     const int nz = n;
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
-    auto kept = [&](int i, int j) { return !(i >= n && j >= n); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
+    auto kept = [&](int i, int j) {
+        return !(i >= n && j >= n);
+    };
     int num_cells = 0;
     for (int j = 0; j < ny; j++) {
         for (int i = 0; i < nx; i++) {
@@ -102,8 +104,8 @@ mfem::Mesh LShape(int n, bool tets) {
                     const int hex[8] = {c[0], c[1], c[3], c[2], c[4], c[5], c[7], c[6]};
                     mesh.AddHex(hex);
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -172,8 +174,10 @@ double ArrivalTime(const ms::SeedSet& s, double v, double x, double y, double z)
 }
 
 /** Host seed view over plain arrays (for calling metric functors directly in tests). */
-ms::SeedDeviceView HostView(const std::vector<double>& x, const std::vector<double>& y,
-                            const std::vector<double>& z, const std::vector<double>& w,
+ms::SeedDeviceView HostView(const std::vector<double>& x,
+                            const std::vector<double>& y,
+                            const std::vector<double>& z,
+                            const std::vector<double>& w,
                             const double* factor) {
     ms::SeedDeviceView v;
     v.x = x.data();
@@ -195,7 +199,8 @@ std::array<double, 3> RandomUnit(std::mt19937_64& gen) {
 
 /** A x for the 6-entry tensor [Axx, Ayy, Azz, Ayz, Axz, Axy]. */
 std::array<double, 3> Apply(const std::array<double, 6>& a, const std::array<double, 3>& x) {
-    return {a[0] * x[0] + a[5] * x[1] + a[4] * x[2], a[5] * x[0] + a[1] * x[1] + a[3] * x[2],
+    return {a[0] * x[0] + a[5] * x[1] + a[4] * x[2],
+            a[5] * x[0] + a[1] * x[1] + a[3] * x[2],
             a[4] * x[0] + a[3] * x[1] + a[2] * x[2]};
 }
 
@@ -275,8 +280,8 @@ TEST(ProjectedIntervalBound, NeverExceedsFAndIsTight) {
             // sum_k lambda_k u_k u_k^T with random orthonormal u_k and kind-dependent lambda
             const auto b = RandomUnit(gen);
             std::array<double, 3> u0 = a;
-            std::array<double, 3> u1 = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                                        a[0] * b[1] - a[1] * b[0]};
+            std::array<double, 3> u1 = {
+                a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
             const double n1 = std::sqrt(u1[0] * u1[0] + u1[1] * u1[1] + u1[2] * u1[2]);
             for (double& c : u1) {
                 c /= n1;
@@ -299,8 +304,7 @@ TEST(ProjectedIntervalBound, NeverExceedsFAndIsTight) {
                 }
                 return s;
             };
-            tensor = {entry(0, 0), entry(1, 1), entry(2, 2), entry(1, 2), entry(0, 2),
-                      entry(0, 1)};
+            tensor = {entry(0, 0), entry(1, 1), entry(2, 2), entry(1, 2), entry(0, 2), entry(0, 1)};
         }
         double factor[9];
         double mu_min = 0.0;
@@ -474,8 +478,8 @@ TEST(ColumnarLamellar, LamellarLayersArePlanar) {
     for (const auto& normal_in : normals) {
         const double len = std::sqrt(normal_in[0] * normal_in[0] + normal_in[1] * normal_in[1] +
                                      normal_in[2] * normal_in[2]);
-        const std::array<double, 3> nrm = {normal_in[0] / len, normal_in[1] / len,
-                                           normal_in[2] / len};
+        const std::array<double, 3> nrm = {
+            normal_in[0] / len, normal_in[1] / len, normal_in[2] / len};
         ms::SeedSet seeds;
         std::vector<double> height;
         for (int i = 0; i < 60; i++) {
@@ -589,8 +593,8 @@ TEST(JohnsonMehl, TwoNucleusBoundaryIsHyperboloid) {
     for (double& c : e1) {
         c /= n1;
     }
-    const std::array<double, 3> e2 = {e[1] * e1[2] - e[2] * e1[1], e[2] * e1[0] - e[0] * e1[2],
-                                      e[0] * e1[1] - e[1] * e1[0]};
+    const std::array<double, 3> e2 = {
+        e[1] * e1[2] - e[2] * e1[1], e[2] * e1[0] - e[0] * e1[2], e[0] * e1[1] - e[1] * e1[0]};
 
     // Closed-form side test: +1 inside the sheet around b, -1 outside, 0 = too close to decide
     auto side = [&](const std::array<double, 3>& x) {
@@ -657,8 +661,8 @@ TEST(JohnsonMehl, TwoNucleusBoundaryIsHyperboloid) {
     mfem::Array<ms::BestPair> best;
     index.FindBest(qx, qy, qz, best, false);
     for (int k = 0; k < np; k++) {
-        EXPECT_EQ(best[k].id1, expected[k]) << "point " << k << " (" << pts[k][0] << ", "
-                                            << pts[k][1] << ", " << pts[k][2] << ")";
+        EXPECT_EQ(best[k].id1, expected[k])
+            << "point " << k << " (" << pts[k][0] << ", " << pts[k][1] << ", " << pts[k][2] << ")";
     }
 }
 
@@ -780,10 +784,10 @@ TEST(JohnsonMehl, CoverageRulesAndCompletion) {
         const double inv_box_rate = 1.0 / (params.nucleation_rate * box_volume);
         double t = report.last_candidate_time;
         int in_material = 0;
-        for (std::int64_t k = report.candidates_generated;
-             k < report.candidates_generated + 20000; k++) {
-            const ms::CounterRng rng(params.rng_seed, ms::RngPurpose::JOHNSON_MEHL,
-                                     static_cast<std::uint64_t>(k));
+        for (std::int64_t k = report.candidates_generated; k < report.candidates_generated + 20000;
+             k++) {
+            const ms::CounterRng rng(
+                params.rng_seed, ms::RngPurpose::JOHNSON_MEHL, static_cast<std::uint64_t>(k));
             t += -std::log(1.0 - rng.UniformDouble(1)) * inv_box_rate;
             if (k == report.candidates_generated) {
                 EXPECT_GT(t, report.completion_time_bound) << "the first unexamined candidate "
@@ -849,12 +853,14 @@ TEST(JohnsonMehl, RankIndependent) {
         params.end_time = c.end_time;
         if (c.ramp) {
             // Rate ramps up linearly from 0 to I_max over the first 0.1 time units
-            params.rate_function = [](double t) { return 1500.0 * std::min(1.0, t / 0.1); };
+            params.rate_function = [](double t) {
+                return 1500.0 * std::min(1.0, t / 0.1);
+            };
         }
         ms::JohnsonMehlReport rep_par, rep_ref;
         const ms::SeedSet par = ms::GenerateJohnsonMehlSeeds(*pmesh, params, &rep_par);
-        const ms::SeedSet ref =
-            ms::GenerateJohnsonMehlSeeds(serial, MPI_COMM_SELF, params, &rep_ref);
+        const ms::SeedSet ref = ms::GenerateJohnsonMehlSeeds(
+            serial, MPI_COMM_SELF, params, &rep_ref);
         ASSERT_GT(ref.Size(), 5u);
         ExpectSameNuclei(par, ref);
         EXPECT_EQ(rep_par.candidates_generated, rep_ref.candidates_generated);
@@ -955,7 +961,9 @@ TEST(JohnsonMehl, InvalidParametersRejected) {
     p.use_sampling_box = true; // empty box
     EXPECT_THROW(ms::GenerateJohnsonMehlSeeds(*pmesh, p), std::invalid_argument);
     p = JmParams(100.0, 1);
-    p.rate_function = [](double) { return 200.0; }; // above nucleation_rate
+    p.rate_function = [](double) {
+        return 200.0;
+    }; // above nucleation_rate
     EXPECT_THROW(ms::GenerateJohnsonMehlSeeds(*pmesh, p), std::invalid_argument);
     // A sampling box outside the material never yields a nucleus: stall error, or partial result
     p = JmParams(100.0, 1);

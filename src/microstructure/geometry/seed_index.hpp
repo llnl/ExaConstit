@@ -1,16 +1,15 @@
 #pragma once
 
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
+
+#include <memory>
+#include <vector>
 
 #include "axom/primal/geometry/BoundingBox.hpp"
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/spin/BVH.hpp"
-
-#include <memory>
-#include <vector>
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file seed_index.hpp
@@ -181,8 +180,11 @@ public:
      * @throws std::invalid_argument if ExecSpace runs on a GPU but the mfem::Device has no
      *         CUDA/HIP backend.
      */
-    void FindBest(const mfem::Vector& qx, const mfem::Vector& qy, const mfem::Vector& qz,
-                  mfem::Array<BestPair>& out, bool exact_second,
+    void FindBest(const mfem::Vector& qx,
+                  const mfem::Vector& qy,
+                  const mfem::Vector& qz,
+                  mfem::Array<BestPair>& out,
+                  bool exact_second,
                   mfem::Array<int>* leaf_visits = nullptr) const;
 
     /**
@@ -222,8 +224,11 @@ public:
      * @throws std::invalid_argument if offsets/ids have inconsistent sizes, or if ExecSpace runs on
      *         a GPU but the mfem::Device has no CUDA/HIP backend.
      */
-    void FindBestExcluding(const mfem::Vector& qx, const mfem::Vector& qy, const mfem::Vector& qz,
-                           const mfem::Array<int>& offsets, const mfem::Array<int>& ids,
+    void FindBestExcluding(const mfem::Vector& qx,
+                           const mfem::Vector& qy,
+                           const mfem::Vector& qz,
+                           const mfem::Array<int>& offsets,
+                           const mfem::Array<int>& ids,
                            mfem::Array<BestPair>& out) const;
 
     /**
@@ -242,8 +247,12 @@ public:
      * @throws std::invalid_argument if ExecSpace runs on a GPU but the mfem::Device has no
      *         CUDA/HIP backend.
      */
-    void FindWithin(const mfem::Vector& qx, const mfem::Vector& qy, const mfem::Vector& qz,
-                    double f_max, mfem::Array<int>& offsets, mfem::Array<int>& ids) const;
+    void FindWithin(const mfem::Vector& qx,
+                    const mfem::Vector& qy,
+                    const mfem::Vector& qz,
+                    double f_max,
+                    mfem::Array<int>& offsets,
+                    mfem::Array<int>& ids) const;
 
     /**
      * @brief The metric functor, pointing at the index's own seed copies. Its pointers are

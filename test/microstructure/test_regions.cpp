@@ -16,6 +16,17 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mpi.h>
+#include <stdexcept>
+#include <vector>
+
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/mesh/attribute_domain.hpp"
@@ -26,19 +37,7 @@
 #include "microstructure/regions/region_assigner.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
 #include "microstructure/util/counter_rng.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <map>
-#include <memory>
-#include <mpi.h>
-#include <stdexcept>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -292,8 +291,8 @@ constexpr int GRIP_ATTRIBUTE = 3;
  * (centroid z > 7, 36 elements) gets attribute 3 instead, leaving 180 part elements.
  */
 mfem::Mesh PlateBox(bool grip = false) {
-    mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(6, 6, 8, mfem::Element::HEXAHEDRON, 6.0, 6.0,
-                                                  8.0);
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(
+        6, 6, 8, mfem::Element::HEXAHEDRON, 6.0, 6.0, 8.0);
     mfem::Vector center;
     for (int e = 0; e < mesh.GetNE(); e++) {
         mesh.GetElementCenter(e, center);
@@ -370,12 +369,11 @@ struct PlateResult {
  * GenerateSeeds, LabelTessellation, MeshAdjacency and CleanupFragments run on the whole mesh with
  * that mask, then ToParent, gathered into serial order on every rank. Collective over comm.
  */
-PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
-                     bool grip = false) {
+PlateResult
+RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank, bool grip = false) {
     Distributed d = Distribute(serial, comm, plate_on_last_rank);
-    const std::vector<int> passthrough = grip
-                                             ? std::vector<int>{GRIP_ATTRIBUTE, PLATE_ATTRIBUTE}
-                                             : std::vector<int>{PLATE_ATTRIBUTE};
+    const std::vector<int> passthrough = grip ? std::vector<int>{GRIP_ATTRIBUTE, PLATE_ATTRIBUTE}
+                                              : std::vector<int>{PLATE_ATTRIBUTE};
     ms::AttributeDomain domain(*d.pmesh, {PART_ATTRIBUTE}, passthrough);
     const ms::ElementMask* mask = domain.Mask();
     EXPECT_NE(mask, nullptr);
@@ -411,14 +409,14 @@ PlateResult RunPlate(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_rank,
     PlateResult out;
     for (std::size_t i = 0; i < seeds.Size(); i++) {
         const double z_max = grip ? 7.0 : 8.0;
-        out.all_seeds_above_plate =
-            out.all_seeds_above_plate && (seeds.z[i] >= 2.0) && (seeds.z[i] <= z_max);
+        out.all_seeds_above_plate = out.all_seeds_above_plate && (seeds.z[i] >= 2.0) &&
+                                    (seeds.z[i] <= z_max);
     }
 
     // Labeling, then adjacency and fragment cleanup with the mask
     const ms::TessellationOptions tessellation;
-    const ms::TessellationLabels labels =
-        ms::LabelTessellation(*d.pmesh, comm, seeds, tessellation, mask);
+    const ms::TessellationLabels labels = ms::LabelTessellation(
+        *d.pmesh, comm, seeds, tessellation, mask);
     const ms::MeshAdjacency adjacency(*d.pmesh);
     ms::FragmentCleanupParameters cleanup;
     cleanup.min_grain_elements = 2;
@@ -550,9 +548,8 @@ TEST(AttributeDomain, CurvedNonGaussLobattoPassthrough) {
     for (const double z : seeds.z) {
         EXPECT_GE(z, 2.0);
     }
-    const ms::TessellationLabels labels =
-        ms::LabelTessellation(*d.pmesh, MPI_COMM_WORLD, seeds, ms::TessellationOptions{},
-                              context.mask);
+    const ms::TessellationLabels labels = ms::LabelTessellation(
+        *d.pmesh, MPI_COMM_WORLD, seeds, ms::TessellationOptions{}, context.mask);
     const mfem::Array<int> parent = domain.ToParent(labels.element_grain, labels.num_grains);
     for (int e = 0; e < d.pmesh->GetNE(); e++) {
         if (d.pmesh->GetAttribute(e) == PLATE_ATTRIBUTE) {

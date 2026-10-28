@@ -1,15 +1,15 @@
 #pragma once
 
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
 #include <cstdint>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file seed_element_locator.hpp
@@ -80,12 +80,12 @@ std::uint64_t VertexKey(double x, double y, double z);
  * @return size N, identical on every rank.
  * @throws std::invalid_argument on every rank if element_key has the wrong size on any rank.
  */
-std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
-                                                 MPI_Comm comm,
-                                                 const SeedSet& seeds,
-                                                 const std::vector<std::uint64_t>* element_key =
-                                                     nullptr,
-                                                 const MaterialContext* context = nullptr);
+std::vector<std::uint64_t>
+ContainingElementKeys(mfem::ParMesh& pmesh,
+                      MPI_Comm comm,
+                      const SeedSet& seeds,
+                      const std::vector<std::uint64_t>* element_key = nullptr,
+                      const MaterialContext* context = nullptr);
 
 /** @brief Result of a nearest-element or nearest-vertex search for a list of seeds. */
 struct NearestKeys {

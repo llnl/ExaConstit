@@ -131,11 +131,8 @@ MFEM_HOST_DEVICE inline double EikonalVertexValue(const double* xv, const double
  * @return the candidate, or +infinity if a value is missing, the segment is too steep (q >= 1) or
  *         the minimizer is not strictly inside the segment.
  */
-MFEM_HOST_DEVICE inline double EikonalSegmentValue(const double* xv,
-                                                   const double* xa,
-                                                   const double* xb,
-                                                   double ta,
-                                                   double tb) {
+MFEM_HOST_DEVICE inline double
+EikonalSegmentValue(const double* xv, const double* xa, const double* xb, double ta, double tb) {
     const double inf = EikonalInfinity();
     if (!(ta < inf) || !(tb < inf)) {
         return inf;
@@ -233,7 +230,8 @@ MFEM_HOST_DEVICE inline double EikonalTriangleInteriorValue(const double* xv,
     const double b1 = EikonalDot(e2, w);
     const double l0a = (m11 * b0 - m01 * b1) / det;
     const double l0b = (m00 * b1 - m01 * b0) / det;
-    const double n[3] = {w[0] - l0a * e1[0] - l0b * e2[0], w[1] - l0a * e1[1] - l0b * e2[1],
+    const double n[3] = {w[0] - l0a * e1[0] - l0b * e2[0],
+                         w[1] - l0a * e1[1] - l0b * e2[1],
                          w[2] - l0a * e1[2] - l0b * e2[2]};
     const double h2 = EikonalDot(n, n);
     // Slope of T_lin on the face: g = M^-1 d, q = d . g (squared in-plane gradient of T_lin)
@@ -253,7 +251,8 @@ MFEM_HOST_DEVICE inline double EikonalTriangleInteriorValue(const double* xv,
         return inf;
     }
     // Evaluate f(l) directly: T_lin(p) + |v - p|
-    const double rv[3] = {w[0] - la * e1[0] - lb * e2[0], w[1] - la * e1[1] - lb * e2[1],
+    const double rv[3] = {w[0] - la * e1[0] - lb * e2[0],
+                          w[1] - la * e1[1] - lb * e2[1],
                           w[2] - la * e1[2] - lb * e2[2]};
     return t[0] + la * d1 + lb * d2 + sqrt(EikonalDot(rv, rv));
 }

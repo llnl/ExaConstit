@@ -27,6 +27,15 @@
  *    inactive elements (every plate element on the last rank) still reports its local copy.
  * Every run uses np = 1-4 (the masked mesh is distributed over MPI_COMM_WORLD).
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <mpi.h>
+#include <string>
+#include <vector>
+
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/mesh/serial_order.hpp"
@@ -38,17 +47,7 @@
 #include "microstructure/seeding/roi_filler.hpp"
 #include "microstructure/seeding/seed_element_locator.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <cmath>
-#include <memory>
-#include <mpi.h>
-#include <string>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -67,9 +66,8 @@ void Warp(const mfem::Vector& x, mfem::Vector& y) {
 
 /** Masked box (plate attribute below z = 0.5) or the active-only reference, optionally curved. */
 mfem::Mesh BuildMesh(bool reference, mfem::Element::Type type, int curved_order) {
-    mfem::Mesh mesh = reference
-                          ? mfem::Mesh::MakeCartesian3D(4, 4, 4, type, 1.0, 1.0, 1.0, false)
-                          : mfem::Mesh::MakeCartesian3D(4, 4, 6, type, 1.0, 1.0, 1.5, false);
+    mfem::Mesh mesh = reference ? mfem::Mesh::MakeCartesian3D(4, 4, 4, type, 1.0, 1.0, 1.0, false)
+                                : mfem::Mesh::MakeCartesian3D(4, 4, 6, type, 1.0, 1.0, 1.5, false);
     if (reference) {
         mesh.Transform([](const mfem::Vector& x, mfem::Vector& y) {
             y = x;
@@ -190,10 +188,10 @@ TEST(MaskSeeding, SeedsEqualActiveOnlyMesh) {
         roi.num_filler = 20;
         roi.rng_seed = 3;
         roi.source_id_offset = 1000;
-        const ms::RoiFillerResult roi_a =
-            ms::FillOutsideRoi(*masked.pmesh, MPI_COMM_WORLD, roi, 10, &context);
-        const ms::RoiFillerResult roi_b =
-            ms::FillOutsideRoi(*reference.pmesh, MPI_COMM_SELF, roi, 10);
+        const ms::RoiFillerResult roi_a = ms::FillOutsideRoi(
+            *masked.pmesh, MPI_COMM_WORLD, roi, 10, &context);
+        const ms::RoiFillerResult roi_b = ms::FillOutsideRoi(
+            *reference.pmesh, MPI_COMM_SELF, roi, 10);
         ExpectSameSeeds(roi_a.filler, roi_b.filler, std::string(v.name) + " ROI filler");
         EXPECT_EQ(roi_a.roi_material_volume, roi_b.roi_material_volume) << v.name;
         EXPECT_EQ(roi_a.outside_material_volume, roi_b.outside_material_volume) << v.name;
@@ -223,8 +221,8 @@ TEST(MaskSeeding, ClearanceIgnoresTheInterface) {
         int near_interface_a = 0;
         int near_interface_b = 0;
         for (std::size_t i = 0; i < a.Size(); i++) {
-            const double side =
-                std::min({a.x[i], 1.0 - a.x[i], a.y[i], 1.0 - a.y[i], 1.5 - a.z[i]});
+            const double side = std::min(
+                {a.x[i], 1.0 - a.x[i], a.y[i], 1.0 - a.y[i], 1.5 - a.z[i]});
             EXPECT_GE(side, c) << v.name;
             near_interface_a += (a.z[i] - PLATE_TOP < c) ? 1 : 0;
         }
@@ -281,10 +279,10 @@ TEST(MaskSeeding, SamplesAndLloydEqualActiveOnlyMesh) {
 
             ms::LloydParameters lloyd;
             lloyd.iterations = 3;
-            const ms::SeedSet ra = ms::RunLloyd(*masked.pmesh, MPI_COMM_WORLD, sa, seeds, lloyd, {},
-                                                nullptr, &context);
-            const ms::SeedSet rb =
-                ms::RunLloyd(*reference.pmesh, MPI_COMM_SELF, sb, seeds, lloyd, {});
+            const ms::SeedSet ra = ms::RunLloyd(
+                *masked.pmesh, MPI_COMM_WORLD, sa, seeds, lloyd, {}, nullptr, &context);
+            const ms::SeedSet rb = ms::RunLloyd(
+                *reference.pmesh, MPI_COMM_SELF, sb, seeds, lloyd, {});
             ExpectSameSeeds(ra, rb, std::string(v.name) + (quadrature ? " Lloyd qp" : " Lloyd"));
         }
     }
@@ -307,7 +305,8 @@ TEST(MaskSeeding, EmptyMaskChangesNothing) {
         params.rng_seed = 2;
         params.boundary_clearance = 0.05;
         ExpectSameSeeds(ms::GenerateSeeds(*m.pmesh, params),
-                        ms::GenerateSeeds(*m.pmesh, params, nullptr, &context), "empty mask");
+                        ms::GenerateSeeds(*m.pmesh, params, nullptr, &context),
+                        "empty mask");
     }
 }
 
@@ -347,9 +346,11 @@ TEST(MaskSeeding, CurvedPlateDoesNotCurveTheMaterial) {
             params.num_seeds = 40;
             params.rng_seed = 17;
             const ms::SeedSet b = ms::GenerateSeeds(*reference.pmesh, params);
-            ExpectSameSeeds(ms::GenerateSeeds(*masked.pmesh, params, nullptr, &shared), b,
+            ExpectSameSeeds(ms::GenerateSeeds(*masked.pmesh, params, nullptr, &shared),
+                            b,
                             name + " shared locator");
-            ExpectSameSeeds(ms::GenerateSeeds(*masked.pmesh, params, nullptr, &local), b,
+            ExpectSameSeeds(ms::GenerateSeeds(*masked.pmesh, params, nullptr, &local),
+                            b,
                             name + " own locator");
         }
     }
@@ -377,9 +378,8 @@ TEST(MaskSeeding, NearestVertexReportsEveryCopy) {
     for (int e = 0, k = 0; e < ne; e++) {
         int owner = 0;
         if (nranks > 1) {
-            owner = serial.GetAttribute(e) == ACTIVE_ATTRIBUTE
-                        ? (k++ * (nranks - 1)) / num_active
-                        : nranks - 1;
+            owner = serial.GetAttribute(e) == ACTIVE_ATTRIBUTE ? (k++ * (nranks - 1)) / num_active
+                                                               : nranks - 1;
         }
         m.order.partitioning[e] = owner;
         if (owner == rank) {
@@ -406,8 +406,8 @@ TEST(MaskSeeding, NearestVertexReportsEveryCopy) {
     seeds.z = {0.45, 0.3, 1.0};
     seeds.source_id = {0, 1, 2};
     const std::vector<int> ids = {0, 1, 2};
-    const ms::NearestVertexResult result =
-        ms::NearestVertex(*m.pmesh, MPI_COMM_WORLD, seeds, ids, mask);
+    const ms::NearestVertexResult result = ms::NearestVertex(
+        *m.pmesh, MPI_COMM_WORLD, seeds, ids, mask);
     const ms::VertexCoordinates coords(*m.pmesh);
     for (std::size_t k = 0; k < ids.size(); k++) {
         const auto& p = result.position[k];

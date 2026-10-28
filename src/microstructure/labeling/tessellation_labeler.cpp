@@ -15,6 +15,14 @@
  */
 #include "microstructure/labeling/tessellation_labeler.hpp"
 
+#include "mfem.hpp"
+
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include "microstructure/exec_dispatch.hpp"
 #include "microstructure/geometry/anisotropy_tensors.hpp"
 #include "microstructure/geometry/metric_functors.hpp"
@@ -23,14 +31,6 @@
 #include "microstructure/labeling/quadrature_vote.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/util/collective_errors.hpp"
-
-#include "mfem.hpp"
-
-#include <cstdint>
-#include <limits>
-#include <stdexcept>
-#include <string>
-#include <vector>
 
 namespace exaconstit::microstructure {
 
@@ -51,8 +51,8 @@ namespace exaconstit::microstructure {
  * driver can call it before the collective seeding.
  */
 void CheckSupportedTessellation(const TessellationOptions& tessellation) {
-    const bool periodic =
-        tessellation.periodic[0] || tessellation.periodic[1] || tessellation.periodic[2];
+    const bool periodic = tessellation.periodic[0] || tessellation.periodic[1] ||
+                          tessellation.periodic[2];
     if (tessellation.distance != DistanceMode::EUCLIDEAN && periodic) {
         throw std::invalid_argument("Tessellation labeler: distance = \"connected\" / "
                                     "\"geodesic\" cannot be combined with periodic axes");
@@ -63,13 +63,11 @@ void CheckSupportedTessellation(const TessellationOptions& tessellation) {
             throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" with "
                                         "metric laguerre needs geodesic solver fim");
         }
-        if (tessellation.metric != MetricType::QUADRIC &&
-            tessellation.anisotropy_kind != "none") {
+        if (tessellation.metric != MetricType::QUADRIC && tessellation.anisotropy_kind != "none") {
             throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" with an "
                                         "anisotropy needs metric quadric");
         }
-        if (tessellation.anisotropy_kind == "per_seed" &&
-            tessellation.geodesic_solver == "graph") {
+        if (tessellation.anisotropy_kind == "per_seed" && tessellation.geodesic_solver == "graph") {
             throw std::invalid_argument("Tessellation labeler: distance = \"geodesic\" with "
                                         "anisotropy kind per_seed needs geodesic solver fim");
         }
@@ -240,7 +238,9 @@ void LabelElementsWithSeeds(mfem::Mesh& local_mesh,
     if (num_elements > 0) {
         const BestPair* best_data = best.Read();
         int* seed_out = element_seed.Write();
-        mfem::forall(num_elements, [=] MFEM_HOST_DEVICE(int e) { seed_out[e] = best_data[e].id1; });
+        mfem::forall(num_elements, [=] MFEM_HOST_DEVICE(int e) {
+            seed_out[e] = best_data[e].id1;
+        });
     }
 
     if (num_coincident_seeds != nullptr) {
@@ -305,8 +305,8 @@ void CompactSeedLabels(MPI_Comm comm,
     }
 
     // Step 3: global OR of the masks (word count is the same on every rank: num_seeds is)
-    MPI_Allreduce(MPI_IN_PLACE, used.data(), static_cast<int>(num_words), MPI_UINT64_T, MPI_BOR,
-                  comm);
+    MPI_Allreduce(
+        MPI_IN_PLACE, used.data(), static_cast<int>(num_words), MPI_UINT64_T, MPI_BOR, comm);
 
     // Step 4: compact grain ids in increasing seed index
     labels.seed_grain.assign(static_cast<std::size_t>(num_seeds), 0);
@@ -340,8 +340,7 @@ void CompactSeedLabels(MPI_Comm comm,
     int* grain_of_element = labels.element_grain.Write();
     mfem::forall(num_elements, [=] MFEM_HOST_DEVICE(int e) {
         // Inactive elements get the placeholder grain 0
-        grain_of_element[e] =
-            (active == nullptr || active[e] != 0) ? table[seed_of_element[e]] : 0;
+        grain_of_element[e] = (active == nullptr || active[e] != 0) ? table[seed_of_element[e]] : 0;
     });
 }
 
@@ -385,7 +384,8 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
     }
     // Reduced: a rank without elements has no mask while the others have one
     ThrowIfAnyRank<std::invalid_argument>(
-        comm, periodic && mask != nullptr && mask->active.Size() > 0,
+        comm,
+        periodic && mask != nullptr && mask->active.Size() > 0,
         "Tessellation labeler: periodic axes cannot be combined with an element mask "
         "(passthrough attributes)");
     PeriodicImages images;
@@ -394,8 +394,8 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
     if (periodic) {
         const PeriodicBox box = PeriodicBoxFromMesh(local_mesh, comm, tessellation.periodic);
         PeriodicImageParameters image_params;
-        layers = RequiredImageLayers(box, tessellation.metric, EffectiveGlobalTensor(tessellation),
-                                     seeds);
+        layers = RequiredImageLayers(
+            box, tessellation.metric, EffectiveGlobalTensor(tessellation), seeds);
         image_params.layers = layers;
         images = BuildPeriodicImages(seeds, box, image_params);
         search_seeds = &images.seeds;
@@ -412,13 +412,13 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
         vote.num_bins = tessellation.num_bins;
         vote.levels = tessellation.vote_levels;
         QuadratureVoteReport vote_report;
-        LabelElementsByQuadratureVote(local_mesh, *search_seeds, vote, element_seed,
-                                      images.original, &vote_report, mask);
+        LabelElementsByQuadratureVote(
+            local_mesh, *search_seeds, vote, element_seed, images.original, &vote_report, mask);
         num_coincident = vote_report.num_coincident_seeds;
         num_split = vote_report.num_split_elements;
     } else {
-        LabelElementsWithSeeds(local_mesh, *search_seeds, tessellation, element_seed,
-                               &num_coincident);
+        LabelElementsWithSeeds(
+            local_mesh, *search_seeds, tessellation, element_seed, &num_coincident);
         if (periodic) {
             MapImageLabelsToOriginal(images, element_seed);
         }
@@ -427,12 +427,15 @@ TessellationLabels LabelTessellation(mfem::Mesh& local_mesh,
 
     // Step 4: elements without a seed (id1 = -1: non-finite centroid or voting points)
     if (tessellation.sampling == SamplingMode::QUADRATURE_VOTE) {
-        ThrowIfAnyElementUnlabeled(comm, element_seed,
+        ThrowIfAnyElementUnlabeled(comm,
+                                   element_seed,
                                    "Tessellation labeler: no voting point of an element has a "
                                    "finite position",
-                                   "; the element has non-finite node coordinates", mask);
+                                   "; the element has non-finite node coordinates",
+                                   mask);
     } else {
-        ThrowIfAnyElementUnlabeled(comm, element_seed,
+        ThrowIfAnyElementUnlabeled(comm,
+                                   element_seed,
                                    "Tessellation labeler: non-finite element centroid",
                                    "; the element is degenerate (zero volume) or has non-finite "
                                    "node coordinates",

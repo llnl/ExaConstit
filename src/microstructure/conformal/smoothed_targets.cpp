@@ -3,12 +3,12 @@
  */
 #include "microstructure/conformal/smoothed_targets.hpp"
 
-#include "microstructure/conformal/boundary_projector.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
+
+#include "microstructure/conformal/boundary_projector.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -43,8 +43,8 @@ std::vector<std::pair<int, int>> LatticeNeighbors(const mfem::FiniteElement& fe)
                 sum += d[k];
             }
             // One axis step, or (tets) one step along a difference of two axes
-            if ((ones == 1 && zeros == 2) || (tet && ones == 2 && zeros == 1 &&
-                                             std::fabs(sum) < 1e-9)) {
+            if ((ones == 1 && zeros == 2) ||
+                (tet && ones == 2 && zeros == 1 && std::fabs(sum) < 1e-9)) {
                 pairs.emplace_back(a, b);
             }
         }
@@ -66,8 +66,8 @@ bool HasSurfacesOf(const NodeLabels& labels, int u, int v) {
     for (int a = off[v]; a < off[v + 1]; ++a) {
         bool found = false;
         for (int b = off[u]; b < off[u + 1] && !found; ++b) {
-            const double dot =
-                n[3 * a] * n[3 * b] + n[3 * a + 1] * n[3 * b + 1] + n[3 * a + 2] * n[3 * b + 2];
+            const double dot = n[3 * a] * n[3 * b] + n[3 * a + 1] * n[3 * b + 1] +
+                               n[3 * a + 2] * n[3 * b + 2];
             found = dot >= labels.FeatureCosine();
         }
         if (!found) {
@@ -87,9 +87,12 @@ bool HasSurfacesOf(const NodeLabels& labels, int u, int v) {
  *     position, sorts, averages, takes the lambda or mu step and projects back on the surfaces.
  *  3. Move limit.
  */
-void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patches,
-                           const mfem::Vector& h, const SmoothingParameters& params,
-                           mfem::Vector& smoothed, std::vector<char>& moved) {
+void SmoothGrainBoundaries(const NodeLabels& labels,
+                           const SurfacePatches& patches,
+                           const mfem::Vector& h,
+                           const SmoothingParameters& params,
+                           mfem::Vector& smoothed,
+                           std::vector<char>& moved) {
     const VertexField& field = labels.Field();
     mfem::ParMesh& pmesh = field.Mesh();
     const int nv = labels.NumNodes();
@@ -100,20 +103,23 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
     for (int v = 0; v < nv; ++v) {
         const int n = labels.NumLabels(v);
         const bool curved_ok = CurvedPatchesReady(labels, patches, v);
-        moved[static_cast<std::size_t>(v)] =
-            (n >= 2 && n <= 3 && !labels.OverConstrained(v) && curved_ok) ? 1 : 0;
+        moved[static_cast<std::size_t>(v)] = (n >= 2 && n <= 3 && !labels.OverConstrained(v) &&
+                                              curved_ok)
+                                                 ? 1
+                                                 : 0;
     }
     const int* en_off = field.ElementVertexOffsets().HostRead();
     const int* en = field.ElementVertices().HostRead();
     // The element's nodal points: the Nodes space, or the vertices (order 1) without Nodes
-    const mfem::FiniteElementSpace* fes =
-        (pmesh.GetNodes() != nullptr) ? pmesh.GetNodes()->FESpace() : nullptr;
+    const mfem::FiniteElementSpace* fes = (pmesh.GetNodes() != nullptr)
+                                              ? pmesh.GetNodes()->FESpace()
+                                              : nullptr;
     const mfem::H1_FECollection linear(1, 3);
     std::vector<std::vector<int>> nbrs(static_cast<std::size_t>(nv));
     for (int e = 0; e < pmesh.GetNE(); ++e) {
-        const mfem::FiniteElement& fe =
-            (fes != nullptr) ? *fes->GetFE(e)
-                             : *linear.FiniteElementForGeometry(pmesh.GetElementBaseGeometry(e));
+        const mfem::FiniteElement& fe = (fes != nullptr) ? *fes->GetFE(e)
+                                                         : *linear.FiniteElementForGeometry(
+                                                               pmesh.GetElementBaseGeometry(e));
         for (const auto& [ka, kb] : LatticeNeighbors(fe)) {
             const int a = en[en_off[e] + ka];
             const int b = en[en_off[e] + kb];
@@ -150,7 +156,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
         for (int v = 0; v < nv; ++v) {
             for (const int u : nbrs[static_cast<std::size_t>(v)]) {
                 send.insert(send.end(), x0 + 3 * u, x0 + 3 * u + 3);
-                send.insert(send.end(), &p[3 * static_cast<std::size_t>(u)],
+                send.insert(send.end(),
+                            &p[3 * static_cast<std::size_t>(u)],
                             &p[3 * static_cast<std::size_t>(u)] + 3);
             }
             send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
@@ -178,8 +185,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
             }
             const auto key_less = [](const std::array<double, 6>& a,
                                      const std::array<double, 6>& b) {
-                return std::lexicographical_compare(a.begin(), a.begin() + 3, b.begin(),
-                                                    b.begin() + 3);
+                return std::lexicographical_compare(
+                    a.begin(), a.begin() + 3, b.begin(), b.begin() + 3);
             };
             const auto key_equal = [](const std::array<double, 6>& a,
                                       const std::array<double, 6>& b) {
@@ -197,8 +204,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
             for (int d = 0; d < 3; ++d) {
                 y[d] += w * (mean[d] / static_cast<double>(list.size()) - y[d]);
             }
-            ProjectOnNodeSurfaces(labels, patches, v, x0 + 3 * v, 1e-10 * h(v),
-                                  SURFACE_PROJECTION_ITERATIONS, y);
+            ProjectOnNodeSurfaces(
+                labels, patches, v, x0 + 3 * v, 1e-10 * h(v), SURFACE_PROJECTION_ITERATIONS, y);
         }
         p.swap(next);
     }
@@ -216,8 +223,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
             for (int d = 0; d < 3; ++d) {
                 y[d] = x[d] + (y[d] - x[d]) * (limit / dist);
             }
-            ProjectOnNodeSurfaces(labels, patches, v, x, 1e-10 * h(v),
-                                  SURFACE_PROJECTION_ITERATIONS, y);
+            ProjectOnNodeSurfaces(
+                labels, patches, v, x, 1e-10 * h(v), SURFACE_PROJECTION_ITERATIONS, y);
         }
         for (int d = 0; d < 3; ++d) {
             smoothed(3 * v + d) = y[d];

@@ -1,13 +1,13 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/util/fixed_point.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/util/fixed_point.hpp"
 
 /**
  * @file cell_measures.hpp
@@ -89,7 +89,8 @@ struct WeightedSamples {
  * @throws std::runtime_error from the element sampler for a mixed-geometry or non-3D mesh;
  *         std::invalid_argument for a mask of the wrong size.
  */
-void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out,
+void MakeElementWeightedSamples(mfem::Mesh& mesh,
+                                WeightedSamples& out,
                                 const ElementMask* mask = nullptr);
 
 /**
@@ -128,7 +129,9 @@ inline constexpr int MAX_POSITIVE_TET_QUAD_ORDER = 20;
  *         order 4p - 1 for node order p >= 6). Also from the sampler for a mixed-geometry or
  *         non-3D mesh.
  */
-void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out,
+void MakeQuadratureWeightedSamples(mfem::Mesh& mesh,
+                                   int quad_order,
+                                   WeightedSamples& out,
                                    const ElementMask* mask = nullptr);
 
 /**
@@ -226,21 +229,23 @@ public:
     }
 
 private:
-    MPI_Comm m_comm;                    ///< communicator of the samples
-    const WeightedSamples& m_samples;   ///< the samples (not owned)
-    int m_num_seeds = 0;                ///< N
-    std::int64_t m_total_samples = 0;   ///< global sample count
-    double m_max_weight = 0.0;          ///< global max W_q
-    double m_center[3] = {0, 0, 0};     ///< center of the global sample bounding box
-    FixedPointScale m_volume_scale;     ///< quantum for W_q terms
-    FixedPointScale m_moment_scale;     ///< quantum for W_q (x_q - center) terms
+    MPI_Comm m_comm;                  ///< communicator of the samples
+    const WeightedSamples& m_samples; ///< the samples (not owned)
+    int m_num_seeds = 0;              ///< N
+    std::int64_t m_total_samples = 0; ///< global sample count
+    double m_max_weight = 0.0;        ///< global max W_q
+    double m_center[3] = {0, 0, 0};   ///< center of the global sample bounding box
+    FixedPointScale m_volume_scale;   ///< quantum for W_q terms
+    FixedPointScale m_moment_scale;   ///< quantum for W_q (x_q - center) terms
 };
 
 /**
  * @brief One-shot convenience: CellMeasureAccumulator(comm, samples, num_seeds).Measure(...).
  * Collective; same parameters and exceptions.
  */
-CellMeasures ComputeCellMeasures(MPI_Comm comm, const WeightedSamples& samples,
-                                 const mfem::Array<int>& sample_seed, int num_seeds);
+CellMeasures ComputeCellMeasures(MPI_Comm comm,
+                                 const WeightedSamples& samples,
+                                 const mfem::Array<int>& sample_seed,
+                                 int num_seeds);
 
 } // namespace exaconstit::microstructure

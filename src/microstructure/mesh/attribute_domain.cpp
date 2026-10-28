@@ -73,10 +73,22 @@ std::map<int, std::int64_t> GlobalAttributeCounts(const mfem::ParMesh& mesh) {
     }
     std::vector<int> all_attr(static_cast<std::size_t>(std::max(total, 1)));
     std::vector<std::int64_t> all_count(static_cast<std::size_t>(std::max(total, 1)));
-    MPI_Allgatherv(local_attr.data(), my_size, MPI_INT, all_attr.data(), sizes.data(),
-                   displs.data(), MPI_INT, comm);
-    MPI_Allgatherv(local_count.data(), my_size, MPI_INT64_T, all_count.data(), sizes.data(),
-                   displs.data(), MPI_INT64_T, comm);
+    MPI_Allgatherv(local_attr.data(),
+                   my_size,
+                   MPI_INT,
+                   all_attr.data(),
+                   sizes.data(),
+                   displs.data(),
+                   MPI_INT,
+                   comm);
+    MPI_Allgatherv(local_count.data(),
+                   my_size,
+                   MPI_INT64_T,
+                   all_count.data(),
+                   sizes.data(),
+                   displs.data(),
+                   MPI_INT64_T,
+                   comm);
 
     // Step 3: global sums per attribute
     std::map<int, std::int64_t> global;
@@ -110,8 +122,7 @@ AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
 
     // Step 2a: listed attributes must be positive; sort and de-duplicate both lists
     const std::set<int> listed_active(active_attributes.begin(), active_attributes.end());
-    const std::set<int> passthrough(passthrough_attributes.begin(),
-                                    passthrough_attributes.end());
+    const std::set<int> passthrough(passthrough_attributes.begin(), passthrough_attributes.end());
     std::set<int> non_positive;
     for (const int a : listed_active) {
         if (a <= 0) {
@@ -130,8 +141,11 @@ AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
 
     // Step 2b: no attribute may be both active and passthrough
     std::vector<int> both;
-    std::set_intersection(listed_active.begin(), listed_active.end(), passthrough.begin(),
-                          passthrough.end(), std::back_inserter(both));
+    std::set_intersection(listed_active.begin(),
+                          listed_active.end(),
+                          passthrough.begin(),
+                          passthrough.end(),
+                          std::back_inserter(both));
     if (!both.empty()) {
         throw std::invalid_argument(
             "AttributeDomain: element attribute(s) " + JoinInts(both) +
@@ -184,8 +198,8 @@ AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
         }
     }
     if (m_global_active_elements == 0) {
-        throw std::invalid_argument("AttributeDomain: the active attributes (" +
-                                    JoinInts(active) + ") have no elements in the mesh");
+        throw std::invalid_argument("AttributeDomain: the active attributes (" + JoinInts(active) +
+                                    ") have no elements in the mesh");
     }
     m_active_attributes.assign(active.begin(), active.end());
     m_passthrough_attributes.assign(passthrough.begin(), passthrough.end());
@@ -255,8 +269,8 @@ mfem::Array<int> AttributeDomain::ToParent(const mfem::Array<int>& element_grain
             continue;
         }
         const int attribute = m_parent.GetAttribute(e);
-        const auto it = std::lower_bound(m_passthrough_attributes.begin(),
-                                         m_passthrough_attributes.end(), attribute);
+        const auto it = std::lower_bound(
+            m_passthrough_attributes.begin(), m_passthrough_attributes.end(), attribute);
         parent_grain[e] = num_grains + 1 + static_cast<int>(it - m_passthrough_attributes.begin());
     }
     return parent_grain;

@@ -26,26 +26,25 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <mpi.h>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include "common/voxel_fixture.hpp"
 #include "microstructure/conformal/conformal_fitter.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_options.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <array>
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <filesystem>
-#include <memory>
-#include <string>
-#include <mpi.h>
-#include <stdexcept>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -129,11 +128,15 @@ void CheckFit(const char* name, DriverRun& run, double floor, double volume) {
     if (mfem::Mpi::Root()) {
         std::printf("%s: %d grains, %lld fitted nodes (%lld smoothed), deviation %.3f -> %.3f h, "
                     "sj %.3f, ar %.2f, rounds %d, solves %d\n",
-                    name, run.result.num_grains, static_cast<long long>(r.conformal_fit.fit_nodes),
+                    name,
+                    run.result.num_grains,
+                    static_cast<long long>(r.conformal_fit.fit_nodes),
                     static_cast<long long>(r.conformal_smoothed_nodes),
-                    r.conformal_fit.initial_deviation, r.conformal_fit.mean_deviation,
+                    r.conformal_fit.initial_deviation,
+                    r.conformal_fit.mean_deviation,
                     r.conformal_fit.quality_after.min_scaled_jacobian,
-                    r.conformal_fit.quality_after.max_aspect_ratio, r.conformal_fit.rounds,
+                    r.conformal_fit.quality_after.max_aspect_ratio,
+                    r.conformal_fit.rounds,
                     r.conformal_fit.solves);
     }
 }
@@ -178,8 +181,8 @@ std::vector<int> MonoDefMasks(mfem::ParMesh& pmesh) {
         x.resize(static_cast<std::size_t>(fes.GetNDofs()));
         for (int i = 0; i < fes.GetNDofs(); ++i) {
             for (int d = 0; d < 3; ++d) {
-                x[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)] =
-                    (*nodes)(fes.DofToVDof(i, d));
+                x[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)] = (*nodes)(
+                    fes.DofToVDof(i, d));
             }
         }
     } else {
@@ -263,10 +266,13 @@ TEST(DriverConformal, HexBox) {
     EXPECT_GT(marked, 0);
     if (mfem::Mpi::Root()) {
         std::printf("hex box: %d grains, %d flips, deviation %.3f -> %.3f h, sj %.3f\n",
-                    fitted.result.num_grains, changed, r.conformal_fit.initial_deviation,
+                    fitted.result.num_grains,
+                    changed,
+                    r.conformal_fit.initial_deviation,
                     r.conformal_fit.mean_deviation,
                     r.conformal_fit.quality_after.min_scaled_jacobian,
-                    r.conformal_fit.quality_after.max_aspect_ratio, r.conformal_fit.rounds,
+                    r.conformal_fit.quality_after.max_aspect_ratio,
+                    r.conformal_fit.rounds,
                     r.conformal_fit.solves);
     }
 }
@@ -306,8 +312,7 @@ TEST(DriverConformal, OrderTwoHook) {
     run.pmesh->SetCurvature(2);
     std::unique_ptr<mfem::ParMesh> input = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
     input->SetCurvature(2);
-    run.result =
-        ms::GenerateMicrostructure(Options(true), *run.pmesh, MPI_COMM_WORLD, &run.report);
+    run.result = ms::GenerateMicrostructure(Options(true), *run.pmesh, MPI_COMM_WORLD, &run.report);
     CheckFit("order 2", run, ms::MESH_QUALITY_FLOOR_HEX, 1.0);
     int marked = 0;
     EXPECT_EQ(MonoDefChanges(*run.pmesh, *input, marked), 0); // every nodal point (V3)
@@ -332,8 +337,8 @@ TEST(DriverConformal, VoxelMap) {
         voxel_fixture::WriteCanonical(dir / "canonical.h5", canonical);
     }
     MPI_Barrier(MPI_COMM_WORLD);
-    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(NX, NY, NZ, mfem::Element::HEXAHEDRON,
-                                                    NX * H, NY * H, NZ * H, false);
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
+        NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H, false);
     ms::MicrostructureOptions options;
     options.seeds.num_seeds = 0;
     options.source.type = "voxel_map";
@@ -358,8 +363,7 @@ TEST(DriverConformal, GeodesicAndConnected) {
     options.tessellation.distance = ms::DistanceMode::CONNECTED;
     DriverRun connected = Generate(serial, options);
     CheckFit("connected", connected, ms::MESH_QUALITY_FLOOR_HEX, 5.0);
-    EXPECT_LT(connected.report.conformal_smoothed_nodes,
-              connected.report.conformal_fit.fit_nodes);
+    EXPECT_LT(connected.report.conformal_smoothed_nodes, connected.report.conformal_fit.fit_nodes);
 }
 
 TEST(DriverConformal, PassthroughPlate) {

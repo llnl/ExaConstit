@@ -12,10 +12,6 @@
  *   order.
  */
 #include "microstructure/morphology/lloyd.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-
-#include "microstructure/morphology/sample_labels.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 
 #include "mfem.hpp"
 
@@ -25,6 +21,10 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/morphology/sample_labels.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -38,8 +38,10 @@ namespace {
  * mfem::Vectors so the kernel can read them on the device), and the accumulator integrates it
  * with fixed-point sums.
  */
-double CvtEnergy(const CellMeasureAccumulator& accumulator, const WeightedSamples& samples,
-                 const SeedSet& seeds, const mfem::Array<int>& labels) {
+double CvtEnergy(const CellMeasureAccumulator& accumulator,
+                 const WeightedSamples& samples,
+                 const SeedSet& seeds,
+                 const mfem::Array<int>& labels) {
     const int num_seeds = static_cast<int>(seeds.Size());
     mfem::Vector seed_x(num_seeds), seed_y(num_seeds), seed_z(num_seeds);
     for (int i = 0; i < num_seeds; ++i) {
@@ -112,10 +114,14 @@ void MinRecordOp(void* in, void* inout, int* len, MPI_Datatype* /*type*/) {
  *     all outside cells; the winning sample becomes the new position. A non-empty cell has at
  *     least one sample on some rank, so a winner always exists.
  */
-int ClampToMaterial(MPI_Comm comm, const MaterialPointLocator& locator,
-                    const WeightedSamples& samples, const mfem::Array<int>& labels,
-                    const CellMeasures& measures, std::vector<double>& new_x,
-                    std::vector<double>& new_y, std::vector<double>& new_z) {
+int ClampToMaterial(MPI_Comm comm,
+                    const MaterialPointLocator& locator,
+                    const WeightedSamples& samples,
+                    const mfem::Array<int>& labels,
+                    const CellMeasures& measures,
+                    std::vector<double>& new_x,
+                    std::vector<double>& new_y,
+                    std::vector<double>& new_z) {
     const std::size_t num_seeds = measures.volume.size();
 
     // Step 1: inside test of the non-empty cells' centroids
@@ -132,11 +138,14 @@ int ClampToMaterial(MPI_Comm comm, const MaterialPointLocator& locator,
     const std::size_t num_words = (tested.size() + 63) / 64;
     std::vector<std::uint64_t> inside(num_words, 0);
     if (!tested.empty()) {
-        locator.MarkInside(static_cast<std::int64_t>(tested.size()), px.data(), py.data(),
-                           pz.data(), inside.data());
+        locator.MarkInside(static_cast<std::int64_t>(tested.size()),
+                           px.data(),
+                           py.data(),
+                           pz.data(),
+                           inside.data());
     }
-    MPI_Allreduce(MPI_IN_PLACE, inside.data(), static_cast<int>(num_words), MPI_UINT64_T, MPI_BOR,
-                  comm);
+    MPI_Allreduce(
+        MPI_IN_PLACE, inside.data(), static_cast<int>(num_words), MPI_UINT64_T, MPI_BOR, comm);
 
     // outside_slot[i] = position of seed i in the list of outside centroids, or -1
     std::vector<int> outside_slot(num_seeds, -1);
@@ -144,8 +153,8 @@ int ClampToMaterial(MPI_Comm comm, const MaterialPointLocator& locator,
     for (std::size_t k = 0; k < tested.size(); ++k) {
         const bool is_inside = ((inside[k / 64] >> (k % 64)) & std::uint64_t(1)) != 0;
         if (!is_inside) {
-            outside_slot[static_cast<std::size_t>(tested[k])] =
-                static_cast<int>(outside_seed.size());
+            outside_slot[static_cast<std::size_t>(tested[k])] = static_cast<int>(
+                outside_seed.size());
             outside_seed.push_back(tested[k]);
         }
     }
@@ -182,8 +191,12 @@ int ClampToMaterial(MPI_Comm comm, const MaterialPointLocator& locator,
     MPI_Type_commit(&record_type);
     MPI_Op min_record;
     MPI_Op_create(&MinRecordOp, 1, &min_record);
-    MPI_Allreduce(MPI_IN_PLACE, record.data(), static_cast<int>(outside_seed.size()), record_type,
-                  min_record, comm);
+    MPI_Allreduce(MPI_IN_PLACE,
+                  record.data(),
+                  static_cast<int>(outside_seed.size()),
+                  record_type,
+                  min_record,
+                  comm);
     MPI_Op_free(&min_record);
     MPI_Type_free(&record_type);
 
@@ -239,9 +252,13 @@ void ValidateLloydParameters(const LloydParameters& params) {
  * Every quantity that decides a position is identical on all ranks, so all ranks move every
  * seed identically.
  */
-SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamples& samples,
-                 const SeedSet& seeds, const LloydParameters& params,
-                 const std::vector<double>& target_volume, LloydReport* report,
+SeedSet RunLloyd(const mfem::Mesh& local_mesh,
+                 MPI_Comm comm,
+                 const WeightedSamples& samples,
+                 const SeedSet& seeds,
+                 const LloydParameters& params,
+                 const std::vector<double>& target_volume,
+                 LloydReport* report,
                  const MaterialContext* context) {
     // Step 1: checks and setup
     ValidateLloydParameters(params);
@@ -273,8 +290,8 @@ SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamp
 
     // Step 2: weights for the starting positions (centroidal power mode)
     if (params.centroidal_power) {
-        WeightFitResult fit =
-            FitWeights(comm, samples, current, target_volume, current.weight, fit_params);
+        WeightFitResult fit = FitWeights(
+            comm, samples, current, target_volume, current.weight, fit_params);
         current.weight = std::move(fit.weight);
         local_report.fits.push_back(std::move(fit.report));
     }
@@ -306,8 +323,8 @@ SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamp
         // 3d: keep seeds inside the material
         int num_clamped = 0;
         if (locator) {
-            num_clamped = ClampToMaterial(comm, *locator, samples, labels, measures, new_x, new_y,
-                                          new_z);
+            num_clamped = ClampToMaterial(
+                comm, *locator, samples, labels, measures, new_x, new_y, new_z);
         }
 
         // 3e: move, record the largest displacement, refit in centroidal power mode
@@ -325,8 +342,8 @@ SeedSet RunLloyd(const mfem::Mesh& local_mesh, MPI_Comm comm, const WeightedSamp
         local_report.num_clamped.push_back(num_clamped);
         local_report.num_empty.push_back(num_empty);
         if (params.centroidal_power) {
-            WeightFitResult fit =
-                FitWeights(comm, samples, current, target_volume, current.weight, fit_params);
+            WeightFitResult fit = FitWeights(
+                comm, samples, current, target_volume, current.weight, fit_params);
             current.weight = std::move(fit.weight);
             local_report.fits.push_back(std::move(fit.report));
         }

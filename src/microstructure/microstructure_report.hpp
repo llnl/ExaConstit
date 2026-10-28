@@ -1,13 +1,13 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/output_writer.hpp"
 #include "microstructure/labeling/grain_statistics.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_types.hpp"
-
-#include <string>
-#include <vector>
 
 /**
  * @file microstructure_report.hpp
@@ -74,7 +74,8 @@ std::string RequestedGrains(const GenerationReport& report);
  * @brief Grain id of passthrough attribute number k (0-based, ascending attribute order): the
  * passthrough grains are always the last grains, num_grains - P + 1 .. num_grains.
  */
-int PassthroughGrainId(const GenerationReport& report, const MicrostructureResult& result,
+int PassthroughGrainId(const GenerationReport& report,
+                       const MicrostructureResult& result,
                        std::size_t k);
 
 /**
@@ -84,8 +85,8 @@ int PassthroughGrainId(const GenerationReport& report, const MicrostructureResul
  * attributes mapped to it with their grain ids, and the number of filler grains in it, e.g.
  * "phase 1; crystalline; passthrough attribute 2 (grain 9)".
  */
-std::string RegionContents(const GenerationReport& report, const MicrostructureResult& result,
-                           int r);
+std::string
+RegionContents(const GenerationReport& report, const MicrostructureResult& result, int r);
 
 /**
  * @brief The conformal grain boundary step in words (lines ending in a newline), for the logs of

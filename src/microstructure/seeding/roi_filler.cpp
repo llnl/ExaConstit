@@ -1,9 +1,5 @@
 #include "microstructure/seeding/roi_filler.hpp"
 
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/util/collective_errors.hpp"
-#include "microstructure/util/fixed_point.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -11,6 +7,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
+#include "microstructure/util/fixed_point.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -80,8 +80,11 @@ struct RoiVolumes {
  *     decode. Integer sums do not depend on the order of the terms, so the volumes are bitwise
  *     identical for any number of ranks.
  */
-RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<double, 3>& lo,
-                             const std::array<double, 3>& hi, const ElementMask* mask) {
+RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh,
+                             MPI_Comm comm,
+                             const std::array<double, 3>& lo,
+                             const std::array<double, 3>& hi,
+                             const ElementMask* mask) {
     // Step 1: one rule for every rank
     const int ne = mesh.GetNE();
     int rule_info[2] = {-1, -1}; // [order, geometry]
@@ -94,7 +97,8 @@ RoiVolumes MeasureRoiVolumes(mfem::Mesh& mesh, MPI_Comm comm, const std::array<d
         throw std::runtime_error("FillOutsideRoi: the mesh has no elements");
     }
     ThrowIfAnyRank<std::invalid_argument>(
-        comm, mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne,
+        comm,
+        mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne,
         "FillOutsideRoi: the element mask needs one entry per local element");
     RequirePositiveRule(static_cast<mfem::Geometry::Type>(rule_info[1]), rule_info[0]);
 
@@ -193,8 +197,8 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
     }
     // The generator adds candidate indices (< 2^40) to the offset, which must not overflow int64
     if (params.source_id_offset < 0 ||
-        params.source_id_offset > std::numeric_limits<std::int64_t>::max() -
-                                      GENERATOR_MAX_CANDIDATES) {
+        params.source_id_offset >
+            std::numeric_limits<std::int64_t>::max() - GENERATOR_MAX_CANDIDATES) {
         throw std::invalid_argument(
             "FillOutsideRoi: source_id_offset = " + std::to_string(params.source_id_offset) +
             " leaves no room for filler ids: it must be in [0, 2^63 - 1 - 2^40], i.e. the seed "
@@ -206,8 +210,8 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
 
     // Step 2
     RoiFillerResult result;
-    const RoiVolumes volumes =
-        MeasureRoiVolumes(local_mesh, comm, params.lo, params.hi, ContextMask(context));
+    const RoiVolumes volumes = MeasureRoiVolumes(
+        local_mesh, comm, params.lo, params.hi, ContextMask(context));
     result.roi_material_volume = volumes.inside;
     result.outside_material_volume = volumes.outside;
 
@@ -218,11 +222,11 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
             throw std::invalid_argument(
                 "FillOutsideRoi: the automatic filler count needs material inside the ROI box and "
                 "at least one ROI seed (V_roi = " +
-                std::to_string(volumes.inside) + ", ROI seeds = " +
-                std::to_string(num_roi_seeds) + "); give num_filler explicitly");
+                std::to_string(volumes.inside) + ", ROI seeds = " + std::to_string(num_roi_seeds) +
+                "); give num_filler explicitly");
         }
-        const double count =
-            std::round(static_cast<double>(num_roi_seeds) * volumes.outside / volumes.inside);
+        const double count = std::round(static_cast<double>(num_roi_seeds) * volumes.outside /
+                                        volumes.inside);
         if (count > static_cast<double>(std::numeric_limits<int>::max())) {
             throw std::invalid_argument("FillOutsideRoi: the automatic filler count exceeds "
                                         "2^31 - 1; the ROI is too small for the mesh");
@@ -250,8 +254,8 @@ RoiFillerResult FillOutsideRoi(mfem::Mesh& local_mesh,
     // Only the outside material can accept candidates: tell the generator, so its automatic stall
     // cap and its stall message account for it (bitwise the same on every rank: both volumes are
     // fixed-point sums)
-    seeding.exclude_box_outside_fraction =
-        std::min(1.0, volumes.outside / (volumes.inside + volumes.outside));
+    seeding.exclude_box_outside_fraction = std::min(
+        1.0, volumes.outside / (volumes.inside + volumes.outside));
     if (params.min_distance_factor > 0.0) {
         seeding.min_distance = params.min_distance_factor *
                                std::cbrt(volumes.outside / static_cast<double>(requested));

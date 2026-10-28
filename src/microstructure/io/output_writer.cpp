@@ -110,7 +110,9 @@ public:
     explicit ErrorRecordingSink(std::streambuf& target) : m_target(target) {}
 
     /** True once any forward to the real sink wrote fewer bytes than asked, or threw. */
-    bool Failed() const { return m_failed; }
+    bool Failed() const {
+        return m_failed;
+    }
 
 protected:
     /** Forwards @p count bytes; reports all of them written regardless of the outcome. */
@@ -190,8 +192,7 @@ void WriteStream(const fs::path& path, int compression, WriteFn&& write) {
 
     if (compression > 0) {
         // Compressed: the gzip writer pushes its output into the file's stream buffer
-        detail::WriteGzip(*file.rdbuf(), compression, std::forward<WriteFn>(write),
-                          path.string());
+        detail::WriteGzip(*file.rdbuf(), compression, std::forward<WriteFn>(write), path.string());
     } else {
         // Plain text: write straight into the file stream
         file.precision(TEXT_PRECISION);
@@ -470,9 +471,9 @@ std::vector<std::filesystem::path> WritePartitionedMesh(mfem::Mesh& serial_with_
     }
     const int num_elements = serial_with_attributes.GetNE();
     if (num_parts < 1 || num_parts > num_elements) {
-        throw std::invalid_argument("WritePartitionedMesh: num_parts = " +
-                                    std::to_string(num_parts) + " must be in 1.." +
-                                    std::to_string(num_elements));
+        throw std::invalid_argument(
+            "WritePartitionedMesh: num_parts = " + std::to_string(num_parts) + " must be in 1.." +
+            std::to_string(num_elements));
     }
     int rank = 0;
     int nranks = 1;
@@ -517,13 +518,14 @@ std::vector<std::filesystem::path> WritePartitionedMesh(mfem::Mesh& serial_with_
         if (rank >= num_parts) {
             return; // more ranks than parts: this rank has nothing to write
         }
-        mfem::MeshPartitioner partitioner(serial_with_attributes, num_parts,
-                                          partitioning.GetData());
+        mfem::MeshPartitioner partitioner(
+            serial_with_attributes, num_parts, partitioning.GetData());
         mfem::MeshPart mesh_part; // reused for each part this rank writes
         for (int p = rank; p < num_parts; p += nranks) {
             partitioner.ExtractPart(p, mesh_part);
-            WriteStream(names[static_cast<std::size_t>(p)], level,
-                        [&](std::ostream& os) { mesh_part.Print(os); });
+            WriteStream(names[static_cast<std::size_t>(p)], level, [&](std::ostream& os) {
+                mesh_part.Print(os);
+            });
         }
     });
     return names;
@@ -581,8 +583,9 @@ std::vector<std::filesystem::path> WriteParallelMesh(const mfem::ParMesh& pmesh,
     // Step 3: each rank writes its own piece
     const std::string formatted = FormatComments(comments);
     CollectiveTry(comm, "WriteParallelMesh", [&]() {
-        WriteStream(names[static_cast<std::size_t>(rank)], level,
-                    [&](std::ostream& os) { pmesh.ParPrint(os, formatted); });
+        WriteStream(names[static_cast<std::size_t>(rank)], level, [&](std::ostream& os) {
+            pmesh.ParPrint(os, formatted);
+        });
     });
     return names;
 }
@@ -592,8 +595,7 @@ void WriteOrientationFile(const std::filesystem::path& path,
                           const std::vector<double>& grain_quat) {
     if (grain_quat.size() % 4 != 0) {
         throw std::invalid_argument("WriteOrientationFile: grain_quat size " +
-                                    std::to_string(grain_quat.size()) +
-                                    " is not a multiple of 4");
+                                    std::to_string(grain_quat.size()) + " is not a multiple of 4");
     }
     WriteStream(path, 0, [&](std::ostream& os) {
         // i is the index of the w component of one grain's quaternion
@@ -629,11 +631,10 @@ void WriteGrainFile(const std::filesystem::path& path, const std::vector<int>& s
     WriteGrainFile(path, serial_grain_ids.data(), serial_grain_ids.size());
 }
 
-void WriteGrainFile(const std::filesystem::path& path,
-                    const mfem::Array<int>& serial_grain_ids) {
+void WriteGrainFile(const std::filesystem::path& path, const mfem::Array<int>& serial_grain_ids) {
     // HostRead makes the host copy valid (copying from the device if needed) and returns it
-    WriteGrainFile(path, serial_grain_ids.HostRead(),
-                   static_cast<std::size_t>(serial_grain_ids.Size()));
+    WriteGrainFile(
+        path, serial_grain_ids.HostRead(), static_cast<std::size_t>(serial_grain_ids.Size()));
 }
 
 /**
@@ -749,14 +750,12 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
 void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacencyTable& table) {
     // Every column must have one entry per pair
     const std::size_t n = table.grain_a.size();
-    if (table.grain_b.size() != n || table.shared_area.size() != n ||
-        table.num_faces.size() != n) {
-        throw std::invalid_argument("WriteGrainAdjacency: the columns grain_a (" +
-                                    std::to_string(n) + "), grain_b (" +
-                                    std::to_string(table.grain_b.size()) + "), shared_area (" +
-                                    std::to_string(table.shared_area.size()) + ") and num_faces (" +
-                                    std::to_string(table.num_faces.size()) +
-                                    ") must have the same length");
+    if (table.grain_b.size() != n || table.shared_area.size() != n || table.num_faces.size() != n) {
+        throw std::invalid_argument(
+            "WriteGrainAdjacency: the columns grain_a (" + std::to_string(n) + "), grain_b (" +
+            std::to_string(table.grain_b.size()) + "), shared_area (" +
+            std::to_string(table.shared_area.size()) + ") and num_faces (" +
+            std::to_string(table.num_faces.size()) + ") must have the same length");
     }
     // Each pair is listed once, smaller grain id first, with 1-based ids
     for (std::size_t k = 0; k < n; ++k) {
@@ -771,8 +770,8 @@ void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacency
     WriteStream(path, 0, [&](std::ostream& os) {
         os << "grain_a,grain_b,shared_area,num_faces\n";
         for (std::size_t k = 0; k < n; ++k) {
-            os << table.grain_a[k] << ',' << table.grain_b[k] << ',' << table.shared_area[k]
-               << ',' << table.num_faces[k] << '\n';
+            os << table.grain_a[k] << ',' << table.grain_b[k] << ',' << table.shared_area[k] << ','
+               << table.num_faces[k] << '\n';
         }
     });
 }
@@ -806,16 +805,16 @@ void WriteParaView(mfem::ParMesh& pmesh,
     CollectiveTry(pmesh.GetComm(), "WriteParaView", [&]() {
         if (element_grain.Size() != ne) {
             throw std::invalid_argument("element_grain has " +
-                                        std::to_string(element_grain.Size()) +
-                                        " entries for " + std::to_string(ne) + " elements");
+                                        std::to_string(element_grain.Size()) + " entries for " +
+                                        std::to_string(ne) + " elements");
         }
         if (grain_region.empty()) {
             return; // no region field, nothing more to check
         }
         const int* grains = element_grain.HostRead();
         for (int e = 0; e < ne; ++e) {
-            const bool has_region =
-                grains[e] >= 1 && static_cast<std::size_t>(grains[e]) <= grain_region.size();
+            const bool has_region = grains[e] >= 1 &&
+                                    static_cast<std::size_t>(grains[e]) <= grain_region.size();
             if (!has_region) {
                 throw std::invalid_argument("grain id " + std::to_string(grains[e]) +
                                             " has no region");

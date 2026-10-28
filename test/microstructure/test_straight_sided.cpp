@@ -9,21 +9,20 @@
  *
  * Runs at 1-4 MPI ranks; distributed results are compared with single-rank references.
  */
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <cmath>
 #include <iostream>
 #include <memory>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -188,15 +187,15 @@ TEST(StraightSided, SameSeedsAndLabelsAsWithoutNodes) {
         mfem::Mesh plain = UnitCube(4, type);
         auto pplain = Distribute(plain);
         ms::GenerationReport plain_report;
-        const ms::MicrostructureResult reference =
-            ms::GenerateMicrostructure(options, *pplain, MPI_COMM_WORLD, &plain_report);
+        const ms::MicrostructureResult reference = ms::GenerateMicrostructure(
+            options, *pplain, MPI_COMM_WORLD, &plain_report);
         for (int order = 1; order <= 2; ++order) {
             mfem::Mesh serial = UnitCube(4, type);
             serial.SetCurvature(order);
             auto pmesh = Distribute(serial);
             ms::GenerationReport report;
-            const ms::MicrostructureResult result =
-                ms::GenerateMicrostructure(options, *pmesh, MPI_COMM_WORLD, &report);
+            const ms::MicrostructureResult result = ms::GenerateMicrostructure(
+                options, *pmesh, MPI_COMM_WORLD, &report);
             ExpectSameSeeds(report.seeds, plain_report.seeds);
             ASSERT_EQ(result.element_grain.Size(), reference.element_grain.Size());
             long long counts[2] = {0, result.element_grain.Size()};

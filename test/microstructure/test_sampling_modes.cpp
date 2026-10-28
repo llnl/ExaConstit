@@ -17,18 +17,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/periodic_images.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/util/counter_rng.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -43,6 +32,16 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/periodic_images.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -136,8 +135,10 @@ double GlobalSum(double v) {
  * kernel does, so the comparison can be exact.
  */
 template <typename Metric>
-std::vector<int> BruteForceVote(mfem::Mesh& mesh, const ms::SeedSet& seeds,
-                                const ms::MetricSetup& setup, const std::vector<int>& owner,
+std::vector<int> BruteForceVote(mfem::Mesh& mesh,
+                                const ms::SeedSet& seeds,
+                                const ms::MetricSetup& setup,
+                                const std::vector<int>& owner,
                                 int levels) {
     ms::SeedIndex<axom::SEQ_EXEC, Metric> index;
     index.Build(seeds, setup, 1, axom::execution_space<axom::SEQ_EXEC>::allocatorID());
@@ -171,8 +172,9 @@ std::vector<int> BruteForceVote(mfem::Mesh& mesh, const ms::SeedSet& seeds,
                     best_f = f;
                 }
             }
-            point_label[static_cast<std::size_t>(q)] =
-                owner.empty() ? best : owner[static_cast<std::size_t>(best)];
+            point_label[static_cast<std::size_t>(q)] = owner.empty()
+                                                           ? best
+                                                           : owner[static_cast<std::size_t>(best)];
         }
         // Totals per label in first-appearance order, each summed over increasing q
         int winner = -1;
@@ -203,8 +205,11 @@ std::vector<int> BruteForceVote(mfem::Mesh& mesh, const ms::SeedSet& seeds,
 }
 
 /** Brute force for a runtime metric type (DispatchMetric picks the functor). */
-std::vector<int> BruteForceVote(ms::MetricType type, mfem::Mesh& mesh, const ms::SeedSet& seeds,
-                                const ms::MetricSetup& setup, const std::vector<int>& owner,
+std::vector<int> BruteForceVote(ms::MetricType type,
+                                mfem::Mesh& mesh,
+                                const ms::SeedSet& seeds,
+                                const ms::MetricSetup& setup,
+                                const std::vector<int>& owner,
                                 int levels) {
     std::vector<int> out;
     ms::DispatchMetric(type, [&](auto metric_tag) {
@@ -270,8 +275,8 @@ TEST(QuadratureVote, MatchesBruteForce) {
         ms::LabelElementsByQuadratureVote(*dist.pmesh, seeds, params, voted, {}, &report);
 
         const ms::MetricSetup setup;
-        const std::vector<int> brute =
-            BruteForceVote(c.metric, *dist.pmesh, seeds, setup, {}, c.levels);
+        const std::vector<int> brute = BruteForceVote(
+            c.metric, *dist.pmesh, seeds, setup, {}, c.levels);
         EXPECT_EQ(ToHost(voted), brute);
         if (dist.pmesh->GetNE() > 0) {
             EXPECT_EQ(report.num_chunks, 1); // default chunk holds all local points
@@ -283,8 +288,8 @@ TEST(QuadratureVote, MatchesBruteForce) {
             params.max_points_per_chunk = elems * std::max(1, report.num_points_per_element);
             mfem::Array<int> chunked;
             ms::QuadratureVoteReport chunk_report;
-            ms::LabelElementsByQuadratureVote(*dist.pmesh, seeds, params, chunked, {},
-                                              &chunk_report);
+            ms::LabelElementsByQuadratureVote(
+                *dist.pmesh, seeds, params, chunked, {}, &chunk_report);
             EXPECT_EQ(ToHost(chunked), brute);
             const int ne = dist.pmesh->GetNE();
             EXPECT_EQ(chunk_report.num_chunks, (ne + elems - 1) / elems);
@@ -365,8 +370,8 @@ TEST(QuadratureVote, CentroidInMinorityPart) {
     share1 /= total;
     EXPECT_GT(share1, 0.5);
     EXPECT_NEAR(share1, 1.0 - c * c * c, 0.05);
-    std::cout << "[ single tet ] measured share of seed 1 at level 3: " << share1
-              << " (exact " << 1.0 - c * c * c << ")" << std::endl;
+    std::cout << "[ single tet ] measured share of seed 1 at level 3: " << share1 << " (exact "
+              << 1.0 - c * c * c << ")" << std::endl;
 }
 
 /**
@@ -445,13 +450,13 @@ TEST(QuadratureVote, VolumesCloserToAnalyticThanCentroid) {
     };
     std::vector<Case> cases;
     const double pi = 3.14159265358979323846;
-    for (const std::array<double, 3>& direction :
-         {std::array<double, 3>{1.0, 0.37, 0.61}, std::array<double, 3>{0.3, 1.0, 0.8},
-          std::array<double, 3>{0.55, 0.45, 1.0}}) {
+    for (const std::array<double, 3>& direction : {std::array<double, 3>{1.0, 0.37, 0.61},
+                                                   std::array<double, 3>{0.3, 1.0, 0.8},
+                                                   std::array<double, 3>{0.55, 0.45, 1.0}}) {
         const double norm = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
                                       direction[2] * direction[2]);
-        const std::array<double, 3> nrm = {direction[0] / norm, direction[1] / norm,
-                                           direction[2] / norm};
+        const std::array<double, 3> nrm = {
+            direction[0] / norm, direction[1] / norm, direction[2] / norm};
         for (double fraction : {0.3, 0.45, 0.6, 0.72}) {
             const double c = fraction * (nrm[0] + nrm[1] + nrm[2]);
             Case k;
@@ -504,8 +509,10 @@ TEST(QuadratureVote, VolumesCloserToAnalyticThanCentroid) {
     // Misassigned volume of coarse labels (grain 0 = seed 0) measured with the points `pts`,
     // which belong to the elements of `mesh_of_pts`; element_label maps those elements to the
     // coarse label (identity for the coarse mesh, the parent for the fine mesh)
-    auto misassigned = [](const ms::QuadraturePointSamples& pts, int num_elements,
-                          const std::function<int(int)>& element_label, const Case& k) {
+    auto misassigned = [](const ms::QuadraturePointSamples& pts,
+                          int num_elements,
+                          const std::function<int(int)>& element_label,
+                          const Case& k) {
         const double* x = pts.x.HostRead();
         const double* y = pts.y.HostRead();
         const double* z = pts.z.HostRead();
@@ -566,7 +573,9 @@ TEST(QuadratureVote, VolumesCloserToAnalyticThanCentroid) {
             };
         };
         auto direct = [](const std::vector<int>& labels) {
-            return [&labels](int e) { return labels[static_cast<std::size_t>(e)]; };
+            return [&labels](int e) {
+                return labels[static_cast<std::size_t>(e)];
+            };
         };
         centroid_mis += misassigned(reference, fine.GetNE(), via_parent(lc), k);
         vote_mis += misassigned(reference, fine.GetNE(), via_parent(lv), k);
@@ -579,8 +588,8 @@ TEST(QuadratureVote, VolumesCloserToAnalyticThanCentroid) {
         EXPECT_LT(vote_mis, centroid_mis);
         std::cout << "[ cube_tet, " << cases.size() << " cases ] volume error sum: centroid "
                   << centroid_volume_error << ", vote " << vote_volume_error
-                  << "; misassigned volume sum: centroid " << centroid_mis << ", vote "
-                  << vote_mis << std::endl;
+                  << "; misassigned volume sum: centroid " << centroid_mis << ", vote " << vote_mis
+                  << std::endl;
     }
 }
 
@@ -714,8 +723,7 @@ TEST(QuadratureVote, ChunkedPointsMatchGeometricFactors) {
                 const double y = nodes(space.DofToVDof(i, 1));
                 const double z = nodes(space.DofToVDof(i, 2));
                 const double bump = 0.03 * std::sin(3.14159265358979 * x) *
-                                    std::sin(3.14159265358979 * y) *
-                                    std::sin(3.14159265358979 * z);
+                                    std::sin(3.14159265358979 * y) * std::sin(3.14159265358979 * z);
                 nodes(space.DofToVDof(i, 0)) += bump;
             }
         }
@@ -731,13 +739,14 @@ TEST(QuadratureVote, ChunkedPointsMatchGeometricFactors) {
             const mfem::GridFunction* nodes = mesh.GetNodes();
             if (nodes == nullptr) {
                 fec = std::make_unique<mfem::H1_FECollection>(1, 3);
-                fes = std::make_unique<mfem::FiniteElementSpace>(&mesh, fec.get(), 3,
-                                                                 mfem::Ordering::byNODES);
+                fes = std::make_unique<mfem::FiniteElementSpace>(
+                    &mesh, fec.get(), 3, mfem::Ordering::byNODES);
                 linear_nodes = std::make_unique<mfem::GridFunction>(fes.get());
                 mesh.GetNodes(*linear_nodes);
                 nodes = linear_nodes.get();
             }
-            const mfem::GeometricFactors factors(*nodes, rule,
+            const mfem::GeometricFactors factors(*nodes,
+                                                 rule,
                                                  mfem::GeometricFactors::COORDINATES |
                                                      mfem::GeometricFactors::DETERMINANTS);
             const double* fx = factors.X.HostRead();
@@ -751,8 +760,8 @@ TEST(QuadratureVote, ChunkedPointsMatchGeometricFactors) {
                 const int end = std::min(ne, begin + 2);
                 ms::QuadraturePointSamples chunk;
                 sampler.Sample(begin, end, chunk);
-                const double* coord[3] = {chunk.x.HostRead(), chunk.y.HostRead(),
-                                          chunk.z.HostRead()};
+                const double* coord[3] = {
+                    chunk.x.HostRead(), chunk.y.HostRead(), chunk.z.HostRead()};
                 const double* w = chunk.weight.HostRead();
                 for (int e = begin; e < end; ++e) {
                     for (int q = 0; q < nq; ++q) {
@@ -770,8 +779,7 @@ TEST(QuadratureVote, ChunkedPointsMatchGeometricFactors) {
                                 ++mismatches;
                             }
                             const double scale = std::max(1.0, std::fabs(expected[k]));
-                            max_rel = std::max(max_rel,
-                                               std::fabs(values[k] - expected[k]) / scale);
+                            max_rel = std::max(max_rel, std::fabs(values[k] - expected[k]) / scale);
                         }
                     }
                 }
@@ -803,10 +811,10 @@ TEST(QuadratureVote, RankCountIndependent) {
 
     auto run = [&](MPI_Comm comm, Distributed& d) {
         const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(*d.pmesh, comm, {true, true, true});
-        const ms::PeriodicImages images =
-            ms::BuildPeriodicImages(seeds, box, ms::PeriodicImageParameters{});
-        return ms::LabelTessellationByQuadratureVote(*d.pmesh, comm, images.seeds, params,
-                                                     images.original, images.num_original);
+        const ms::PeriodicImages images = ms::BuildPeriodicImages(
+            seeds, box, ms::PeriodicImageParameters{});
+        return ms::LabelTessellationByQuadratureVote(
+            *d.pmesh, comm, images.seeds, params, images.original, images.num_original);
     };
 
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);
@@ -886,7 +894,8 @@ TEST(PeriodicImages, CountsWrappingAndData) {
         int layers;
         std::size_t copies;
     };
-    for (const Count& c : {Count{{true, false, false}, 1, 3}, Count{{true, true, true}, 1, 27},
+    for (const Count& c : {Count{{true, false, false}, 1, 3},
+                           Count{{true, true, true}, 1, 27},
                            Count{{true, true, true}, 2, 125}}) {
         box.periodic = c.periodic;
         ms::PeriodicImageParameters params;
@@ -965,8 +974,8 @@ TEST(PeriodicImages, CountsWrappingAndData) {
 TEST(PeriodicImages, BoxFromMesh) {
     mfem::Mesh serial = CubeTet();
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);
-    const ms::PeriodicBox box =
-        ms::PeriodicBoxFromMesh(*dist.pmesh, MPI_COMM_WORLD, {true, false, true});
+    const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(
+        *dist.pmesh, MPI_COMM_WORLD, {true, false, true});
     for (int d = 0; d < 3; ++d) {
         EXPECT_DOUBLE_EQ(box.lo[d], 0.0);
         EXPECT_DOUBLE_EQ(box.hi[d], 1.0);
@@ -984,8 +993,8 @@ TEST(PeriodicImages, BoxFromMesh) {
         max_vertex_x = std::max(max_vertex_x, periodic_mesh.GetVertex(v)[0]);
     }
     EXPECT_DOUBLE_EQ(max_vertex_x, 0.75); // what a vertex-based box would have used
-    const ms::PeriodicBox periodic_box =
-        ms::PeriodicBoxFromMesh(periodic_mesh, MPI_COMM_SELF, {true, false, false});
+    const ms::PeriodicBox periodic_box = ms::PeriodicBoxFromMesh(
+        periodic_mesh, MPI_COMM_SELF, {true, false, false});
     for (int d = 0; d < 3; ++d) {
         EXPECT_DOUBLE_EQ(periodic_box.lo[d], 0.0);
         EXPECT_DOUBLE_EQ(periodic_box.hi[d], 1.0);
@@ -1011,33 +1020,32 @@ TEST(PeriodicImages, RequiredLayers) {
     const std::array<double, 6> identity = {1, 1, 1, 0, 0, 0};
     EXPECT_EQ(ms::RequiredImageLayers(box, ms::MetricType::VORONOI, identity, seeds), 1);
     EXPECT_EQ(ms::RequiredImageLayers(box, ms::MetricType::ADDITIVE, identity, seeds), 1);
-    EXPECT_EQ(ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, {4, 1, 0.01, 0, 0, 0},
-                                      seeds),
+    EXPECT_EQ(ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, {4, 1, 0.01, 0, 0, 0}, seeds),
               1);
     ms::PeriodicBox none;
-    EXPECT_EQ(ms::RequiredImageLayers(none, ms::MetricType::QUADRIC, {1, 1, 1, 0.9, 0, 0},
-                                      seeds),
+    EXPECT_EQ(ms::RequiredImageLayers(none, ms::MetricType::QUADRIC, {1, 1, 1, 0.9, 0, 0}, seeds),
               1);
 
     // Sheared tensor: eigenvalues of [[1,0,0],[0,1,0.9],[0,0.9,1]] are 0.1, 1, 1.9
     const std::array<double, 6> sheared = {1.0, 1.0, 1.0, 0.9, 0.0, 0.0};
     const int k = ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, sheared, seeds);
     EXPECT_EQ(k, static_cast<int>(std::ceil(std::sqrt(1.9 / 0.1) * std::sqrt(3.0) / 2.0)));
-    EXPECT_THROW(ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, {1, 1, 0, 1, 0, 0},
-                                         seeds),
+    EXPECT_THROW(ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, {1, 1, 0, 1, 0, 0}, seeds),
                  std::invalid_argument);
 
     // In use: 1, k and 2k + 2 layers for a nearly columnar tensor, A = I - (1 - eps) u u^T
     const double eps = 0.01;
     const double norm_u = std::sqrt(1.0 + 0.618 * 0.618 + 0.382 * 0.382);
     const double u[3] = {1.0 / norm_u, 0.618 / norm_u, 0.382 / norm_u};
-    const std::array<double, 6> columnar = {
-        1.0 - (1.0 - eps) * u[0] * u[0], 1.0 - (1.0 - eps) * u[1] * u[1],
-        1.0 - (1.0 - eps) * u[2] * u[2], -(1.0 - eps) * u[1] * u[2],
-        -(1.0 - eps) * u[0] * u[2],      -(1.0 - eps) * u[0] * u[1]};
+    const std::array<double, 6> columnar = {1.0 - (1.0 - eps) * u[0] * u[0],
+                                            1.0 - (1.0 - eps) * u[1] * u[1],
+                                            1.0 - (1.0 - eps) * u[2] * u[2],
+                                            -(1.0 - eps) * u[1] * u[2],
+                                            -(1.0 - eps) * u[0] * u[2],
+                                            -(1.0 - eps) * u[0] * u[1]};
     const ms::SeedSet two_seeds = RandomSeeds(2, 21u);
-    const int k_columnar =
-        ms::RequiredImageLayers(box, ms::MetricType::QUADRIC, columnar, two_seeds);
+    const int k_columnar = ms::RequiredImageLayers(
+        box, ms::MetricType::QUADRIC, columnar, two_seeds);
     EXPECT_EQ(k_columnar, static_cast<int>(std::ceil(std::sqrt(1.0 / eps) * std::sqrt(3.0) / 2.0)));
     mfem::Mesh mesh = HexBox(6);
     ms::TessellationOptions options;
@@ -1064,8 +1072,8 @@ TEST(PeriodicImages, RequiredLayers) {
     }
     EXPECT_GT(differing, 0) << "one layer should not be enough for this tensor";
     std::cout << "[ columnar quadric ] k = " << k_columnar
-              << "; elements labeled differently with 1 layer: "
-              << differing << " of " << with_k.size() << std::endl;
+              << "; elements labeled differently with 1 layer: " << differing << " of "
+              << with_k.size() << std::endl;
 }
 
 /**
@@ -1082,8 +1090,8 @@ TEST(PeriodicImages, ShiftInvariance) {
     const int n = 8;
     mfem::Mesh serial = HexBox(n);
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);
-    const ms::PeriodicBox box =
-        ms::PeriodicBoxFromMesh(*dist.pmesh, MPI_COMM_WORLD, {true, true, true});
+    const ms::PeriodicBox box = ms::PeriodicBoxFromMesh(
+        *dist.pmesh, MPI_COMM_WORLD, {true, true, true});
     const int shift[3] = {2, 1, 3};
 
     // Serial element id from integer centroid coordinates (centroid = (i + 1/2) / n)
@@ -1113,8 +1121,8 @@ TEST(PeriodicImages, ShiftInvariance) {
         if (vote) {
             ms::QuadratureVoteParameters params;
             params.metric = metric;
-            ms::LabelElementsByQuadratureVote(*dist.pmesh, images.seeds, params, element_seed,
-                                              images.original);
+            ms::LabelElementsByQuadratureVote(
+                *dist.pmesh, images.seeds, params, element_seed, images.original);
         } else {
             ms::TessellationOptions options;
             options.metric = metric;
@@ -1130,8 +1138,9 @@ TEST(PeriodicImages, ShiftInvariance) {
         for (std::size_t e = 0; e < before.size(); ++e) {
             std::array<int, 3> moved;
             for (int d = 0; d < 3; ++d) {
-                moved[static_cast<std::size_t>(d)] =
-                    (cell_of[e][static_cast<std::size_t>(d)] + shift[d]) % n;
+                moved[static_cast<std::size_t>(d)] = (cell_of[e][static_cast<std::size_t>(d)] +
+                                                      shift[d]) %
+                                                     n;
             }
             const auto target = static_cast<std::size_t>(element_at.at(moved));
             count += (after[target] != before[e]) ? 1 : 0;
@@ -1211,13 +1220,15 @@ TEST(PeriodicImages, GrainCrossingPeriodicFaceIsOneGrain) {
         SCOPED_TRACE(vote ? "vote" : "centroid");
         ms::TessellationLabels labels;
         if (vote) {
-            labels = ms::LabelTessellationByQuadratureVote(mesh, MPI_COMM_WORLD, images.seeds,
+            labels = ms::LabelTessellationByQuadratureVote(mesh,
+                                                           MPI_COMM_WORLD,
+                                                           images.seeds,
                                                            ms::QuadratureVoteParameters{},
-                                                           images.original, images.num_original);
+                                                           images.original,
+                                                           images.num_original);
         } else {
             mfem::Array<int> element_seed;
-            ms::LabelElementsWithSeeds(mesh, images.seeds, ms::TessellationOptions{},
-                                       element_seed);
+            ms::LabelElementsWithSeeds(mesh, images.seeds, ms::TessellationOptions{}, element_seed);
             ms::MapImageLabelsToOriginal(images, element_seed);
             ms::CompactSeedLabels(MPI_COMM_WORLD, element_seed, images.num_original, labels);
         }

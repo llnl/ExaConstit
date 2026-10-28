@@ -24,9 +24,6 @@
  */
 #include "microstructure/labeling/cell_measures.hpp"
 
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
 
 #include <float.h>
@@ -35,6 +32,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -50,8 +50,7 @@ using Accumulator = unsigned long long;
  * @brief Global sum of `count` accumulators: copies the device result to the host and adds the
  * per-rank values with MPI_Allreduce(MPI_SUM) on unsigned 64-bit integers. Collective.
  */
-std::vector<Accumulator> AllreduceAccumulators(MPI_Comm comm,
-                                              const mfem::Array<Accumulator>& acc) {
+std::vector<Accumulator> AllreduceAccumulators(MPI_Comm comm, const mfem::Array<Accumulator>& acc) {
     const int count = acc.Size();
     std::vector<Accumulator> total(static_cast<std::size_t>(count), 0);
     const Accumulator* host = acc.HostRead();
@@ -108,8 +107,8 @@ void RequirePositiveSampleRule(mfem::Geometry::Type geometry, int order) {
     const std::string name = mfem::Geometry::Name[geometry];
     if (geometry == mfem::Geometry::TETRAHEDRON && order > MAX_POSITIVE_TET_QUAD_ORDER) {
         throw std::runtime_error(
-            "MakeQuadratureWeightedSamples: tetrahedron quadrature order " +
-            std::to_string(order) + " > " + std::to_string(MAX_POSITIVE_TET_QUAD_ORDER) +
+            "MakeQuadratureWeightedSamples: tetrahedron quadrature order " + std::to_string(order) +
+            " > " + std::to_string(MAX_POSITIVE_TET_QUAD_ORDER) +
             " is not available with positive weights (MFEM's positive tet rules stop at order " +
             std::to_string(MAX_POSITIVE_TET_QUAD_ORDER) +
             "); request a lower quad_order (the default 4p - 1 exceeds it for node order p >= 6)");
@@ -196,7 +195,9 @@ void MakeElementWeightedSamples(mfem::Mesh& mesh, WeightedSamples& out, const El
  *     result, are independent of the partition, and the check in step 3 is rank-identical.
  *  3. Check that the rule has only positive weights (RequirePositiveSampleRule), then sample.
  */
-void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSamples& out,
+void MakeQuadratureWeightedSamples(mfem::Mesh& mesh,
+                                   int quad_order,
+                                   WeightedSamples& out,
                                    const ElementMask* mask) {
     // Step 1: local order and geometry
     int resolved[2] = {quad_order, -1};
@@ -245,7 +246,8 @@ void MakeQuadratureWeightedSamples(mfem::Mesh& mesh, int quad_order, WeightedSam
  *     FixedPointScale::ForRange then picks the finest power-of-two quantum for which the sum of
  *     all samples' terms stays below 2^62. Per-cell sums are partial sums, so they are safe too.
  */
-CellMeasureAccumulator::CellMeasureAccumulator(MPI_Comm comm, const WeightedSamples& samples,
+CellMeasureAccumulator::CellMeasureAccumulator(MPI_Comm comm,
+                                               const WeightedSamples& samples,
                                                int num_seeds)
     : m_comm(comm), m_samples(samples), m_num_seeds(num_seeds) {
     if (num_seeds < 1) {
@@ -263,8 +265,8 @@ CellMeasureAccumulator::CellMeasureAccumulator(MPI_Comm comm, const WeightedSamp
     double hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
     double max_weight = 0.0;
     if (!bad && n > 0) {
-        const double* coords[3] = {samples.x.HostRead(), samples.y.HostRead(),
-                                   samples.z.HostRead()};
+        const double* coords[3] = {
+            samples.x.HostRead(), samples.y.HostRead(), samples.z.HostRead()};
         const double* weight = samples.weight.HostRead();
         for (int q = 0; q < n && !bad; ++q) {
             for (int d = 0; d < 3; ++d) {
@@ -284,7 +286,8 @@ CellMeasureAccumulator::CellMeasureAccumulator(MPI_Comm comm, const WeightedSamp
     }
 
     // Step 2: global reductions (all ranks reach them, also those with bad data)
-    ThrowIfAnyRank(comm, bad,
+    ThrowIfAnyRank(comm,
+                   bad,
                    "CellMeasureAccumulator: inconsistent sample array sizes, a non-finite sample "
                    "coordinate or weight, or a negative weight on at least one rank");
     long long local_count = n;
@@ -339,7 +342,8 @@ CellMeasureAccumulator::CellMeasureAccumulator(MPI_Comm comm, const WeightedSamp
  */
 CellMeasures CellMeasureAccumulator::Measure(const mfem::Array<int>& sample_seed) const {
     const int n = m_samples.Size();
-    ThrowIfAnyRank(m_comm, sample_seed.Size() != n,
+    ThrowIfAnyRank(m_comm,
+                   sample_seed.Size() != n,
                    "CellMeasureAccumulator::Measure: label array size differs from the sample "
                    "count on at least one rank");
 
@@ -350,7 +354,9 @@ CellMeasures CellMeasureAccumulator::Measure(const mfem::Array<int>& sample_seed
     mfem::Array<Accumulator> acc(num_acc);
     {
         Accumulator* acc_w = acc.Write();
-        mfem::forall(num_acc, [=] MFEM_HOST_DEVICE(int k) { acc_w[k] = 0ULL; });
+        mfem::forall(num_acc, [=] MFEM_HOST_DEVICE(int k) {
+            acc_w[k] = 0ULL;
+        });
     }
 
     // Step 2: encode and accumulate every sample
@@ -374,12 +380,12 @@ CellMeasures CellMeasureAccumulator::Measure(const mfem::Array<int>& sample_seed
             }
             // Signed fixed-point terms, cast to unsigned for the wrap-around atomic add
             const Accumulator v = static_cast<Accumulator>(volume_scale.Encode(w[q]));
-            const Accumulator mx =
-                static_cast<Accumulator>(moment_scale.Encode(w[q] * (x[q] - center_x)));
-            const Accumulator my =
-                static_cast<Accumulator>(moment_scale.Encode(w[q] * (y[q] - center_y)));
-            const Accumulator mz =
-                static_cast<Accumulator>(moment_scale.Encode(w[q] * (z[q] - center_z)));
+            const Accumulator mx = static_cast<Accumulator>(
+                moment_scale.Encode(w[q] * (x[q] - center_x)));
+            const Accumulator my = static_cast<Accumulator>(
+                moment_scale.Encode(w[q] * (y[q] - center_y)));
+            const Accumulator mz = static_cast<Accumulator>(
+                moment_scale.Encode(w[q] * (z[q] - center_z)));
             AtomicAdd(sums[5 * s + 0], v);
             AtomicAdd(sums[5 * s + 1], mx);
             AtomicAdd(sums[5 * s + 2], my);
@@ -412,12 +418,12 @@ CellMeasures CellMeasureAccumulator::Measure(const mfem::Array<int>& sample_seed
         out.sample_count[i] = ToSigned(total[5 * i + 4]);
         count_total += out.sample_count[i];
         if (out.volume[i] > 0.0) {
-            out.cx[i] = m_center[0] + m_moment_scale.Decode(ToSigned(total[5 * i + 1])) /
-                                          out.volume[i];
-            out.cy[i] = m_center[1] + m_moment_scale.Decode(ToSigned(total[5 * i + 2])) /
-                                          out.volume[i];
-            out.cz[i] = m_center[2] + m_moment_scale.Decode(ToSigned(total[5 * i + 3])) /
-                                          out.volume[i];
+            out.cx[i] = m_center[0] +
+                        m_moment_scale.Decode(ToSigned(total[5 * i + 1])) / out.volume[i];
+            out.cy[i] = m_center[1] +
+                        m_moment_scale.Decode(ToSigned(total[5 * i + 2])) / out.volume[i];
+            out.cz[i] = m_center[2] +
+                        m_moment_scale.Decode(ToSigned(total[5 * i + 3])) / out.volume[i];
         }
     }
     // The total is the decoded integer sum of all cells, so it equals sum_i V_i up to one
@@ -442,7 +448,8 @@ CellMeasures CellMeasureAccumulator::Measure(const mfem::Array<int>& sample_seed
  */
 double CellMeasureAccumulator::Integrate(const mfem::Vector& value) const {
     const int n = m_samples.Size();
-    ThrowIfAnyRank(m_comm, value.Size() != n,
+    ThrowIfAnyRank(m_comm,
+                   value.Size() != n,
                    "CellMeasureAccumulator::Integrate: value size differs from the sample count "
                    "on at least one rank");
 
@@ -452,7 +459,9 @@ double CellMeasureAccumulator::Integrate(const mfem::Vector& value) const {
     mfem::Array<Accumulator> bad_count(1);
     {
         Accumulator* bad_w = bad_count.Write();
-        mfem::forall(1, [=] MFEM_HOST_DEVICE(int k) { bad_w[k] = 0ULL; });
+        mfem::forall(1, [=] MFEM_HOST_DEVICE(int k) {
+            bad_w[k] = 0ULL;
+        });
     }
     if (n > 0) {
         const double* w = m_samples.weight.Read();
@@ -494,7 +503,9 @@ double CellMeasureAccumulator::Integrate(const mfem::Vector& value) const {
     mfem::Array<Accumulator> acc(1);
     {
         Accumulator* acc_w = acc.Write();
-        mfem::forall(1, [=] MFEM_HOST_DEVICE(int k) { acc_w[k] = 0ULL; });
+        mfem::forall(1, [=] MFEM_HOST_DEVICE(int k) {
+            acc_w[k] = 0ULL;
+        });
     }
     if (n > 0) {
         const double* t = terms.Read();
@@ -510,8 +521,10 @@ double CellMeasureAccumulator::Integrate(const mfem::Vector& value) const {
 /*
  * ComputeCellMeasures: setup and one measurement, for callers that measure only once.
  */
-CellMeasures ComputeCellMeasures(MPI_Comm comm, const WeightedSamples& samples,
-                                 const mfem::Array<int>& sample_seed, int num_seeds) {
+CellMeasures ComputeCellMeasures(MPI_Comm comm,
+                                 const WeightedSamples& samples,
+                                 const mfem::Array<int>& sample_seed,
+                                 int num_seeds) {
     const CellMeasureAccumulator accumulator(comm, samples, num_seeds);
     return accumulator.Measure(sample_seed);
 }

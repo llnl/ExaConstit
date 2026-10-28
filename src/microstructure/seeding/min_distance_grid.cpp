@@ -130,8 +130,8 @@ bool MinDistanceGrid::AnyNeighborPoint(const std::array<double, 3>& p, Visit&& v
     for (int a = 0; a < num_neighbors[0]; a++) {
         for (int b = 0; b < num_neighbors[1]; b++) {
             for (int c = 0; c < num_neighbors[2]; c++) {
-                const auto it = m_cells.find(CellKey(neighbors[0][a], neighbors[1][b],
-                                                     neighbors[2][c]));
+                const auto it = m_cells.find(
+                    CellKey(neighbors[0][a], neighbors[1][b], neighbors[2][c]));
                 if (it == m_cells.end()) {
                     continue;
                 }
@@ -167,8 +167,9 @@ double MinDistanceGrid::SquaredDistanceTo(const std::array<double, 3>& p, std::s
  * < d^2 ("< d^2" means a pair at exactly d is allowed).
  */
 bool MinDistanceGrid::HasNeighborCloserThan(const std::array<double, 3>& p) const {
-    return AnyNeighborPoint(
-        p, [&](std::size_t idx) { return SquaredDistanceTo(p, idx) < m_min_distance_sq; });
+    return AnyNeighborPoint(p, [&](std::size_t idx) {
+        return SquaredDistanceTo(p, idx) < m_min_distance_sq;
+    });
 }
 
 /*
@@ -193,8 +194,8 @@ void MinDistanceGrid::Insert(const std::array<double, 3>& p, double radius) {
     const std::size_t idx = m_points.size();
     m_points.push_back(p);
     m_radii.push_back(radius);
-    const std::uint64_t key =
-        CellKey(CellCoordinate(p[0], 0), CellCoordinate(p[1], 1), CellCoordinate(p[2], 2));
+    const std::uint64_t key = CellKey(
+        CellCoordinate(p[0], 0), CellCoordinate(p[1], 1), CellCoordinate(p[2], 2));
     m_cells[key].push_back(idx);
 }
 

@@ -22,16 +22,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/labeling/geodesic_graph.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_options.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -45,6 +36,14 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/geodesic_graph.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -72,7 +71,9 @@ struct GridMesh {
  */
 template <typename Kept>
 GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -81,9 +82,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
             }
         }
     }
-    GridMesh grid{mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells,
-                             0, 3),
-                  {}};
+    GridMesh grid{
+        mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells, 0, 3), {}};
     mfem::Mesh& mesh = grid.mesh;
     for (int k = 0; k <= nz; k++) {
         for (int j = 0; j <= ny; j++) {
@@ -108,8 +108,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
                     mesh.AddHex(hex);
                     grid.cell.push_back({i, j, k});
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -195,8 +195,8 @@ struct SerialVertexValues {
  * arranges them in serial order; vertices touched by no element keep (inf, -1). Collective over
  * comm.
  */
-SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::VertexField& field,
-                                      MPI_Comm comm) {
+SerialVertexValues
+GatherVertexValues(const mfem::Mesh& serial, const ms::VertexField& field, MPI_Comm comm) {
     const auto ids = SerialVertexIds(serial);
     const int nv = field.NumVertices();
     const double* xyz = field.Coordinates().HostRead();
@@ -220,19 +220,25 @@ SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::Vertex
     MPI_Allgather(&nv, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(nranks), 0);
     for (int r = 1; r < nranks; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r - 1)] + counts[static_cast<std::size_t>(r - 1)];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r - 1)] +
+                                              counts[static_cast<std::size_t>(r - 1)];
     }
     const int total = displs.back() + counts.back();
     std::vector<int> all_ids(static_cast<std::size_t>(total));
     std::vector<double> all_t(static_cast<std::size_t>(total));
     std::vector<int> all_lab(static_cast<std::size_t>(total));
-    MPI_Allgatherv(local_ids.data(), nv, MPI_INT, all_ids.data(), counts.data(), displs.data(),
-                   MPI_INT, comm);
-    MPI_Allgatherv(local_t.data(), nv, MPI_DOUBLE, all_t.data(), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
-    MPI_Allgatherv(local_lab.data(), nv, MPI_INT, all_lab.data(), counts.data(), displs.data(),
-                   MPI_INT, comm);
+    MPI_Allgatherv(
+        local_ids.data(), nv, MPI_INT, all_ids.data(), counts.data(), displs.data(), MPI_INT, comm);
+    MPI_Allgatherv(local_t.data(),
+                   nv,
+                   MPI_DOUBLE,
+                   all_t.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_DOUBLE,
+                   comm);
+    MPI_Allgatherv(
+        local_lab.data(), nv, MPI_INT, all_lab.data(), counts.data(), displs.data(), MPI_INT, comm);
     int found_int = found ? 1 : 0;
     MPI_Allreduce(MPI_IN_PLACE, &found_int, 1, MPI_INT, MPI_MIN, comm);
     out.all_found = found_int != 0;
@@ -260,8 +266,10 @@ SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::Vertex
 }
 
 /** Element values gathered into serial order on every rank (GatherToSerial + MPI_Bcast). */
-std::vector<int> GatherElements(MPI_Comm comm, const ms::SerialOrder& order,
-                                const mfem::Array<int>& local, int serial_ne) {
+std::vector<int> GatherElements(MPI_Comm comm,
+                                const ms::SerialOrder& order,
+                                const mfem::Array<int>& local,
+                                int serial_ne) {
     std::vector<int> values = ms::GatherToSerial(comm, order, local, 0);
     values.resize(static_cast<std::size_t>(serial_ne));
     MPI_Bcast(values.data(), serial_ne, MPI_INT, 0, comm);
@@ -277,8 +285,11 @@ struct GeodesicRun {
 };
 
 /** LabelGeodesicGraph on `serial` distributed per `layout`, gathered. Collective. */
-GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& seeds,
-                        bool additive, const ms::GeodesicParameters& params) {
+GeodesicRun RunGeodesic(mfem::Mesh& serial,
+                        Layout layout,
+                        const ms::SeedSet& seeds,
+                        bool additive,
+                        const ms::GeodesicParameters& params) {
     const MPI_Comm comm = (layout == Layout::SELF) ? MPI_COMM_SELF : MPI_COMM_WORLD;
     Distributed d = Distribute(serial, layout);
     ms::GeodesicLabels labels = ms::LabelGeodesicGraph(*d.pmesh, comm, seeds, additive, params);
@@ -297,12 +308,14 @@ GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& se
  * the report of the METIS run (its round counts show the exchanges). Collective over
  * MPI_COMM_WORLD.
  */
-GeodesicRun RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds, bool additive,
+GeodesicRun RunAndCompare(mfem::Mesh& serial,
+                          const ms::SeedSet& seeds,
+                          bool additive,
                           const ms::GeodesicParameters& params = {},
                           ms::GeodesicReport* world_report = nullptr) {
     const GeodesicRun world = RunGeodesic(serial, Layout::METIS_WORLD, seeds, additive, params);
-    const GeodesicRun scattered =
-        RunGeodesic(serial, Layout::SCATTERED_WORLD, seeds, additive, params);
+    const GeodesicRun scattered = RunGeodesic(
+        serial, Layout::SCATTERED_WORLD, seeds, additive, params);
     const GeodesicRun self = RunGeodesic(serial, Layout::SELF, seeds, additive, params);
     for (const GeodesicRun* other : {&world, &scattered}) {
         EXPECT_TRUE(other->vertex.copies_agree);
@@ -353,7 +366,9 @@ std::array<double, 3> Centroid(const mfem::Mesh& mesh, int e) {
  * positive value (the vertices the caller wants measured; others return <= 0).
  */
 template <typename Exact>
-double MaxRelativeError(const mfem::Mesh& serial, const std::vector<double>& T, Exact exact,
+double MaxRelativeError(const mfem::Mesh& serial,
+                        const std::vector<double>& T,
+                        Exact exact,
                         double* mean_error = nullptr) {
     double worst = 0.0;
     double sum = 0.0;
@@ -386,7 +401,9 @@ double MaxRelativeError(const mfem::Mesh& serial, const std::vector<double>& T, 
 // and coordinates match the mesh vertices, and that the owned marker counts each vertex once.
 TEST(VertexField, ReduceSharedIsLexicographicMinimum) {
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 3, 5, 0.5, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(4, 3, 5, 0.5, tets, [](int, int, int) {
+            return true;
+        });
         Distributed d = Distribute(grid.mesh, Layout::SCATTERED_WORLD);
         ms::VertexField field(*d.pmesh);
         const int rank = WorldRank();
@@ -426,11 +443,14 @@ TEST(VertexField, ReduceSharedIsLexicographicMinimum) {
         MPI_Comm_size(MPI_COMM_WORLD, &nranks);
         std::vector<int> present(static_cast<std::size_t>(grid.mesh.GetNV() * nranks), 0);
         for (int v = 0; v < field.NumVertices(); ++v) {
-            present[static_cast<std::size_t>(sid[static_cast<std::size_t>(v)] * nranks + rank)] =
-                1;
+            present[static_cast<std::size_t>(sid[static_cast<std::size_t>(v)] * nranks + rank)] = 1;
         }
-        MPI_Allreduce(MPI_IN_PLACE, present.data(), static_cast<int>(present.size()), MPI_INT,
-                      MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE,
+                      present.data(),
+                      static_cast<int>(present.size()),
+                      MPI_INT,
+                      MPI_MAX,
+                      MPI_COMM_WORLD);
         bool any_difference = false;
         for (int s = 0; s < grid.mesh.GetNV(); ++s) {
             int holders = 0;
@@ -441,8 +461,8 @@ TEST(VertexField, ReduceSharedIsLexicographicMinimum) {
                 ++holders;
                 const std::pair<double, int> c = {static_cast<double>((s + r) % 3),
                                                   (7 * s + 13 * r) % 5};
-                expected[static_cast<std::size_t>(s)] =
-                    std::min(expected[static_cast<std::size_t>(s)], c);
+                expected[static_cast<std::size_t>(s)] = std::min(
+                    expected[static_cast<std::size_t>(s)], c);
             }
             any_difference = any_difference || holders > 1;
         }
@@ -480,7 +500,9 @@ TEST(VertexField, ReduceSharedIsLexicographicMinimum) {
 // interpolation of the linear map, exact at the corners), so Coordinates() must equal the mesh
 // vertices bitwise.
 TEST(VertexField, CurvedMeshUsesNodeVertices) {
-    GridMesh grid = BuildGrid(3, 3, 3, 1.0 / 3.0, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(3, 3, 3, 1.0 / 3.0, false, [](int, int, int) {
+        return true;
+    });
     grid.mesh.SetCurvature(2);
     Distributed d = Distribute(grid.mesh, Layout::METIS_WORLD);
     ms::VertexField field(*d.pmesh);
@@ -507,7 +529,9 @@ TEST(GeodesicGraph, StraightStrutAccuracy) {
     ms::SeedSet seeds;
     AddSeed(seeds, 0.5, 0.5, 0.0);
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) {
+            return true;
+        });
         ms::GeodesicReport world_report;
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report);
         // With several ranks the distances must cross partition boundaries: more than one round
@@ -518,11 +542,15 @@ TEST(GeodesicGraph, StraightStrutAccuracy) {
             EXPECT_GE(world_report.label_rounds, 2);
         }
         double mean = 0.0;
-        const double worst = MaxRelativeError(grid.mesh, run.vertex.T, [](const double* p) {
-            const double d = std::sqrt((p[0] - 0.5) * (p[0] - 0.5) +
-                                       (p[1] - 0.5) * (p[1] - 0.5) + p[2] * p[2]);
-            return (d > 2.0) ? d : 0.0;
-        }, &mean);
+        const double worst = MaxRelativeError(
+            grid.mesh,
+            run.vertex.T,
+            [](const double* p) {
+                const double d = std::sqrt((p[0] - 0.5) * (p[0] - 0.5) +
+                                           (p[1] - 0.5) * (p[1] - 0.5) + p[2] * p[2]);
+                return (d > 2.0) ? d : 0.0;
+            },
+            &mean);
         if (WorldRank() == 0) {
             std::cout << "[ geodesic ] straight strut " << (tets ? "tet" : "hex")
                       << ": max relative error " << worst << ", mean " << mean
@@ -549,18 +577,24 @@ TEST(GeodesicGraph, LShapeCornerAccuracy) {
     AddSeed(seeds, 3.5, 0.5, 0.5);
     const double r1 = std::sqrt(2.5 * 2.5 + 0.5 * 0.5);
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4 * n, 4 * n, n, 1.0 / n, tets,
-                                  [](int i, int j, int) { return i < n || j < n; });
+        GridMesh grid = BuildGrid(4 * n, 4 * n, n, 1.0 / n, tets, [](int i, int j, int) {
+            return i < n || j < n;
+        });
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false);
         double mean = 0.0;
-        const double worst = MaxRelativeError(grid.mesh, run.vertex.T, [r1](const double* p) {
-            if (p[1] < 2.0) {
-                return 0.0;
-            }
-            const double r2 = std::sqrt((p[0] - 1.0) * (p[0] - 1.0) + (p[1] - 1.0) * (p[1] - 1.0));
-            const double dz = p[2] - 0.5;
-            return std::sqrt((r1 + r2) * (r1 + r2) + dz * dz);
-        }, &mean);
+        const double worst = MaxRelativeError(
+            grid.mesh,
+            run.vertex.T,
+            [r1](const double* p) {
+                if (p[1] < 2.0) {
+                    return 0.0;
+                }
+                const double r2 = std::sqrt((p[0] - 1.0) * (p[0] - 1.0) +
+                                            (p[1] - 1.0) * (p[1] - 1.0));
+                const double dz = p[2] - 0.5;
+                return std::sqrt((r1 + r2) * (r1 + r2) + dz * dz);
+            },
+            &mean);
         if (WorldRank() == 0) {
             std::cout << "[ geodesic ] L-shape corner " << (tets ? "tet" : "hex")
                       << ": max relative error " << worst << ", mean " << mean << std::endl;
@@ -586,8 +620,8 @@ TEST(GeodesicGraph, UShapeLabelsDoNotCrossTheGap) {
     AddSeed(seeds, 2.9, 0.5, 0.5);
 
     // Euclidean labels (every rank alone on the serial mesh): A crosses the slot
-    const ms::TessellationLabels euclid =
-        ms::LabelTessellation(mesh, MPI_COMM_SELF, seeds, ms::TessellationOptions{});
+    const ms::TessellationLabels euclid = ms::LabelTessellation(
+        mesh, MPI_COMM_SELF, seeds, ms::TessellationOptions{});
     const int* es = euclid.element_seed.HostRead();
     int euclid_crossing = 0;
     for (int e = 0; e < mesh.GetNE(); ++e) {
@@ -623,7 +657,9 @@ TEST(GeodesicGraph, UShapeLabelsDoNotCrossTheGap) {
 // vertex. Elements whose centroid lies more than one element (h) below 4 must belong to seed 0,
 // more than h above to seed 1; the axis vertices get the exact path sums min(z, 8 - z).
 TEST(GeodesicGraph, AdditiveBoundaryPosition) {
-    GridMesh grid = BuildGrid(4, 4, 40, 0.25, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(4, 4, 40, 0.25, false, [](int, int, int) {
+        return true;
+    });
     ms::SeedSet seeds;
     AddSeed(seeds, 0.5, 0.5, 0.0);
     AddSeed(seeds, 0.5, 0.5, 10.0);
@@ -643,8 +679,8 @@ TEST(GeodesicGraph, AdditiveBoundaryPosition) {
     for (int v = 0; v < grid.mesh.GetNV(); ++v) {
         const double* p = grid.mesh.GetVertex(v);
         if (p[0] == 0.5 && p[1] == 0.5) {
-            EXPECT_NEAR(run.vertex.T[static_cast<std::size_t>(v)],
-                        std::min(p[2], 8.0 - p[2]), 1e-12);
+            EXPECT_NEAR(
+                run.vertex.T[static_cast<std::size_t>(v)], std::min(p[2], 8.0 - p[2]), 1e-12);
         }
     }
 }
@@ -658,7 +694,9 @@ TEST(GeodesicGraph, AdditiveBoundaryPosition) {
 // vertices keep T = +inf and label -1 and its 64 elements get -1. The scattered layout of
 // RunAndCompare also covers a rank owning no element.
 TEST(GeodesicGraph, SnappingUnreachedBodyAndEmptyRanks) {
-    GridMesh grid = BuildGrid(4, 4, 9, 0.25, false, [](int, int, int k) { return k != 4; });
+    GridMesh grid = BuildGrid(4, 4, 9, 0.25, false, [](int, int, int k) {
+        return k != 4;
+    });
     ms::SeedSet seeds;
     AddSeed(seeds, 0.5, 0.5, -0.25);
     AddSeed(seeds, 0.3, 0.7, 0.6);
@@ -719,8 +757,9 @@ TEST(GeodesicGraph, SnappingUnreachedBodyAndEmptyRanks) {
 // dx^2 + dy^2 + dz^2 of the same coordinates) along the same shortest paths.
 TEST(GeodesicGraph, MatchesSerialReference) {
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 3, 2, 0.5, tets,
-                                  [](int i, int j, int) { return !(i == 2 && j >= 1); });
+        GridMesh grid = BuildGrid(4, 3, 2, 0.5, tets, [](int i, int j, int) {
+            return !(i == 2 && j >= 1);
+        });
         ms::SeedSet seeds;
         AddSeed(seeds, 0.3, 0.2, 0.3);
         AddSeed(seeds, 1.85, 1.3, 0.7);
@@ -826,7 +865,9 @@ TEST(GeodesicGraph, MatchesSerialReference) {
 // and the vertices of the plane z = 1 are reached at exactly the same T from both seeds. They must
 // get label 0, whichever seed is listed first.
 TEST(GeodesicGraph, ExactTieGoesToLowerSeedIndex) {
-    GridMesh grid = BuildGrid(4, 4, 8, 0.25, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(4, 4, 8, 0.25, false, [](int, int, int) {
+        return true;
+    });
     const auto ids = SerialVertexIds(grid.mesh);
     for (const bool bottom_first : {true, false}) {
         ms::SeedSet seeds;
@@ -861,13 +902,15 @@ TEST(GeodesicGraph, ExactTieGoesToLowerSeedIndex) {
 // 1.62 for seed 1); with the straight lines from the seeds inside their source element, seed 1
 // wins (0.25 against 0.83).
 TEST(GeodesicGraph, DirectTermInSourceElement) {
-    GridMesh grid = BuildGrid(2, 2, 2, 1.0, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(2, 2, 2, 1.0, false, [](int, int, int) {
+        return true;
+    });
     ms::SeedSet seeds;
     AddSeed(seeds, 0.02, 0.02, 0.02);
     AddSeed(seeds, 0.5, 0.5, 0.75);
     const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false);
     for (int e = 0; e < grid.mesh.GetNE(); ++e) {
-        if (grid.cell[static_cast<std::size_t>(e)] == std::array<int, 3> {0, 0, 0}) {
+        if (grid.cell[static_cast<std::size_t>(e)] == std::array<int, 3>{0, 0, 0}) {
             EXPECT_EQ(run.element_seed[static_cast<std::size_t>(e)], 1);
         }
     }
@@ -876,7 +919,9 @@ TEST(GeodesicGraph, DirectTermInSourceElement) {
 // Invalid input throws on every rank (and leaves the ranks in step for the next collective call):
 // an empty seed set, a weight array of the wrong size, max_rounds < 1.
 TEST(GeodesicGraph, InvalidInputThrowsOnAllRanks) {
-    GridMesh grid = BuildGrid(2, 2, 2, 0.5, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(2, 2, 2, 0.5, false, [](int, int, int) {
+        return true;
+    });
     Distributed d = Distribute(grid.mesh, Layout::METIS_WORLD);
     ms::SeedSet empty;
     EXPECT_THROW(ms::LabelGeodesicGraph(*d.pmesh, MPI_COMM_WORLD, empty, false, {}),
@@ -892,8 +937,8 @@ TEST(GeodesicGraph, InvalidInputThrowsOnAllRanks) {
     EXPECT_THROW(ms::LabelGeodesicGraph(*d.pmesh, MPI_COMM_WORLD, seeds, false, bad),
                  std::invalid_argument);
     // Valid input still works afterwards
-    const ms::GeodesicLabels ok =
-        ms::LabelGeodesicGraph(*d.pmesh, MPI_COMM_WORLD, seeds, false, {});
+    const ms::GeodesicLabels ok = ms::LabelGeodesicGraph(
+        *d.pmesh, MPI_COMM_WORLD, seeds, false, {});
     EXPECT_EQ(ok.report.unreached_elements, 0);
 }
 

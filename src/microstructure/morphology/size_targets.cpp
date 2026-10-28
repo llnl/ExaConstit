@@ -5,15 +5,15 @@
  */
 #include "microstructure/morphology/size_targets.hpp"
 
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -39,11 +39,11 @@ void FillDerived(SizeTargets& targets) {
     }
     targets.placement_order.resize(n);
     std::iota(targets.placement_order.begin(), targets.placement_order.end(), 0);
-    std::stable_sort(targets.placement_order.begin(), targets.placement_order.end(),
-                     [&](int a, int b) {
-                         return targets.volume[static_cast<std::size_t>(a)] >
-                                targets.volume[static_cast<std::size_t>(b)];
-                     });
+    std::stable_sort(
+        targets.placement_order.begin(), targets.placement_order.end(), [&](int a, int b) {
+            return targets.volume[static_cast<std::size_t>(a)] >
+                   targets.volume[static_cast<std::size_t>(b)];
+        });
 }
 
 /** @brief Throws unless the material volume is positive and finite. */
@@ -100,7 +100,8 @@ void ValidateSizeTargetParameters(const SizeTargetParameters& params) {
  *  2. Normalize to the material volume.
  *  3. Radii, initial weights and the largest-first order.
  */
-SizeTargets MakeSizeTargets(const std::vector<std::int64_t>& source_id, double material_volume,
+SizeTargets MakeSizeTargets(const std::vector<std::int64_t>& source_id,
+                            double material_volume,
                             const SizeTargetParameters& params) {
     if (source_id.empty()) {
         throw std::invalid_argument("Size targets: no seeds");
@@ -113,8 +114,8 @@ SizeTargets MakeSizeTargets(const std::vector<std::int64_t>& source_id, double m
     if (params.distribution == SizeDistribution::LOGNORMAL) {
         for (std::size_t i = 0; i < source_id.size(); ++i) {
             // int64 -> uint64 is the defined modulo-2^64 conversion (one-to-one)
-            const CounterRng rng(params.rng_seed, RngPurpose::SEED_WEIGHT,
-                                 static_cast<std::uint64_t>(source_id[i]));
+            const CounterRng rng(
+                params.rng_seed, RngPurpose::SEED_WEIGHT, static_cast<std::uint64_t>(source_id[i]));
             // V_i = (pi/6) exp(3 mu + 3 sigma z_i); the factor (pi/6) exp(3 mu) is the same for
             // every seed and cancels in the normalization, so only exp(3 sigma z_i) is formed.
             // With |z| < 8.6 (53-bit uniforms) and sigma <= 3 it lies within exp(+-78): finite.

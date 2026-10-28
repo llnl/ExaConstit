@@ -4,13 +4,13 @@
  */
 #include "microstructure/labeling/geodesic_metric.hpp"
 
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/geometry/anisotropy_tensors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -21,7 +21,8 @@ namespace {
  * built from the coordinate axis least aligned with n, so the choice is stable and identical on
  * every rank (replicated inputs). Host.
  */
-void CompleteBasis(const std::array<double, 3>& n, std::array<double, 3>& u,
+void CompleteBasis(const std::array<double, 3>& n,
+                   std::array<double, 3>& u,
                    std::array<double, 3>& v) {
     int axis = 0;
     for (int c = 1; c < 3; ++c) {
@@ -53,9 +54,13 @@ double RoundUpTwoDigits(double x) {
  * (MPI_MIN / MPI_MAX are exact, so every partition gets the same bits). A rank without active
  * elements contributes +inf / -inf.
  */
-double AutoGeodesicElongation(bool columnar, const std::array<double, 3>& direction,
-                              mfem::ParMesh& pmesh, MPI_Comm comm, int num_seeds,
-                              const ElementMask* mask, bool* clamped) {
+double AutoGeodesicElongation(bool columnar,
+                              const std::array<double, 3>& direction,
+                              mfem::ParMesh& pmesh,
+                              MPI_Comm comm,
+                              int num_seeds,
+                              const ElementMask* mask,
+                              bool* clamped) {
     if (num_seeds < 1) {
         throw std::invalid_argument("AutoGeodesicElongation: num_seeds must be >= 1");
     }
@@ -120,7 +125,9 @@ double AutoGeodesicElongation(bool columnar, const std::array<double, 3>& direct
  * message as validate().
  */
 GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,
-                                     mfem::ParMesh& pmesh, MPI_Comm comm, int num_seeds,
+                                     mfem::ParMesh& pmesh,
+                                     MPI_Comm comm,
+                                     int num_seeds,
                                      const ElementMask* mask) {
     GeodesicMetric metric;
     if (tessellation.metric != MetricType::QUADRIC) {
@@ -133,12 +140,12 @@ GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,
     }
     if (kind == "columnar" || kind == "lamellar") {
         const bool columnar = (kind == "columnar");
-        const std::array<double, 3>& direction =
-            columnar ? tessellation.anisotropy_axis : tessellation.anisotropy_normal;
+        const std::array<double, 3>& direction = columnar ? tessellation.anisotropy_axis
+                                                          : tessellation.anisotropy_normal;
         double k = tessellation.geodesic_elongation;
         if (k == 0.0) {
-            k = AutoGeodesicElongation(columnar, direction, pmesh, comm, num_seeds, mask,
-                                       &metric.clamped);
+            k = AutoGeodesicElongation(
+                columnar, direction, pmesh, comm, num_seeds, mask, &metric.clamped);
             metric.automatic = true;
         } else if (!std::isfinite(k) || k < 1.0 || k > GEODESIC_MAX_ELONGATION) {
             throw std::invalid_argument("ResolveGeodesicMetric: geodesic elongation must be in "
@@ -151,8 +158,7 @@ GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,
     if (kind == "per_seed") {
         return metric; // one tensor per seed: the weighted solver maps per seed, the field not
     }
-    throw std::invalid_argument("ResolveGeodesicMetric: unknown anisotropy kind \"" + kind +
-                                "\"");
+    throw std::invalid_argument("ResolveGeodesicMetric: unknown anisotropy kind \"" + kind + "\"");
 }
 
 } // namespace exaconstit::microstructure

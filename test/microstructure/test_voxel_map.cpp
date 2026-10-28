@@ -23,16 +23,15 @@
  * tests call the throwing function on every rank; if any rank did not throw, the test would hang
  * or fail, so a pass means the error was collective.
  */
+#include "mfem.hpp"
+
+#include "axom/config.hpp"
+#include "common/voxel_fixture.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/quadrature_vote.hpp"
 #include "microstructure/labeling/voxel_labeler.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/mesh/serial_order.hpp"
-
-#include "common/voxel_fixture.hpp"
-
-#include "axom/config.hpp"
-#include "mfem.hpp"
 
 #ifdef AXOM_USE_HDF5
 #include "conduit.hpp"
@@ -40,8 +39,6 @@
 #include "conduit_relay_io_hdf5.hpp"
 #include "hdf5.h"
 #endif
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -57,6 +54,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -186,8 +185,8 @@ void WriteFixtures() {
             for (int k = 0; k < NZ; ++k) {
                 for (int j = 0; j < NY; ++j) {
                     for (int i = 0; i < NX; ++i) {
-                        tie.ids[static_cast<std::size_t>(VoxelIndex(i, j, k))] =
-                            (i % 2 == 0) ? 9 : 4;
+                        tie.ids[static_cast<std::size_t>(VoxelIndex(i, j, k))] = (i % 2 == 0) ? 9
+                                                                                              : 4;
                     }
                 }
             }
@@ -268,8 +267,8 @@ Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm = MPI_COMM_WORLD) {
 }
 
 /** Gathers per-element ints to rank 0 in serial element order (collective over `comm`). */
-std::vector<int> Gather(const Distributed& d, const mfem::Array<int>& local,
-                        MPI_Comm comm = MPI_COMM_WORLD) {
+std::vector<int>
+Gather(const Distributed& d, const mfem::Array<int>& local, MPI_Comm comm = MPI_COMM_WORLD) {
     local.HostRead();
     return ms::GatherToSerial(comm, d.order, local, 0);
 }
@@ -302,15 +301,17 @@ Distributed DistributeWithOwners(mfem::Mesh& serial, const std::vector<int>& own
  * The labeler with the grid description read first, as the integration code will call it
  * (collective).
  */
-ms::VoxelLabels Label(mfem::ParMesh& pmesh, MPI_Comm comm, const ms::VoxelMapParameters& map,
+ms::VoxelLabels Label(mfem::ParMesh& pmesh,
+                      MPI_Comm comm,
+                      const ms::VoxelMapParameters& map,
                       const ms::VoxelLabelParameters& params) {
     const ms::VoxelGridInfo grid = ms::ReadVoxelGridInfo(map, comm);
     return ms::LabelElementsFromVoxels(pmesh, comm, map, grid, params);
 }
 
 /** Box mesh of nx x ny x nz elements over [0, sx] x [0, sy] x [0, sz], lexicographic order. */
-mfem::Mesh BoxMesh(int nx, int ny, int nz, mfem::Element::Type type, double sx, double sy,
-                   double sz) {
+mfem::Mesh
+BoxMesh(int nx, int ny, int nz, mfem::Element::Type type, double sx, double sy, double sz) {
     return mfem::Mesh::MakeCartesian3D(nx, ny, nz, type, sx, sy, sz, false);
 }
 
@@ -319,7 +320,9 @@ mfem::Mesh BoxMesh(int nx, int ny, int nz, mfem::Element::Type type, double sx, 
  * affine (hex box or tet) element every point of the element is within r of c (the element is
  * the convex hull of its vertices).
  */
-void ElementCenterAndRadius(const mfem::Mesh& mesh, int e, std::array<double, 3>& center,
+void ElementCenterAndRadius(const mfem::Mesh& mesh,
+                            int e,
+                            std::array<double, 3>& center,
                             double& radius) {
     mfem::Array<int> v;
     mesh.GetElementVertices(e, v);
@@ -395,7 +398,8 @@ TEST(VoxelMapReader, CanonicalGridBlockAndFeatures) {
     params.read_quats = true;
     params.read_phases = true;
     const ms::VoxelGridInfo grid = ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD);
-    const ms::VoxelFeatureTable table = ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable table = ms::ReadVoxelFeatures(
+        params, grid, kUsedIds, MPI_COMM_WORLD);
     EXPECT_EQ(table.id, (std::vector<std::int64_t>{3, 5, 8, 13, 21, 34}));
     EXPECT_EQ(table.quat.size(), std::size_t(24));
     EXPECT_EQ(table.phase.size(), std::size_t(6));
@@ -433,12 +437,14 @@ TEST(VoxelMapReader, Dream3dSimplLayoutAndQuatDeclarations) {
     EXPECT_EQ(grid.spacing, (std::array<double, 3>{H, H, H}));
 
     const std::vector<float> stored = Dream3dQuatsXyzw();
-    const ms::VoxelFeatureTable plain = ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable plain = ms::ReadVoxelFeatures(
+        params, grid, kUsedIds, MPI_COMM_WORLD);
     EXPECT_EQ(plain.id.size(), std::size_t(kRows - 1));
     EXPECT_EQ(plain.id.front(), 1);
     EXPECT_EQ(plain.id.back(), kRows - 1);
     params.conjugate = 1;
-    const ms::VoxelFeatureTable conj = ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable conj = ms::ReadVoxelFeatures(
+        params, grid, kUsedIds, MPI_COMM_WORLD);
     params.conjugate = 0;
     params.quat_layout = ms::QuatLayout::WXYZ;
     params.read_phases = false;
@@ -470,8 +476,8 @@ TEST(VoxelMapReader, Dream3dSimplLayoutAndQuatDeclarations) {
     // Phases only: no quaternion declarations needed
     ms::VoxelMapParameters phases_only = Dream3d("simpl.h5");
     phases_only.read_phases = true;
-    const ms::VoxelFeatureTable phases =
-        ms::ReadVoxelFeatures(phases_only, grid, kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable phases = ms::ReadVoxelFeatures(
+        phases_only, grid, kUsedIds, MPI_COMM_WORLD);
     EXPECT_TRUE(phases.quat.empty());
     EXPECT_EQ(phases.phase.size(), std::size_t(kRows - 1));
     for (int id : kFeatureId) {
@@ -491,19 +497,25 @@ TEST(VoxelMapReader, QuatDeclarationsRequired) {
     const ms::VoxelGridInfo grid = ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD);
 
     params.conjugate = 0; // layout missing
-    std::string error = ErrorOf([&] { ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD); });
+    std::string error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "quat_layout")) << error;
 
     params.quat_layout = ms::QuatLayout::XYZW;
     params.conjugate = -1; // conjugate missing
-    error = ErrorOf([&] { ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "conjugate")) << error;
 
     ms::VoxelMapParameters canonical = Canonical("canonical.h5");
     canonical.read_quats = true;
     canonical.quat_layout = ms::QuatLayout::XYZW;
     const ms::VoxelGridInfo cgrid = ms::ReadVoxelGridInfo(canonical, MPI_COMM_WORLD);
-    error = ErrorOf([&] { ms::ReadVoxelFeatures(canonical, cgrid, kUsedIds, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(canonical, cgrid, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "canonical")) << error;
 }
 
@@ -519,7 +531,9 @@ TEST(VoxelMapReader, QuatDeclarationsRequired) {
 TEST(VoxelMapReader, NameSearchErrorsAndOverrides) {
     WriteFixtures();
     ms::VoxelMapParameters params = Dream3d("ambiguous.h5");
-    std::string error = ErrorOf([&] { ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD); });
+    std::string error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "/DataContainers/A/CellData/FeatureIds")) << error;
     EXPECT_TRUE(Contains(error, "/DataContainers/B/CellData/FeatureIds")) << error;
     EXPECT_TRUE(Contains(error, "feature_ids_path")) << error;
@@ -532,8 +546,8 @@ TEST(VoxelMapReader, NameSearchErrorsAndOverrides) {
     params.read_quats = true;
     params.quat_layout = ms::QuatLayout::XYZW;
     params.conjugate = 0;
-    const ms::VoxelFeatureTable from_b =
-        ms::ReadVoxelFeatures(params, grid, kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable from_b = ms::ReadVoxelFeatures(
+        params, grid, kUsedIds, MPI_COMM_WORLD);
     EXPECT_EQ(from_b.id.size(), std::size_t(kRows - 1));
 
     ms::VoxelMapParameters only_a = Dream3d("only_a_quats.h5");
@@ -542,7 +556,9 @@ TEST(VoxelMapReader, NameSearchErrorsAndOverrides) {
     only_a.quat_layout = ms::QuatLayout::XYZW;
     only_a.conjugate = 0;
     const ms::VoxelGridInfo grid_b = ms::ReadVoxelGridInfo(only_a, MPI_COMM_WORLD);
-    error = ErrorOf([&] { ms::ReadVoxelFeatures(only_a, grid_b, kUsedIds, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(only_a, grid_b, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "/DataContainers/A/CellFeatureData/AvgQuats")) << error;
     EXPECT_TRUE(Contains(error, "other containers")) << error;
     EXPECT_TRUE(Contains(error, "quats_path")) << error;
@@ -551,12 +567,16 @@ TEST(VoxelMapReader, NameSearchErrorsAndOverrides) {
               std::size_t(kRows - 1));
 
     const ms::VoxelMapParameters none = Dream3d("no_feature_ids.h5");
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(none, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(none, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "FeatureIds")) << error;
     EXPECT_TRUE(Contains(error, "feature_ids_path")) << error;
 
     const ms::VoxelMapParameters missing_file = Canonical("does_not_exist.h5");
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(missing_file, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(missing_file, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "cannot open")) << error;
 }
 
@@ -573,7 +593,9 @@ TEST(VoxelMapReader, Dream3dNxGeometry) {
     EXPECT_EQ(grid.spacing, (std::array<double, 3>{H, H, H}));
 
     ms::VoxelMapParameters nogeom = Dream3d("nx_nogeom.h5");
-    std::string error = ErrorOf([&] { ms::ReadVoxelGridInfo(nogeom, MPI_COMM_WORLD); });
+    std::string error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(nogeom, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "origin and spacing")) << error;
     nogeom.has_origin = true;
     nogeom.has_spacing = true;
@@ -583,7 +605,9 @@ TEST(VoxelMapReader, Dream3dNxGeometry) {
     EXPECT_EQ(given.origin, nogeom.origin);
     EXPECT_EQ(given.spacing, nogeom.spacing);
 
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(Dream3d("nx_baddims.h5"), MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(Dream3d("nx_baddims.h5"), MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "dimensions")) << error;
 }
 
@@ -627,13 +651,17 @@ TEST(VoxelMapReader, ValidationErrors) {
     ms::VoxelMapParameters bad = Canonical("bad_quat.h5");
     bad.read_quats = true;
     const ms::VoxelGridInfo bad_grid = ms::ReadVoxelGridInfo(bad, MPI_COMM_WORLD);
-    error = ErrorOf([&] { ms::ReadVoxelFeatures(bad, bad_grid, kUsedIds, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(bad, bad_grid, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "grain 13: quaternion norm")) << error;
 
     ms::VoxelMapParameters missing = Canonical("missing_feature.h5");
     missing.read_phases = true;
     const ms::VoxelGridInfo missing_grid = ms::ReadVoxelGridInfo(missing, MPI_COMM_WORLD);
-    error = ErrorOf([&] { ms::ReadVoxelFeatures(missing, missing_grid, kUsedIds, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelFeatures(missing, missing_grid, kUsedIds, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "grain id 34")) << error;
     // With a used-id list without 34 (a mesh that never touches grain 34) the table is fine
     EXPECT_EQ(ms::ReadVoxelFeatures(missing, missing_grid, {3, 5, 8}, MPI_COMM_WORLD).id.size(),
@@ -642,29 +670,41 @@ TEST(VoxelMapReader, ValidationErrors) {
     // Format header: a newer format_version and an HDF5 file that is not an ExaConstit
     // microstructure file (here a DREAM.3D file) are refused; the DREAM.3D path overrides do not
     // apply
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(Canonical("newer_version.h5"), MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(Canonical("newer_version.h5"), MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "format_version 2 is newer")) << error;
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(Canonical("simpl.h5"), MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(Canonical("simpl.h5"), MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "not an ExaConstit microstructure file")) << error;
     ms::VoxelMapParameters with_path = Canonical("canonical.h5");
     with_path.quats_path = "/grains/quat";
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(with_path, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(with_path, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "DREAM.3D files only")) << error;
 
     ms::VoxelMapParameters zero = Canonical("canonical.h5");
     zero.has_spacing = true;
     zero.spacing = {H, 0.0, H};
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(zero, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(zero, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "spacing")) << error;
 
     // A units_scale so small that the scaled spacing underflows to 0, and a non-finite translate
     ms::VoxelMapParameters tiny = Canonical("canonical.h5");
     tiny.units_scale = 1.0e-323; // times spacing 1/16 rounds to 0
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(tiny, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(tiny, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "after units_scale")) << error;
     ms::VoxelMapParameters nan_translate = Canonical("canonical.h5");
     nan_translate.translate = {0.0, std::nan(""), 0.0};
-    error = ErrorOf([&] { ms::ReadVoxelGridInfo(nan_translate, MPI_COMM_WORLD); });
+    error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(nan_translate, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "translate")) << error;
 }
 
@@ -708,12 +748,12 @@ namespace {
  * its voxel's id; the 8 hole elements get no vote and are filled in one round from their 3
  * outside face neighbors, which all carry the hole's grain.
  */
-void ExpectAlignedExact(const ms::VoxelMapParameters& map, const ms::VoxelLabelParameters& lp,
+void ExpectAlignedExact(const ms::VoxelMapParameters& map,
+                        const ms::VoxelLabelParameters& lp,
                         const std::string& what) {
     mfem::Mesh serial = BoxMesh(NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H);
     Distributed dist = Distribute(serial);
-    const ms::VoxelLabels labels = Label(*dist.pmesh, MPI_COMM_WORLD, map,
-                                                               lp);
+    const ms::VoxelLabels labels = Label(*dist.pmesh, MPI_COMM_WORLD, map, lp);
     EXPECT_EQ(labels.num_filled, 8) << what;
     EXPECT_EQ(labels.fill_rounds, 1) << what;
     EXPECT_EQ(labels.num_outside_points, 0) << what;
@@ -778,8 +818,7 @@ TEST(VoxelLabeler, AlignedHexMeshMatchesVoxels) {
  */
 TEST(VoxelLabeler, ExactVoteTieGoesToLowestId) {
     WriteFixtures();
-    mfem::Mesh serial = BoxMesh(NX / 2, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H,
-                                NZ * H);
+    mfem::Mesh serial = BoxMesh(NX / 2, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H);
     Distributed dist = Distribute(serial);
     ms::VoxelLabelParameters vote;
     vote.sampling = ms::SamplingMode::QUADRATURE_VOTE;
@@ -832,8 +871,8 @@ TEST(VoxelLabeler, CurvedElementsBeyondTheirNodes) {
     const std::vector<int> all = Gather(dist, labels.element_feature);
 
     Distributed self = Distribute(serial, MPI_COMM_SELF);
-    const ms::VoxelLabels reference =
-        Label(*self.pmesh, MPI_COMM_SELF, Canonical("curved.h5"), vote);
+    const ms::VoxelLabels reference = Label(
+        *self.pmesh, MPI_COMM_SELF, Canonical("curved.h5"), vote);
     const std::vector<int> reference_all = Gather(self, reference.element_feature, MPI_COMM_SELF);
     if (Rank() == 0) {
         EXPECT_EQ(all, reference_all);
@@ -868,13 +907,13 @@ TEST(VoxelLabeler, SplitPartitionReadsOnlyItsTiles) {
     Distributed dist = DistributeWithOwners(serial, owner);
     ms::VoxelLabelParameters params;
     params.tile_size = 4;
-    const ms::VoxelLabels labels =
-        Label(*dist.pmesh, MPI_COMM_WORLD, Canonical("canonical.h5"), params);
+    const ms::VoxelLabels labels = Label(
+        *dist.pmesh, MPI_COMM_WORLD, Canonical("canonical.h5"), params);
     EXPECT_EQ(labels.num_filled, 8);
     if (Rank() == 0) {
-        std::cout << "  split partition, np " << nranks << ": rank 0 read "
-                  << labels.num_tiles_read << " tiles, " << labels.num_voxels_read
-                  << " voxels (grid: " << NX * NY * NZ << ")" << std::endl;
+        std::cout << "  split partition, np " << nranks << ": rank 0 read " << labels.num_tiles_read
+                  << " tiles, " << labels.num_voxels_read << " voxels (grid: " << NX * NY * NZ
+                  << ")" << std::endl;
         if (nranks > 1) {
             EXPECT_EQ(labels.num_tiles_read, 24);
             EXPECT_EQ(labels.num_voxels_read, 1536);
@@ -900,8 +939,7 @@ TEST(VoxelLabeler, SplitPartitionReadsOnlyItsTiles) {
     // Compaction and the feature table with a rank that owns nothing
     mfem::Array<int> element_grain;
     std::vector<std::int64_t> grain_feature;
-    ms::CompactFeatureLabels(MPI_COMM_WORLD, labels.element_feature, element_grain,
-                             grain_feature);
+    ms::CompactFeatureLabels(MPI_COMM_WORLD, labels.element_feature, element_grain, grain_feature);
     EXPECT_EQ(grain_feature, kUsedIds);
     ms::VoxelMapParameters map = Canonical("canonical.h5");
     map.read_quats = true;
@@ -969,8 +1007,8 @@ TEST(VoxelLabeler, CoarseMeshesMatchVoronoiAwayFromBoundaries) {
         mfem::Element::Type type;
         int nx, ny, nz;
     };
-    for (const Case c : {Case{mfem::Element::HEXAHEDRON, 9, 7, 5},
-                         Case{mfem::Element::TETRAHEDRON, 6, 5, 4}}) {
+    for (const Case c :
+         {Case{mfem::Element::HEXAHEDRON, 9, 7, 5}, Case{mfem::Element::TETRAHEDRON, 6, 5, 4}}) {
         mfem::Mesh serial = BoxMesh(c.nx, c.ny, c.nz, c.type, NX * H, NY * H, NZ * H);
         Distributed dist = Distribute(serial);
         const ms::VoxelLabels labels = Label(
@@ -982,8 +1020,8 @@ TEST(VoxelLabeler, CoarseMeshesMatchVoronoiAwayFromBoundaries) {
         Distributed self = Distribute(serial, MPI_COMM_SELF);
         const ms::VoxelLabels reference = Label(
             *self.pmesh, MPI_COMM_SELF, Canonical("canonical.h5"), vote);
-        const std::vector<int> reference_all =
-            Gather(self, reference.element_feature, MPI_COMM_SELF);
+        const std::vector<int> reference_all = Gather(
+            self, reference.element_feature, MPI_COMM_SELF);
         EXPECT_EQ(labels.num_filled, reference.num_filled);
         if (Rank() == 0) {
             EXPECT_EQ(all, reference_all);
@@ -1018,8 +1056,7 @@ TEST(VoxelLabeler, UnfillableElementsThrowEverywhere) {
     mfem::Mesh serial = BoxMesh(5, 4, 3, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H);
     Distributed dist = Distribute(serial);
     std::string error = ErrorOf([&] {
-        Label(*dist.pmesh, MPI_COMM_WORLD, Canonical("empty.h5"),
-                                    ms::VoxelLabelParameters{});
+        Label(*dist.pmesh, MPI_COMM_WORLD, Canonical("empty.h5"), ms::VoxelLabelParameters{});
     });
     EXPECT_TRUE(Contains(error, "60 element(s)")) << error;
 
@@ -1033,8 +1070,7 @@ TEST(VoxelLabeler, UnfillableElementsThrowEverywhere) {
     ms::VoxelLabelParameters bad;
     bad.sampling = ms::SamplingMode::QUADRATURE_VOTE;
     bad.vote_levels = 4;
-    EXPECT_THROW(Label(*dist.pmesh, MPI_COMM_WORLD,
-                                             Canonical("canonical.h5"), bad),
+    EXPECT_THROW(Label(*dist.pmesh, MPI_COMM_WORLD, Canonical("canonical.h5"), bad),
                  std::invalid_argument);
 }
 
@@ -1052,8 +1088,7 @@ TEST(VoxelLabeler, CompactFeatureLabels) {
         *dist.pmesh, MPI_COMM_WORLD, Canonical("canonical.h5"), ms::VoxelLabelParameters{});
     mfem::Array<int> element_grain;
     std::vector<std::int64_t> grain_feature;
-    ms::CompactFeatureLabels(MPI_COMM_WORLD, labels.element_feature, element_grain,
-                             grain_feature);
+    ms::CompactFeatureLabels(MPI_COMM_WORLD, labels.element_feature, element_grain, grain_feature);
     EXPECT_EQ(grain_feature, (std::vector<std::int64_t>{3, 5, 8, 13, 21, 34}));
     const int* feature = labels.element_feature.HostRead();
     const int* grain = element_grain.HostRead();
@@ -1092,7 +1127,7 @@ TEST(VoxelMapReader, GridIsBlueprintMesh) {
         conduit::relay::io::hdf5_read(Fixture(name).string(), file);
         conduit::Node info;
         EXPECT_TRUE(conduit::blueprint::mesh::verify(file["mesh"], info)) << name << "\n"
-                                                                           << info.to_yaml();
+                                                                          << info.to_yaml();
         EXPECT_EQ(file["format"].as_string(), "ExaConstit microstructure");
         EXPECT_EQ(file["mesh/fields/grain_id/values"].dtype().number_of_elements(),
                   static_cast<conduit::index_t>(NX * NY * NZ));
@@ -1105,8 +1140,9 @@ TEST(VoxelMapReader, GridIsBlueprintMesh) {
 TEST(VoxelMapReader, BuiltWithoutHdf5) {
     ms::VoxelMapParameters params;
     params.file = "anything.h5";
-    const std::string error =
-        ErrorOf([&] { ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD); });
+    const std::string error = ErrorOf([&] {
+        ms::ReadVoxelGridInfo(params, MPI_COMM_WORLD);
+    });
     EXPECT_TRUE(Contains(error, "without HDF5")) << error;
 }
 

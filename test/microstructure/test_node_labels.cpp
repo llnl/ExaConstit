@@ -27,11 +27,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/conformal/node_labels.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -44,6 +40,9 @@
 #include <set>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/conformal/node_labels.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -139,7 +138,8 @@ struct LabeledMesh {
  * Builds NodeLabels on the distributed mesh and compares every local node with the serial
  * reference (label set, boundary surfaces), then the summary with counts of the reference.
  */
-LabeledMesh CheckAgainstReference(mfem::Mesh& serial, const LabelFunction& label,
+LabeledMesh CheckAgainstReference(mfem::Mesh& serial,
+                                  const LabelFunction& label,
                                   const SurfaceFunction& surfaces,
                                   const ms::NodeLabelOptions& options = {}) {
     const mfem::Array<int> serial_labels = CenterLabels(serial, label);
@@ -209,7 +209,11 @@ constexpr int QUAD = static_cast<int>(ms::JunctionKind::QUAD_POINT);
 TEST(NodeLabels, HexBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     LabeledMesh run = CheckAgainstReference(
-        serial, [](const double* x) { return x[0] < 0.5 ? 1 : 2; }, BoxSurfaces);
+        serial,
+        [](const double* x) {
+            return x[0] < 0.5 ? 1 : 2;
+        },
+        BoxSurfaces);
     const auto& nl = run.nl;
     // The 5 x 5 nodes of the plane x = 0.5: 9 inside, 12 on a box face, 4 on a box edge
     const auto& s = nl->Summary();
@@ -240,7 +244,8 @@ TEST(NodeLabels, TricrystalOnFourthGrain) {
     EXPECT_EQ(CountOwned(*nl,
                          [&](const double* x, int v) {
                              return std::fabs(x[0] - 0.5) + std::fabs(x[1] - 0.5) +
-                                            std::fabs(x[2] - 0.5) < 1e-12 &&
+                                            std::fabs(x[2] - 0.5) <
+                                        1e-12 &&
                                     nl->Kind(v) == ms::JunctionKind::QUAD_POINT;
                          }),
               1);
@@ -252,7 +257,9 @@ TEST(NodeLabels, QuadrantsOverConstrainedAtTheBox) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     LabeledMesh run = CheckAgainstReference(
         serial,
-        [](const double* x) { return 1 + (x[0] > 0.5 ? 1 : 0) + (x[1] > 0.5 ? 2 : 0); },
+        [](const double* x) {
+            return 1 + (x[0] > 0.5 ? 1 : 0) + (x[1] > 0.5 ? 2 : 0);
+        },
         BoxSurfaces);
     const auto& s = run.nl->Summary();
     EXPECT_EQ(s.count[QUAD][0], 3);
@@ -264,7 +271,10 @@ TEST(NodeLabels, QuadrantsOverConstrainedAtTheBox) {
 TEST(NodeLabels, TetInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::TETRAHEDRON);
     CheckAgainstReference(
-        serial, [](const double* x) { return x[0] + 0.5 * x[1] + 0.25 * x[2] < 0.9 ? 3 : 7; },
+        serial,
+        [](const double* x) {
+            return x[0] + 0.5 * x[1] + 0.25 * x[2] < 0.9 ? 3 : 7;
+        },
         BoxSurfaces);
 }
 
@@ -273,7 +283,10 @@ TEST(NodeLabels, OrderTwoNodes) {
         mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(3, 3, 3, type);
         serial.SetCurvature(2);
         LabeledMesh run = CheckAgainstReference(
-            serial, [](const double* x) { return x[0] + 0.3 * x[2] < 0.6 ? 1 : 2; },
+            serial,
+            [](const double* x) {
+                return x[0] + 0.3 * x[2] < 0.6 ? 1 : 2;
+            },
             BoxSurfaces);
         EXPECT_TRUE(run.nl->Field().UsesMeshNodes());
     }
@@ -310,14 +323,19 @@ TEST(NodeLabels, FeatureAngle) {
         options.feature_angle_degrees = angle;
         const bool split = angle < 20.0;
         LabeledMesh run = CheckAgainstReference(
-            serial, [](const double*) { return 1; },
-            [&](const double* x) { return roof_surfaces(x, split); }, options);
+            serial,
+            [](const double*) {
+                return 1;
+            },
+            [&](const double* x) {
+                return roof_surfaces(x, split);
+            },
+            options);
         const auto& nl = run.nl;
         // The 5 crease nodes: 3 inside the top face, 2 on the side faces y = 0, 1
         EXPECT_EQ(CountOwned(*nl,
                              [&](const double* x, int v) {
-                                 return on_crease(x) &&
-                                        nl->BoundarySurfaces(v) == (split ? 2 : 1);
+                                 return on_crease(x) && nl->BoundarySurfaces(v) == (split ? 2 : 1);
                              }),
                   3);
     }
@@ -364,8 +382,8 @@ TEST(NodeLabels, FixedLabelInterface) {
             bool found = false;
             for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
                 const double* m = normal + 3 * s;
-                found = found || (m[0] == 0.0 && m[1] == 0.0 && std::fabs(m[2]) == 1.0 &&
-                                  planar[s] == 1);
+                found = found ||
+                        (m[0] == 0.0 && m[1] == 0.0 && std::fabs(m[2]) == 1.0 && planar[s] == 1);
             }
             mismatches += found ? 0 : 1;
         }
@@ -407,8 +425,9 @@ TEST(NodeLabels, Pinches) {
                          }),
               0);
     // A plain bicrystal has no pinch
-    const ms::NodeLabels plain(*pmesh,
-                               CenterLabels(*pmesh, [](const double* x) { return x[0] < 0.5 ? 1 : 2; }));
+    const ms::NodeLabels plain(*pmesh, CenterLabels(*pmesh, [](const double* x) {
+        return x[0] < 0.5 ? 1 : 2;
+    }));
     EXPECT_EQ(plain.NumPinched(), 0);
 }
 

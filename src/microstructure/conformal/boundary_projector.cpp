@@ -3,12 +3,12 @@
  */
 #include "microstructure/conformal/boundary_projector.hpp"
 
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <stdexcept>
+
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -19,8 +19,8 @@ double Dot(const double a[3], const double b[3]) {
 }
 
 /** @brief p = a + s u + t w. */
-void Combine(const double a[3], double s, const double u[3], double t, const double w[3],
-             double p[3]) {
+void Combine(
+    const double a[3], double s, const double u[3], double t, const double w[3], double p[3]) {
     for (int d = 0; d < 3; ++d) {
         p[d] = a[d] + s * u[d] + t * w[d];
     }
@@ -71,8 +71,12 @@ void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double 
  * ClosestPointOnTriangle: Ericson's Voronoi-region test (Real-Time Collision Detection, 2005,
  * section 5.1.5): the vertex regions, then the edge regions, then the interior.
  */
-void ClosestPointOnTriangle(const double y[3], const double a[3], const double b[3],
-                            const double c[3], double p[3], bool& interior) {
+void ClosestPointOnTriangle(const double y[3],
+                            const double a[3],
+                            const double b[3],
+                            const double c[3],
+                            double p[3],
+                            bool& interior) {
     interior = false;
     const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     const double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
@@ -139,7 +143,8 @@ void ExchangeTriangles(const VertexField& field, std::vector<std::vector<Tri>>& 
     for (int v = 0; v < nv; ++v) {
         auto& list = lists[static_cast<std::size_t>(v)];
         for (int k = recv_off[static_cast<std::size_t>(v)];
-             k + 9 <= recv_off[static_cast<std::size_t>(v) + 1]; k += 9) {
+             k + 9 <= recv_off[static_cast<std::size_t>(v) + 1];
+             k += 9) {
             Tri t;
             std::copy(recv.data() + k, recv.data() + k + 9, t.begin());
             list.push_back(t);
@@ -202,13 +207,17 @@ void TriangleNormal(const Tri& t, double n[3]) {
  *     orientation of the face does not matter), and a triangle outside the one-ring only when
  *     that |cos| reaches surfaces->min_cosine.
  */
-SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>& selected,
-                               const std::vector<char>* surface_faces, int rings,
+SurfacePatches::SurfacePatches(const VertexField& field,
+                               const std::vector<char>& selected,
+                               const std::vector<char>* surface_faces,
+                               int rings,
                                const PatchSurfaces* surfaces) {
     const int nv = field.NumVertices();
-    ThrowIfAnyRank(field.Comm(), selected.size() != static_cast<std::size_t>(nv),
+    ThrowIfAnyRank(field.Comm(),
+                   selected.size() != static_cast<std::size_t>(nv),
                    "SurfacePatches: selected needs one entry per node");
-    ThrowIfAnyRank(field.Comm(), rings < 1 || rings > SURFACE_PATCH_MAX_RINGS,
+    ThrowIfAnyRank(field.Comm(),
+                   rings < 1 || rings > SURFACE_PATCH_MAX_RINGS,
                    "SurfacePatches: rings must be between 1 and SURFACE_PATCH_MAX_RINGS");
     mfem::ParMesh& pmesh = field.Mesh();
 
@@ -218,8 +227,7 @@ SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>
         shared[static_cast<std::size_t>(pmesh.GetSharedFace(i))] = 1;
     }
     const mfem::GridFunction* nodes = pmesh.GetNodes();
-    const mfem::FiniteElementSpace* node_fes =
-        field.UsesMeshNodes() ? nodes->FESpace() : nullptr;
+    const mfem::FiniteElementSpace* node_fes = field.UsesMeshNodes() ? nodes->FESpace() : nullptr;
     const int order = (nodes != nullptr) ? nodes->FESpace()->GetMaxElementOrder() : 1;
     std::vector<int> face_node_off(1, 0);
     std::vector<int> face_node;
@@ -302,7 +310,8 @@ SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>
         for (int j = face_node_off[f]; j < face_node_off[f + 1]; ++j) {
             const auto v = static_cast<std::size_t>(face_node[j]);
             if (need[0][v] != 0) {
-                one[v].insert(one[v].end(), face_tri.begin() + face_tri_off[f],
+                one[v].insert(one[v].end(),
+                              face_tri.begin() + face_tri_off[f],
                               face_tri.begin() + face_tri_off[f + 1]);
             }
         }
@@ -376,8 +385,8 @@ SurfacePatches::SurfacePatches(const VertexField& field, const std::vector<char>
     }
 }
 
-double SurfacePatches::ClosestPoint(int v, const double y[3], double p[3], double normal[3],
-                                    bool& interior, int k) const {
+double SurfacePatches::ClosestPoint(
+    int v, const double y[3], double p[3], double normal[3], bool& interior, int k) const {
     double best = -1.0;
     for (int t = 0; t < NumTriangles(v, k); ++t) {
         const double* tri = Triangle(v, t, k);
@@ -424,8 +433,8 @@ std::unique_ptr<SurfacePatches> MakeCurvedPatches(const NodeLabels& labels, int 
     surfaces.offsets = &labels.SurfaceOffsets();
     surfaces.normals = &labels.SurfaceNormals();
     surfaces.min_cosine = labels.FeatureCosine();
-    return std::make_unique<SurfacePatches>(labels.Field(), selected, &labels.SurfaceFaces(),
-                                            rings, &surfaces);
+    return std::make_unique<SurfacePatches>(
+        labels.Field(), selected, &labels.SurfaceFaces(), rings, &surfaces);
 }
 
 bool CurvedPatchesReady(const NodeLabels& labels, const SurfacePatches& patches, int v) {
@@ -439,8 +448,13 @@ bool CurvedPatchesReady(const NodeLabels& labels, const SurfacePatches& patches,
     return true;
 }
 
-void ProjectOnNodeSurfaces(const NodeLabels& labels, const SurfacePatches& patches, int v,
-                           const double* x0, double tol, int max_iterations, double y[3]) {
+void ProjectOnNodeSurfaces(const NodeLabels& labels,
+                           const SurfacePatches& patches,
+                           int v,
+                           const double* x0,
+                           double tol,
+                           int max_iterations,
+                           double y[3]) {
     const int* off = labels.SurfaceOffsets().HostRead();
     const double* nrm = labels.SurfaceNormals().HostRead();
     const int* planar = labels.SurfacePlanar().HostRead();

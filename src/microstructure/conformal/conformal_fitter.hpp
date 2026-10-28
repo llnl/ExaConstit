@@ -1,11 +1,11 @@
 #pragma once
 
-#include "microstructure/conformal/node_targets.hpp"
-#include "microstructure/conformal/quality.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
+
+#include "microstructure/conformal/node_targets.hpp"
+#include "microstructure/conformal/quality.hpp"
 
 /**
  * @file conformal_fitter.hpp
@@ -154,7 +154,8 @@ struct ConformalFitReport {
  * @throws std::invalid_argument on every rank if the mesh has no Nodes, the node labels do not use
  *         them, or the options are invalid.
  */
-ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets,
+ConformalFitReport FitConformal(mfem::ParMesh& pmesh,
+                                const NodeTargets& targets,
                                 const ConformalFitOptions& options = {});
 
 } // namespace exaconstit::microstructure

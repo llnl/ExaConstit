@@ -3,9 +3,8 @@
  */
 #include "microstructure/conformal/adjacency_check.hpp"
 
-#include <mpi.h>
-
 #include <algorithm>
+#include <mpi.h>
 #include <utility>
 
 namespace exaconstit::microstructure {
@@ -19,7 +18,7 @@ constexpr std::int64_t GRAIN_PAIR = 1; ///< a pair of grains with a grain withou
 
 /** @brief One pair with its kind and flags: info = 4 * kind + flags. */
 struct PairRecord {
-    std::int64_t key;  ///< first << 32 | second
+    std::int64_t key; ///< first << 32 | second
     std::int64_t info;
 };
 
@@ -67,12 +66,12 @@ std::vector<std::array<int, 2>> GatherExamples(const std::vector<std::int64_t>& 
     MPI_Allgather(&n, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(size) + 1, 0);
     for (int r = 0; r < size; ++r) {
-        displs[static_cast<std::size_t>(r) + 1] =
-            displs[static_cast<std::size_t>(r)] + counts[static_cast<std::size_t>(r)];
+        displs[static_cast<std::size_t>(r) + 1] = displs[static_cast<std::size_t>(r)] +
+                                                  counts[static_cast<std::size_t>(r)];
     }
     std::vector<std::int64_t> all(static_cast<std::size_t>(std::max(1, displs.back())));
-    MPI_Allgatherv(local.data(), n, MPI_INT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_INT64_T, comm);
+    MPI_Allgatherv(
+        local.data(), n, MPI_INT64_T, all.data(), counts.data(), displs.data(), MPI_INT64_T, comm);
     all.resize(static_cast<std::size_t>(displs.back()));
     std::sort(all.begin(), all.end());
     std::vector<std::array<int, 2>> out;
@@ -118,7 +117,9 @@ AdjacencyComparison CompareAdjacency(const NodeTargets& targets,
     const auto grain_of_seed = [&](int s) {
         return (s >= 0 && s < num_seeds) ? seed_grain[static_cast<std::size_t>(s)] : -1;
     };
-    const auto seed_of = [&](int grain) { return grain_seed[static_cast<std::size_t>(grain - 1)]; };
+    const auto seed_of = [&](int grain) {
+        return grain_seed[static_cast<std::size_t>(grain - 1)];
+    };
     const auto pair_query = [](int v, int ga, int gb) {
         NodeLabelQuery q;
         q.node = v;
@@ -159,8 +160,11 @@ AdjacencyComparison CompareAdjacency(const NodeTargets& targets,
     if (analytic) {
         std::vector<int> nearby_off;
         std::vector<int> nearby;
-        targets.NearbySeeds(owned_nodes, ADJACENCY_NEARBY_SEEDS,
-                            2.0 * targets.Options().max_move, nearby_off, nearby);
+        targets.NearbySeeds(owned_nodes,
+                            ADJACENCY_NEARBY_SEEDS,
+                            2.0 * targets.Options().max_move,
+                            nearby_off,
+                            nearby);
         for (std::size_t i = 0; i < owned_nodes.size(); ++i) {
             const int b = nearby_off[i];
             if (nearby_off[i + 1] <= b) {
@@ -209,13 +213,20 @@ AdjacencyComparison CompareAdjacency(const NodeTargets& targets,
     MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm);
     std::vector<int> recv_displs(static_cast<std::size_t>(size) + 1, 0);
     for (int r = 0; r < size; ++r) {
-        recv_displs[static_cast<std::size_t>(r) + 1] =
-            recv_displs[static_cast<std::size_t>(r)] + recv_counts[static_cast<std::size_t>(r)];
+        recv_displs[static_cast<std::size_t>(r) + 1] = recv_displs[static_cast<std::size_t>(r)] +
+                                                       recv_counts[static_cast<std::size_t>(r)];
     }
     send.resize(std::max<std::size_t>(send.size(), 1));
     std::vector<std::int64_t> recv(static_cast<std::size_t>(std::max(1, recv_displs.back())));
-    MPI_Alltoallv(send.data(), send_counts.data(), send_displs.data(), MPI_INT64_T, recv.data(),
-                  recv_counts.data(), recv_displs.data(), MPI_INT64_T, comm);
+    MPI_Alltoallv(send.data(),
+                  send_counts.data(),
+                  send_displs.data(),
+                  MPI_INT64_T,
+                  recv.data(),
+                  recv_counts.data(),
+                  recv_displs.data(),
+                  MPI_INT64_T,
+                  comm);
     std::vector<PairRecord> mine(static_cast<std::size_t>(recv_displs.back() / 2));
     for (std::size_t i = 0; i < mine.size(); ++i) {
         mine[i] = {recv[2 * i], recv[2 * i + 1]};

@@ -31,26 +31,25 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/conformal/manifold_projector.hpp"
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/conformal/manifold_projector.hpp"
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -112,9 +111,12 @@ struct Fitted {
  * Distributes `serial` on `comm` (element e on rank e mod size), labels the elements with
  * `labels_of` and computes the targets.
  */
-Fitted Fit(mfem::Mesh& serial, MPI_Comm comm,
-           const std::function<mfem::Array<int>(mfem::Mesh&)>& labels_of, ms::MetricType metric,
-           const ms::SeedSet& seeds, const std::vector<int>& grain_seed,
+Fitted Fit(mfem::Mesh& serial,
+           MPI_Comm comm,
+           const std::function<mfem::Array<int>(mfem::Mesh&)>& labels_of,
+           ms::MetricType metric,
+           const ms::SeedSet& seeds,
+           const std::vector<int>& grain_seed,
            const ms::NodeLabelOptions& label_options = {},
            const ms::NodeTargetOptions& target_options = {}) {
     int size = 1;
@@ -127,8 +129,8 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm,
     f.pmesh = std::make_unique<mfem::ParMesh>(comm, serial, part.data());
     const mfem::Array<int> labels = labels_of(*f.pmesh);
     f.labels = std::make_unique<ms::NodeLabels>(*f.pmesh, labels, label_options);
-    f.targets = std::make_unique<ms::NodeTargets>(*f.labels, metric, seeds, ms::MetricSetup{},
-                                                  grain_seed, target_options);
+    f.targets = std::make_unique<ms::NodeTargets>(
+        *f.labels, metric, seeds, ms::MetricSetup{}, grain_seed, target_options);
     return f;
 }
 
@@ -186,8 +188,8 @@ bool OnTriangles(const std::vector<std::array<double, 9>>& tris, const double* y
         const double u[3] = {t[3] - t[0], t[4] - t[1], t[5] - t[2]};
         const double w[3] = {t[6] - t[0], t[7] - t[1], t[8] - t[2]};
         const double r[3] = {y[0] - t[0], y[1] - t[1], y[2] - t[2]};
-        const double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
-                             u[0] * w[1] - u[1] * w[0]};
+        const double n[3] = {
+            u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]};
         const double nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
         const double off = (r[0] * n[0] + r[1] * n[1] + r[2] * n[2]) / std::sqrt(nn);
         // Barycentric coordinates of the projection onto the plane
@@ -284,8 +286,8 @@ TEST(NodeTargets, VoronoiInclinedBicrystal) {
     EXPECT_EQ(GlobalSum(bad), 0);
     const auto& s = dist.targets->Summary();
     EXPECT_EQ(s.status[FAKE], 0);
-    EXPECT_EQ(s.status[FIT], nl.Summary().count[1][0] + nl.Summary().count[1][1] +
-                                 nl.Summary().count[1][2]);
+    EXPECT_EQ(s.status[FIT],
+              nl.Summary().count[1][0] + nl.Summary().count[1][1] + nl.Summary().count[1][2]);
     EXPECT_GT(s.status[FIT], 0);
     EXPECT_LE(s.max_move_ratio, 1.0);
 }
@@ -302,10 +304,10 @@ TEST(NodeTargets, LaguerreQuadPoint) {
         return SeedLabels(m, ms::MetricType::LAGUERRE, seeds);
     };
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
-    Fitted dist =
-        Fit(serial, MPI_COMM_WORLD, labels_of, ms::MetricType::LAGUERRE, seeds, {0, 1, 2, 3});
-    Fitted self =
-        Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::LAGUERRE, seeds, {0, 1, 2, 3});
+    Fitted dist = Fit(
+        serial, MPI_COMM_WORLD, labels_of, ms::MetricType::LAGUERRE, seeds, {0, 1, 2, 3});
+    Fitted self = Fit(
+        serial, MPI_COMM_SELF, labels_of, ms::MetricType::LAGUERRE, seeds, {0, 1, 2, 3});
     EXPECT_EQ(CompareWithSerial(dist, self), 0);
 
     // Analytic quad point: 2 y . (s_k - s_0) = |s_k|^2 - |s_0|^2 - w_k + w_0, k = 1, 2, 3
@@ -362,10 +364,11 @@ TEST(NodeTargets, LaguerreQuadPoint) {
                 g1[d] = s1[d] - sx[d];
                 g2[d] = s2[d] - sx[d];
             }
-            const double cr[3] = {g1[1] * g2[2] - g1[2] * g2[1], g1[2] * g2[0] - g1[0] * g2[2],
+            const double cr[3] = {g1[1] * g2[2] - g1[2] * g2[1],
+                                  g1[2] * g2[0] - g1[0] * g2[2],
                                   g1[0] * g2[1] - g1[1] * g2[0]};
-            const double dot =
-                (x[0] - y[0]) * cr[0] + (x[1] - y[1]) * cr[1] + (x[2] - y[2]) * cr[2];
+            const double dot = (x[0] - y[0]) * cr[0] + (x[1] - y[1]) * cr[1] +
+                               (x[2] - y[2]) * cr[2];
             bad += (std::fabs(dot) > 1e-13) ? 1 : 0;
         }
     }
@@ -413,8 +416,8 @@ TEST(NodeTargets, AdditiveCurvedBoundary) {
                 g[d] = (y[d] - s0[d]) / r0 - (y[d] - s1[d]) / r1;
             }
             const double u[3] = {x[0] - y[0], x[1] - y[1], x[2] - y[2]};
-            const double cr[3] = {u[1] * g[2] - u[2] * g[1], u[2] * g[0] - u[0] * g[2],
-                                  u[0] * g[1] - u[1] * g[0]};
+            const double cr[3] = {
+                u[1] * g[2] - u[2] * g[1], u[2] * g[0] - u[0] * g[2], u[0] * g[1] - u[1] * g[0]};
             bad += (std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) > 1e-10) ? 1 : 0;
         } else {
             for (int d = 0; d < 3; ++d) {
@@ -444,7 +447,9 @@ TEST(NodeTargets, CurvedTopSurface) {
     EXPECT_EQ(CompareWithSerial(dist, self), 0);
 
     const std::vector<std::array<double, 9>> dome = TopTriangles(serial);
-    const auto on_dome = [&](const double* y) { return OnTriangles(dome, y); };
+    const auto on_dome = [&](const double* y) {
+        return OnTriangles(dome, y);
+    };
     const double n[3] = {0.4, 0.15, -0.05};
     const double c = 0.5 * ((0.49 + 0.3025 + 0.2025) - (0.09 + 0.16 + 0.25));
     const ms::NodeLabels& nl = *dist.labels;
@@ -517,8 +522,8 @@ TEST(NodeTargets, FarTargetOnCurvedSurface) {
     });
     ms::NodeTargetOptions options;
     options.max_move = 2.0;
-    Fitted f = Fit(serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, seeds, {0, 1}, {},
-                   options);
+    Fitted f = Fit(
+        serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, seeds, {0, 1}, {}, options);
     EXPECT_EQ(f.targets->PatchRings(), 2);
     const std::vector<std::array<double, 9>> dome = TopTriangles(serial);
     const ms::NodeLabels& nl = *f.labels;
@@ -583,13 +588,22 @@ TEST(NodeTargets, FarTargetOnCurvedSurface) {
         one_ring->ClosestPoint(v, results[0].target, p, pn, interior);
         const double* x = xyz + 3 * v;
         const double* y = results[0].target;
-        std::fprintf(out, "X %.10g %.10g %.10g\nY %.10g %.10g %.10g\nP %.10g %.10g %.10g\n", x[0],
-                     x[1], x[2], y[0], y[1], y[2], p[0], p[1], p[2]);
+        std::fprintf(out,
+                     "X %.10g %.10g %.10g\nY %.10g %.10g %.10g\nP %.10g %.10g %.10g\n",
+                     x[0],
+                     x[1],
+                     x[2],
+                     y[0],
+                     y[1],
+                     y[2],
+                     p[0],
+                     p[1],
+                     p[2]);
         std::fclose(out);
     }
     // Distributed patches give the MPI_COMM_SELF targets, node by node
-    Fitted self = Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, seeds, {0, 1},
-                      {}, options);
+    Fitted self = Fit(
+        serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, seeds, {0, 1}, {}, options);
     EXPECT_EQ(CompareWithSerial(f, self), 0);
 }
 
@@ -607,10 +621,10 @@ TEST(NodeTargets, SmoothedStaircase) {
     options.smoothed = true;
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(12, 12, 12, mfem::Element::HEXAHEDRON);
     const ms::SeedSet none;
-    Fitted dist = Fit(serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none,
-                      {-1, -1}, {}, options);
-    Fitted self = Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none,
-                      {-1, -1}, {}, options);
+    Fitted dist = Fit(
+        serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none, {-1, -1}, {}, options);
+    Fitted self = Fit(
+        serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none, {-1, -1}, {}, options);
     EXPECT_EQ(CompareWithSerial(dist, self), 0);
 
     const double n[3] = {0.4, 0.15, -0.05};
@@ -631,9 +645,8 @@ TEST(NodeTargets, SmoothedStaircase) {
         }
         const double* x = xyz + 3 * v;
         const double* y = t + 3 * v;
-        bad += (dist.targets->Status(v) != ms::TargetStatus::FIT || !dist.targets->Smoothed(v))
-                   ? 1
-                   : 0;
+        bad += (dist.targets->Status(v) != ms::TargetStatus::FIT || !dist.targets->Smoothed(v)) ? 1
+                                                                                                : 0;
         for (int d = 0; d < 3; ++d) {
             bad += (OnBoxFace(x[d]) && y[d] != x[d]) ? 1 : 0;
         }
@@ -654,16 +667,18 @@ TEST(NodeTargets, SmoothedStaircase) {
     EXPECT_EQ(dist.targets->Summary().smoothed, dist.targets->Summary().status[FIT]);
     if (mfem::Mpi::Root()) {
         std::printf("smoothed staircase: mean distance to the bisector %.4f -> %.4f (h = %.4f)\n",
-                    sums[0] / sums[2], sums[1] / sums[2], 1.0 / 12.0);
+                    sums[0] / sums[2],
+                    sums[1] / sums[2],
+                    1.0 / 12.0);
     }
 
     // Order-2 Nodes (smoothing over the lattice of the nodal points): same checks, coarser mesh
     mfem::Mesh coarse = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     coarse.SetCurvature(2);
-    Fitted dist2 = Fit(coarse, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none,
-                       {-1, -1}, {}, options);
-    Fitted self2 = Fit(coarse, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none,
-                       {-1, -1}, {}, options);
+    Fitted dist2 = Fit(
+        coarse, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, none, {-1, -1}, {}, options);
+    Fitted self2 = Fit(
+        coarse, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, none, {-1, -1}, {}, options);
     EXPECT_EQ(CompareWithSerial(dist2, self2), 0);
     const ms::NodeLabels& nl2 = *dist2.labels;
     const double* xyz2 = nl2.Field().Coordinates().HostRead();

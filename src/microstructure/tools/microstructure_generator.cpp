@@ -50,17 +50,8 @@
  * the message on every rank that caught it (with the rank number) and calls MPI_Abort, which also
  * stops the other ranks when only some ranks threw (e.g. a file write failing on one rank).
  */
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_report.hpp"
-#include "microstructure/util/collective_errors.hpp"
 #include "utilities/auto_mesh.hpp"
 
-#include "ExaConstit_Version.h"
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -82,6 +73,16 @@
 #include <utility>
 #include <vector>
 
+#include "ExaConstit_Version.h"
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
 
@@ -92,11 +93,11 @@ constexpr double MIN_ELEMENTS_PER_GRAIN = 50.0;
 
 /** Parsed command line. Identical on every rank (every rank receives the same argv). */
 struct CommandLine {
-    bool help = false;                ///< -h / --help
-    std::optional<fs::path> input;    ///< -i FILE
-    ms::CliOverrides overrides;       ///< -m -n -s -o --parts
-    std::string error;                ///< non-empty when the command line is invalid
-    std::string text;                 ///< the full command line, for provenance
+    bool help = false;             ///< -h / --help
+    std::optional<fs::path> input; ///< -i FILE
+    ms::CliOverrides overrides;    ///< -m -n -s -o --parts
+    std::string error;             ///< non-empty when the command line is invalid
+    std::string text;              ///< the full command line, for provenance
 };
 
 /** Prints the usage text. Host only. */
@@ -119,7 +120,9 @@ void PrintUsage(std::ostream& os) {
  * [min_value, max_value]. Returns false otherwise (no exceptions: the command-line parser
  * collects a message instead).
  */
-bool ParseInteger(const std::string& word, long long min_value, long long max_value,
+bool ParseInteger(const std::string& word,
+                  long long min_value,
+                  long long max_value,
                   long long& value) {
     if (word.empty()) {
         return false;
@@ -244,11 +247,12 @@ std::string DistanceName(ms::DistanceMode distance) {
 /*
  * DistanceHeaderLine: the distance mode for the mesh header provenance, one line, e.g.
  * "distance: geodesic (solver fim)", or "distance: geodesic (solver fim, elongation 440 auto)"
- * for the regularized columnar / lamellar metric (partition independent). Only settings go here, no counts: the header must be
- * byte-identical for every rank count, and the graph solver's round counts depend on how the
- * mesh is split between ranks (GeodesicReport, labeling/geodesic_common.hpp). The other counts
- * are partition independent but are kept in the log with the rounds, so the header stays a
- * record of what was asked for. Empty for voxel maps (no distance is computed there).
+ * for the regularized columnar / lamellar metric (partition independent). Only settings go here, no
+ * counts: the header must be byte-identical for every rank count, and the graph solver's round
+ * counts depend on how the mesh is split between ranks (GeodesicReport,
+ * labeling/geodesic_common.hpp). The other counts are partition independent but are kept in the log
+ * with the rounds, so the header stays a record of what was asked for. Empty for voxel maps (no
+ * distance is computed there).
  */
 std::string DistanceHeaderLine(const ms::GenerationReport& report) {
     if (report.used_voxel_map) {
@@ -300,8 +304,7 @@ std::string DistanceText(const ms::GenerationReport& report) {
         os << "distance: geodesic (path length inside the material), solver "
            << report.geodesic_solver << ": " << g.distance_rounds << " distance round(s), "
            << g.label_rounds << " label round(s)"
-           << (report.geodesic_solver == "graph" ? " (round counts depend on the rank count)"
-                                                 : "")
+           << (report.geodesic_solver == "graph" ? " (round counts depend on the rank count)" : "")
            << "; " << g.seeds_outside_material << " seed(s) outside the material, "
            << report.num_unreached_elements
            << " unreached element(s) (straight-line label, split off by the cleanup), "
@@ -321,8 +324,8 @@ std::string DistanceText(const ms::GenerationReport& report) {
 std::string DescribeMeshInput(const ms::MicrostructureOptions& options) {
     std::ostringstream os;
     if (options.mesh.type == "auto") {
-        os << "auto box, ncuts = [" << options.mesh.nxyz[0] << ", " << options.mesh.nxyz[1]
-           << ", " << options.mesh.nxyz[2] << "], length = [" << options.mesh.mxyz[0] << ", "
+        os << "auto box, ncuts = [" << options.mesh.nxyz[0] << ", " << options.mesh.nxyz[1] << ", "
+           << options.mesh.nxyz[2] << "], length = [" << options.mesh.mxyz[0] << ", "
            << options.mesh.mxyz[1] << ", " << options.mesh.mxyz[2] << "]";
     } else {
         os << "file " << options.mesh.floc.string();
@@ -373,8 +376,8 @@ ms::GrainStatistics ComputeStatistics(const ms::GenerationReport& report,
         // The driver always fills it; identical on every rank, so all ranks throw together
         throw std::logic_error("the driver report carries no mesh adjacency");
     }
-    return ms::ComputeGrainStatistics(*report.adjacency, result.element_grain, result.num_grains,
-                                      0);
+    return ms::ComputeGrainStatistics(
+        *report.adjacency, result.element_grain, result.num_grains, 0);
 }
 
 /** "first -> last" of a non-empty history, or "n/a". */
@@ -486,8 +489,8 @@ std::string SeedTableText(const ms::MicrostructureOptions& options,
     if (report.table_has_shape) {
         columns.push_back("shape tensor");
     }
-    os << "  optional columns: " << JoinList(columns) << "; ignored columns: "
-       << JoinList(report.table_ignored_columns) << "\n";
+    os << "  optional columns: " << JoinList(columns)
+       << "; ignored columns: " << JoinList(report.table_ignored_columns) << "\n";
 
     // Region of interest and filler seeds
     if (report.used_roi) {
@@ -496,8 +499,8 @@ std::string SeedTableText(const ms::MicrostructureOptions& options,
     }
     if (report.used_filler) {
         os << "filler seeds outside the ROI: material volume inside the ROI "
-           << report.roi_material_volume << ", outside " << report.outside_material_volume
-           << "; " << report.num_filler_requested << " requested ("
+           << report.roi_material_volume << ", outside " << report.outside_material_volume << "; "
+           << report.num_filler_requested << " requested ("
            << (seeds.filler_num_seeds > 0 ? "given"
                                           : "automatic: same mean grain volume as the ROI")
            << "), " << report.num_filler_seeds << " placed, source ids from "
@@ -526,8 +529,8 @@ std::string VoxelMapText(const ms::MicrostructureOptions& options,
     std::ostringstream os;
     const ms::VoxelMapOptions& voxel = options.voxel_map;
     const ms::VoxelGridInfo& grid = report.voxel_grid;
-    os << "voxel map: " << voxel.file.string() << " (format \"" << voxel.format
-       << "\", ids from " << grid.feature_ids_path << ")\n";
+    os << "voxel map: " << voxel.file.string() << " (format \"" << voxel.format << "\", ids from "
+       << grid.feature_ids_path << ")\n";
     os << "  grid " << grid.dims[0] << " x " << grid.dims[1] << " x " << grid.dims[2]
        << " voxels, origin " << Triple(grid.origin) << ", spacing " << Triple(grid.spacing)
        << " (mesh units)\n";
@@ -600,8 +603,8 @@ std::string DescribePhasesAndRegions(const ms::MicrostructureOptions& options,
         std::map<int, std::pair<int, double>> phase_sum; // phase -> (grains, volume)
         double active_volume = 0.0;
         for (std::size_t g = 0; g < ng; ++g) {
-            const bool passthrough =
-                static_cast<int>(g) >= result.num_grains - report.num_passthrough_grains;
+            const bool passthrough = static_cast<int>(g) >=
+                                     result.num_grains - report.num_passthrough_grains;
             if (passthrough) {
                 continue;
             }
@@ -643,9 +646,9 @@ std::string DescribePhasesAndRegions(const ms::MicrostructureOptions& options,
                 volume += have_volumes ? stats.volume[g] : 0.0;
             }
         }
-        os << "  region " << r << ": " << grains << " grain(s), volume " << volume
-           << " (fraction " << (stats.total_volume > 0.0 ? volume / stats.total_volume : 0.0)
-           << "); " << ms::RegionContents(report, result, r) << "\n";
+        os << "  region " << r << ": " << grains << " grain(s), volume " << volume << " (fraction "
+           << (stats.total_volume > 0.0 ? volume / stats.total_volume : 0.0) << "); "
+           << ms::RegionContents(report, result, r) << "\n";
     }
     return os.str();
 }
@@ -716,8 +719,8 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
         }
         os << "\n";
         if (!lloyd.fits.empty()) {
-            os << "  centroidal power: " << lloyd.fits.size() << " refit(s); last refit: "
-               << DescribeFit(lloyd.fits.back()) << "\n";
+            os << "  centroidal power: " << lloyd.fits.size()
+               << " refit(s); last refit: " << DescribeFit(lloyd.fits.back()) << "\n";
         }
     }
 
@@ -739,8 +742,8 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
                 seeded_seed.push_back(report.grain_seed[g]);
             }
         }
-        const ms::TargetVolumeComparison cmp =
-            ms::CompareWithTargetVolumes(seeded_volume, seeded_seed, report.seed_target_volume);
+        const ms::TargetVolumeComparison cmp = ms::CompareWithTargetVolumes(
+            seeded_volume, seeded_seed, report.seed_target_volume);
         os << "element-level volume error vs targets (final grains, summed per seed): max "
            << cmp.max_relative_error << " (seed " << cmp.worst_seed << "), mean "
            << cmp.mean_relative_error << "; " << cmp.num_empty_seeds
@@ -749,9 +752,9 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
 
     // Periodic images and face pairing
     if (report.periodic_layers > 0) {
-        os << "periodic: axes [" << (tess.periodic[0] ? "x" : "-")
-           << (tess.periodic[1] ? "y" : "-") << (tess.periodic[2] ? "z" : "-") << "], "
-           << report.periodic_layers << " image layer(s), " << report.num_periodic_images
+        os << "periodic: axes [" << (tess.periodic[0] ? "x" : "-") << (tess.periodic[1] ? "y" : "-")
+           << (tess.periodic[2] ? "z" : "-") << "], " << report.periodic_layers
+           << " image layer(s), " << report.num_periodic_images
            << " seed images; face pairing: " << report.periodic_faces.plane_faces
            << " faces on periodic planes, " << report.periodic_faces.matched_pairs
            << " matched pairs, " << report.periodic_faces.unmatched_faces << " unmatched\n";
@@ -803,7 +806,9 @@ std::string DescribeStages(const ms::MicrostructureOptions& options,
  * vertex order). The ParMesh keeps each element's vertex order, so corner k is the same vertex
  * in both meshes.
  */
-void CopyFittedCorners(MPI_Comm comm, const ms::SerialOrder& order, mfem::ParMesh& pmesh,
+void CopyFittedCorners(MPI_Comm comm,
+                       const ms::SerialOrder& order,
+                       mfem::ParMesh& pmesh,
                        mfem::Mesh& serial) {
     const mfem::GridFunction* pnodes = pmesh.GetNodes();
     std::vector<double> mine;
@@ -828,12 +833,12 @@ void CopyFittedCorners(MPI_Comm comm, const ms::SerialOrder& order, mfem::ParMes
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(size), 0);
     for (int r = 1; r < size; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r) - 1] +
+                                              counts[static_cast<std::size_t>(r) - 1];
     }
     std::vector<double> all(static_cast<std::size_t>(displs.back() + counts.back()));
-    MPI_Allgatherv(mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
+    MPI_Allgatherv(
+        mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(), MPI_DOUBLE, comm);
     mfem::GridFunction* snodes = serial.GetNodes();
     std::vector<int> cursor = displs;
     for (int e = 0; e < serial.GetNE(); ++e) {
@@ -906,8 +911,8 @@ std::string MaterialsGuidance(const ms::GenerationReport& report,
            << result.num_regions
            << " [[Materials]] blocks, in region order (block k is region k):\n";
         for (int r = 1; r <= result.num_regions; ++r) {
-            os << "    block " << r << " (region " << r << "): "
-               << ms::RegionContents(report, result, r) << "\n";
+            os << "    block " << r << " (region " << r
+               << "): " << ms::RegionContents(report, result, r) << "\n";
         }
         os << "  every crystal-plasticity block uses\n"
            << "    " << grain_line << "\n"
@@ -1011,9 +1016,8 @@ void PrintSummary(const ms::MicrostructureOptions& options,
     if (options.mesh.type == "auto" && !files.grain_file.empty()) {
         os << "  or [Mesh] type = \"auto\" with [Mesh.Auto] length = [" << options.mesh.mxyz[0]
            << ", " << options.mesh.mxyz[1] << ", " << options.mesh.mxyz[2] << "], ncuts = ["
-           << options.mesh.nxyz[0] << ", " << options.mesh.nxyz[1] << ", "
-           << options.mesh.nxyz[2] << "] and top-level grain_file = \""
-           << files.grain_file.string() << "\"";
+           << options.mesh.nxyz[0] << ", " << options.mesh.nxyz[1] << ", " << options.mesh.nxyz[2]
+           << "] and top-level grain_file = \"" << files.grain_file.string() << "\"";
         if (result.num_regions > 1) {
             os << " (required with several materials)";
         }
@@ -1126,16 +1130,16 @@ int main(int argc, char** argv) {
         std::unique_ptr<mfem::ParMesh> pmesh = ms::MakeParMesh(comm, *serial, order);
 
         ms::GenerationReport report;
-        ms::MicrostructureResult result = ms::GenerateMicrostructure(options, *pmesh, comm,
-                                                                     &report);
+        ms::MicrostructureResult result = ms::GenerateMicrostructure(
+            options, *pmesh, comm, &report);
         // A conformal fit moved the nodes: the serial mesh the files are written from follows
         if (report.ran_conformal) {
             CopyFittedCorners(comm, order, *pmesh, *serial);
         }
 
         // Coarse-resolution warning: a grain needs many elements to deform realistically
-        const double elements_per_grain =
-            double(report.num_elements) / double(std::max(1, report.num_grains));
+        const double elements_per_grain = double(report.num_elements) /
+                                          double(std::max(1, report.num_grains));
         if (root && elements_per_grain < MIN_ELEMENTS_PER_GRAIN) {
             std::cout << "Warning: only " << elements_per_grain
                       << " elements per grain on average (fewer than about "
@@ -1201,14 +1205,14 @@ int main(int argc, char** argv) {
 
         WrittenFiles files;
         if (write_serial && root) {
-            files.serial_mesh = ms::WriteSerialMesh(*serial, fs::path(base.string() + ".mesh"),
-                                                    out.compression, comments.str());
+            files.serial_mesh = ms::WriteSerialMesh(
+                *serial, fs::path(base.string() + ".mesh"), out.compression, comments.str());
         }
         if (write_parallel) {
             files.num_parts = (out.num_parts > 0) ? out.num_parts : nranks;
             files.parallel_prefix = base.string() + ".mesh.";
-            ms::WritePartitionedMesh(*serial, files.num_parts, files.parallel_prefix,
-                                     out.compression, comm);
+            ms::WritePartitionedMesh(
+                *serial, files.num_parts, files.parallel_prefix, out.compression, comm);
         }
 
         // Per-grain text files (rank 0): orientations always; region map only with >1 region;
@@ -1216,9 +1220,9 @@ int main(int argc, char** argv) {
         files.orientation_file = base.string() + ".ori";
         // An auto mesh rebuilt by ExaConstit would lose the fitted node positions, so after a
         // conformal fit "auto" writes no grain file (the mesh file carries the grains)
-        const bool want_grain_file =
-            (out.grain_file == "true") || (out.grain_file == "auto" &&
-                                           options.mesh.type == "auto" && !report.ran_conformal);
+        const bool want_grain_file = (out.grain_file == "true") ||
+                                     (out.grain_file == "auto" && options.mesh.type == "auto" &&
+                                      !report.ran_conformal);
         if (want_grain_file) {
             files.grain_file = base.string() + ".grains";
         }

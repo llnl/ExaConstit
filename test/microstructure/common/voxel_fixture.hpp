@@ -3,8 +3,8 @@
  * @file voxel_fixture.hpp
  * @brief Shared test fixture: a small voxelized Voronoi microstructure written as HDF5 voxel maps
  * in the canonical ExaConstit microstructure file layout (io/microstructure_file_io.hpp) and the
- * DREAM.3D (SIMPL v6 and NX-like) layouts. Used by test_voxel_map (reader and labeler) and test_driver_stage1d (the driver's
- * voxel-map path).
+ * DREAM.3D (SIMPL v6 and NX-like) layouts. Used by test_voxel_map (reader and labeler) and
+ * test_driver_stage1d (the driver's voxel-map path).
  *
  * **The map.** A 20 x 16 x 12 voxel grid with voxel size h = 1/16 and origin 0 (so the box is
  * [0, 1.25] x [0, 1] x [0, 0.75], and every voxel boundary is exactly representable in floating
@@ -22,8 +22,6 @@
 
 #ifdef AXOM_USE_HDF5
 
-#include "hdf5.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -33,6 +31,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "hdf5.h"
 
 namespace voxel_fixture {
 
@@ -53,11 +53,11 @@ inline const std::array<int, NUM_SEEDS> kFeatureId = {3, 5, 8, 13, 21, 34};
 inline const std::vector<std::int64_t> kUsedIds = {3, 5, 8, 13, 21, 34};
 /** Seeds inside the box [0, 1.25] x [0, 1] x [0, 0.75]; generic positions (no exact ties). */
 inline const std::array<std::array<double, 3>, NUM_SEEDS> kSeeds = {{{0.23, 0.21, 0.17},
-                                                              {0.97, 0.26, 0.21},
-                                                              {0.31, 0.77, 0.52},
-                                                              {1.01, 0.79, 0.55},
-                                                              {0.62, 0.48, 0.36},
-                                                              {0.58, 0.13, 0.61}}};
+                                                                     {0.97, 0.26, 0.21},
+                                                                     {0.31, 0.77, 0.52},
+                                                                     {1.01, 0.79, 0.55},
+                                                                     {0.62, 0.48, 0.36},
+                                                                     {0.58, 0.13, 0.61}}};
 
 /** Index of the seed nearest to p (brute force; ties go to the lowest index). */
 inline int NearestSeed(const std::array<double, 3>& p) {
@@ -110,9 +110,9 @@ inline int VoxelIndex(int i, int j, int k) {
 
 /** The voxelized tessellation: ids (x fastest), the hole voxels and the hole's grain id. */
 struct VoxelMapData {
-    std::vector<std::int64_t> ids;      ///< with the hole (0)
-    std::vector<std::int64_t> filled;   ///< without the hole (what the fill must restore)
-    std::array<int, 3> hole_lo{};       ///< first voxel of the 2 x 2 x 2 hole
+    std::vector<std::int64_t> ids;    ///< with the hole (0)
+    std::vector<std::int64_t> filled; ///< without the hole (what the fill must restore)
+    std::array<int, 3> hole_lo{};     ///< first voxel of the 2 x 2 x 2 hole
     int hole_feature = 0;
 };
 
@@ -225,15 +225,17 @@ public:
     H5Writer& operator=(const H5Writer&) = delete;
 
     /** Writes `data` (memory type mem_type) as a dataset of file type file_type and shape dims. */
-    void Dataset(const std::string& path, hid_t file_type, hid_t mem_type,
-                 const std::vector<hsize_t>& dims, const void* data) {
+    void Dataset(const std::string& path,
+                 hid_t file_type,
+                 hid_t mem_type,
+                 const std::vector<hsize_t>& dims,
+                 const void* data) {
         Closer space{H5Screate_simple(static_cast<int>(dims.size()), dims.data(), nullptr),
                      H5Sclose};
-        Closer dset{H5Dcreate2(m_file, path.c_str(), file_type, space.id, m_lcpl, H5P_DEFAULT,
-                               H5P_DEFAULT),
-                    H5Dclose};
-        if (dset.id < 0 ||
-            H5Dwrite(dset.id, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
+        Closer dset{
+            H5Dcreate2(m_file, path.c_str(), file_type, space.id, m_lcpl, H5P_DEFAULT, H5P_DEFAULT),
+            H5Dclose};
+        if (dset.id < 0 || H5Dwrite(dset.id, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
             throw std::runtime_error("cannot write dataset " + path);
         }
     }
@@ -241,11 +243,10 @@ public:
     /** Writes a scalar dataset of file type file_type. */
     void Scalar(const std::string& path, hid_t file_type, hid_t mem_type, const void* data) {
         Closer space{H5Screate(H5S_SCALAR), H5Sclose};
-        Closer dset{H5Dcreate2(m_file, path.c_str(), file_type, space.id, m_lcpl, H5P_DEFAULT,
-                               H5P_DEFAULT),
-                    H5Dclose};
-        if (dset.id < 0 ||
-            H5Dwrite(dset.id, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
+        Closer dset{
+            H5Dcreate2(m_file, path.c_str(), file_type, space.id, m_lcpl, H5P_DEFAULT, H5P_DEFAULT),
+            H5Dclose};
+        if (dset.id < 0 || H5Dwrite(dset.id, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) < 0) {
             throw std::runtime_error("cannot write dataset " + path);
         }
     }
@@ -261,15 +262,17 @@ public:
 
     /** Creates a group (and its parents). */
     void Group(const std::string& path) {
-        Closer group{H5Gcreate2(m_file, path.c_str(), m_lcpl, H5P_DEFAULT, H5P_DEFAULT),
-                     H5Gclose};
+        Closer group{H5Gcreate2(m_file, path.c_str(), m_lcpl, H5P_DEFAULT, H5P_DEFAULT), H5Gclose};
         if (group.id < 0) {
             throw std::runtime_error("cannot create group " + path);
         }
     }
 
     /** Writes a 3-value attribute on an existing object. */
-    void Attribute3(const std::string& object, const char* name, hid_t file_type, hid_t mem_type,
+    void Attribute3(const std::string& object,
+                    const char* name,
+                    hid_t file_type,
+                    hid_t mem_type,
                     const void* data) {
         Closer obj{H5Oopen(m_file, object.c_str(), H5P_DEFAULT), H5Oclose};
         const hsize_t three = 3;
@@ -293,16 +296,16 @@ inline std::vector<int> AsInt32(const std::vector<std::int64_t>& ids) {
 
 /** Options of a canonical fixture. */
 struct CanonicalOptions {
-    std::vector<std::int64_t> ids;                 ///< voxel ids (x fastest), dims[0..2]
-    std::array<hsize_t, 3> dims = {NX, NY, NZ};    ///< voxel counts x, y, z
+    std::vector<std::int64_t> ids;              ///< voxel ids (x fastest), dims[0..2]
+    std::array<hsize_t, 3> dims = {NX, NY, NZ}; ///< voxel counts x, y, z
     std::array<double, 3> origin = {0.0, 0.0, 0.0};
     std::array<double, 3> spacing = {H, H, H};
-    bool rank4_uint16 = false;                     ///< store as uint16 (nz, ny, nx, 1)
-    bool flat = false;                             ///< store flat (nx ny nz), as Conduit writes
-    bool features = true; ///< write feature_ids with quat and phase (else only the grid's ids)
+    bool rank4_uint16 = false; ///< store as uint16 (nz, ny, nx, 1)
+    bool flat = false;         ///< store flat (nx ny nz), as Conduit writes
+    bool features = true;      ///< write feature_ids with quat and phase (else only the grid's ids)
     std::vector<int> feature_ids = {21, 3, 34, 8, 13, 5}; ///< unsorted on purpose
-    int bad_quat_id = -1;                          ///< this id gets a quaternion of norm 0.5
-    std::int64_t format_version = 1;               ///< written format_version
+    int bad_quat_id = -1;                                 ///< this id gets a quaternion of norm 0.5
+    std::int64_t format_version = 1;                      ///< written format_version
 };
 
 /**
@@ -324,9 +327,11 @@ inline void WriteCanonical(const fs::path& path, const CanonicalOptions& opt) {
     for (int d = 0; d < 3; ++d) {
         const std::int64_t points = static_cast<std::int64_t>(opt.dims[d]) + 1;
         w.Scalar(cs + "/dims/" + dim_names[d], H5T_STD_I64LE, H5T_NATIVE_INT64, &points);
-        w.Scalar(cs + "/origin/" + origin_names[d], H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE,
-                 &opt.origin[d]);
-        w.Scalar(cs + "/spacing/" + spacing_names[d], H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE,
+        w.Scalar(
+            cs + "/origin/" + origin_names[d], H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, &opt.origin[d]);
+        w.Scalar(cs + "/spacing/" + spacing_names[d],
+                 H5T_IEEE_F64LE,
+                 H5T_NATIVE_DOUBLE,
                  &opt.spacing[d]);
     }
     w.String("/mesh/topologies/topo/type", "uniform");
@@ -336,14 +341,23 @@ inline void WriteCanonical(const fs::path& path, const CanonicalOptions& opt) {
     const std::string values = "/mesh/fields/grain_id/values";
     if (opt.rank4_uint16) {
         std::vector<std::uint16_t> ids(opt.ids.begin(), opt.ids.end());
-        w.Dataset(values, H5T_STD_U16LE, H5T_NATIVE_UINT16,
-                  {opt.dims[2], opt.dims[1], opt.dims[0], 1}, ids.data());
+        w.Dataset(values,
+                  H5T_STD_U16LE,
+                  H5T_NATIVE_UINT16,
+                  {opt.dims[2], opt.dims[1], opt.dims[0], 1},
+                  ids.data());
     } else if (opt.flat) {
-        w.Dataset(values, H5T_STD_I64LE, H5T_NATIVE_INT64,
-                  {opt.dims[0] * opt.dims[1] * opt.dims[2]}, opt.ids.data());
+        w.Dataset(values,
+                  H5T_STD_I64LE,
+                  H5T_NATIVE_INT64,
+                  {opt.dims[0] * opt.dims[1] * opt.dims[2]},
+                  opt.ids.data());
     } else {
-        w.Dataset(values, H5T_STD_I64LE, H5T_NATIVE_INT64,
-                  {opt.dims[2], opt.dims[1], opt.dims[0]}, opt.ids.data());
+        w.Dataset(values,
+                  H5T_STD_I64LE,
+                  H5T_NATIVE_INT64,
+                  {opt.dims[2], opt.dims[1], opt.dims[0]},
+                  opt.ids.data());
     }
 
     // Grain table: without features, the positive ids of the grid (the format requires
@@ -422,23 +436,28 @@ inline void WriteSimpl(const fs::path& path) {
     const std::string dc = "/DataContainers/ImageDataContainer";
     const std::int64_t dims[3] = {NX, NY, NZ};
     const float origin[3] = {0.0f, 0.0f, 0.0f};
-    const float spacing[3] = {static_cast<float>(H), static_cast<float>(H),
-                              static_cast<float>(H)};
+    const float spacing[3] = {static_cast<float>(H), static_cast<float>(H), static_cast<float>(H)};
     w.Dataset(dc + "/_SIMPL_GEOMETRY/DIMENSIONS", H5T_STD_I64LE, H5T_NATIVE_INT64, {3}, dims);
     w.Dataset(dc + "/_SIMPL_GEOMETRY/ORIGIN", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, origin);
     w.Dataset(dc + "/_SIMPL_GEOMETRY/SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, spacing);
     const std::vector<int> ids = AsInt32(map.ids);
-    w.Dataset(dc + "/CellData/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1},
-              ids.data());
+    w.Dataset(
+        dc + "/CellData/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1}, ids.data());
     std::vector<int> cell_phases(ids.size(), 1);
-    w.Dataset(dc + "/CellData/Phases", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1},
+    w.Dataset(dc + "/CellData/Phases",
+              H5T_STD_I32LE,
+              H5T_NATIVE_INT,
+              {NZ, NY, NX, 1},
               cell_phases.data());
     const std::vector<float> quats = Dream3dQuatsXyzw();
-    w.Dataset(dc + "/CellFeatureData/AvgQuats", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {kRows, 4},
+    w.Dataset(dc + "/CellFeatureData/AvgQuats",
+              H5T_IEEE_F32LE,
+              H5T_NATIVE_FLOAT,
+              {kRows, 4},
               quats.data());
     const std::vector<int> phases = Dream3dPhases();
-    w.Dataset(dc + "/CellFeatureData/Phases", H5T_STD_I32LE, H5T_NATIVE_INT, {kRows, 1},
-              phases.data());
+    w.Dataset(
+        dc + "/CellFeatureData/Phases", H5T_STD_I32LE, H5T_NATIVE_INT, {kRows, 1}, phases.data());
 }
 
 /**
@@ -452,21 +471,24 @@ inline void WriteNx(const fs::path& path, int geometry) {
     const std::string geom = "/DataStructure/ImageGeom";
     w.Group(geom);
     if (geometry > 0) {
-        const std::uint64_t dims[3] = {NX, NY, static_cast<std::uint64_t>(geometry == 1 ? NZ
-                                                                                         : NZ + 1)};
+        const std::uint64_t dims[3] = {
+            NX, NY, static_cast<std::uint64_t>(geometry == 1 ? NZ : NZ + 1)};
         const float origin[3] = {0.0f, 0.0f, 0.0f};
-        const float spacing[3] = {static_cast<float>(H), static_cast<float>(H),
-                                  static_cast<float>(H)};
+        const float spacing[3] = {
+            static_cast<float>(H), static_cast<float>(H), static_cast<float>(H)};
         w.Attribute3(geom, "_DIMENSIONS", H5T_STD_U64LE, H5T_NATIVE_UINT64, dims);
         w.Attribute3(geom, "_ORIGIN", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, origin);
         w.Attribute3(geom, "_SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, spacing);
     }
     const std::vector<int> ids = AsInt32(map.ids);
-    w.Dataset(geom + "/Cell Data/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1},
-              ids.data());
+    w.Dataset(
+        geom + "/Cell Data/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1}, ids.data());
     const std::vector<float> quats = Dream3dQuatsXyzw();
-    w.Dataset(geom + "/Cell Feature Data/AvgQuats", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT,
-              {kRows, 4}, quats.data());
+    w.Dataset(geom + "/Cell Feature Data/AvgQuats",
+              H5T_IEEE_F32LE,
+              H5T_NATIVE_FLOAT,
+              {kRows, 4},
+              quats.data());
 }
 
 /**
@@ -486,17 +508,22 @@ inline void WriteTwoContainers(const fs::path& path, bool a_quats_zero, bool b_h
         }
         const std::int64_t dims[3] = {NX, NY, NZ};
         const float origin[3] = {0.0f, 0.0f, 0.0f};
-        const float spacing[3] = {static_cast<float>(H), static_cast<float>(H),
-                                  static_cast<float>(H)};
+        const float spacing[3] = {
+            static_cast<float>(H), static_cast<float>(H), static_cast<float>(H)};
         w.Dataset(dc + "/_SIMPL_GEOMETRY/DIMENSIONS", H5T_STD_I64LE, H5T_NATIVE_INT64, {3}, dims);
         w.Dataset(dc + "/_SIMPL_GEOMETRY/ORIGIN", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, origin);
-        w.Dataset(dc + "/_SIMPL_GEOMETRY/SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3},
-                  spacing);
-        w.Dataset(dc + "/CellData/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT, {NZ, NY, NX, 1},
+        w.Dataset(dc + "/_SIMPL_GEOMETRY/SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, spacing);
+        w.Dataset(dc + "/CellData/FeatureIds",
+                  H5T_STD_I32LE,
+                  H5T_NATIVE_INT,
+                  {NZ, NY, NX, 1},
                   ids.data());
         if (is_a || b_has_quats) {
-            w.Dataset(dc + "/CellFeatureData/AvgQuats", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT,
-                      {kRows, 4}, quats.data());
+            w.Dataset(dc + "/CellFeatureData/AvgQuats",
+                      H5T_IEEE_F32LE,
+                      H5T_NATIVE_FLOAT,
+                      {kRows, 4},
+                      quats.data());
         }
     }
 }

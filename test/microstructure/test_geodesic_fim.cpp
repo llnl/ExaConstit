@@ -23,20 +23,7 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_metric.hpp"
-#include "microstructure/labeling/geodesic_weighted.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_options.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -51,6 +38,18 @@
 #include <random>
 #include <string>
 #include <vector>
+
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+#include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_metric.hpp"
+#include "microstructure/labeling/geodesic_weighted.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -78,7 +77,9 @@ struct GridMesh {
  */
 template <typename Kept>
 GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -87,9 +88,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
             }
         }
     }
-    GridMesh grid{mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells,
-                             0, 3),
-                  {}};
+    GridMesh grid{
+        mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells, 0, 3), {}};
     mfem::Mesh& mesh = grid.mesh;
     for (int k = 0; k <= nz; k++) {
         for (int j = 0; j <= ny; j++) {
@@ -114,8 +114,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
                     mesh.AddHex(hex);
                     grid.cell.push_back({i, j, k});
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -201,8 +201,8 @@ struct SerialVertexValues {
  * arranges them in serial order; vertices touched by no element keep (inf, -1). Collective over
  * comm.
  */
-SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::VertexField& field,
-                                      MPI_Comm comm) {
+SerialVertexValues
+GatherVertexValues(const mfem::Mesh& serial, const ms::VertexField& field, MPI_Comm comm) {
     const auto ids = SerialVertexIds(serial);
     const int nv = field.NumVertices();
     const double* xyz = field.Coordinates().HostRead();
@@ -226,19 +226,25 @@ SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::Vertex
     MPI_Allgather(&nv, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(nranks), 0);
     for (int r = 1; r < nranks; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r - 1)] + counts[static_cast<std::size_t>(r - 1)];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r - 1)] +
+                                              counts[static_cast<std::size_t>(r - 1)];
     }
     const int total = displs.back() + counts.back();
     std::vector<int> all_ids(static_cast<std::size_t>(total));
     std::vector<double> all_t(static_cast<std::size_t>(total));
     std::vector<int> all_lab(static_cast<std::size_t>(total));
-    MPI_Allgatherv(local_ids.data(), nv, MPI_INT, all_ids.data(), counts.data(), displs.data(),
-                   MPI_INT, comm);
-    MPI_Allgatherv(local_t.data(), nv, MPI_DOUBLE, all_t.data(), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
-    MPI_Allgatherv(local_lab.data(), nv, MPI_INT, all_lab.data(), counts.data(), displs.data(),
-                   MPI_INT, comm);
+    MPI_Allgatherv(
+        local_ids.data(), nv, MPI_INT, all_ids.data(), counts.data(), displs.data(), MPI_INT, comm);
+    MPI_Allgatherv(local_t.data(),
+                   nv,
+                   MPI_DOUBLE,
+                   all_t.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_DOUBLE,
+                   comm);
+    MPI_Allgatherv(
+        local_lab.data(), nv, MPI_INT, all_lab.data(), counts.data(), displs.data(), MPI_INT, comm);
     int found_int = found ? 1 : 0;
     MPI_Allreduce(MPI_IN_PLACE, &found_int, 1, MPI_INT, MPI_MIN, comm);
     out.all_found = found_int != 0;
@@ -266,8 +272,10 @@ SerialVertexValues GatherVertexValues(const mfem::Mesh& serial, const ms::Vertex
 }
 
 /** Element values gathered into serial order on every rank (GatherToSerial + MPI_Bcast). */
-std::vector<int> GatherElements(MPI_Comm comm, const ms::SerialOrder& order,
-                                const mfem::Array<int>& local, int serial_ne) {
+std::vector<int> GatherElements(MPI_Comm comm,
+                                const ms::SerialOrder& order,
+                                const mfem::Array<int>& local,
+                                int serial_ne) {
     std::vector<int> values = ms::GatherToSerial(comm, order, local, 0);
     values.resize(static_cast<std::size_t>(serial_ne));
     MPI_Bcast(values.data(), serial_ne, MPI_INT, 0, comm);
@@ -286,15 +294,18 @@ struct GeodesicRun {
  * LabelGeodesicFim on `serial` distributed per `layout`, gathered; with `weights`, the weighted
  * solver LabelGeodesicWeighted (labeling/geodesic_weighted.hpp) instead. Collective.
  */
-GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& seeds,
-                        bool additive, const ms::GeodesicParameters& params,
+GeodesicRun RunGeodesic(mfem::Mesh& serial,
+                        Layout layout,
+                        const ms::SeedSet& seeds,
+                        bool additive,
+                        const ms::GeodesicParameters& params,
                         const std::vector<double>* weights = nullptr) {
     const MPI_Comm comm = (layout == Layout::SELF) ? MPI_COMM_SELF : MPI_COMM_WORLD;
     Distributed d = Distribute(serial, layout);
-    ms::GeodesicLabels labels =
-        (weights != nullptr)
-            ? ms::LabelGeodesicWeighted(*d.pmesh, comm, seeds, *weights, params)
-            : ms::LabelGeodesicFim(*d.pmesh, comm, seeds, additive, params);
+    ms::GeodesicLabels labels = (weights != nullptr)
+                                    ? ms::LabelGeodesicWeighted(
+                                          *d.pmesh, comm, seeds, *weights, params)
+                                    : ms::LabelGeodesicFim(*d.pmesh, comm, seeds, additive, params);
     GeodesicRun run;
     run.element_seed = GatherElements(comm, d.order, labels.element_seed, serial.GetNE());
     run.vertex = GatherVertexValues(serial, *labels.field, comm);
@@ -310,14 +321,16 @@ GeodesicRun RunGeodesic(mfem::Mesh& serial, Layout layout, const ms::SeedSet& se
  * the report of the METIS run (its round counts show the exchanges). Collective over
  * MPI_COMM_WORLD.
  */
-GeodesicRun RunAndCompare(mfem::Mesh& serial, const ms::SeedSet& seeds, bool additive,
+GeodesicRun RunAndCompare(mfem::Mesh& serial,
+                          const ms::SeedSet& seeds,
+                          bool additive,
                           const ms::GeodesicParameters& params = {},
                           ms::GeodesicReport* world_report = nullptr,
                           const std::vector<double>* weights = nullptr) {
-    const GeodesicRun world =
-        RunGeodesic(serial, Layout::METIS_WORLD, seeds, additive, params, weights);
-    const GeodesicRun scattered =
-        RunGeodesic(serial, Layout::SCATTERED_WORLD, seeds, additive, params, weights);
+    const GeodesicRun world = RunGeodesic(
+        serial, Layout::METIS_WORLD, seeds, additive, params, weights);
+    const GeodesicRun scattered = RunGeodesic(
+        serial, Layout::SCATTERED_WORLD, seeds, additive, params, weights);
     const GeodesicRun self = RunGeodesic(serial, Layout::SELF, seeds, additive, params, weights);
     for (const GeodesicRun* other : {&world, &scattered}) {
         EXPECT_TRUE(other->vertex.copies_agree);
@@ -376,7 +389,9 @@ std::array<double, 3> Centroid(const mfem::Mesh& mesh, int e) {
  * positive value (the vertices the caller wants measured; others return <= 0).
  */
 template <typename Exact>
-double MaxRelativeError(const mfem::Mesh& serial, const std::vector<double>& T, Exact exact,
+double MaxRelativeError(const mfem::Mesh& serial,
+                        const std::vector<double>& T,
+                        Exact exact,
                         double* mean_error = nullptr) {
     double worst = 0.0;
     double sum = 0.0;
@@ -398,7 +413,6 @@ double MaxRelativeError(const mfem::Mesh& serial, const std::vector<double>& T, 
     return worst;
 }
 
-
 /** A random point in the unit cube. */
 std::array<double, 3> RandomPoint(std::mt19937_64& rng) {
     std::uniform_real_distribution<double> u(0.0, 1.0);
@@ -417,8 +431,13 @@ double Distance3(const double* p, const double* q) {
  * convex function of l1) converge to the minimum; 100 steps each shrink the intervals by
  * (2/3)^100 ~ 2e-18.
  */
-double BruteTriangle(const double* v, const double* a, const double* b, const double* c, double ta,
-                     double tb, double tc) {
+double BruteTriangle(const double* v,
+                     const double* a,
+                     const double* b,
+                     const double* c,
+                     double ta,
+                     double tb,
+                     double tc) {
     auto f = [&](double l1, double l2) {
         double p[3];
         for (int d = 0; d < 3; ++d) {
@@ -501,7 +520,8 @@ std::vector<LocalProblem> RandomLocalProblems(int count, std::uint64_t seed) {
         p.c = RandomPoint(rng);
         const double e1[3] = {p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]};
         const double e2[3] = {p.c[0] - p.a[0], p.c[1] - p.a[1], p.c[2] - p.a[2]};
-        const double cr[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+        const double cr[3] = {e1[1] * e2[2] - e1[2] * e2[1],
+                              e1[2] * e2[0] - e1[0] * e2[2],
                               e1[0] * e2[1] - e1[1] * e2[0]};
         if (0.5 * std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) < 1e-3) {
             continue;
@@ -520,7 +540,6 @@ std::vector<LocalProblem> RandomLocalProblems(int count, std::uint64_t seed) {
     }
     return problems;
 }
-
 
 /**
  * Independent serial reference for the FIM vertex labels, re-derived from the converged distances
@@ -544,8 +563,10 @@ std::vector<LocalProblem> RandomLocalProblems(int count, std::uint64_t seed) {
  * expressions with the same compiler flags; if MICROSTRUCTURE_STRICT_FP is ON the test gets the
  * same -ffp-contract=off (test_geodesic_fim.cmake).
  */
-std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial, const std::vector<double>& T,
-                                       const ms::SeedSet& seeds, bool additive,
+std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial,
+                                       const std::vector<double>& T,
+                                       const ms::SeedSet& seeds,
+                                       bool additive,
                                        const std::vector<std::uint64_t>& source_keys) {
     const int nv = serial.GetNV();
     const int ne = serial.GetNE();
@@ -625,8 +646,12 @@ std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial, const std::vect
                 }
                 return common != 0;
             };
-            const auto X = [&](int u) { return serial.GetVertex(u); };
-            const auto Tu = [&](int u) { return T[static_cast<std::size_t>(u)]; };
+            const auto X = [&](int u) {
+                return serial.GetVertex(u);
+            };
+            const auto Tu = [&](int u) {
+                return T[static_cast<std::size_t>(u)];
+            };
             const int n = static_cast<int>(o.size());
             for (int i = 0; i < n; ++i) {
                 consider(ms::EikonalVertexValue(xv, X(o[i]), Tu(o[i])), {o[i]});
@@ -646,17 +671,17 @@ std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial, const std::vect
                         if (!on_far_face({i, j, k})) {
                             continue;
                         }
-                        consider(ms::EikonalTriangleInteriorValue(xv, X(o[i]), X(o[j]), X(o[k]),
-                                                                  Tu(o[i]), Tu(o[j]), Tu(o[k])),
+                        consider(ms::EikonalTriangleInteriorValue(
+                                     xv, X(o[i]), X(o[j]), X(o[k]), Tu(o[i]), Tu(o[j]), Tu(o[k])),
                                  {o[i], o[j], o[k]});
                     }
                 }
             }
         }
-        is_source[static_cast<std::size_t>(v)] =
-            (label0[static_cast<std::size_t>(v)] >= 0 && t0[static_cast<std::size_t>(v)] == m)
-                ? 1
-                : 0;
+        is_source[static_cast<std::size_t>(v)] = (label0[static_cast<std::size_t>(v)] >= 0 &&
+                                                  t0[static_cast<std::size_t>(v)] == m)
+                                                     ? 1
+                                                     : 0;
         if (is_source[static_cast<std::size_t>(v)] != 0) {
             continue; // a source vertex keeps its seed's label
         }
@@ -665,8 +690,8 @@ std::vector<int> ReferenceVertexLabels(const mfem::Mesh& serial, const std::vect
         for (const int u : support) {
             if (T[static_cast<std::size_t>(u)] < tv) {
                 const double tu = T[static_cast<std::size_t>(u)];
-                best_arrival =
-                    std::min(best_arrival, ms::EikonalVertexValue(xv, serial.GetVertex(u), tu));
+                best_arrival = std::min(best_arrival,
+                                        ms::EikonalVertexValue(xv, serial.GetVertex(u), tu));
             }
         }
         for (const int u : support) {
@@ -721,8 +746,8 @@ TEST(EikonalLocalSolver, MatchesBruteForceOnRandomSimplices) {
     for (const LocalProblem& p : problems) {
         const ms::EikonalUpdate up = ms::EikonalTriangleUpdate(
             p.v.data(), p.a.data(), p.b.data(), p.c.data(), p.ta, p.tb, p.tc);
-        const double brute =
-            BruteTriangle(p.v.data(), p.a.data(), p.b.data(), p.c.data(), p.ta, p.tb, p.tc);
+        const double brute = BruteTriangle(
+            p.v.data(), p.a.data(), p.b.data(), p.c.data(), p.ta, p.tb, p.tc);
         worst = std::max(worst, std::fabs(up.value - brute));
         EXPECT_NEAR(up.value, brute, 1e-9);
         const int bits = (up.support & 1) + ((up.support >> 1) & 1) + ((up.support >> 2) & 1);
@@ -734,9 +759,8 @@ TEST(EikonalLocalSolver, MatchesBruteForceOnRandomSimplices) {
         const std::array<double, 3> t = {p.ta, p.tb, p.tc};
         std::array<int, 3> perm = {0, 1, 2};
         do {
-            const ms::EikonalUpdate q =
-                ms::EikonalTriangleUpdate(p.v.data(), x[perm[0]], x[perm[1]], x[perm[2]],
-                                          t[perm[0]], t[perm[1]], t[perm[2]]);
+            const ms::EikonalUpdate q = ms::EikonalTriangleUpdate(
+                p.v.data(), x[perm[0]], x[perm[1]], x[perm[2]], t[perm[0]], t[perm[1]], t[perm[2]]);
             EXPECT_EQ(q.value, up.value);
         } while (std::next_permutation(perm.begin(), perm.end()));
     }
@@ -759,8 +783,7 @@ TEST(EikonalLocalSolver, InfiniteInputsAreExact) {
     for (const LocalProblem& p : problems) {
         const ms::EikonalUpdate one = ms::EikonalTriangleUpdate(
             p.v.data(), p.a.data(), p.b.data(), p.c.data(), p.ta, p.tb, INF);
-        EXPECT_NEAR(one.value, BruteSegment(p.v.data(), p.a.data(), p.b.data(), p.ta, p.tb),
-                    1e-9);
+        EXPECT_NEAR(one.value, BruteSegment(p.v.data(), p.a.data(), p.b.data(), p.ta, p.tb), 1e-9);
         EXPECT_EQ(one.support & 4, 0);
         const ms::EikonalUpdate two = ms::EikonalTriangleUpdate(
             p.v.data(), p.a.data(), p.b.data(), p.c.data(), p.ta, INF, INF);
@@ -800,8 +823,8 @@ TEST(EikonalLocalSolver, RunsInsideForallKernel) {
     int* out_support = support.Write();
     mfem::forall(n, [=] MFEM_HOST_DEVICE(int i) {
         const double* q = in + 15 * i;
-        const ms::EikonalUpdate up =
-            ms::EikonalTriangleUpdate(q, q + 3, q + 6, q + 9, q[12], q[13], q[14]);
+        const ms::EikonalUpdate up = ms::EikonalTriangleUpdate(
+            q, q + 3, q + 6, q + 9, q[12], q[13], q[14]);
         out_value[i] = up.value;
         out_support[i] = up.support;
     });
@@ -834,15 +857,21 @@ TEST(GeodesicFim, StraightStrutAccuracy) {
     ms::SeedSet seeds;
     AddSeed(seeds, 0.5, 0.5, 0.0);
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) {
+            return true;
+        });
         ms::GeodesicReport world_report;
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report);
         double mean = 0.0;
-        const double worst = MaxRelativeError(grid.mesh, run.vertex.T, [](const double* p) {
-            const double d = std::sqrt((p[0] - 0.5) * (p[0] - 0.5) +
-                                       (p[1] - 0.5) * (p[1] - 0.5) + p[2] * p[2]);
-            return (d > 2.0) ? d : 0.0;
-        }, &mean);
+        const double worst = MaxRelativeError(
+            grid.mesh,
+            run.vertex.T,
+            [](const double* p) {
+                const double d = std::sqrt((p[0] - 0.5) * (p[0] - 0.5) +
+                                           (p[1] - 0.5) * (p[1] - 0.5) + p[2] * p[2]);
+                return (d > 2.0) ? d : 0.0;
+            },
+            &mean);
         if (WorldRank() == 0) {
             std::cout << "[ fim ] straight strut " << (tets ? "tet" : "hex")
                       << ": max relative error " << worst << ", mean " << mean << " ("
@@ -872,19 +901,25 @@ TEST(GeodesicFim, LShapeCornerAccuracy) {
     AddSeed(seeds, 3.5, 0.5, 0.5);
     const double r1 = std::sqrt(2.5 * 2.5 + 0.5 * 0.5);
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4 * n, 4 * n, n, 1.0 / n, tets,
-                                  [](int i, int j, int) { return i < n || j < n; });
+        GridMesh grid = BuildGrid(4 * n, 4 * n, n, 1.0 / n, tets, [](int i, int j, int) {
+            return i < n || j < n;
+        });
         ms::GeodesicReport world_report;
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report);
         double mean = 0.0;
-        const double worst = MaxRelativeError(grid.mesh, run.vertex.T, [r1](const double* p) {
-            if (p[1] < 2.0) {
-                return 0.0;
-            }
-            const double r2 = std::sqrt((p[0] - 1.0) * (p[0] - 1.0) + (p[1] - 1.0) * (p[1] - 1.0));
-            const double dz = p[2] - 0.5;
-            return std::sqrt((r1 + r2) * (r1 + r2) + dz * dz);
-        }, &mean);
+        const double worst = MaxRelativeError(
+            grid.mesh,
+            run.vertex.T,
+            [r1](const double* p) {
+                if (p[1] < 2.0) {
+                    return 0.0;
+                }
+                const double r2 = std::sqrt((p[0] - 1.0) * (p[0] - 1.0) +
+                                            (p[1] - 1.0) * (p[1] - 1.0));
+                const double dz = p[2] - 0.5;
+                return std::sqrt((r1 + r2) * (r1 + r2) + dz * dz);
+            },
+            &mean);
         if (WorldRank() == 0) {
             std::cout << "[ fim ] L-shape corner " << (tets ? "tet" : "hex")
                       << ": max relative error " << worst << ", mean " << mean << " ("
@@ -908,8 +943,8 @@ TEST(GeodesicFim, UShapeLabelsDoNotCrossTheGap) {
     AddSeed(seeds, 2.9, 0.5, 0.5);
 
     // Euclidean labels (every rank alone on the serial mesh): A crosses the slot
-    const ms::TessellationLabels euclid =
-        ms::LabelTessellation(mesh, MPI_COMM_SELF, seeds, ms::TessellationOptions{});
+    const ms::TessellationLabels euclid = ms::LabelTessellation(
+        mesh, MPI_COMM_SELF, seeds, ms::TessellationOptions{});
     const int* es = euclid.element_seed.HostRead();
     int euclid_crossing = 0;
     for (int e = 0; e < mesh.GetNE(); ++e) {
@@ -946,7 +981,9 @@ TEST(GeodesicFim, UShapeLabelsDoNotCrossTheGap) {
 // Both tet and hex meshes.
 TEST(GeodesicFim, AdditiveBoundaryPosition) {
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) {
+            return true;
+        });
         ms::SeedSet seeds;
         AddSeed(seeds, 0.5, 0.5, 0.0);
         AddSeed(seeds, 0.5, 0.5, 10.0);
@@ -966,8 +1003,8 @@ TEST(GeodesicFim, AdditiveBoundaryPosition) {
         for (int v = 0; v < grid.mesh.GetNV(); ++v) {
             const double* p = grid.mesh.GetVertex(v);
             if (p[0] == 0.5 && p[1] == 0.5) {
-                EXPECT_NEAR(run.vertex.T[static_cast<std::size_t>(v)],
-                            std::min(p[2], 8.0 - p[2]), 1e-9);
+                EXPECT_NEAR(
+                    run.vertex.T[static_cast<std::size_t>(v)], std::min(p[2], 8.0 - p[2]), 1e-9);
             }
         }
     }
@@ -982,7 +1019,9 @@ TEST(GeodesicFim, AdditiveBoundaryPosition) {
 // T = +inf and label -1 and its 64 elements get -1. The scattered layout of RunAndCompare also
 // covers a rank owning no element.
 TEST(GeodesicFim, SnappingUnreachedBodyAndEmptyRanks) {
-    GridMesh grid = BuildGrid(4, 4, 9, 0.25, false, [](int, int, int k) { return k != 4; });
+    GridMesh grid = BuildGrid(4, 4, 9, 0.25, false, [](int, int, int k) {
+        return k != 4;
+    });
     ms::SeedSet seeds;
     AddSeed(seeds, 0.5, 0.5, -0.25);
     AddSeed(seeds, 0.3, 0.7, 0.6);
@@ -1031,7 +1070,9 @@ TEST(GeodesicFim, SnappingUnreachedBodyAndEmptyRanks) {
 // an empty seed set, a weight array of the wrong size, max_rounds < 1; and a max_rounds cap too
 // small for the distance rounds throws std::runtime_error on every rank.
 TEST(GeodesicFim, InvalidInputThrowsOnAllRanks) {
-    GridMesh grid = BuildGrid(4, 4, 4, 0.25, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(4, 4, 4, 0.25, false, [](int, int, int) {
+        return true;
+    });
     Distributed d = Distribute(grid.mesh, Layout::METIS_WORLD);
     ms::SeedSet empty;
     EXPECT_THROW(ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_WORLD, empty, false, {}),
@@ -1051,8 +1092,7 @@ TEST(GeodesicFim, InvalidInputThrowsOnAllRanks) {
     EXPECT_THROW(ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_WORLD, seeds, false, capped),
                  std::runtime_error);
     // Valid input still works afterwards
-    const ms::GeodesicLabels ok =
-        ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_WORLD, seeds, false, {});
+    const ms::GeodesicLabels ok = ms::LabelGeodesicFim(*d.pmesh, MPI_COMM_WORLD, seeds, false, {});
     EXPECT_EQ(ok.report.unreached_elements, 0);
 }
 
@@ -1063,17 +1103,19 @@ TEST(GeodesicFim, InvalidInputThrowsOnAllRanks) {
 // checks np = 2..4 against np = 1, so this pins the labels of every rank count to the rule.
 TEST(GeodesicFim, VertexLabelsMatchSerialReference) {
     {
-        mfem::Mesh mesh(std::string(MS_GEODESIC_FIM_DATA_DIR) +
-                        "/microstructure/u_shape_hex.mesh");
+        mfem::Mesh mesh(std::string(MS_GEODESIC_FIM_DATA_DIR) + "/microstructure/u_shape_hex.mesh");
         ms::SeedSet seeds;
         AddSeed(seeds, 0.9, 1.9, 0.5);
         AddSeed(seeds, 2.9, 0.5, 0.5);
         const GeodesicRun run = RunAndCompare(mesh, seeds, false);
-        EXPECT_EQ(run.vertex.label, ReferenceVertexLabels(mesh, run.vertex.T, seeds, false,
-                                                          run.sources.source_element_key));
+        EXPECT_EQ(run.vertex.label,
+                  ReferenceVertexLabels(
+                      mesh, run.vertex.T, seeds, false, run.sources.source_element_key));
     }
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 4, 24, 0.25, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(4, 4, 24, 0.25, tets, [](int, int, int) {
+            return true;
+        });
         ms::SeedSet seeds;
         AddSeed(seeds, 0.31, 0.62, 0.4);
         AddSeed(seeds, 0.77, 0.18, 1.9);
@@ -1090,14 +1132,17 @@ TEST(GeodesicFim, VertexLabelsMatchSerialReference) {
         }
     }
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) {
+            return true;
+        });
         ms::SeedSet seeds;
         AddSeed(seeds, 0.5, 0.5, 0.0);
         AddSeed(seeds, 0.5, 0.5, 10.0);
         seeds.weight = {0.0, 2.0};
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, true);
-        EXPECT_EQ(run.vertex.label, ReferenceVertexLabels(grid.mesh, run.vertex.T, seeds, true,
-                                                          run.sources.source_element_key));
+        EXPECT_EQ(run.vertex.label,
+                  ReferenceVertexLabels(
+                      grid.mesh, run.vertex.T, seeds, true, run.sources.source_element_key));
     }
 }
 
@@ -1107,7 +1152,9 @@ TEST(GeodesicFim, VertexLabelsMatchSerialReference) {
 // so T = 5 exactly from both sides: checked with each seed alone. With both seeds the tie must go
 // to the lower seed id, whichever end that seed sits at (seed order swapped in the second run).
 TEST(GeodesicFim, ExactTieGoesToLowerSeedId) {
-    GridMesh grid = BuildGrid(4, 4, 40, 0.25, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(4, 4, 40, 0.25, false, [](int, int, int) {
+        return true;
+    });
     const auto ids = SerialVertexIds(grid.mesh);
     const auto mid = static_cast<std::size_t>(ids.at({0.5, 0.5, 5.0}));
     for (const double z : {0.0, 10.0}) {
@@ -1123,8 +1170,9 @@ TEST(GeodesicFim, ExactTieGoesToLowerSeedId) {
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false);
         EXPECT_EQ(run.vertex.T[mid], 5.0);
         EXPECT_EQ(run.vertex.label[mid], 0);
-        EXPECT_EQ(run.vertex.label, ReferenceVertexLabels(grid.mesh, run.vertex.T, seeds, false,
-                                                          run.sources.source_element_key));
+        EXPECT_EQ(run.vertex.label,
+                  ReferenceVertexLabels(
+                      grid.mesh, run.vertex.T, seeds, false, run.sources.source_element_key));
     }
 }
 
@@ -1145,8 +1193,12 @@ std::array<double, 6> TensorOfStretch(const std::array<double, 9>& s) {
 /** Tensor of a grain k times longer along the unit vector u: I - (1 - 1/k^2) u u^T. */
 std::array<double, 6> ElongatedTensor(const std::array<double, 3>& u, double k) {
     const double c = 1.0 - 1.0 / (k * k);
-    return {1.0 - c * u[0] * u[0], 1.0 - c * u[1] * u[1], 1.0 - c * u[2] * u[2],
-            -c * u[1] * u[2],      -c * u[0] * u[2],      -c * u[0] * u[1]};
+    return {1.0 - c * u[0] * u[0],
+            1.0 - c * u[1] * u[1],
+            1.0 - c * u[2] * u[2],
+            -c * u[1] * u[2],
+            -c * u[0] * u[2],
+            -c * u[0] * u[1]};
 }
 
 /** A-length of r for A = [Axx, Ayy, Azz, Ayz, Axz, Axy]. */
@@ -1168,8 +1220,8 @@ int CountMismatches(const std::vector<int>& a, const mfem::Array<int>& b) {
 
 /** Mismatches against exact straight-line labels, and how close they are to a tie. */
 struct MismatchStats {
-    int count = 0;         ///< elements whose label is not the exact nearest seed
-    double max_gap = 0.0;  ///< largest sqrt(f_label) - sqrt(f_best) over them (length units)
+    int count = 0;        ///< elements whose label is not the exact nearest seed
+    double max_gap = 0.0; ///< largest sqrt(f_label) - sqrt(f_best) over them (length units)
 };
 
 /**
@@ -1178,8 +1230,10 @@ struct MismatchStats {
  * should be an element whose centroid is almost equally far from both seeds, i.e. next to a grain
  * boundary, where the FIM distance error (first order in h, largest near the seeds) decides.
  */
-MismatchStats CompareWithExact(const mfem::Mesh& mesh, const std::vector<int>& labels,
-                               const ms::SeedSet& seeds, const std::array<double, 6>& tensor) {
+MismatchStats CompareWithExact(const mfem::Mesh& mesh,
+                               const std::vector<int>& labels,
+                               const ms::SeedSet& seeds,
+                               const std::array<double, 6>& tensor) {
     MismatchStats stats;
     const int n = static_cast<int>(seeds.Size());
     for (int e = 0; e < mesh.GetNE(); ++e) {
@@ -1189,8 +1243,8 @@ MismatchStats CompareWithExact(const mfem::Mesh& mesh, const std::vector<int>& l
         std::vector<double> d(static_cast<std::size_t>(n));
         for (int i = 0; i < n; ++i) {
             const auto si = static_cast<std::size_t>(i);
-            d[si] = TensorLength(tensor, c[0] - seeds.x[si], c[1] - seeds.y[si],
-                                 c[2] - seeds.z[si]);
+            d[si] = TensorLength(
+                tensor, c[0] - seeds.x[si], c[1] - seeds.y[si], c[2] - seeds.z[si]);
             if (d[si] < best_d) {
                 best_d = d[si];
                 best = i;
@@ -1226,13 +1280,14 @@ TEST(GeodesicMetric, StretchBuilders) {
         const std::array<double, 6> lam_ref = {i2 + c * axis[0] * axis[0],
                                                i2 + c * axis[1] * axis[1],
                                                i2 + c * axis[2] * axis[2],
-                                               c * axis[1] * axis[2], c * axis[0] * axis[2],
+                                               c * axis[1] * axis[2],
+                                               c * axis[0] * axis[2],
                                                c * axis[0] * axis[1]};
         for (int j = 0; j < 6; ++j) {
-            EXPECT_NEAR(col[static_cast<std::size_t>(j)], col_ref[static_cast<std::size_t>(j)],
-                        1e-15);
-            EXPECT_NEAR(lam[static_cast<std::size_t>(j)], lam_ref[static_cast<std::size_t>(j)],
-                        1e-15);
+            EXPECT_NEAR(
+                col[static_cast<std::size_t>(j)], col_ref[static_cast<std::size_t>(j)], 1e-15);
+            EXPECT_NEAR(
+                lam[static_cast<std::size_t>(j)], lam_ref[static_cast<std::size_t>(j)], 1e-15);
         }
     }
     EXPECT_THROW(ms::MetricStretchFromTensor(ms::MakeColumnarTensor({0.0, 0.0, 1.0})),
@@ -1256,13 +1311,19 @@ TEST(GeodesicFim, GlobalTensorStrutAccuracy) {
     ms::GeodesicParameters params;
     params.stretch = ms::MetricStretchFromTensor(tensor);
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(8, 8, 80, 0.125, tets, [](int, int, int) {
+            return true;
+        });
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params);
         double mean = 0.0;
-        const double worst = MaxRelativeError(grid.mesh, run.vertex.T, [&](const double* p) {
-            const double d = TensorLength(tensor, p[0] - 0.5, p[1] - 0.5, p[2]);
-            return (d >= 1.0) ? d : 0.0;
-        }, &mean);
+        const double worst = MaxRelativeError(
+            grid.mesh,
+            run.vertex.T,
+            [&](const double* p) {
+                const double d = TensorLength(tensor, p[0] - 0.5, p[1] - 0.5, p[2]);
+                return (d >= 1.0) ? d : 0.0;
+            },
+            &mean);
         if (WorldRank() == 0) {
             std::cout << "[ fim ] tensor strut " << (tets ? "tet" : "hex")
                       << ": max relative error " << worst << ", mean " << mean << std::endl;
@@ -1286,7 +1347,9 @@ TEST(GeodesicFim, GlobalTensorStrutAccuracy) {
 // this coarse box touch a grain boundary.
 TEST(GeodesicFim, ConvexBoxMatchesExactLabels) {
     constexpr double h = 1.0 / 12;
-    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) {
+        return true;
+    });
     std::mt19937_64 rng(20261024);
     ms::SeedSet seeds;
     for (int i = 0; i < 8; ++i) {
@@ -1308,14 +1371,13 @@ TEST(GeodesicFim, ConvexBoxMatchesExactLabels) {
         ms::GeodesicReport world_report;
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params, &world_report);
         const MismatchStats stats = CompareWithExact(grid.mesh, run.element_seed, seeds, tensor);
-        const ms::TessellationLabels euclid =
-            ms::LabelTessellation(grid.mesh, MPI_COMM_SELF, seeds, tess);
+        const ms::TessellationLabels euclid = ms::LabelTessellation(
+            grid.mesh, MPI_COMM_SELF, seeds, tess);
         if (WorldRank() == 0) {
-            std::cout << "[ fim ] " << (stretched ? "tensor" : "voronoi") << " box: "
-                      << stats.count << " of " << grid.mesh.GetNE()
-                      << " elements differ from the exact labels, largest gap "
-                      << stats.max_gap / h << " h (" << world_report.distance_rounds
-                      << " distance rounds)" << std::endl;
+            std::cout << "[ fim ] " << (stretched ? "tensor" : "voronoi") << " box: " << stats.count
+                      << " of " << grid.mesh.GetNE()
+                      << " elements differ from the exact labels, largest gap " << stats.max_gap / h
+                      << " h (" << world_report.distance_rounds << " distance rounds)" << std::endl;
         }
         EXPECT_EQ(CountMismatches(run.element_seed, euclid.element_seed), stats.count);
         EXPECT_LT(static_cast<double>(stats.count) / grid.mesh.GetNE(), stretched ? 0.12 : 0.07);
@@ -1330,21 +1392,23 @@ TEST(GeodesicFim, ConvexBoxMatchesExactLabels) {
 //  - a tiny seed count gives the floor 10, a huge one the limit 1e4 (clamped).
 // The value comes from exact min/max reductions, so it is the same on every partition.
 TEST(GeodesicMetric, AutoElongationFromPartExtents) {
-    GridMesh grid = BuildGrid(4, 4, 16, 0.25, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(4, 4, 16, 0.25, false, [](int, int, int) {
+        return true;
+    });
     for (const Layout layout : {Layout::METIS_WORLD, Layout::SCATTERED_WORLD}) {
         Distributed d = Distribute(grid.mesh, layout);
         const MPI_Comm comm = MPI_COMM_WORLD;
         bool clamped = true;
-        EXPECT_EQ(ms::AutoGeodesicElongation(true, {0.0, 0.0, 2.0}, *d.pmesh, comm, 6, nullptr,
-                                             &clamped),
-                  98.0);
+        EXPECT_EQ(
+            ms::AutoGeodesicElongation(true, {0.0, 0.0, 2.0}, *d.pmesh, comm, 6, nullptr, &clamped),
+            98.0);
         EXPECT_FALSE(clamped);
         EXPECT_EQ(ms::AutoGeodesicElongation(false, {1.0, 0.0, 0.0}, *d.pmesh, comm, 6, nullptr),
                   250.0);
         EXPECT_EQ(ms::AutoGeodesicElongation(true, {1.0, 0.0, 0.0}, *d.pmesh, comm, 1, nullptr),
                   10.0); // 10 x 1 / sqrt(4) = 5 -> floor
-        EXPECT_EQ(ms::AutoGeodesicElongation(false, {0.0, 0.0, 1.0}, *d.pmesh, comm, 100000,
-                                             nullptr, &clamped),
+        EXPECT_EQ(ms::AutoGeodesicElongation(
+                      false, {0.0, 0.0, 1.0}, *d.pmesh, comm, 100000, nullptr, &clamped),
                   1.0e4);
         EXPECT_TRUE(clamped);
 
@@ -1352,14 +1416,14 @@ TEST(GeodesicMetric, AutoElongationFromPartExtents) {
         ms::TessellationOptions tess;
         tess.metric = ms::MetricType::QUADRIC;
         tess.anisotropy_kind = "columnar";
-        const ms::GeodesicMetric automatic =
-            ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
+        const ms::GeodesicMetric automatic = ms::ResolveGeodesicMetric(
+            tess, *d.pmesh, comm, 6, nullptr);
         EXPECT_TRUE(automatic.automatic);
         EXPECT_EQ(automatic.elongation, 98.0);
         EXPECT_EQ(automatic.stretch, ms::ColumnarStretch({0.0, 0.0, 1.0}, 98.0));
         tess.geodesic_elongation = 30.0;
-        const ms::GeodesicMetric given =
-            ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
+        const ms::GeodesicMetric given = ms::ResolveGeodesicMetric(
+            tess, *d.pmesh, comm, 6, nullptr);
         EXPECT_FALSE(given.automatic);
         EXPECT_EQ(given.elongation, 30.0);
         tess.anisotropy_kind = "per_seed"; // one tensor per seed: the field keeps no metric
@@ -1370,8 +1434,8 @@ TEST(GeodesicMetric, AutoElongationFromPartExtents) {
                      std::invalid_argument);
         // Voronoi: the identity
         tess.metric = ms::MetricType::VORONOI;
-        const ms::GeodesicMetric plain =
-            ms::ResolveGeodesicMetric(tess, *d.pmesh, comm, 6, nullptr);
+        const ms::GeodesicMetric plain = ms::ResolveGeodesicMetric(
+            tess, *d.pmesh, comm, 6, nullptr);
         EXPECT_EQ(plain.stretch, ms::GeodesicParameters{}.stretch);
         EXPECT_EQ(plain.elongation, 0.0);
     }
@@ -1385,7 +1449,9 @@ TEST(GeodesicMetric, AutoElongationFromPartExtents) {
 // large k does not cost accuracy here.
 TEST(GeodesicFim, ColumnarAndLamellarConvexBoxMatchExactLabels) {
     constexpr double h = 0.125;
-    GridMesh grid = BuildGrid(8, 8, 32, h, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(8, 8, 32, h, false, [](int, int, int) {
+        return true;
+    });
     std::mt19937_64 rng(7);
     ms::SeedSet seeds;
     for (int i = 0; i < 6; ++i) {
@@ -1397,10 +1463,10 @@ TEST(GeodesicFim, ColumnarAndLamellarConvexBoxMatchExactLabels) {
         bool columnar;
         double elongation;
     };
-    for (const Case& c : {Case{true, 98.0}, Case{true, 1000.0}, Case{false, 22.0},
-                          Case{false, 1000.0}}) {
-        const std::array<double, 6> exact =
-            c.columnar ? ms::MakeColumnarTensor(z) : ms::MakeLamellarTensor(z);
+    for (const Case& c :
+         {Case{true, 98.0}, Case{true, 1000.0}, Case{false, 22.0}, Case{false, 1000.0}}) {
+        const std::array<double, 6> exact = c.columnar ? ms::MakeColumnarTensor(z)
+                                                       : ms::MakeLamellarTensor(z);
         ms::GeodesicParameters params;
         params.stretch = c.columnar ? ms::ColumnarStretch(z, c.elongation)
                                     : ms::LamellarStretch(z, c.elongation);
@@ -1408,9 +1474,9 @@ TEST(GeodesicFim, ColumnarAndLamellarConvexBoxMatchExactLabels) {
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params, &world_report);
         const MismatchStats stats = CompareWithExact(grid.mesh, run.element_seed, seeds, exact);
         if (WorldRank() == 0) {
-            std::cout << "[ fim ] " << (c.columnar ? "columnar" : "lamellar") << " box (k = "
-                      << c.elongation << "): " << stats.count << " of " << grid.mesh.GetNE()
-                      << " elements differ from the exact labels, largest gap "
+            std::cout << "[ fim ] " << (c.columnar ? "columnar" : "lamellar")
+                      << " box (k = " << c.elongation << "): " << stats.count << " of "
+                      << grid.mesh.GetNE() << " elements differ from the exact labels, largest gap "
                       << stats.max_gap / h << " h (" << world_report.distance_rounds
                       << " distance rounds)" << std::endl;
         }
@@ -1473,8 +1539,10 @@ TEST(GeodesicFim, ColumnarUShapeDoesNotCrossTheGap) {
  * (2 d_label), the distance by which the boundary would have to move (first order) to make the
  * label right.
  */
-MismatchStats CompareWithExactWeighted(const mfem::Mesh& mesh, const std::vector<int>& labels,
-                                       const ms::SeedSet& seeds, const std::vector<double>& w,
+MismatchStats CompareWithExactWeighted(const mfem::Mesh& mesh,
+                                       const std::vector<int>& labels,
+                                       const ms::SeedSet& seeds,
+                                       const std::vector<double>& w,
                                        const std::array<double, 6>& tensor) {
     MismatchStats stats;
     const int n = static_cast<int>(seeds.Size());
@@ -1485,8 +1553,8 @@ MismatchStats CompareWithExactWeighted(const mfem::Mesh& mesh, const std::vector
         int best = -1;
         for (int i = 0; i < n; ++i) {
             const auto si = static_cast<std::size_t>(i);
-            d[si] = TensorLength(tensor, c[0] - seeds.x[si], c[1] - seeds.y[si],
-                                 c[2] - seeds.z[si]);
+            d[si] = TensorLength(
+                tensor, c[0] - seeds.x[si], c[1] - seeds.y[si], c[2] - seeds.z[si]);
             f[si] = d[si] * d[si] - w[si];
             if (best < 0 || f[si] < f[static_cast<std::size_t>(best)]) {
                 best = i;
@@ -1510,7 +1578,9 @@ MismatchStats CompareWithExactWeighted(const mfem::Mesh& mesh, const std::vector
 // Hex and tet; RunAndCompare checks rank independence with no list overflow.
 TEST(GeodesicWeighted, HeavySeedOwnsPointsAnotherFrontReachesFirst) {
     for (const bool tets : {false, true}) {
-        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) { return true; });
+        GridMesh grid = BuildGrid(4, 4, 40, 0.25, tets, [](int, int, int) {
+            return true;
+        });
         ms::SeedSet seeds;
         AddSeed(seeds, 0.5, 0.5, 0.0);
         AddSeed(seeds, 0.5, 0.5, 10.0);
@@ -1544,7 +1614,9 @@ TEST(GeodesicWeighted, HeavySeedOwnsPointsAnotherFrontReachesFirst) {
 // 4x Quadric tensor (weighted Quadric). Equal weights reduce to one seed per node.
 TEST(GeodesicWeighted, ConvexBoxMatchesExactLaguerreLabels) {
     constexpr double h = 1.0 / 12;
-    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) {
+        return true;
+    });
     std::mt19937_64 rng(4242);
     std::uniform_real_distribution<double> radius(0.05, 0.25);
     ms::SeedSet seeds;
@@ -1565,11 +1637,11 @@ TEST(GeodesicWeighted, ConvexBoxMatchesExactLaguerreLabels) {
         }
         ms::GeodesicReport world_report;
         const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, params, &world_report, &w);
-        const MismatchStats stats =
-            CompareWithExactWeighted(grid.mesh, run.element_seed, seeds, w, tensor);
+        const MismatchStats stats = CompareWithExactWeighted(
+            grid.mesh, run.element_seed, seeds, w, tensor);
         if (WorldRank() == 0) {
-            std::cout << "[ weighted ] " << (stretched ? "quadric" : "laguerre") << " box: "
-                      << stats.count << " of " << grid.mesh.GetNE()
+            std::cout << "[ weighted ] " << (stretched ? "quadric" : "laguerre")
+                      << " box: " << stats.count << " of " << grid.mesh.GetNE()
                       << " elements differ from the exact labels, largest shift "
                       << stats.max_gap / h << " h (" << world_report.distance_rounds
                       << " rounds, longest list " << world_report.max_list_length << ")"
@@ -1583,8 +1655,8 @@ TEST(GeodesicWeighted, ConvexBoxMatchesExactLaguerreLabels) {
     const std::vector<double> equal(seeds.Size(), 0.01);
     ms::GeodesicReport world_report;
     const GeodesicRun run = RunAndCompare(grid.mesh, seeds, false, {}, &world_report, &equal);
-    const MismatchStats stats = CompareWithExactWeighted(grid.mesh, run.element_seed, seeds,
-                                                         equal, {1.0, 1.0, 1.0, 0.0, 0.0, 0.0});
+    const MismatchStats stats = CompareWithExactWeighted(
+        grid.mesh, run.element_seed, seeds, equal, {1.0, 1.0, 1.0, 0.0, 0.0, 0.0});
     if (WorldRank() == 0) {
         std::cout << "[ weighted ] equal weights box: " << stats.count << " of "
                   << grid.mesh.GetNE() << " elements differ, largest shift " << stats.max_gap / h
@@ -1639,7 +1711,9 @@ TEST(GeodesicWeighted, UShapeLaguerreDoesNotCrossTheGap) {
 // the overflow (single rank: with overflow the result may depend on the partition). Invalid
 // capacities and weight arrays are refused on every rank.
 TEST(GeodesicWeighted, OverflowIsReportedAndInputsChecked) {
-    GridMesh grid = BuildGrid(8, 8, 8, 0.125, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(8, 8, 8, 0.125, false, [](int, int, int) {
+        return true;
+    });
     std::mt19937_64 rng(99);
     ms::SeedSet seeds;
     std::vector<double> w;
@@ -1677,7 +1751,9 @@ TEST(GeodesicWeighted, OverflowIsReportedAndInputsChecked) {
 // near-ties (the arithmetic of the two mappings differs in the last bits).
 TEST(GeodesicWeighted, PerSeedTensorsMatchExactLabels) {
     constexpr double h = 1.0 / 12;
-    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) { return true; });
+    GridMesh grid = BuildGrid(12, 12, 12, h, false, [](int, int, int) {
+        return true;
+    });
     std::mt19937_64 rng(777);
     std::uniform_real_distribution<double> u(-1.0, 1.0);
     ms::SeedSet seeds;
@@ -1711,8 +1787,8 @@ TEST(GeodesicWeighted, PerSeedTensorsMatchExactLabels) {
         std::vector<double> f(seeds.Size());
         std::vector<double> d(seeds.Size());
         for (std::size_t i = 0; i < seeds.Size(); ++i) {
-            d[i] = TensorLength(tensors[i], c[0] - seeds.x[i], c[1] - seeds.y[i],
-                                c[2] - seeds.z[i]);
+            d[i] = TensorLength(
+                tensors[i], c[0] - seeds.x[i], c[1] - seeds.y[i], c[2] - seeds.z[i]);
             f[i] = d[i] * d[i] - w[i];
             if (best < 0 || f[i] < f[static_cast<std::size_t>(best)]) {
                 best = static_cast<int>(i);
@@ -1722,8 +1798,8 @@ TEST(GeodesicWeighted, PerSeedTensorsMatchExactLabels) {
         if (label != best) {
             ++mismatched;
             const auto l = static_cast<std::size_t>(label);
-            max_shift = std::max(max_shift, (f[l] - f[static_cast<std::size_t>(best)]) /
-                                                (2.0 * d[l]));
+            max_shift = std::max(max_shift,
+                                 (f[l] - f[static_cast<std::size_t>(best)]) / (2.0 * d[l]));
         }
     }
     if (WorldRank() == 0) {

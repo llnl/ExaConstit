@@ -1,12 +1,12 @@
 #pragma once
 
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <math.h>
+
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
 
 /**
  * @file random_orientation.hpp
@@ -40,8 +40,8 @@ namespace exaconstit::microstructure {
  * @param sample sample index (0 unless several orientations per grain are needed).
  * @param q      the quaternion, written to q[0..3] as w x y z (unit norm up to round-off).
  */
-MFEM_HOST_DEVICE inline void RandomQuaternion(const CounterRng& rng, std::uint32_t sample,
-                                              double q[4]) {
+MFEM_HOST_DEVICE inline void
+RandomQuaternion(const CounterRng& rng, std::uint32_t sample, double q[4]) {
     // Three uniforms from blocks (sample, 0..1)
     double u[3];
     UniformUnitCube(rng, sample, u);

@@ -22,6 +22,24 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
+#include "utilities/auto_mesh.hpp"
+
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mpi.h>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/labeling/quadrature_vote.hpp"
@@ -35,25 +53,7 @@
 #include "microstructure/seeding/johnson_mehl.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
 #include "microstructure/util/collective_errors.hpp"
-#include "utilities/auto_mesh.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-#include <iostream>
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <filesystem>
-#include <map>
-#include <memory>
-#include <mpi.h>
-#include <set>
-#include <stdexcept>
-#include <string>
-#include <vector>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -90,7 +90,9 @@ struct GridMesh {
 
 template <typename Kept>
 GridMesh BuildHexGrid(int nx, int ny, int nz, double h, Kept kept) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -113,10 +115,14 @@ GridMesh BuildHexGrid(int nx, int ny, int nz, double h, Kept kept) {
                 if (!kept(i, j, k)) {
                     continue;
                 }
-                const int hex[8] = {vid(i, j, k),         vid(i + 1, j, k),
-                                    vid(i + 1, j + 1, k), vid(i, j + 1, k),
-                                    vid(i, j, k + 1),     vid(i + 1, j, k + 1),
-                                    vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)};
+                const int hex[8] = {vid(i, j, k),
+                                    vid(i + 1, j, k),
+                                    vid(i + 1, j + 1, k),
+                                    vid(i, j + 1, k),
+                                    vid(i, j, k + 1),
+                                    vid(i + 1, j, k + 1),
+                                    vid(i + 1, j + 1, k + 1),
+                                    vid(i, j + 1, k + 1)};
                 grid.mesh.AddHex(hex);
                 grid.cell.push_back({i, j, k});
             }
@@ -183,8 +189,8 @@ Distributed DistributeWithEmptyLastRank(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** Per-element values gathered into serial element order and broadcast to every rank. */
-std::vector<int> GatherToAll(MPI_Comm comm, const ms::SerialOrder& order,
-                             const mfem::Array<int>& local) {
+std::vector<int>
+GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>& local) {
     local.HostRead();
     std::vector<int> all = ms::GatherToSerial(comm, order, local, 0);
     int size = static_cast<int>(all.size());
@@ -202,8 +208,10 @@ struct DriverRun {
 };
 
 /** GenerateMicrostructure on `serial` distributed over `comm`. Collective over comm. */
-DriverRun RunDriver(mfem::Mesh& serial, const ms::MicrostructureOptions& options, MPI_Comm comm,
-              bool empty_last_rank = false) {
+DriverRun RunDriver(mfem::Mesh& serial,
+                    const ms::MicrostructureOptions& options,
+                    MPI_Comm comm,
+                    bool empty_last_rank = false) {
     Distributed d = empty_last_rank ? DistributeWithEmptyLastRank(serial, comm)
                                     : Distribute(serial, comm);
     DriverRun run;
@@ -223,7 +231,8 @@ struct RunPair {
  * exactly: labels in serial order, grain count, orientations (bitwise), source ids, and the
  * report counts of seeding and cleanup. Collective over MPI_COMM_WORLD.
  */
-RunPair RunAndCompare(mfem::Mesh& serial, const ms::MicrostructureOptions& options,
+RunPair RunAndCompare(mfem::Mesh& serial,
+                      const ms::MicrostructureOptions& options,
                       bool empty_last_rank = false) {
     RunPair pair;
     pair.world = RunDriver(serial, options, MPI_COMM_WORLD, empty_last_rank);
@@ -274,7 +283,9 @@ ms::MicrostructureOptions QuickOptions(std::int64_t n, std::uint64_t rng_seed) {
  * equal labels through shared faces, optionally also through matching periodic faces of the
  * mesh box). Computed alone on every rank (MPI_COMM_SELF).
  */
-std::size_t CountPieces(mfem::Mesh& serial, const std::vector<int>& labels, bool periodic_pairs,
+std::size_t CountPieces(mfem::Mesh& serial,
+                        const std::vector<int>& labels,
+                        bool periodic_pairs,
                         const std::array<bool, 3>& periodic = {true, true, true}) {
     Distributed alone = Distribute(serial, MPI_COMM_SELF);
     std::unique_ptr<ms::MeshAdjacency> adjacency;
@@ -400,8 +411,7 @@ TEST(DriverStage1bc, KeepSeedComponent) {
 
     // The seeds themselves (same parameters as the driver)
     Distributed alone = Distribute(grid.mesh, MPI_COMM_SELF);
-    const ms::SeedSet seeds =
-        ms::GenerateSeeds(*alone.pmesh, ms::MakeSeedingParameters(keep_seed));
+    const ms::SeedSet seeds = ms::GenerateSeeds(*alone.pmesh, ms::MakeSeedingParameters(keep_seed));
     std::map<std::array<int, 3>, int> element_of_cell;
     for (std::size_t e = 0; e < grid.cell.size(); ++e) {
         element_of_cell[grid.cell[e]] = static_cast<int>(e);
@@ -521,8 +531,8 @@ TEST(DriverStage1bc, SplitLargeMergeTinyPolicy) {
                 labels[e] = label_of(*d.pmesh, e);
             }
             const ms::MeshAdjacency adjacency(*d.pmesh);
-            const ms::FragmentCleanupResult result =
-                ms::CleanupFragments(adjacency, labels, 2, {10, 20}, params);
+            const ms::FragmentCleanupResult result = ms::CleanupFragments(
+                adjacency, labels, 2, {10, 20}, params);
             EXPECT_EQ(result.num_grains, x.grains);
             EXPECT_EQ(result.report.fragments_found, 2);
             EXPECT_EQ(result.report.fragments_split, x.split);
@@ -575,12 +585,12 @@ TEST(DriverStage1bc, QuadratureVoteMatchesLibrary) {
 
         // Library reference on the whole mesh
         Distributed alone = Distribute(serial, MPI_COMM_SELF);
-        const ms::SeedSet seeds =
-            ms::GenerateSeeds(*alone.pmesh, ms::MakeSeedingParameters(options));
+        const ms::SeedSet seeds = ms::GenerateSeeds(*alone.pmesh,
+                                                    ms::MakeSeedingParameters(options));
         ms::QuadratureVoteParameters vote;
         vote.levels = levels;
-        const ms::TessellationLabels labels =
-            ms::LabelTessellationByQuadratureVote(*alone.pmesh, MPI_COMM_SELF, seeds, vote);
+        const ms::TessellationLabels labels = ms::LabelTessellationByQuadratureVote(
+            *alone.pmesh, MPI_COMM_SELF, seeds, vote);
         std::vector<int> expected(static_cast<std::size_t>(serial.GetNE()));
         const int* grain = labels.element_grain.HostRead();
         for (int e = 0; e < alone.pmesh->GetNE(); ++e) {
@@ -637,8 +647,9 @@ TEST(DriverStage1bc, PeriodicFacePairing) {
             for (int axis = 0; axis < 3; ++axis) {
                 for (const int step : {-1, 1}) {
                     std::array<int, 3> nb = c;
-                    nb[static_cast<std::size_t>(axis)] =
-                        (nb[static_cast<std::size_t>(axis)] + step + n) % n;
+                    nb[static_cast<std::size_t>(axis)] = (nb[static_cast<std::size_t>(axis)] +
+                                                          step + n) %
+                                                         n;
                     expected.insert(key_of_cell[nb]);
                 }
             }
@@ -804,8 +815,8 @@ TEST(DriverStage1bc, ColumnarAndLamellarGrains) {
             const int i = static_cast<int>(std::floor(c[0] * n));
             const int j = static_cast<int>(std::floor(c[1] * n));
             const int k = static_cast<int>(std::floor(c[2] * n));
-            const std::array<int, 2> key =
-                (kind == "columnar") ? std::array<int, 2>{i, j} : std::array<int, 2>{k, 0};
+            const std::array<int, 2> key = (kind == "columnar") ? std::array<int, 2>{i, j}
+                                                                : std::array<int, 2>{k, 0};
             grains_of[key].insert(runs.alone.labels[static_cast<std::size_t>(e)]);
         }
         for (const auto& entry : grains_of) {
@@ -841,8 +852,8 @@ TEST(DriverStage1bc, JohnsonMehlSeeds) {
     params.rng_seed = 5u;
     const ms::SeedSet nuclei = ms::GenerateJohnsonMehlSeeds(*alone.pmesh, params);
     EXPECT_EQ(static_cast<std::int64_t>(nuclei.Size()), report.num_seeds);
-    const ms::TessellationLabels labels =
-        ms::LabelTessellation(*alone.pmesh, MPI_COMM_SELF, nuclei, options.tessellation);
+    const ms::TessellationLabels labels = ms::LabelTessellation(
+        *alone.pmesh, MPI_COMM_SELF, nuclei, options.tessellation);
     std::vector<int> expected(static_cast<std::size_t>(serial.GetNE()));
     const int* grain = labels.element_grain.HostRead();
     for (int e = 0; e < alone.pmesh->GetNE(); ++e) {
@@ -854,16 +865,21 @@ TEST(DriverStage1bc, JohnsonMehlSeeds) {
 // Every example options file of the new features (test/data/microstructure) runs through the
 // driver on its auto mesh and gives the same microstructure for every rank count.
 TEST(DriverStage1bc, ExampleFilesRun) {
-    for (const char* name : {"periodic_vote_auto.toml", "lognormal_fit_auto.toml",
-                             "columnar_auto.toml", "johnson_mehl_auto.toml",
+    for (const char* name : {"periodic_vote_auto.toml",
+                             "lognormal_fit_auto.toml",
+                             "columnar_auto.toml",
+                             "johnson_mehl_auto.toml",
                              "lloyd_cvt_auto.toml"}) {
         SCOPED_TRACE(name);
-        const ms::MicrostructureOptions options =
-            ms::MicrostructureOptions::parse_options_file(data_dir / "microstructure" / name);
+        const ms::MicrostructureOptions options = ms::MicrostructureOptions::parse_options_file(
+            data_dir / "microstructure" / name);
         EXPECT_TRUE(options.validate());
-        mfem::Mesh serial = AutoHex(options.mesh.nxyz[0], options.mesh.nxyz[1],
-                                    options.mesh.nxyz[2], options.mesh.mxyz[0],
-                                    options.mesh.mxyz[1], options.mesh.mxyz[2]);
+        mfem::Mesh serial = AutoHex(options.mesh.nxyz[0],
+                                    options.mesh.nxyz[1],
+                                    options.mesh.nxyz[2],
+                                    options.mesh.mxyz[0],
+                                    options.mesh.mxyz[1],
+                                    options.mesh.mxyz[2]);
         const RunPair runs = RunAndCompare(serial, options);
         EXPECT_GT(runs.alone.result.num_grains, 1);
     }
@@ -887,8 +903,12 @@ TEST(DriverStage1bc, RefusedCombinations) {
         return false;
     };
     using O = ms::MicrostructureOptions;
-    EXPECT_TRUE(refused([](O& o) { o.orientations.source = "from_source"; }));
-    EXPECT_TRUE(refused([](O& o) { o.orientations.source = "list"; }));
+    EXPECT_TRUE(refused([](O& o) {
+        o.orientations.source = "from_source";
+    }));
+    EXPECT_TRUE(refused([](O& o) {
+        o.orientations.source = "list";
+    }));
     EXPECT_TRUE(refused([](O& o) {
         o.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
         o.seeds.johnson_mehl.rate = 60.0;
@@ -927,14 +947,14 @@ TEST(DriverStage1bc, CollectiveErrorsAgree) {
     } catch (const std::runtime_error& e) {
         message = e.what();
     }
-    EXPECT_EQ(message, "bad element on the last rank (reported by rank " + std::to_string(last) +
-                           ")");
+    EXPECT_EQ(message,
+              "bad element on the last rank (reported by rank " + std::to_string(last) + ")");
 
     message.clear();
     try {
         const bool fails = (rank == 0 || rank == last);
-        ms::ThrowIfAnyRankFailed(MPI_COMM_WORLD,
-                                 fails ? "failure on rank " + std::to_string(rank) : "", false);
+        ms::ThrowIfAnyRankFailed(
+            MPI_COMM_WORLD, fails ? "failure on rank " + std::to_string(rank) : "", false);
     } catch (const std::runtime_error& e) {
         message = e.what();
     }
@@ -973,8 +993,8 @@ TEST(DriverStage1bc, PolydisperseRsaSeeds) {
         for (std::size_t i = 0; i < seeds.Size(); ++i) {
             for (std::size_t j = i + 1; j < seeds.Size(); ++j) {
                 double d2 = 0.0;
-                const double delta[3] = {seeds.x[i] - seeds.x[j], seeds.y[i] - seeds.y[j],
-                                         seeds.z[i] - seeds.z[j]};
+                const double delta[3] = {
+                    seeds.x[i] - seeds.x[j], seeds.y[i] - seeds.y[j], seeds.z[i] - seeds.z[j]};
                 for (double dx : delta) {
                     if (periodic) {
                         dx -= std::round(dx); // box length 1

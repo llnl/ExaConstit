@@ -1,11 +1,11 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <vector>
+
+#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file attribute_domain.hpp
@@ -134,12 +134,12 @@ public:
     }
 
 private:
-    mfem::ParMesh& m_parent;                      ///< the whole mesh
-    ElementMask m_mask;                           ///< active elements; empty = all active
-    std::vector<int> m_active_attributes;         ///< sorted ascending
-    std::vector<int> m_passthrough_attributes;    ///< sorted ascending
+    mfem::ParMesh& m_parent;                        ///< the whole mesh
+    ElementMask m_mask;                             ///< active elements; empty = all active
+    std::vector<int> m_active_attributes;           ///< sorted ascending
+    std::vector<int> m_passthrough_attributes;      ///< sorted ascending
     std::vector<std::int64_t> m_passthrough_counts; ///< global, per passthrough attribute
-    std::int64_t m_global_active_elements = 0;    ///< global number of active elements
+    std::int64_t m_global_active_elements = 0;      ///< global number of active elements
 };
 
 } // namespace exaconstit::microstructure

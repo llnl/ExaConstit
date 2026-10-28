@@ -1,10 +1,10 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-
 #include "mfem.hpp"
 
 #include <mpi.h>
+
+#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file straight_sided.hpp
@@ -74,7 +74,8 @@ constexpr double STRAIGHT_SIDED_REL_TOL = 1.0e-12;
  *        not empty its size must be mesh.GetNE() (std::invalid_argument otherwise).
  * @param rel_tol relative tolerance of the higher-order test (default STRAIGHT_SIDED_REL_TOL).
  */
-bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask = nullptr,
+bool StraightSidedLocal(const mfem::Mesh& mesh,
+                        const ElementMask* mask = nullptr,
                         double rel_tol = STRAIGHT_SIDED_REL_TOL);
 
 /**
@@ -86,7 +87,9 @@ bool StraightSidedLocal(const mfem::Mesh& mesh, const ElementMask* mask = nullpt
  * @param mask active elements of this rank (nullptr or empty = every element); a mask of the
  *        wrong size on any rank makes every rank throw std::invalid_argument.
  */
-bool IsStraightSided(const mfem::Mesh& mesh, MPI_Comm comm, const ElementMask* mask = nullptr,
+bool IsStraightSided(const mfem::Mesh& mesh,
+                     MPI_Comm comm,
+                     const ElementMask* mask = nullptr,
                      double rel_tol = STRAIGHT_SIDED_REL_TOL);
 
 /**
@@ -106,7 +109,8 @@ void ElementCornerPoints(const mfem::Mesh& mesh, int e, mfem::DenseMatrix& corne
  * Mesh::GetTransformationFEforElementType). For a straight-sided mesh this is the element's true
  * geometry, and it is bitwise the transformation of the same mesh without Nodes. Host only.
  */
-void StraightElementTransformation(const mfem::Mesh& mesh, int e,
+void StraightElementTransformation(const mfem::Mesh& mesh,
+                                   int e,
                                    mfem::IsoparametricTransformation& trans);
 
 /**
@@ -121,7 +125,8 @@ void VertexPoint(const mfem::Mesh& mesh, int v, double* x);
  * vertices (VertexPoint): what Mesh::GetFaceTransformation does for a mesh without Nodes
  * (mesh.cpp:539-561), bitwise the same for such a mesh. Host only.
  */
-void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
+void StraightFaceTransformation(const mfem::Mesh& mesh,
+                                int f,
                                 mfem::IsoparametricTransformation& trans);
 
 /**
@@ -132,7 +137,9 @@ void StraightFaceTransformation(const mfem::Mesh& mesh, int f,
  * serial mesh. Host only, not collective (building `coords` is).
  * @param coords VertexCoordinates of this same mesh.
  */
-void StraightFaceTransformation(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
+void StraightFaceTransformation(const mfem::Mesh& mesh,
+                                const VertexCoordinates& coords,
+                                int f,
                                 mfem::IsoparametricTransformation& trans);
 
 } // namespace exaconstit::microstructure

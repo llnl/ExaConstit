@@ -1,28 +1,26 @@
+#include "mfem.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <memory>
+#include <mpi.h>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "conduit.hpp"
+#include "conduit_relay_io_hdf5.hpp"
 #include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/seed_table_io.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/seeding/roi_filler.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
 #include "microstructure/util/collective_errors.hpp"
-
-#include "mfem.hpp"
-
-#include "conduit.hpp"
-#include "conduit_relay_io_hdf5.hpp"
-
 #include <gtest/gtest.h>
-
-#include <array>
-#include <cmath>
-#include <cstdlib>
-#include <filesystem>
-#include <limits>
-#include <fstream>
-#include <memory>
-#include <mpi.h>
-#include <stdexcept>
-#include <string>
-#include <vector>
 
 /*
  * Tests for seed tables (ReadSeedTable / WriteSeedTable / KeepSeedsInBox), the exclusion box and
@@ -143,7 +141,10 @@ void ExpectSameSeeds(const ms::SeedSet& a, const ms::SeedSet& b) {
     EXPECT_EQ(a.source_id, b.source_id);
 }
 
-bool StrictlyInside(double x, double y, double z, const std::array<double, 3>& lo,
+bool StrictlyInside(double x,
+                    double y,
+                    double z,
+                    const std::array<double, 3>& lo,
                     const std::array<double, 3>& hi) {
     return x > lo[0] && x < hi[0] && y > lo[1] && y < hi[1] && z > lo[2] && z < hi[2];
 }
@@ -180,9 +181,17 @@ TEST(SeedTable, AllColumns) {
     EXPECT_EQ(t.seeds.source_id, (std::vector<std::int64_t>{10, 3, 7}));
     EXPECT_EQ(t.seeds.x, (std::vector<double>{D("0.1"), D("0.6"), D("0.4")}));
     EXPECT_EQ(t.seeds.z, (std::vector<double>{D("0.3"), D("0.8"), D("0.9")}));
-    const std::vector<double> quat = {D("-0.5"), D("0.5"), D("0.5"), D("0.5"),
-                                      D("1.0004"), 0.0, 0.0, 0.0,
-                                      D("0.70710678118654757"), 0.0, 0.0,
+    const std::vector<double> quat = {D("-0.5"),
+                                      D("0.5"),
+                                      D("0.5"),
+                                      D("0.5"),
+                                      D("1.0004"),
+                                      0.0,
+                                      0.0,
+                                      0.0,
+                                      D("0.70710678118654757"),
+                                      0.0,
+                                      0.0,
                                       D("0.70710678118654757")};
     EXPECT_EQ(t.seeds.quat, quat);
     EXPECT_EQ(t.seeds.phase, (std::vector<int>{2, 1, 3}));
@@ -272,8 +281,8 @@ TEST(SeedTable, UnitsScaleAndTranslate) {
 
 // Unknown columns are ignored (and listed); duplicate positions are allowed.
 TEST(SeedTable, IgnoredColumnsAndDuplicatePositions) {
-    const fs::path p =
-        WriteText("ignored", "x,y,z,confidence,Grain_Name\n0,0,0,0.9,a\n0,0,0,0.8,b\n");
+    const fs::path p = WriteText("ignored",
+                                 "x,y,z,confidence,Grain_Name\n0,0,0,0.9,a\n0,0,0,0.8,b\n");
     const ms::SeedTable t = Read(p);
     EXPECT_EQ(t.seeds.Size(), 2u);
     EXPECT_EQ(t.ignored_columns, (std::vector<std::string>{"confidence", "grain_name"}));
@@ -289,15 +298,17 @@ TEST(SeedTable, Errors) {
     ExpectCollectiveError(WriteText("missing", "# c\nx,z\n0,0\n"), {":2:", "missing", "'y'"});
     ExpectCollectiveError(WriteText("partial_quat", "# c\nx,y,z,qw,qx,qy\n0,0,0,1,0,0\n"),
                           {":2:", "incomplete quaternion", "qz"});
-    ExpectCollectiveError(WriteText("quat_norm", "# c\nx,y,z,qw,qx,qy,qz\n0,0,0,1,0,0,0\n"
-                                                 "1,1,1,0.7,0.7,0.1,0\n"),
+    ExpectCollectiveError(WriteText("quat_norm",
+                                    "# c\nx,y,z,qw,qx,qy,qz\n0,0,0,1,0,0,0\n"
+                                    "1,1,1,0.7,0.7,0.1,0\n"),
                           {":4:", "norm"});
     ExpectCollectiveError(WriteText("euler", "# c\nx,y,z,phi1,Phi,phi2\n0,0,0,1,2,3\n"),
                           {":2:", "'phi1'", "qw,qx,qy,qz"});
     ExpectCollectiveError(WriteText("euler2", "x,y,z,euler_1\n0,0,0,1\n"), {":1:", "euler_1"});
     ExpectCollectiveError(WriteText("rotmat", "x,y,z,r12\n0,0,0,1\n"), {":1:", "'r12'"});
-    ExpectCollectiveError(WriteText("non_spd", "# c\nx,y,z,m11,m22,m33,m23,m13,m12\n"
-                                               "0,0,0,1,1,1,0,0,0\n\n0,0,0,1,1,1,0,0,2\n"),
+    ExpectCollectiveError(WriteText("non_spd",
+                                    "# c\nx,y,z,m11,m22,m33,m23,m13,m12\n"
+                                    "0,0,0,1,1,1,0,0,0\n\n0,0,0,1,1,1,0,0,2\n"),
                           {":5:", "positive definite"});
     ExpectCollectiveError(WriteText("dup_id", "# c\nid,x,y,z\n4,0,0,0\n2,1,0,0\n4,0,1,0\n"),
                           {":5:", "duplicate id 4", "line 3"});
@@ -334,8 +345,7 @@ TEST(SeedTable, InputRobustness) {
     const ms::SeedTable bom = Read(WriteText("bom", "\xEF\xBB\xBFx,y,z\n1,2,3\n"));
     ASSERT_EQ(bom.seeds.Size(), 1u);
     EXPECT_EQ(bom.seeds.z[0], 3.0);
-    EXPECT_EQ(Read(WriteText("bom_comment", "\xEF\xBB\xBF# c\nX,y,z\n1,2,3\n")).seeds.Size(),
-              1u);
+    EXPECT_EQ(Read(WriteText("bom_comment", "\xEF\xBB\xBF# c\nX,y,z\n1,2,3\n")).seeds.Size(), 1u);
 
     // Non-finite values and hexadecimal floats
     ExpectCollectiveError(WriteText("inf", "x,y,z\n0,inf,0\n"), {":2:", "'y'", "'inf'", "finite"});
@@ -514,9 +524,9 @@ TEST(SeedGeneratorExtensions, ExclusionBoxAllPlacements) {
     auto pmesh = Distribute(serial);
     const std::array<double, 3> lo = {0.2, 0.3, -1.0};
     const std::array<double, 3> hi = {0.7, 0.8, 2.0}; // a column through the cube
-    for (const ms::SeedPlacement placement :
-         {ms::SeedPlacement::REJECTION, ms::SeedPlacement::ELEMENT_WEIGHTED,
-          ms::SeedPlacement::LATTICE}) {
+    for (const ms::SeedPlacement placement : {ms::SeedPlacement::REJECTION,
+                                              ms::SeedPlacement::ELEMENT_WEIGHTED,
+                                              ms::SeedPlacement::LATTICE}) {
         ms::SeedingParameters params;
         params.placement = placement;
         params.num_seeds = 64;
@@ -558,8 +568,7 @@ TEST(RoiFiller, CornerRoiAutoCount) {
     params.source_id_offset = 1000;
     params.min_distance_factor = 0.3;
 
-    const ms::RoiFillerResult reference =
-        ms::FillOutsideRoi(serial, MPI_COMM_SELF, params, 20);
+    const ms::RoiFillerResult reference = ms::FillOutsideRoi(serial, MPI_COMM_SELF, params, 20);
     const ms::RoiFillerResult result = ms::FillOutsideRoi(*pmesh, MPI_COMM_WORLD, params, 20);
 
     EXPECT_NEAR(result.roi_material_volume, 0.125, 1e-12);

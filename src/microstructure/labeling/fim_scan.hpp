@@ -1,8 +1,8 @@
 #pragma once
 
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-
 #include "mfem.hpp"
+
+#include "microstructure/labeling/eikonal_local_solver.hpp"
 
 /**
  * @file fim_scan.hpp
@@ -95,8 +95,8 @@ MFEM_HOST_DEVICE inline double ScanCell(const double* xv,
                 if (far != nullptr && (far[i] & far[j] & far[k]) == 0) {
                     continue;
                 }
-                const double value =
-                    EikonalTriangleInteriorValue(xv, xo[i], xo[j], xo[k], to[i], to[j], to[k]);
+                const double value = EikonalTriangleInteriorValue(
+                    xv, xo[i], xo[j], xo[k], to[i], to[j], to[k]);
                 const int support = (1 << pos[i]) | (1 << pos[j]) | (1 << pos[k]);
                 if (value < best) {
                     best = value;
@@ -130,8 +130,7 @@ MFEM_HOST_DEVICE inline bool CellFarMasks(bool curved, const int* bits, int n, i
     if (curved) {
         for (int i = 0; i < 7; ++i) {
             const int c = bits[i];
-            far[i] = ((c % 3) != 1 ? 1 : 0) | (((c / 3) % 3) != 1 ? 2 : 0) |
-                     ((c / 9) != 1 ? 4 : 0);
+            far[i] = ((c % 3) != 1 ? 1 : 0) | (((c / 3) % 3) != 1 ? 2 : 0) | ((c / 9) != 1 ? 4 : 0);
         }
         return true;
     }

@@ -118,13 +118,13 @@ private:
     /** @brief One 64-bit hash-map key from three cell coordinates (21 bits each). */
     static std::uint64_t CellKey(std::int64_t i, std::int64_t j, std::int64_t k);
 
-    std::array<double, 3> m_lo;           ///< box lower corner
-    std::array<double, 3> m_length;       ///< box edge lengths (= period on periodic axes)
-    std::array<double, 3> m_cell_size;    ///< cell edge length per axis, >= d
+    std::array<double, 3> m_lo;              ///< box lower corner
+    std::array<double, 3> m_length;          ///< box edge lengths (= period on periodic axes)
+    std::array<double, 3> m_cell_size;       ///< cell edge length per axis, >= d
     std::array<std::int64_t, 3> m_num_cells; ///< number of cells per axis, 1 .. 2^20
-    std::array<bool, 3> m_periodic;       ///< periodic flag per axis
-    double m_min_distance;                ///< d
-    double m_min_distance_sq;             ///< d^2
+    std::array<bool, 3> m_periodic;          ///< periodic flag per axis
+    double m_min_distance;                   ///< d
+    double m_min_distance_sq;                ///< d^2
     /**
      * @brief Calls visit(index) for every inserted point filed in p's cell or one of its
      * neighbor cells (wrapped on periodic axes, each cell once); stops and returns true as soon

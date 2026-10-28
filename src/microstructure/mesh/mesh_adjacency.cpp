@@ -1,7 +1,5 @@
 #include "microstructure/mesh/mesh_adjacency.hpp"
 
-#include "microstructure/mesh/vertex_coordinates.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,6 +9,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "microstructure/mesh/vertex_coordinates.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -29,8 +29,7 @@ namespace {
 double FaceArea(const mfem::Mesh& mesh, int f, int quad_order) {
     mfem::IsoparametricTransformation transformation;
     mesh.GetFaceTransformation(f, &transformation);
-    const mfem::IntegrationRule& rule =
-        mfem::IntRules.Get(mesh.GetFaceGeometry(f), quad_order);
+    const mfem::IntegrationRule& rule = mfem::IntRules.Get(mesh.GetFaceGeometry(f), quad_order);
     double area = 0.0;
     for (int q = 0; q < rule.GetNPoints(); q++) {
         const mfem::IntegrationPoint& ip = rule.IntPoint(q);
@@ -68,15 +67,15 @@ constexpr int MAX_FACE_VERTICES = 4;
  * face, vertex count) are exact in a double (|value| < 2^53).
  */
 struct PlaneFace {
-    double axis;    ///< periodic axis d of the plane
-    double side;    ///< 0: plane x_d = lo_d, 1: plane x_d = hi_d
-    double c[3];    ///< face centroid (vertex average)
-    double rank;    ///< owner rank
-    double element; ///< owner's local element
-    double face;    ///< owner's local face index
-    double num_vertices;                ///< 3 or 4
+    double axis;                          ///< periodic axis d of the plane
+    double side;                          ///< 0: plane x_d = lo_d, 1: plane x_d = hi_d
+    double c[3];                          ///< face centroid (vertex average)
+    double rank;                          ///< owner rank
+    double element;                       ///< owner's local element
+    double face;                          ///< owner's local face index
+    double num_vertices;                  ///< 3 or 4
     double vertex[3 * MAX_FACE_VERTICES]; ///< vertex coordinates, vertex[3 v + d]
-    double min_edge;                    ///< smallest edge length of the face
+    double min_edge;                      ///< smallest edge length of the face
 };
 constexpr int PLANE_FACE_DOUBLES = 22;
 static_assert(sizeof(PlaneFace) == PLANE_FACE_DOUBLES * sizeof(double),
@@ -114,8 +113,12 @@ double SmallestEdge(const VertexCoordinates& coords, const mfem::Array<int>& ver
  * Only this rank's own Nodes values are read: a boundary face belongs to one rank only, and the
  * test has a tolerance, so last-bit differences between copies of a shared dof do not matter.
  */
-bool FaceOnPlane(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
-                 const mfem::Array<int>& vertices, std::size_t axis, double value,
+bool FaceOnPlane(const mfem::Mesh& mesh,
+                 const VertexCoordinates& coords,
+                 int f,
+                 const mfem::Array<int>& vertices,
+                 std::size_t axis,
+                 double value,
                  double plane_tol) {
     const mfem::GridFunction* nodes = mesh.GetNodes();
     if (coords.FromNodes()) {
@@ -148,8 +151,8 @@ bool FaceOnPlane(const mfem::Mesh& mesh, const VertexCoordinates& coords, int f,
  * True if every vertex of `lower`, shifted by `shift` along `axis`, lies within `tol` (in every
  * coordinate) of some vertex of `upper`, and both faces have the same number of vertices.
  */
-bool VerticesMatch(const PlaneFace& lower, const PlaneFace& upper, std::size_t axis,
-                   double shift, double tol) {
+bool VerticesMatch(
+    const PlaneFace& lower, const PlaneFace& upper, std::size_t axis, double shift, double tol) {
     if (lower.num_vertices != upper.num_vertices) {
         return false;
     }
@@ -247,8 +250,8 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
     for (int c = 0; c < 2; c++) {
         const int num_components = c + 1;
         auto& fes = m_fes[static_cast<std::size_t>(c)];
-        fes = std::make_unique<mfem::ParFiniteElementSpace>(&pmesh, m_fec.get(), num_components,
-                                                            mfem::Ordering::byNODES);
+        fes = std::make_unique<mfem::ParFiniteElementSpace>(
+            &pmesh, m_fec.get(), num_components, mfem::Ordering::byNODES);
         fes->ExchangeFaceNbrData();
         std::vector<int>& element_vdof = m_element_vdof[static_cast<std::size_t>(c)];
         std::vector<int>& ghost_vdof = m_ghost_vdof[static_cast<std::size_t>(c)];
@@ -318,13 +321,12 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
     }
 
     // Step 5: CSR rows sorted by (element, neighbor)
-    std::sort(entries.begin(), entries.end(),
-              [](const Entry& a, const Entry& b) {
-                  if (a.element != b.element) {
-                      return a.element < b.element;
-                  }
-                  return a.neighbor < b.neighbor;
-              });
+    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+        if (a.element != b.element) {
+            return a.element < b.element;
+        }
+        return a.neighbor < b.neighbor;
+    });
     const int num_entries = static_cast<int>(entries.size());
     m_offsets.SetSize(m_num_elements + 1);
     m_offsets = 0;
@@ -391,7 +393,8 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
  *     element id, lines up with the ghost block r receives from this rank, sorted by the same
  *     ids. Only partner ranks exchange messages.
  */
-void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, int quad_order,
+void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic,
+                                      int quad_order,
                                       std::vector<Entry>& entries) {
     mfem::ParMesh& pmesh = *m_pmesh;
     const MPI_Comm comm = GetComm();
@@ -467,10 +470,11 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
                 continue;
             }
             // On a plane only if every nodal point of the face is on it
-            const bool on_lo =
-                FaceOnPlane(pmesh, coords, f, vertices, d, periodic.lo[d], plane_tol);
-            const bool on_hi =
-                !on_lo && FaceOnPlane(pmesh, coords, f, vertices, d, periodic.hi[d], plane_tol);
+            const bool on_lo = FaceOnPlane(
+                pmesh, coords, f, vertices, d, periodic.lo[d], plane_tol);
+            const bool on_hi = !on_lo &&
+                               FaceOnPlane(
+                                   pmesh, coords, f, vertices, d, periodic.hi[d], plane_tol);
             if (!on_lo && !on_hi) {
                 continue;
             }
@@ -510,9 +514,14 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
         throw std::invalid_argument("MeshAdjacency: too many faces on the periodic planes");
     }
     std::vector<PlaneFace> all_faces(static_cast<std::size_t>(total / PLANE_FACE_DOUBLES));
-    MPI_Allgatherv(reinterpret_cast<const double*>(local_faces.data()), local_count, MPI_DOUBLE,
-                   reinterpret_cast<double*>(all_faces.data()), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
+    MPI_Allgatherv(reinterpret_cast<const double*>(local_faces.data()),
+                   local_count,
+                   MPI_DOUBLE,
+                   reinterpret_cast<double*>(all_faces.data()),
+                   counts.data(),
+                   displs.data(),
+                   MPI_DOUBLE,
+                   comm);
     double smallest_edge = largest;
     std::array<std::int64_t, 3> faces_on_axis = {0, 0, 0};
     for (const PlaneFace& face : all_faces) {
@@ -578,8 +587,8 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
             for (long long a = -1; a <= 1; a++) {
                 for (long long b = -1; b <= 1; b++) {
                     for (long long g = -1; g <= 1; g++) {
-                        const auto it =
-                            upper_cells.find({center[0] + a, center[1] + b, center[2] + g});
+                        const auto it = upper_cells.find(
+                            {center[0] + a, center[1] + b, center[2] + g});
                         if (it == upper_cells.end()) {
                             continue;
                         }
@@ -615,15 +624,16 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic, in
             "MeshAdjacency: periodic face pairing found " + std::to_string(unmatched) + " of " +
             std::to_string(all_faces.size()) +
             " faces on the periodic planes without a unique partner on the opposite plane "
-            "(matching tolerance " + std::to_string(tol) +
+            "(matching tolerance " +
+            std::to_string(tol) +
             "). The mesh must have matching faces on opposite periodic planes; use a periodic "
             "mesh, adjust the periodic tolerance, or turn the periodic axes off.");
     }
 
     // Step 5: entries of the pairs that involve this rank; remote partners become ghosts
     struct Pending {
-        int element;  ///< local element
-        int face;     ///< local face
+        int element; ///< local element
+        int face;    ///< local face
         int partner_rank;
         int partner_element;
     };
@@ -718,10 +728,10 @@ void MeshAdjacency::CheckLocalSize(int size, const char* caller) const {
     int any_bad = 0;
     MPI_Allreduce(&local_bad, &any_bad, 1, MPI_INT, MPI_MAX, GetComm());
     if (any_bad != 0) {
-        throw std::invalid_argument(std::string("MeshAdjacency::") + caller +
-                                    ": the input must have one value per local element " +
-                                    (local_bad ? "(wrong size on this rank)"
-                                               : "(wrong size on another rank)"));
+        throw std::invalid_argument(
+            std::string("MeshAdjacency::") + caller +
+            ": the input must have one value per local element " +
+            (local_bad ? "(wrong size on this rank)" : "(wrong size on another rank)"));
     }
 }
 
@@ -739,7 +749,8 @@ void MeshAdjacency::CheckLocalSize(int size, const char* caller) const {
  *     needs and MPI_Irecv its block of periodic ghosts (num_components values per element,
  *     element-major), then MPI_Waitall. Only partner ranks are involved.
  */
-void MeshAdjacency::ExchangeComponents(const double* local, int num_components,
+void MeshAdjacency::ExchangeComponents(const double* local,
+                                       int num_components,
                                        std::vector<double>& ghost) const {
     const std::size_t c = static_cast<std::size_t>(num_components - 1);
     const int ne = m_num_elements;
@@ -789,17 +800,27 @@ void MeshAdjacency::ExchangeComponents(const double* local, int num_components,
         send[p].resize(elements.size() * static_cast<std::size_t>(num_components));
         for (std::size_t i = 0; i < elements.size(); i++) {
             for (int k = 0; k < num_components; k++) {
-                send[p][i * static_cast<std::size_t>(num_components) +
-                        static_cast<std::size_t>(k)] =
-                    local[static_cast<std::size_t>(k) * static_cast<std::size_t>(ne) +
-                          static_cast<std::size_t>(elements[i])];
+                send[p]
+                    [i * static_cast<std::size_t>(num_components) + static_cast<std::size_t>(k)] =
+                        local[static_cast<std::size_t>(k) * static_cast<std::size_t>(ne) +
+                              static_cast<std::size_t>(elements[i])];
             }
         }
         recv[p].resize(static_cast<std::size_t>(m_periodic_recv_count[p] * num_components));
-        MPI_Irecv(recv[p].data(), static_cast<int>(recv[p].size()), MPI_DOUBLE,
-                  m_periodic_partners[p], tag, GetComm(), &requests[2 * p]);
-        MPI_Isend(send[p].data(), static_cast<int>(send[p].size()), MPI_DOUBLE,
-                  m_periodic_partners[p], tag, GetComm(), &requests[2 * p + 1]);
+        MPI_Irecv(recv[p].data(),
+                  static_cast<int>(recv[p].size()),
+                  MPI_DOUBLE,
+                  m_periodic_partners[p],
+                  tag,
+                  GetComm(),
+                  &requests[2 * p]);
+        MPI_Isend(send[p].data(),
+                  static_cast<int>(send[p].size()),
+                  MPI_DOUBLE,
+                  m_periodic_partners[p],
+                  tag,
+                  GetComm(),
+                  &requests[2 * p + 1]);
     }
     MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
     for (std::size_t p = 0; p < num_partners; p++) {

@@ -1,14 +1,14 @@
 #pragma once
 
-#include "microstructure/io/voxel_map_io.hpp"
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/io/voxel_map_io.hpp"
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file voxel_labeler.hpp

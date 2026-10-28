@@ -3,18 +3,17 @@
  */
 #include "microstructure/conformal/label_repair.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <set>
+#include <utility>
+
+#include "axom/core.hpp"
 #include "microstructure/geometry/seed_index.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/util/collective_errors.hpp"
-
-#include "axom/core.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <utility>
 
 namespace exaconstit::microstructure {
 
@@ -47,8 +46,8 @@ std::vector<Priority> NodeMaximum(const VertexField& field, const std::vector<Pr
     std::vector<Priority> node(static_cast<std::size_t>(nv));
     for (int v = 0; v < nv; ++v) {
         for (int k = ve_off[v]; k < ve_off[v + 1]; ++k) {
-            node[static_cast<std::size_t>(v)] =
-                std::max(node[static_cast<std::size_t>(v)], elem[static_cast<std::size_t>(ve[k])]);
+            node[static_cast<std::size_t>(v)] = std::max(node[static_cast<std::size_t>(v)],
+                                                         elem[static_cast<std::size_t>(ve[k])]);
         }
     }
     mfem::Vector neg(nv);
@@ -77,8 +76,8 @@ std::vector<Priority> ElementMaximum(const VertexField& field, const std::vector
     std::vector<Priority> elem(static_cast<std::size_t>(ne));
     for (int e = 0; e < ne; ++e) {
         for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
-            elem[static_cast<std::size_t>(e)] =
-                std::max(elem[static_cast<std::size_t>(e)], node[static_cast<std::size_t>(en[k])]);
+            elem[static_cast<std::size_t>(e)] = std::max(elem[static_cast<std::size_t>(e)],
+                                                         node[static_cast<std::size_t>(en[k])]);
         }
     }
     return elem;
@@ -154,8 +153,10 @@ bool IsPeninsula(const LabelView& view, int e, const NodeLabels& labels) {
 }
 
 /** @brief Peninsula flags of the local elements and their ghost copies. Collective. */
-void ComputePeninsulas(const MeshAdjacency& adj, const mfem::Array<int>& label,
-                       const NodeLabels& labels, LabelState& state) {
+void ComputePeninsulas(const MeshAdjacency& adj,
+                       const mfem::Array<int>& label,
+                       const NodeLabels& labels,
+                       LabelState& state) {
     mfem::ParMesh& pmesh = adj.GetParMesh();
     adj.ExchangeLabels(label, state.ghost_label);
     const LabelView view{adj, label, state.ghost_label};
@@ -171,8 +172,10 @@ void ComputePeninsulas(const MeshAdjacency& adj, const mfem::Array<int>& label,
  * partition independent: LabelComponents names each piece by its smallest element key, and the
  * distinct (grain, piece) pairs of all ranks are counted). Collective.
  */
-std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj, const mfem::Array<int>& label,
-                                      const std::vector<std::uint64_t>& keys, int num_grains) {
+std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj,
+                                      const mfem::Array<int>& label,
+                                      const std::vector<std::uint64_t>& keys,
+                                      int num_grains) {
     std::vector<std::uint64_t> component;
     LabelComponents(adj, label, keys, component);
     std::set<std::pair<int, std::uint64_t>> mine;
@@ -192,12 +195,18 @@ std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj, const mfem::Arra
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(size), 0);
     for (int r = 1; r < size; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r) - 1] +
+                                              counts[static_cast<std::size_t>(r) - 1];
     }
     std::vector<std::uint64_t> all(static_cast<std::size_t>(displs.back() + counts.back()));
-    MPI_Allgatherv(send.data(), count, MPI_UINT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_UINT64_T, comm);
+    MPI_Allgatherv(send.data(),
+                   count,
+                   MPI_UINT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_UINT64_T,
+                   comm);
     std::set<std::pair<std::uint64_t, std::uint64_t>> pieces;
     for (std::size_t k = 0; k + 1 < all.size(); k += 2) {
         pieces.insert({all[k], all[k + 1]});
@@ -219,8 +228,11 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
 }
 
 /** @brief Local potential of element e (file comment, pass step 5). Host. */
-int LocalPotential(const MeshAdjacency& adj, const VertexField& field, const NodeTargets& targets,
-                   const LabelState& state, int e) {
+int LocalPotential(const MeshAdjacency& adj,
+                   const VertexField& field,
+                   const NodeTargets& targets,
+                   const LabelState& state,
+                   int e) {
     const int* en_off = field.ElementVertexOffsets().HostRead();
     const int* en = field.ElementVertices().HostRead();
     int bad = 0;
@@ -243,12 +255,16 @@ int LocalPotential(const MeshAdjacency& adj, const VertexField& field, const Nod
  * RepairLabels: the passes of the file comment. The node labels are built once and relabeled
  * (NodeLabels::SetElementLabels); the targets are rebuilt after every change of labels.
  */
-LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
-                               MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
+LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
+                               mfem::Array<int>& element_label,
+                               MetricType metric,
+                               const SeedSet& seeds,
+                               const MetricSetup& setup,
                                const std::vector<int>& grain_seed,
                                const LabelRepairOptions& options) {
     const MPI_Comm comm = pmesh.GetComm();
-    ThrowIfAnyRank(comm, options.max_passes < 0 || options.min_grain_elements < 1,
+    ThrowIfAnyRank(comm,
+                   options.max_passes < 0 || options.min_grain_elements < 1,
                    "RepairLabels: max_passes must be >= 0 and min_grain_elements >= 1");
     LabelRepairResult result;
     LabelRepairReport& report = result.report;
@@ -262,8 +278,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     pass_targets.hold_pinches = false;        // pinched nodes are bad: repair removes pinches
     const auto rebuild_targets = [&]() {
         result.targets.reset();
-        result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
-                                                       grain_seed, pass_targets);
+        result.targets = std::make_unique<NodeTargets>(
+            *result.labels, metric, seeds, setup, grain_seed, pass_targets);
     };
     rebuild_targets();
 
@@ -447,8 +463,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
             element_label[e] = proposal[static_cast<std::size_t>(e)];
         }
         {
-            const std::vector<std::int64_t> pieces_after =
-                GrainPieces(adj, element_label, keys, num_grains);
+            const std::vector<std::int64_t> pieces_after = GrainPieces(
+                adj, element_label, keys, num_grains);
             std::vector<int> kept_apply;
             std::vector<int> kept_before;
             std::vector<int> kept_old;
@@ -509,8 +525,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
     if (options.targets.smoothed || options.targets.hold_under_resolved ||
         options.targets.hold_pinches) {
         result.targets.reset();
-        result.targets = std::make_unique<NodeTargets>(*result.labels, metric, seeds, setup,
-                                                       grain_seed, options.targets);
+        result.targets = std::make_unique<NodeTargets>(
+            *result.labels, metric, seeds, setup, grain_seed, options.targets);
     }
     report.bad_nodes_after = count_bad(); // final targets: smoothed fallback, thin grains held
     return result;
@@ -521,9 +537,13 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
  * past the boundary, and the label of a face neighbor of the best seed (ghost labels from
  * MeshAdjacency).
  */
-std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
-                                MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
-                                const std::vector<int>& grain_seed, double hysteresis,
+std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh,
+                                mfem::Array<int>& element_label,
+                                MetricType metric,
+                                const SeedSet& seeds,
+                                const MetricSetup& setup,
+                                const std::vector<int>& grain_seed,
+                                double hysteresis,
                                 std::vector<char>& flipped) {
     const int ne = pmesh.GetNE();
     if (flipped.empty()) {
@@ -572,8 +592,8 @@ std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh, mfem::Array<int>& element_
             int target = -1;
             for (int k = off[e]; k < off[e + 1]; ++k) {
                 const int n = nbr[k];
-                const int lb =
-                    adj.IsGhost(n) ? ghost_label[n - adj.NumElements()] : element_label[n];
+                const int lb = adj.IsGhost(n) ? ghost_label[n - adj.NumElements()]
+                                              : element_label[n];
                 if (grain_seed[static_cast<std::size_t>(lb - 1)] == b[e].id1 &&
                     (target < 0 || lb < target)) {
                     target = lb;

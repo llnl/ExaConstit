@@ -1,3 +1,12 @@
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <mpi.h>
+#include <stdexcept>
+#include <vector>
+
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/morphology/lloyd.hpp"
@@ -6,17 +15,7 @@
 #include "microstructure/morphology/weight_fit.hpp"
 #include "microstructure/util/counter_rng.hpp"
 #include "microstructure/util/random_distributions.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <cmath>
-#include <memory>
-#include <mpi.h>
-#include <stdexcept>
-#include <vector>
 
 /*
  * Tests for size control: cell measures, target volumes, Laguerre weight fitting and Lloyd
@@ -52,8 +51,12 @@ mfem::Mesh LShape(int n, int arm) {
     const int nx = (1 + arm) * n;
     const int ny = nx;
     const int nz = n;
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
-    auto kept = [&](int i, int j) { return !(i >= n && j >= n); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
+    auto kept = [&](int i, int j) {
+        return !(i >= n && j >= n);
+    };
     int num_cells = 0;
     for (int j = 0; j < ny; j++) {
         for (int i = 0; i < nx; i++) {
@@ -74,10 +77,14 @@ mfem::Mesh LShape(int n, int arm) {
                 if (!kept(i, j)) {
                     continue;
                 }
-                const int hex[8] = {vid(i, j, k),         vid(i + 1, j, k),
-                                    vid(i + 1, j + 1, k), vid(i, j + 1, k),
-                                    vid(i, j, k + 1),     vid(i + 1, j, k + 1),
-                                    vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)};
+                const int hex[8] = {vid(i, j, k),
+                                    vid(i + 1, j, k),
+                                    vid(i + 1, j + 1, k),
+                                    vid(i, j + 1, k),
+                                    vid(i, j, k + 1),
+                                    vid(i + 1, j, k + 1),
+                                    vid(i + 1, j + 1, k + 1),
+                                    vid(i, j + 1, k + 1)};
                 mesh.AddHex(hex);
             }
         }
@@ -91,8 +98,8 @@ mfem::Mesh LShape(int n, int arm) {
 bool InLShape(double x, double y, double z, int arm) {
     const double tol = 1e-12;
     const double top = 1.0 + arm;
-    const bool in_block = x >= -tol && x <= top + tol && y >= -tol && y <= top + tol &&
-                          z >= -tol && z <= 1 + tol;
+    const bool in_block = x >= -tol && x <= top + tol && y >= -tol && y <= top + tol && z >= -tol &&
+                          z <= 1 + tol;
     const bool in_notch = x > 1 + tol && y > 1 + tol;
     return in_block && !in_notch;
 }
@@ -191,8 +198,8 @@ TEST(CellMeasures, BisectorHalves) {
     ms::WeightedSamples samples;
     ms::MakeElementWeightedSamples(*dist.pmesh, samples);
     mfem::Array<int> labels;
-    ms::LabelSamples(samples, seeds, ms::MetricType::VORONOI, ms::MetricSetup{}, 1, labels,
-                     nullptr);
+    ms::LabelSamples(
+        samples, seeds, ms::MetricType::VORONOI, ms::MetricSetup{}, 1, labels, nullptr);
     const ms::CellMeasures m = ms::ComputeCellMeasures(MPI_COMM_WORLD, samples, labels, 2);
 
     EXPECT_NEAR(m.volume[0], 0.5, 1e-12);
@@ -218,15 +225,17 @@ TEST(CellMeasures, RankIndependentAndMatchBruteForce) {
     const ms::SeedSet seeds = RandomSeeds(12, 7u);
 
     for (int use_quadrature = 0; use_quadrature < 2; use_quadrature++) {
-        auto measure = [&](mfem::Mesh& mesh, MPI_Comm comm, ms::WeightedSamples& samples,
+        auto measure = [&](mfem::Mesh& mesh,
+                           MPI_Comm comm,
+                           ms::WeightedSamples& samples,
                            mfem::Array<int>& labels) {
             if (use_quadrature) {
                 ms::MakeQuadratureWeightedSamples(mesh, -1, samples);
             } else {
                 ms::MakeElementWeightedSamples(mesh, samples);
             }
-            ms::LabelSamples(samples, seeds, ms::MetricType::VORONOI, ms::MetricSetup{}, 1,
-                             labels, nullptr);
+            ms::LabelSamples(
+                samples, seeds, ms::MetricType::VORONOI, ms::MetricSetup{}, 1, labels, nullptr);
             return ms::ComputeCellMeasures(comm, samples, labels, 12);
         };
         ms::WeightedSamples ref_samples, samples;
@@ -315,10 +324,10 @@ TEST(CellMeasures, QuadratureOrderAndScaleGuards) {
     mfem::Mesh tets = UnitCube(2, mfem::Element::TETRAHEDRON);
     Distributed dist_tet = Distribute(tets, MPI_COMM_WORLD);
     ms::WeightedSamples samples;
-    EXPECT_NO_THROW(ms::MakeQuadratureWeightedSamples(*dist_tet.pmesh,
-                                                      ms::MAX_POSITIVE_TET_QUAD_ORDER, samples));
-    EXPECT_THROW(ms::MakeQuadratureWeightedSamples(*dist_tet.pmesh,
-                                                   ms::MAX_POSITIVE_TET_QUAD_ORDER + 1, samples),
+    EXPECT_NO_THROW(ms::MakeQuadratureWeightedSamples(
+        *dist_tet.pmesh, ms::MAX_POSITIVE_TET_QUAD_ORDER, samples));
+    EXPECT_THROW(ms::MakeQuadratureWeightedSamples(
+                     *dist_tet.pmesh, ms::MAX_POSITIVE_TET_QUAD_ORDER + 1, samples),
                  std::runtime_error);
     mfem::Mesh hexes = UnitCube(2, mfem::Element::HEXAHEDRON);
     Distributed dist_hex = Distribute(hexes, MPI_COMM_WORLD);
@@ -437,18 +446,20 @@ TEST(SizeTargets, SeedCountAndValidation) {
  * with quadrature samples of the given order (negative: exact default); returns the distributed
  * result and checks bitwise agreement of the weights, the Phi history and the final volumes.
  */
-ms::WeightFitResult FitBothWays(mfem::Mesh& serial, const ms::SeedSet& seeds,
+ms::WeightFitResult FitBothWays(mfem::Mesh& serial,
+                                const ms::SeedSet& seeds,
                                 const std::vector<double>& target,
                                 const std::vector<double>& initial,
-                                const ms::WeightFitParameters& params, int quad_order = -1) {
+                                const ms::WeightFitParameters& params,
+                                int quad_order = -1) {
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);
     ms::WeightedSamples samples, ref_samples;
     ms::MakeQuadratureWeightedSamples(*dist.pmesh, quad_order, samples);
     ms::MakeQuadratureWeightedSamples(serial, quad_order, ref_samples);
-    const ms::WeightFitResult ref =
-        ms::FitWeights(MPI_COMM_SELF, ref_samples, seeds, target, initial, params);
-    ms::WeightFitResult got =
-        ms::FitWeights(MPI_COMM_WORLD, samples, seeds, target, initial, params);
+    const ms::WeightFitResult ref = ms::FitWeights(
+        MPI_COMM_SELF, ref_samples, seeds, target, initial, params);
+    ms::WeightFitResult got = ms::FitWeights(
+        MPI_COMM_WORLD, samples, seeds, target, initial, params);
     ExpectBitwiseEqual(got.weight, ref.weight);
     ExpectBitwiseEqual(got.report.phi, ref.report.phi);
     ExpectBitwiseEqual(got.measures.volume, ref.measures.volume);
@@ -489,8 +500,8 @@ TEST(WeightFit, LognormalTargets) {
     sp.rng_seed = 5;
     const ms::SizeTargets targets = ms::MakeSizeTargets(seeds.source_id, 1.0, sp);
     ms::WeightFitParameters params;
-    const ms::WeightFitResult r =
-        FitBothWays(serial, seeds, targets.volume, targets.initial_weight, params, 5);
+    const ms::WeightFitResult r = FitBothWays(
+        serial, seeds, targets.volume, targets.initial_weight, params, 5);
 
     EXPECT_LT(r.report.resolution_floor, 0.02);
     EXPECT_TRUE(r.report.converged) << r.report.stop_reason;
@@ -544,12 +555,12 @@ TEST(WeightFit, QuadricAndAdditiveMetrics) {
     // mu = trace(A) / 3; for a mean cell volume of 1/8, L = 1/2.
     ms::MetricSetup setup;
     setup.global_tensor = {1.0, 1.0, 0.25, 0.0, 0.0, 0.0};
-    EXPECT_NEAR(ms::InitialInverseStiffness(ms::MetricType::LAGUERRE, 0.125, setup, {}), 0.6,
-                1e-14);
-    EXPECT_NEAR(ms::InitialInverseStiffness(ms::MetricType::ADDITIVE, 0.125, setup, {}), 1.2,
-                1e-14);
-    EXPECT_NEAR(ms::InitialInverseStiffness(ms::MetricType::QUADRIC, 0.125, setup, {}), 0.45,
-                1e-14);
+    EXPECT_NEAR(
+        ms::InitialInverseStiffness(ms::MetricType::LAGUERRE, 0.125, setup, {}), 0.6, 1e-14);
+    EXPECT_NEAR(
+        ms::InitialInverseStiffness(ms::MetricType::ADDITIVE, 0.125, setup, {}), 1.2, 1e-14);
+    EXPECT_NEAR(
+        ms::InitialInverseStiffness(ms::MetricType::QUADRIC, 0.125, setup, {}), 0.45, 1e-14);
 }
 
 // Phi reported by the fit equals a brute-force evaluation of its definition,
@@ -564,8 +575,7 @@ TEST(WeightFit, PhiMatchesBruteForce) {
     ms::MakeQuadratureWeightedSamples(serial, -1, samples);
     ms::WeightFitParameters params;
     params.max_iterations = 3; // a few steps away from the start, so w is not trivial
-    const ms::WeightFitResult r =
-        ms::FitWeights(MPI_COMM_SELF, samples, seeds, target, {}, params);
+    const ms::WeightFitResult r = ms::FitWeights(MPI_COMM_SELF, samples, seeds, target, {}, params);
 
     double phi = 0.0;
     for (std::size_t i = 0; i < seeds.Size(); i++) {
@@ -606,10 +616,10 @@ TEST(WeightFit, StopsAtResolutionFloorAfterSteepestRetry) {
     ms::WeightedSamples samples, ref_samples;
     ms::MakeElementWeightedSamples(*dist.pmesh, samples);
     ms::MakeElementWeightedSamples(serial, ref_samples);
-    const ms::WeightFitResult ref =
-        ms::FitWeights(MPI_COMM_SELF, ref_samples, seeds, target, {}, params);
-    const ms::WeightFitResult r =
-        ms::FitWeights(MPI_COMM_WORLD, samples, seeds, target, {}, params);
+    const ms::WeightFitResult ref = ms::FitWeights(
+        MPI_COMM_SELF, ref_samples, seeds, target, {}, params);
+    const ms::WeightFitResult r = ms::FitWeights(
+        MPI_COMM_WORLD, samples, seeds, target, {}, params);
 
     EXPECT_EQ(r.report.stop_reason, "line_search_failed");
     EXPECT_FALSE(r.report.converged);
@@ -661,10 +671,10 @@ TEST(Lloyd, CvtEnergyDecreasesAndRankIndependent) {
     ms::MakeQuadratureWeightedSamples(*dist.pmesh, -1, samples);
     ms::MakeQuadratureWeightedSamples(serial, -1, ref_samples);
     ms::LloydReport report, ref_report;
-    const ms::SeedSet ref =
-        ms::RunLloyd(serial, MPI_COMM_SELF, ref_samples, seeds, params, {}, &ref_report);
-    const ms::SeedSet got =
-        ms::RunLloyd(*dist.pmesh, MPI_COMM_WORLD, samples, seeds, params, {}, &report);
+    const ms::SeedSet ref = ms::RunLloyd(
+        serial, MPI_COMM_SELF, ref_samples, seeds, params, {}, &ref_report);
+    const ms::SeedSet got = ms::RunLloyd(
+        *dist.pmesh, MPI_COMM_WORLD, samples, seeds, params, {}, &report);
 
     EXPECT_EQ(report.energy.size(), 11u);
     EXPECT_TRUE(NonIncreasing(report.energy, 1e-12));
@@ -700,10 +710,10 @@ TEST(Lloyd, ClampingKeepsSeedsInLShape) {
         ms::MakeElementWeightedSamples(*dist.pmesh, samples);
         ms::MakeElementWeightedSamples(serial, ref_samples);
         ms::LloydReport report;
-        const ms::SeedSet ref =
-            ms::RunLloyd(serial, MPI_COMM_SELF, ref_samples, seeds, params, {}, nullptr);
-        const ms::SeedSet got =
-            ms::RunLloyd(*dist.pmesh, MPI_COMM_WORLD, samples, seeds, params, {}, &report);
+        const ms::SeedSet ref = ms::RunLloyd(
+            serial, MPI_COMM_SELF, ref_samples, seeds, params, {}, nullptr);
+        const ms::SeedSet got = ms::RunLloyd(
+            *dist.pmesh, MPI_COMM_WORLD, samples, seeds, params, {}, &report);
         for (std::size_t i = 0; i < got.Size(); i++) {
             EXPECT_TRUE(InLShape(got.x[i], got.y[i], got.z[i], arm))
                 << "seed " << i << " at (" << got.x[i] << ", " << got.y[i] << ") after "
@@ -720,8 +730,8 @@ TEST(Lloyd, ClampingKeepsSeedsInLShape) {
     free_params.clamp_to_material = false;
     ms::WeightedSamples samples;
     ms::MakeElementWeightedSamples(*dist.pmesh, samples);
-    const ms::SeedSet moved =
-        ms::RunLloyd(*dist.pmesh, MPI_COMM_WORLD, samples, seeds, free_params, {}, nullptr);
+    const ms::SeedSet moved = ms::RunLloyd(
+        *dist.pmesh, MPI_COMM_WORLD, samples, seeds, free_params, {}, nullptr);
     EXPECT_FALSE(InLShape(moved.x[1], moved.y[1], moved.z[1], arm));
 }
 
@@ -746,10 +756,10 @@ TEST(Lloyd, CentroidalPowerKeepsTargets) {
     ms::MakeQuadratureWeightedSamples(*dist.pmesh, -1, samples);
     ms::MakeQuadratureWeightedSamples(serial, -1, ref_samples);
     ms::LloydReport report;
-    const ms::SeedSet ref = ms::RunLloyd(serial, MPI_COMM_SELF, ref_samples, start, params,
-                                         targets.volume, nullptr);
-    const ms::SeedSet got = ms::RunLloyd(*dist.pmesh, MPI_COMM_WORLD, samples, start, params,
-                                         targets.volume, &report);
+    const ms::SeedSet ref = ms::RunLloyd(
+        serial, MPI_COMM_SELF, ref_samples, start, params, targets.volume, nullptr);
+    const ms::SeedSet got = ms::RunLloyd(
+        *dist.pmesh, MPI_COMM_WORLD, samples, start, params, targets.volume, &report);
 
     EXPECT_EQ(report.fits.size(), 4u);
     for (const auto& fit : report.fits) {
@@ -757,8 +767,7 @@ TEST(Lloyd, CentroidalPowerKeepsTargets) {
     }
     // Volumes of the returned power cells (positions and weights as returned)
     mfem::Array<int> labels;
-    ms::LabelSamples(samples, got, ms::MetricType::LAGUERRE, ms::MetricSetup{}, 8, labels,
-                     nullptr);
+    ms::LabelSamples(samples, got, ms::MetricType::LAGUERRE, ms::MetricSetup{}, 8, labels, nullptr);
     const ms::CellMeasures m = ms::ComputeCellMeasures(MPI_COMM_WORLD, samples, labels, 10);
     EXPECT_LE(MaxRelativeError(m.volume, targets.volume), 0.02 + 1e-12);
     ExpectBitwiseEqual(got.x, ref.x);

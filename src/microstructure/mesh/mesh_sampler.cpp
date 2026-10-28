@@ -165,8 +165,8 @@ void BuildPointEvaluator(mfem::Mesh& mesh, const mfem::IntegrationRule& rule, Po
     pe.ne = mesh.GetNE();
 
     // Step 3: element-wise node coordinates
-    const mfem::Operator* restriction =
-        space.GetElementRestriction(mfem::ElementDofOrdering::NATIVE);
+    const mfem::Operator* restriction = space.GetElementRestriction(
+        mfem::ElementDofOrdering::NATIVE);
     pe.element_nodes.SetSize(3 * pe.nd * pe.ne, mfem::Device::GetDeviceMemoryType());
     restriction->Mult(*nodes, pe.element_nodes);
 }
@@ -313,7 +313,6 @@ int DefaultSampleQuadOrder(const mfem::Mesh& mesh) {
     return 4 * max_order - 1;
 }
 
-
 /*
  * ComputeElementSamples
  *
@@ -354,8 +353,8 @@ void ComputeElementSamples(mfem::Mesh& mesh, int quad_order, ElementSamples& out
     }
 
     // Step 2: quadrature-point coordinates and Jacobian determinants of all local elements.
-    const SampleFactors sf =
-        BuildSampleFactors(mesh, mfem::IntRules.Get(mesh.GetElementGeometry(0), order));
+    const SampleFactors sf = BuildSampleFactors(
+        mesh, mfem::IntRules.Get(mesh.GetElementGeometry(0), order));
     const int nq = sf.ir->GetNPoints();
 
     // Step 3: kernel-side views. `sf` owns the factor data until the end of this function.
@@ -395,11 +394,8 @@ void ComputeElementSamples(mfem::Mesh& mesh, int quad_order, ElementSamples& out
  * live in a global table for the whole program). A rank with no elements returns empty Vectors
  * (num_qp = 0) without looking up a rule, since there is no element to read the geometry from.
  */
-void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
-                                   int quad_order,
-                                   int elem_begin,
-                                   int elem_end,
-                                   QuadraturePointSamples& out) {
+void ComputeQuadraturePointSamples(
+    mfem::Mesh& mesh, int quad_order, int elem_begin, int elem_end, QuadraturePointSamples& out) {
     RequireSampleableMesh(mesh, "ComputeQuadraturePointSamples");
     const int order = ResolveQuadOrder(mesh, quad_order);
     const int ne = mesh.GetNE();
@@ -408,8 +404,8 @@ void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
         SetEmptySamples(elem_begin, elem_end, out);
         return;
     }
-    ComputeQuadraturePointSamples(mesh, mfem::IntRules.Get(mesh.GetElementGeometry(0), order),
-                                  elem_begin, elem_end, out);
+    ComputeQuadraturePointSamples(
+        mesh, mfem::IntRules.Get(mesh.GetElementGeometry(0), order), elem_begin, elem_end, out);
 }
 
 /*
@@ -449,8 +445,7 @@ struct QuadraturePointSampler::Factors {
     PointEvaluator pe;
 };
 
-QuadraturePointSampler::QuadraturePointSampler(mfem::Mesh& mesh,
-                                               const mfem::IntegrationRule& rule)
+QuadraturePointSampler::QuadraturePointSampler(mfem::Mesh& mesh, const mfem::IntegrationRule& rule)
     : m_mesh(mesh), m_rule(rule) {
     RequireSampleableMesh(mesh, "QuadraturePointSampler");
     if (mesh.GetNE() > 0) {
@@ -468,7 +463,8 @@ int QuadraturePointSampler::NumPointsPerElement() const {
     return m_rule.GetNPoints();
 }
 
-void QuadraturePointSampler::Sample(int elem_begin, int elem_end,
+void QuadraturePointSampler::Sample(int elem_begin,
+                                    int elem_end,
                                     QuadraturePointSamples& out) const {
     const int ne = m_mesh.GetNE();
     RequireElementRange(elem_begin, elem_end, ne, "QuadraturePointSampler::Sample");

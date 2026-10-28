@@ -33,19 +33,9 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/labeling/connected_labeler.hpp"
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_graph.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -62,6 +52,16 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/connected_labeler.hpp"
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_graph.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -96,10 +96,15 @@ fs::path DataDir() {
  * the cells for which kept(i, j, k) is true, with element attribute attribute(i, j, k).
  * Lexicographic cell order (x fastest); unused vertices are removed.
  */
-mfem::Mesh GridMesh(int nx, int ny, int nz, double h,
+mfem::Mesh GridMesh(int nx,
+                    int ny,
+                    int nz,
+                    double h,
                     const std::function<bool(int, int, int)>& kept,
                     const std::function<int(int, int, int)>& attribute) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int cells = 0;
     for (int k = 0; k < nz; ++k) {
         for (int j = 0; j < ny; ++j) {
@@ -120,10 +125,14 @@ mfem::Mesh GridMesh(int nx, int ny, int nz, double h,
         for (int j = 0; j < ny; ++j) {
             for (int i = 0; i < nx; ++i) {
                 if (kept(i, j, k)) {
-                    const int hex[8] = {vid(i, j, k),         vid(i + 1, j, k),
-                                        vid(i + 1, j + 1, k), vid(i, j + 1, k),
-                                        vid(i, j, k + 1),     vid(i + 1, j, k + 1),
-                                        vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)};
+                    const int hex[8] = {vid(i, j, k),
+                                        vid(i + 1, j, k),
+                                        vid(i + 1, j + 1, k),
+                                        vid(i, j + 1, k),
+                                        vid(i, j, k + 1),
+                                        vid(i + 1, j, k + 1),
+                                        vid(i + 1, j + 1, k + 1),
+                                        vid(i, j + 1, k + 1)};
                     mesh.AddHex(hex, attribute(i, j, k));
                 }
             }
@@ -145,20 +154,47 @@ bool InNotch(int i, int j) {
 
 /** U-shaped part [0,3] x [0,2] x [0,1] without the notch: two arms joined at y < 1. */
 mfem::Mesh UShape() {
-    return GridMesh(3 * N, 2 * N, N, 1.0 / N, [](int i, int j, int) { return !InNotch(i, j); },
-                    [](int, int, int) { return 1; });
+    return GridMesh(
+        3 * N,
+        2 * N,
+        N,
+        1.0 / N,
+        [](int i, int j, int) {
+            return !InNotch(i, j);
+        },
+        [](int, int, int) {
+            return 1;
+        });
 }
 
 /** The full box [0,3] x [0,2] x [0,1]; the notch cells have attribute 2, the U attribute 1. */
 mfem::Mesh BoxWithNotchAttribute() {
-    return GridMesh(3 * N, 2 * N, N, 1.0 / N, [](int, int, int) { return true; },
-                    [](int i, int j, int) { return InNotch(i, j) ? 2 : 1; });
+    return GridMesh(
+        3 * N,
+        2 * N,
+        N,
+        1.0 / N,
+        [](int, int, int) {
+            return true;
+        },
+        [](int i, int j, int) {
+            return InNotch(i, j) ? 2 : 1;
+        });
 }
 
 /** Two unit cubes [0,1]^3 and [2,3] x [0,1]^2 that do not touch (64 hexahedra each). */
 mfem::Mesh TwoBodies() {
-    return GridMesh(3 * N, N, N, 1.0 / N, [](int i, int, int) { return i < N || i >= 2 * N; },
-                    [](int, int, int) { return 1; });
+    return GridMesh(
+        3 * N,
+        N,
+        N,
+        1.0 / N,
+        [](int i, int, int) {
+            return i < N || i >= 2 * N;
+        },
+        [](int, int, int) {
+            return 1;
+        });
 }
 
 /**
@@ -166,9 +202,17 @@ mfem::Mesh TwoBodies() {
  * only along the edge x = 1, y = 1 (shared mesh vertices, no shared face).
  */
 mfem::Mesh EdgeContactBlocks() {
-    return GridMesh(2 * N, 2 * N, N, 1.0 / N,
-                    [](int i, int j, int) { return (i < N && j < N) || (i >= N && j >= N); },
-                    [](int, int, int) { return 1; });
+    return GridMesh(
+        2 * N,
+        2 * N,
+        N,
+        1.0 / N,
+        [](int i, int j, int) {
+            return (i < N && j < N) || (i >= N && j >= N);
+        },
+        [](int, int, int) {
+            return 1;
+        });
 }
 
 /** Element centers (vertex average) of a serial mesh, 3 per element. */
@@ -338,8 +382,8 @@ Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** Per-element values gathered into serial element order and broadcast to every rank. */
-std::vector<int> GatherToAll(MPI_Comm comm, const ms::SerialOrder& order,
-                             const mfem::Array<int>& local) {
+std::vector<int>
+GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>& local) {
     local.HostRead();
     std::vector<int> all = ms::GatherToSerial(comm, order, local, 0);
     int size = static_cast<int>(all.size());
@@ -469,13 +513,14 @@ std::vector<int> GrainsOfSeed(const ms::GenerationReport& report, int s) {
  * in serial element order: straight-line labels, ConstrainToConnectedCells with the options'
  * rounds and sampling, CompactSeedLabels.
  */
-std::vector<int> DirectConnectedLabels(mfem::Mesh& serial, const ms::SeedSet& seeds,
+std::vector<int> DirectConnectedLabels(mfem::Mesh& serial,
+                                       const ms::SeedSet& seeds,
                                        const ms::TessellationOptions& tess) {
     Distributed d = Distribute(serial, MPI_COMM_SELF);
     ms::TessellationOptions euclidean = tess;
     euclidean.distance = ms::DistanceMode::EUCLIDEAN;
-    const ms::TessellationLabels straight =
-        ms::LabelTessellation(*d.pmesh, MPI_COMM_SELF, seeds, euclidean);
+    const ms::TessellationLabels straight = ms::LabelTessellation(
+        *d.pmesh, MPI_COMM_SELF, seeds, euclidean);
     mfem::Array<int> element_seed;
     element_seed = straight.element_seed;
     const ms::MeshAdjacency adjacency(*d.pmesh);
@@ -483,8 +528,8 @@ std::vector<int> DirectConnectedLabels(mfem::Mesh& serial, const ms::SeedSet& se
     params.max_rounds = tess.connected_max_rounds;
     params.sampling = tess.sampling;
     params.vote_levels = tess.vote_levels;
-    ms::ConstrainToConnectedCells(*d.pmesh, MPI_COMM_SELF, adjacency, seeds, tess, element_seed,
-                                  params);
+    ms::ConstrainToConnectedCells(
+        *d.pmesh, MPI_COMM_SELF, adjacency, seeds, tess, element_seed, params);
     ms::TessellationLabels labels;
     ms::CompactSeedLabels(MPI_COMM_SELF, element_seed, static_cast<int>(seeds.Size()), labels);
     return GatherToAll(MPI_COMM_SELF, d.order, labels.element_grain);
@@ -495,7 +540,8 @@ std::vector<int> DirectConnectedLabels(mfem::Mesh& serial, const ms::SeedSet& se
  * tess.geodesic_solver (LabelGeodesicFim for "fim", LabelGeodesicGraph for "graph"), then
  * CompactSeedLabels. Every element must be reached (no body without a seed).
  */
-std::vector<int> DirectGeodesicLabels(mfem::Mesh& serial, const ms::SeedSet& seeds,
+std::vector<int> DirectGeodesicLabels(mfem::Mesh& serial,
+                                      const ms::SeedSet& seeds,
                                       const ms::TessellationOptions& tess) {
     Distributed d = Distribute(serial, MPI_COMM_SELF);
     ms::GeodesicParameters params;
@@ -508,8 +554,8 @@ std::vector<int> DirectGeodesicLabels(mfem::Mesh& serial, const ms::SeedSet& see
             : ms::LabelGeodesicGraph(*d.pmesh, MPI_COMM_SELF, seeds, additive, params);
     EXPECT_EQ(geodesic.report.unreached_elements, 0);
     ms::TessellationLabels labels;
-    ms::CompactSeedLabels(MPI_COMM_SELF, geodesic.element_seed, static_cast<int>(seeds.Size()),
-                          labels);
+    ms::CompactSeedLabels(
+        MPI_COMM_SELF, geodesic.element_seed, static_cast<int>(seeds.Size()), labels);
     return GatherToAll(MPI_COMM_SELF, d.order, labels.element_grain);
 }
 
@@ -680,8 +726,8 @@ TEST(DriverStage1e, PassthroughNotchKeepsPathsInActivePart) {
     const std::vector<std::array<double, 3>> ucenter = Centers(ushape);
     std::map<std::array<long long, 3>, int> u_at;
     auto key = [](const std::array<double, 3>& p) {
-        return std::array<long long, 3>{std::llround(p[0] * 1e6), std::llround(p[1] * 1e6),
-                                        std::llround(p[2] * 1e6)};
+        return std::array<long long, 3>{
+            std::llround(p[0] * 1e6), std::llround(p[1] * 1e6), std::llround(p[2] * 1e6)};
     };
     for (std::size_t e = 0; e < ucenter.size(); ++e) {
         u_at[key(ucenter[e])] = static_cast<int>(e);
@@ -824,7 +870,9 @@ TEST(DriverStage1e, RefusedCombinations) {
     mfem::Mesh serial = exaconstit::MakeAutoHexMesh({4, 4, 4}, {1.0, 1.0, 1.0});
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
     using O = ms::MicrostructureOptions;
-    auto refused = [&](const O& options) { return Refused(*d.pmesh, options); };
+    auto refused = [&](const O& options) {
+        return Refused(*d.pmesh, options);
+    };
     O base;
     base.seeds.num_seeds = 5;
     base.seeds.rng_seed = 2u;
@@ -1012,11 +1060,11 @@ TEST(DriverStage1e, GeodesicPerSeedTensors) {
 // each runs the mode it names and no grain crosses the notch.
 TEST(DriverStage1e, ExampleOptionsFilesRun) {
     const fs::path dir = data_dir / "microstructure";
-    for (const char* name : {"connected_ushape.toml", "geodesic_ushape.toml",
-                             "geodesic_johnson_mehl_ushape.toml"}) {
+    for (const char* name :
+         {"connected_ushape.toml", "geodesic_ushape.toml", "geodesic_johnson_mehl_ushape.toml"}) {
         SCOPED_TRACE(name);
-        ms::MicrostructureOptions options =
-            ms::MicrostructureOptions::parse_options_file(dir / name);
+        ms::MicrostructureOptions options = ms::MicrostructureOptions::parse_options_file(dir /
+                                                                                          name);
         options.mesh.floc = dir / options.mesh.floc;
         EXPECT_TRUE(options.validate());
         mfem::Mesh serial(options.mesh.floc.string().c_str(), 1, 1, true);

@@ -1,13 +1,13 @@
 #pragma once
 
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
 #include <cstdint>
 #include <mpi.h>
+
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
 
 /**
  * @file roi_filler.hpp

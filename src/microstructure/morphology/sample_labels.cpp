@@ -9,10 +9,10 @@
  */
 #include "microstructure/morphology/sample_labels.hpp"
 
+#include "mfem.hpp"
+
 #include "microstructure/exec_dispatch.hpp"
 #include "microstructure/geometry/seed_index.hpp"
-
-#include "mfem.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -28,8 +28,12 @@ namespace exaconstit::microstructure {
  *     outside the dispatch lambdas on purpose: CUDA does not accept a device lambda defined
  *     inside a generic (auto-parameter) lambda.
  */
-void LabelSamples(const WeightedSamples& samples, const SeedSet& seeds, MetricType metric,
-                  MetricSetup setup, int num_bins, mfem::Array<int>& sample_seed,
+void LabelSamples(const WeightedSamples& samples,
+                  const SeedSet& seeds,
+                  MetricType metric,
+                  MetricSetup setup,
+                  int num_bins,
+                  mfem::Array<int>& sample_seed,
                   mfem::Vector* sample_f) {
     setup.per_seed_shape = !seeds.shape.empty();
     const int n = samples.Size();
@@ -57,10 +61,14 @@ void LabelSamples(const WeightedSamples& samples, const SeedSet& seeds, MetricTy
     }
     const BestPair* best_data = best.Read();
     int* seed_out = sample_seed.Write();
-    mfem::forall(n, [=] MFEM_HOST_DEVICE(int q) { seed_out[q] = best_data[q].id1; });
+    mfem::forall(n, [=] MFEM_HOST_DEVICE(int q) {
+        seed_out[q] = best_data[q].id1;
+    });
     if (sample_f != nullptr) {
         double* f_out = sample_f->Write();
-        mfem::forall(n, [=] MFEM_HOST_DEVICE(int q) { f_out[q] = best_data[q].f1; });
+        mfem::forall(n, [=] MFEM_HOST_DEVICE(int q) {
+            f_out[q] = best_data[q].f1;
+        });
     }
 }
 

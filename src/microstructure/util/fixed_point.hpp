@@ -2,9 +2,9 @@
 
 #include "mfem.hpp"
 
-#include <cmath>   // std::frexp, std::ldexp, std::isfinite in the host-only ForRange
+#include <cmath> // std::frexp, std::ldexp, std::isfinite in the host-only ForRange
 #include <cstdint>
-#include <math.h>  // C math library floor() in Encode, which also runs in GPU kernels
+#include <math.h> // C math library floor() in Encode, which also runs in GPU kernels
 #include <stdexcept>
 
 /**

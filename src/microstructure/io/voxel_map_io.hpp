@@ -240,8 +240,8 @@ struct VoxelFeatureTable {
  * Checks: units_scale > 0 and finite; finite translate and origin; spacing > 0 and finite both
  * in file units and after scaling (a tiny units_scale could underflow to 0); integer id dataset
  * of rank 3, or rank 4 with last extent 1 (canonical files also a flat rank-1 dataset);
- * dimensions > 0 and equal to the file's declared dimensions. The "ids < 2^31" check is done on the voxels each rank actually reads (by the
- * voxel labeler), not here.
+ * dimensions > 0 and equal to the file's declared dimensions. The "ids < 2^31" check is done on the
+ * voxels each rank actually reads (by the voxel labeler), not here.
  *
  * **Collective** over `comm`. Host only.
  *

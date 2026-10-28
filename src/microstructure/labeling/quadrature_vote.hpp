@@ -1,15 +1,15 @@
 #pragma once
 
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
 #include <mpi.h>
 #include <vector>
+
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file quadrature_vote.hpp
@@ -170,11 +170,8 @@ const mfem::IntegrationRule& VoteRule(mfem::Geometry::Type geometry, int levels)
  * @throws std::invalid_argument for an unsupported geometry or levels; std::runtime_error for an
  *         invalid range, a non-3D or mixed-geometry mesh, or more points than fit in an int.
  */
-void ComputeVotePoints(mfem::Mesh& mesh,
-                       int levels,
-                       int elem_begin,
-                       int elem_end,
-                       QuadraturePointSamples& out);
+void ComputeVotePoints(
+    mfem::Mesh& mesh, int levels, int elem_begin, int elem_end, QuadraturePointSamples& out);
 
 /**
  * @brief For every local element, the seed that wins the volume-weighted vote of the element's

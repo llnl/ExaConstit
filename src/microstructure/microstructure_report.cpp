@@ -1,11 +1,11 @@
 #include "microstructure/microstructure_report.hpp"
 
-#include "microstructure/io/seed_table_io.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <utility>
+
+#include "microstructure/io/seed_table_io.hpp"
 
 /*
  * The record tables and log phrases of a generated microstructure (see the header). These used to
@@ -47,8 +47,9 @@ GrainTable BuildGrainTable(const MicrostructureResult& result,
         table.target_volume.resize(report.grain_seed.size());
         for (std::size_t g = 0; g < report.grain_seed.size(); ++g) {
             const int seed = report.grain_seed[g];
-            table.target_volume[g] =
-                (seed >= 0) ? report.seed_target_volume[static_cast<std::size_t>(seed)] : 0.0;
+            table.target_volume[g] = (seed >= 0)
+                                         ? report.seed_target_volume[static_cast<std::size_t>(seed)]
+                                         : 0.0;
         }
     }
     if (report.used_voxel_map) {
@@ -171,8 +172,8 @@ std::string ConformalText(const GenerationReport& report) {
        << " -> " << fit.quality_after.min_scaled_jacobian << ", largest aspect ratio "
        << fit.quality_before.max_aspect_ratio << " -> " << fit.quality_after.max_aspect_ratio
        << ", smallest mean ratio " << fit.quality_before.min_mean_ratio << " -> "
-       << fit.quality_after.min_mean_ratio << ", inverted elements "
-       << fit.quality_after.inverted << "\n";
+       << fit.quality_after.min_mean_ratio << ", inverted elements " << fit.quality_after.inverted
+       << "\n";
     return os.str();
 }
 
@@ -197,7 +198,8 @@ std::string RequestedGrains(const GenerationReport& report) {
     return "set by Johnson-Mehl nucleation (no nucleus limit)";
 }
 
-int PassthroughGrainId(const GenerationReport& report, const MicrostructureResult& result,
+int PassthroughGrainId(const GenerationReport& report,
+                       const MicrostructureResult& result,
                        std::size_t k) {
     return result.num_grains - report.num_passthrough_grains + 1 + static_cast<int>(k);
 }
@@ -206,8 +208,8 @@ int PassthroughGrainId(const GenerationReport& report, const MicrostructureResul
  * RegionContents: phases, crystallinity, passthrough attributes (with their grain ids) and
  * filler grains of region r, separated by "; ".
  */
-std::string RegionContents(const GenerationReport& report, const MicrostructureResult& result,
-                           int r) {
+std::string
+RegionContents(const GenerationReport& report, const MicrostructureResult& result, int r) {
     const auto ri = static_cast<std::size_t>(r - 1);
     std::ostringstream os;
     // Phases
@@ -218,8 +220,8 @@ std::string RegionContents(const GenerationReport& report, const MicrostructureR
         os << "no phase data";
     }
     // Crystallinity
-    const bool crystalline =
-        ri < result.region_crystalline.size() && result.region_crystalline[ri] != 0;
+    const bool crystalline = ri < result.region_crystalline.size() &&
+                             result.region_crystalline[ri] != 0;
     os << "; " << (crystalline ? "crystalline" : "not crystalline (identity orientations)");
     // Passthrough parts of the mesh in this region
     for (std::size_t k = 0; k < report.passthrough_attributes.size(); ++k) {

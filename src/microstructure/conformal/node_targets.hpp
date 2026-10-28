@@ -1,16 +1,16 @@
 #pragma once
 
+#include "mfem.hpp"
+
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
 #include "microstructure/conformal/node_labels.hpp"
 #include "microstructure/conformal/smoothed_targets.hpp"
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/microstructure_types.hpp"
-
-#include "mfem.hpp"
-
-#include <array>
-#include <memory>
-#include <cstdint>
-#include <vector>
 
 /**
  * @file node_targets.hpp
@@ -154,16 +154,16 @@ inline constexpr int NUM_TARGET_STATUSES = 5;
 /** @brief Why a node is HELD or a FAKE_JUNCTION (NONE otherwise). */
 enum class TargetReason : int {
     NONE = 0,
-    NON_ANALYTIC = 1,    ///< HELD: a label with grain_seed = -1
-    CURVED_FEATURE = 2,  ///< HELD: a curved boundary surface has no patch triangles at the node
-    SAME_SEED = 3,       ///< two labels grew from the same seed
-    SINGULAR = 4,        ///< dependent equations (e.g. a grain boundary parallel to a box face)
-    NOT_CONVERGED = 5,   ///< the projection did not converge
-    RESIDUAL = 6,        ///< an equation does not hold at the target
-    TOO_FAR = 7,         ///< the target is more than max_move element sizes away
-    FOREIGN_SEED = 8,    ///< another seed is closer at the target
-    UNDER_RESOLVED = 9,  ///< HELD: a label of a grain without an interior node
-    PINCH = 10           ///< a grain pinches at the node (NodeLabels::Pinched)
+    NON_ANALYTIC = 1,   ///< HELD: a label with grain_seed = -1
+    CURVED_FEATURE = 2, ///< HELD: a curved boundary surface has no patch triangles at the node
+    SAME_SEED = 3,      ///< two labels grew from the same seed
+    SINGULAR = 4,       ///< dependent equations (e.g. a grain boundary parallel to a box face)
+    NOT_CONVERGED = 5,  ///< the projection did not converge
+    RESIDUAL = 6,       ///< an equation does not hold at the target
+    TOO_FAR = 7,        ///< the target is more than max_move element sizes away
+    FOREIGN_SEED = 8,   ///< another seed is closer at the target
+    UNDER_RESOLVED = 9, ///< HELD: a label of a grain without an interior node
+    PINCH = 10          ///< a grain pinches at the node (NodeLabels::Pinched)
 };
 inline constexpr int NUM_TARGET_REASONS = 11;
 
@@ -225,8 +225,11 @@ public:
      * @throws std::invalid_argument on every rank for a label outside grain_seed, a seed index out
      *         of range, an empty seed set or invalid options; SeedIndex::Build errors.
      */
-    NodeTargets(const NodeLabels& labels, MetricType metric, const SeedSet& seeds,
-                const MetricSetup& setup, const std::vector<int>& grain_seed,
+    NodeTargets(const NodeLabels& labels,
+                MetricType metric,
+                const SeedSet& seeds,
+                const MetricSetup& setup,
+                const std::vector<int>& grain_seed,
                 const NodeTargetOptions& options = {});
     ~NodeTargets();
     NodeTargets(const NodeTargets&) = delete;
@@ -243,8 +246,8 @@ public:
      * @brief Evaluate with the analytic rules only: no smoothed fallback, so FIT means a valid
      * analytic target (the adjacency check, adjacency_check.hpp). Not collective; host.
      */
-    std::vector<NodeTargetResult> EvaluateAnalytic(
-        const std::vector<NodeLabelQuery>& queries) const;
+    std::vector<NodeTargetResult>
+    EvaluateAnalytic(const std::vector<NodeLabelQuery>& queries) const;
 
     /**
      * @brief For each listed node: the best seed at its original position, then the next best
@@ -254,8 +257,11 @@ public:
      * seeds[offsets[i] .. offsets[i + 1]). Empty lists with NodeTargetOptions::analytic = false.
      * Not collective; host.
      */
-    void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
-                     std::vector<int>& offsets, std::vector<int>& seeds) const;
+    void NearbySeeds(const std::vector<int>& nodes,
+                     int max_seeds,
+                     double reach,
+                     std::vector<int>& offsets,
+                     std::vector<int>& seeds) const;
 
     /** @brief Face rings of the curved-surface patches (PatchRingsFor of the largest move). */
     int PatchRings() const {

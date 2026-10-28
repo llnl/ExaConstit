@@ -48,8 +48,8 @@ struct MeshQuality {
  * @brief Scaled Jacobian and aspect ratio of one local element (see the file comment).
  * Hex and tet elements only. Host.
  */
-void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio,
-                    double& min_det);
+void ElementQuality(
+    mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio, double& min_det);
 
 /**
  * @brief Mean ratio of one local element: at every corner (every nodal point for curved

@@ -24,10 +24,6 @@
  */
 #include "microstructure/geometry/seed_index.hpp"
 
-#include "axom/core/Array.hpp"
-#include "axom/core/execution/for_all.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -37,6 +33,10 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+#include "axom/core/Array.hpp"
+#include "axom/core/execution/for_all.hpp"
+#include "axom/primal/operators/squared_distance.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -54,14 +54,14 @@ using SeedBox = axom::primal::BoundingBox<double, 3>;
  */
 template <typename Metric, typename Traverser>
 struct SearchView {
-    Metric metric;                           ///< f_i(x) and its lower bounds
-    int num_bins;                            ///< bins in use, 1..SEED_INDEX_MAX_BINS
-    Traverser trav[SEED_INDEX_MAX_BINS];     ///< traverser of the BVH of bin b
-    SeedBox root[SEED_INDEX_MAX_BINS];       ///< bounding box of all seeds of bin b
-    BinBound bound[SEED_INDEX_MAX_BINS];     ///< weight/eigenvalue summary of bin b
-    int bin_begin[SEED_INDEX_MAX_BINS + 1];  ///< bin b = indexed_ids[bin_begin[b]..[b+1])
-    const int* indexed_ids;                  ///< BVH box j of bin b -> seed indexed_ids[begin+j]
-    const int* coincident_next;              ///< next seed at the same position, or -1
+    Metric metric;                          ///< f_i(x) and its lower bounds
+    int num_bins;                           ///< bins in use, 1..SEED_INDEX_MAX_BINS
+    Traverser trav[SEED_INDEX_MAX_BINS];    ///< traverser of the BVH of bin b
+    SeedBox root[SEED_INDEX_MAX_BINS];      ///< bounding box of all seeds of bin b
+    BinBound bound[SEED_INDEX_MAX_BINS];    ///< weight/eigenvalue summary of bin b
+    int bin_begin[SEED_INDEX_MAX_BINS + 1]; ///< bin b = indexed_ids[bin_begin[b]..[b+1])
+    const int* indexed_ids;                 ///< BVH box j of bin b -> seed indexed_ids[begin+j]
+    const int* coincident_next;             ///< next seed at the same position, or -1
 };
 
 /**
@@ -75,9 +75,14 @@ struct SearchView {
  */
 template <typename Metric, typename BVHType, std::size_t... I>
 SearchView<Metric, typename BVHType::TraverserType>
-MakeSearchView(const Metric& metric, const std::vector<std::unique_ptr<BVHType>>& bvh,
-               const SeedBox* bin_root, const BinBound* bin_bound, const int* bin_begin,
-               const int* indexed_ids, const int* coincident_next, std::index_sequence<I...>) {
+MakeSearchView(const Metric& metric,
+               const std::vector<std::unique_ptr<BVHType>>& bvh,
+               const SeedBox* bin_root,
+               const BinBound* bin_bound,
+               const int* bin_begin,
+               const int* indexed_ids,
+               const int* coincident_next,
+               std::index_sequence<I...>) {
     using Traverser = typename BVHType::TraverserType;
     const int num_bins = static_cast<int>(bvh.size());
     const Traverser empty{axom::ArrayView<const SeedBox>{},
@@ -140,8 +145,8 @@ struct RunningBest {
  * Host and device (called inside query kernels).
  */
 template <typename View, typename Visit>
-MFEM_HOST_DEVICE inline void TraverseBin(const View& view, int b, const SeedPoint& p,
-                                         const double& threshold, Visit& visit) {
+MFEM_HOST_DEVICE inline void
+TraverseBin(const View& view, int b, const SeedPoint& p, const double& threshold, Visit& visit) {
     const int* bin_ids = view.indexed_ids + view.bin_begin[b];
     const BinBound bound = view.bound[b];
     const auto& metric = view.metric;
@@ -158,8 +163,8 @@ MFEM_HOST_DEVICE inline void TraverseBin(const View& view, int b, const SeedPoin
     // metrics use only the squared distance.
     auto predicate = [&](const SeedPoint& q, const SeedBox& box) -> bool {
         const double sqdist = axom::primal::squared_distance(q, box);
-        return metric.LowerBound(q.data(), box.getMin().data(), box.getMax().data(), sqdist,
-                                 bound) <= threshold;
+        return metric.LowerBound(
+                   q.data(), box.getMin().data(), box.getMax().data(), sqdist, bound) <= threshold;
     };
 
     view.trav[b].traverse_tree(p, leaf_action, predicate);
@@ -172,11 +177,13 @@ MFEM_HOST_DEVICE inline void TraverseBin(const View& view, int b, const SeedPoin
  * root. Ties keep the bin order, so the visiting order is deterministic. Host and device.
  */
 template <typename View>
-MFEM_HOST_DEVICE inline void OrderBins(const View& view, const SeedPoint& p, double* root_lb,
-                                       int* order) {
+MFEM_HOST_DEVICE inline void
+OrderBins(const View& view, const SeedPoint& p, double* root_lb, int* order) {
     for (int b = 0; b < view.num_bins; ++b) {
         const SeedBox& root = view.root[b];
-        root_lb[b] = view.metric.LowerBound(p.data(), root.getMin().data(), root.getMax().data(),
+        root_lb[b] = view.metric.LowerBound(p.data(),
+                                            root.getMin().data(),
+                                            root.getMax().data(),
                                             axom::primal::squared_distance(p, root),
                                             view.bound[b]);
         order[b] = b;
@@ -205,8 +212,14 @@ MFEM_HOST_DEVICE inline void OrderBins(const View& view, const SeedPoint& p, dou
  * prunes (N for no pruning at all, a few dozen for good pruning).
  */
 template <typename ExecSpace, typename View>
-void FindBestKernel(const View& view, int nq, const double* qx, const double* qy,
-                    const double* qz, BestPair* out, bool exact_second, int* leaf_visits) {
+void FindBestKernel(const View& view,
+                    int nq,
+                    const double* qx,
+                    const double* qy,
+                    const double* qz,
+                    BestPair* out,
+                    bool exact_second,
+                    int* leaf_visits) {
     axom::for_all<ExecSpace>(
         nq, AXOM_LAMBDA(axom::IndexType q) {
             const double x = qx[q];
@@ -270,8 +283,13 @@ void FindBestKernel(const View& view, int nq, const double* qx, const double* qy
  * which keeps the kernel GPU-ready.
  */
 template <typename ExecSpace, typename View>
-void FindBestExcludingKernel(const View& view, int nq, const double* qx, const double* qy,
-                             const double* qz, const int* offsets, const int* ids,
+void FindBestExcludingKernel(const View& view,
+                             int nq,
+                             const double* qx,
+                             const double* qy,
+                             const double* qz,
+                             const int* offsets,
+                             const int* ids,
                              BestPair* out) {
     axom::for_all<ExecSpace>(
         nq, AXOM_LAMBDA(axom::IndexType q) {
@@ -333,8 +351,15 @@ void FindBestExcludingKernel(const View& view, int nq, const double* qx, const d
  * fixed threshold, so they visit exactly the same seeds.
  */
 template <typename ExecSpace, typename View>
-void WithinKernel(const View& view, int nq, const double* qx, const double* qy, const double* qz,
-                  double f_max, int* counts, const int* offsets, int* ids) {
+void WithinKernel(const View& view,
+                  int nq,
+                  const double* qx,
+                  const double* qy,
+                  const double* qz,
+                  double f_max,
+                  int* counts,
+                  const int* offsets,
+                  int* ids) {
     axom::for_all<ExecSpace>(
         nq, AXOM_LAMBDA(axom::IndexType q) {
             const double x = qx[q];
@@ -375,8 +400,7 @@ void WithinKernel(const View& view, int nq, const double* qx, const double* qy, 
  * @throws std::invalid_argument when the precondition is violated.
  */
 inline void RequireMatchingMfemDevice(bool on_device, const char* caller) {
-    const bool mfem_gpu =
-        mfem::Device::Allows(mfem::Backend::CUDA_MASK | mfem::Backend::HIP_MASK);
+    const bool mfem_gpu = mfem::Device::Allows(mfem::Backend::CUDA_MASK | mfem::Backend::HIP_MASK);
     if (on_device && !mfem_gpu) {
         throw std::invalid_argument(
             std::string(caller) +
@@ -427,8 +451,10 @@ SeedIndex<ExecSpace, Metric>::~SeedIndex() = default;
  * The host sorts are O(N log N) and run once; N is at most a few million seeds.
  */
 template <typename ExecSpace, typename Metric>
-void SeedIndex<ExecSpace, Metric>::Build(const SeedSet& seeds, const MetricSetup& setup,
-                                         int num_bins, int allocator_id) {
+void SeedIndex<ExecSpace, Metric>::Build(const SeedSet& seeds,
+                                         const MetricSetup& setup,
+                                         int num_bins,
+                                         int allocator_id) {
     m_built = false;
     m_bvh.clear();
     detail::RequireMatchingMfemDevice(axom::execution_space<ExecSpace>::onDevice(),
@@ -662,8 +688,8 @@ void SeedIndex<ExecSpace, Metric>::Build(const SeedSet& seeds, const MetricSetup
         // Box j of this bin is the point of seed dids[begin + j]. Uninitialized allocation
         // because BoundingBox is not trivially constructible (LinearBVH.hpp:280-284 does the
         // same); every entry is written by the kernel.
-        axom::Array<detail::SeedBox> boxes(axom::ArrayOptions::Uninitialized{}, count, count,
-                                           allocator_id);
+        axom::Array<detail::SeedBox> boxes(
+            axom::ArrayOptions::Uninitialized{}, count, count, allocator_id);
         auto boxes_view = boxes.view();
         axom::for_all<ExecSpace>(
             count, AXOM_LAMBDA(axom::IndexType j) {
@@ -692,8 +718,10 @@ void SeedIndex<ExecSpace, Metric>::Build(const SeedSet& seeds, const MetricSetup
  * ExecSpace (mfem Read/Write with on_device), so no host round trip is needed on a GPU.
  */
 template <typename ExecSpace, typename Metric>
-void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::Vector& qy,
-                                            const mfem::Vector& qz, mfem::Array<BestPair>& out,
+void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx,
+                                            const mfem::Vector& qy,
+                                            const mfem::Vector& qz,
+                                            mfem::Array<BestPair>& out,
                                             bool exact_second,
                                             mfem::Array<int>* leaf_visits) const {
     MFEM_VERIFY(m_built, "SeedIndex::FindBest called before Build");
@@ -712,14 +740,24 @@ void SeedIndex<ExecSpace, Metric>::FindBest(const mfem::Vector& qx, const mfem::
 
     // Kernel view: traversers of the bins plus copies of the per-bin host data (by value)
     const bool on_device = axom::execution_space<ExecSpace>::onDevice();
-    const auto view = detail::MakeSearchView(
-        m_metric, m_bvh, m_bin_root, m_bin_bound, m_bin_begin, m_indexed_ids.Read(on_device),
-        m_coincident_next.Read(on_device), std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
+    const auto view = detail::MakeSearchView(m_metric,
+                                             m_bvh,
+                                             m_bin_root,
+                                             m_bin_bound,
+                                             m_bin_begin,
+                                             m_indexed_ids.Read(on_device),
+                                             m_coincident_next.Read(on_device),
+                                             std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
 
     // Optional diagnostic output (null pointer = not requested)
     int* visits = (leaf_visits != nullptr) ? leaf_visits->Write(on_device) : nullptr;
-    detail::FindBestKernel<ExecSpace>(view, nq, qx.Read(on_device), qy.Read(on_device),
-                                      qz.Read(on_device), out.Write(on_device), exact_second,
+    detail::FindBestKernel<ExecSpace>(view,
+                                      nq,
+                                      qx.Read(on_device),
+                                      qy.Read(on_device),
+                                      qz.Read(on_device),
+                                      out.Write(on_device),
+                                      exact_second,
                                       visits);
 }
 
@@ -760,15 +798,25 @@ void SeedIndex<ExecSpace, Metric>::FindBestExcluding(const mfem::Vector& qx,
 
     // Kernel view (as in FindBest) and the search
     const bool on_device = axom::execution_space<ExecSpace>::onDevice();
-    const auto view = detail::MakeSearchView(
-        m_metric, m_bvh, m_bin_root, m_bin_bound, m_bin_begin, m_indexed_ids.Read(on_device),
-        m_coincident_next.Read(on_device), std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
+    const auto view = detail::MakeSearchView(m_metric,
+                                             m_bvh,
+                                             m_bin_root,
+                                             m_bin_bound,
+                                             m_bin_begin,
+                                             m_indexed_ids.Read(on_device),
+                                             m_coincident_next.Read(on_device),
+                                             std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
     // An empty ids array has no data to move; pass a null pointer (never dereferenced, since
     // every list is then empty)
     const int* list_ids = (ids.Size() > 0) ? ids.Read(on_device) : nullptr;
-    detail::FindBestExcludingKernel<ExecSpace>(view, nq, qx.Read(on_device), qy.Read(on_device),
-                                               qz.Read(on_device), offsets.Read(on_device),
-                                               list_ids, out.Write(on_device));
+    detail::FindBestExcludingKernel<ExecSpace>(view,
+                                               nq,
+                                               qx.Read(on_device),
+                                               qy.Read(on_device),
+                                               qz.Read(on_device),
+                                               offsets.Read(on_device),
+                                               list_ids,
+                                               out.Write(on_device));
 }
 
 /*
@@ -777,8 +825,10 @@ void SeedIndex<ExecSpace, Metric>::FindBestExcluding(const mfem::Vector& qx,
  * the host so the output does not depend on the traversal order.
  */
 template <typename ExecSpace, typename Metric>
-void SeedIndex<ExecSpace, Metric>::FindWithin(const mfem::Vector& qx, const mfem::Vector& qy,
-                                              const mfem::Vector& qz, double f_max,
+void SeedIndex<ExecSpace, Metric>::FindWithin(const mfem::Vector& qx,
+                                              const mfem::Vector& qy,
+                                              const mfem::Vector& qz,
+                                              double f_max,
                                               mfem::Array<int>& offsets,
                                               mfem::Array<int>& ids) const {
     MFEM_VERIFY(m_built, "SeedIndex::FindWithin called before Build");
@@ -795,17 +845,22 @@ void SeedIndex<ExecSpace, Metric>::FindWithin(const mfem::Vector& qx, const mfem
     }
 
     const bool on_device = axom::execution_space<ExecSpace>::onDevice();
-    const auto view = detail::MakeSearchView(
-        m_metric, m_bvh, m_bin_root, m_bin_bound, m_bin_begin, m_indexed_ids.Read(on_device),
-        m_coincident_next.Read(on_device), std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
+    const auto view = detail::MakeSearchView(m_metric,
+                                             m_bvh,
+                                             m_bin_root,
+                                             m_bin_bound,
+                                             m_bin_begin,
+                                             m_indexed_ids.Read(on_device),
+                                             m_coincident_next.Read(on_device),
+                                             std::make_index_sequence<SEED_INDEX_MAX_BINS>{});
     const double* dqx = qx.Read(on_device);
     const double* dqy = qy.Read(on_device);
     const double* dqz = qz.Read(on_device);
 
     // Pass 1: counts per query
     mfem::Array<int> counts(nq);
-    detail::WithinKernel<ExecSpace>(view, nq, dqx, dqy, dqz, f_max, counts.Write(on_device),
-                                    nullptr, nullptr);
+    detail::WithinKernel<ExecSpace>(
+        view, nq, dqx, dqy, dqz, f_max, counts.Write(on_device), nullptr, nullptr);
 
     // Exclusive prefix sum on the host
     const int* hcounts = counts.HostRead();
@@ -818,8 +873,8 @@ void SeedIndex<ExecSpace, Metric>::FindWithin(const mfem::Vector& qx, const mfem
     // Pass 2: indices
     ids.SetSize(hoffsets[nq]);
     if (hoffsets[nq] > 0) {
-        detail::WithinKernel<ExecSpace>(view, nq, dqx, dqy, dqz, f_max, nullptr,
-                                        offsets.Read(on_device), ids.Write(on_device));
+        detail::WithinKernel<ExecSpace>(
+            view, nq, dqx, dqy, dqz, f_max, nullptr, offsets.Read(on_device), ids.Write(on_device));
     }
 
     // Ascending seed index within each query (host)
@@ -834,10 +889,10 @@ void SeedIndex<ExecSpace, Metric>::FindWithin(const mfem::Vector& qx, const mfem
 // Explicit instantiations: every metric on every execution space this translation unit can see.
 // GPU spaces exist only when this file is compiled as CUDA/HIP (exec_dispatch.hpp file comment).
 // -------------------------------------------------------------------------------------------------
-#define EXACONSTIT_MS_INSTANTIATE_SEED_INDEX(EXEC)            \
-    template class SeedIndex<EXEC, VoronoiMetric>;            \
-    template class SeedIndex<EXEC, LaguerreMetric>;           \
-    template class SeedIndex<EXEC, QuadricMetric>;            \
+#define EXACONSTIT_MS_INSTANTIATE_SEED_INDEX(EXEC)  \
+    template class SeedIndex<EXEC, VoronoiMetric>;  \
+    template class SeedIndex<EXEC, LaguerreMetric>; \
+    template class SeedIndex<EXEC, QuadricMetric>;  \
     template class SeedIndex<EXEC, AdditiveMetric>;
 
 EXACONSTIT_MS_INSTANTIATE_SEED_INDEX(axom::SEQ_EXEC)

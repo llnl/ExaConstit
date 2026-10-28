@@ -1,11 +1,11 @@
 #include "microstructure/mesh/element_key.hpp"
 
-#include "microstructure/mesh/straight_sided.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+
+#include "microstructure/mesh/straight_sided.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -69,7 +69,8 @@ double QuantumFromCorners(const std::vector<std::array<double, 3>>& coords) {
     }
     // The coordinate magnitude counts (round-off between copies grows with it), but at most
     // ELEMENT_KEY_MAX_MAGNITUDE_RATIO element sizes, so q stays far below the element size
-    const double scale = std::max(size, std::min(magnitude, ELEMENT_KEY_MAX_MAGNITUDE_RATIO * size));
+    const double scale = std::max(size,
+                                  std::min(magnitude, ELEMENT_KEY_MAX_MAGNITUDE_RATIO * size));
     const double scaled = ELEMENT_KEY_SIZE_FACTOR * scale;
     if (!(scaled > 0.0) || !std::isfinite(scaled)) {
         return 0.0;

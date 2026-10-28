@@ -41,30 +41,6 @@
  */
 #include "microstructure/microstructure_driver.hpp"
 
-#include "microstructure/conformal/conformal_fitter.hpp"
-#include "microstructure/conformal/label_repair.hpp"
-#include "microstructure/geometry/periodic_images.hpp"
-#include "microstructure/io/seed_table_io.hpp"
-#include "microstructure/io/voxel_map_io.hpp"
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_metric.hpp"
-#include "microstructure/labeling/geodesic_weighted.hpp"
-#include "microstructure/labeling/geodesic_graph.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/labeling/voxel_labeler.hpp"
-#include "microstructure/mesh/attribute_domain.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/preflight.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/morphology/size_targets.hpp"
-#include "microstructure/orientation/orientation_assigner.hpp"
-#include "microstructure/regions/region_assigner.hpp"
-#include "microstructure/util/collective_errors.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/seeding/roi_filler.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -80,6 +56,30 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/conformal/conformal_fitter.hpp"
+#include "microstructure/conformal/label_repair.hpp"
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+#include "microstructure/geometry/periodic_images.hpp"
+#include "microstructure/io/seed_table_io.hpp"
+#include "microstructure/io/voxel_map_io.hpp"
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_graph.hpp"
+#include "microstructure/labeling/geodesic_metric.hpp"
+#include "microstructure/labeling/geodesic_weighted.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/labeling/voxel_labeler.hpp"
+#include "microstructure/mesh/attribute_domain.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/morphology/size_targets.hpp"
+#include "microstructure/orientation/orientation_assigner.hpp"
+#include "microstructure/regions/region_assigner.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/seeding/roi_filler.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -310,8 +310,10 @@ double MaterialVolume(mfem::ParMesh& pmesh, MPI_Comm comm, const MaterialContext
  * volumes are bitwise identical for every rank count. Used by AssignPhaseFractions, whose result
  * would otherwise depend on the summation order of a plain floating-point MPI sum.
  */
-std::vector<double> GrainVolumes(mfem::ParMesh& pmesh, MPI_Comm comm,
-                                 const mfem::Array<int>& element_grain, int num_grains,
+std::vector<double> GrainVolumes(mfem::ParMesh& pmesh,
+                                 MPI_Comm comm,
+                                 const mfem::Array<int>& element_grain,
+                                 int num_grains,
                                  const MaterialContext& material) {
     WeightedSamples samples;
     MakeElementWeightedSamples(pmesh, samples, material.mask);
@@ -344,8 +346,8 @@ SizeTargetParameters MakeSizeParameters(const MicrostructureOptions& options) {
     if (size.mean_diameter > 0.0) {
         params.mean_diameter = size.mean_diameter;
     } else if (size.mean_volume > 0.0) {
-        params.mean_diameter =
-            std::cbrt(6.0 * size.mean_volume / PI) * std::exp(-params.sigma * params.sigma);
+        params.mean_diameter = std::cbrt(6.0 * size.mean_volume / PI) *
+                               std::exp(-params.sigma * params.sigma);
     }
     return params;
 }
@@ -361,8 +363,10 @@ bool NeedsSizeTargets(const MicrostructureOptions& options) {
  * GenerateJohnsonMehl (collective): the [Seeds.JohnsonMehl] options as JohnsonMehlParameters, the
  * nucleation run, and the parts of the seeding report the tool prints for every placement.
  */
-SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            GenerationReport& report, const MaterialContext& material) {
+SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options,
+                            mfem::ParMesh& pmesh,
+                            GenerationReport& report,
+                            const MaterialContext& material) {
     const JohnsonMehlOptions& jm = options.seeds.johnson_mehl;
     JohnsonMehlParameters params;
     params.nucleation_rate = jm.rate;
@@ -399,9 +403,12 @@ SeedSet GenerateJohnsonMehl(const MicrostructureOptions& options, mfem::ParMesh&
  * volume (returned in `slot_volume`, in seed order), which keeps every seed's target consistent
  * with the exclusion sphere it was placed with.
  */
-SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            MPI_Comm comm, double material_volume,
-                            std::vector<double>& slot_volume, GenerationReport& report,
+SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options,
+                            mfem::ParMesh& pmesh,
+                            MPI_Comm comm,
+                            double material_volume,
+                            std::vector<double>& slot_volume,
+                            GenerationReport& report,
                             const MaterialContext& material) {
     SeedingParameters params = MakeSeedingParameters(options);
     const SeedSizeOptions& size = options.seeds.size;
@@ -416,8 +423,8 @@ SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     if (size.polydisperse_placement) {
         std::vector<std::int64_t> slot_id(static_cast<std::size_t>(params.num_seeds));
         std::iota(slot_id.begin(), slot_id.end(), std::int64_t(0));
-        const SizeTargets slots =
-            MakeSizeTargets(slot_id, material_volume, MakeSizeParameters(options));
+        const SizeTargets slots = MakeSizeTargets(
+            slot_id, material_volume, MakeSizeParameters(options));
         params.rsa_radius.resize(slot_id.size());
         slot_volume.resize(slot_id.size());
         for (std::size_t j = 0; j < slot_id.size(); ++j) {
@@ -445,14 +452,14 @@ SeedSet GeneratePlacedSeeds(const MicrostructureOptions& options, mfem::ParMesh&
  * per-seed SeedSet array must have one entry per seed (periodic images copy them).
  */
 struct TableSeeds {
-    SeedSet seeds;                  ///< table rows (kept by the ROI), then the filler seeds
-    std::int64_t num_table = 0;     ///< seeds 0..num_table-1 are table rows
-    std::vector<double> quat;       ///< 4 per seed (filler rows 0), when the table has quats
-    std::vector<char> has_quat;     ///< 1 for table rows with a quaternion, 0 for filler seeds
-    std::vector<int> phase;         ///< per seed: table phase, filler_phase or -1 (empty: none)
+    SeedSet seeds;                    ///< table rows (kept by the ROI), then the filler seeds
+    std::int64_t num_table = 0;       ///< seeds 0..num_table-1 are table rows
+    std::vector<double> quat;         ///< 4 per seed (filler rows 0), when the table has quats
+    std::vector<char> has_quat;       ///< 1 for table rows with a quaternion, 0 for filler seeds
+    std::vector<int> phase;           ///< per seed: table phase, filler_phase or -1 (empty: none)
     std::vector<double> table_volume; ///< table volume of seeds 0..num_table-1 (or empty)
-    double roi_volume = 0.0;        ///< V_roi (filler runs only)
-    double outside_volume = 0.0;    ///< V_outside (filler runs only)
+    double roi_volume = 0.0;          ///< V_roi (filler runs only)
+    double outside_volume = 0.0;      ///< V_outside (filler runs only)
 };
 
 /*
@@ -479,8 +486,10 @@ struct TableSeeds {
  *     (x - s)^T M^-1 (x - s) = 1 on its measured ellipsoid.
  *  6. The combined SeedSet: table rows first (seed indices 0..num_table-1), then the filler.
  */
-TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                          MPI_Comm comm, GenerationReport& report,
+TableSeeds ReadTableSeeds(const MicrostructureOptions& options,
+                          mfem::ParMesh& pmesh,
+                          MPI_Comm comm,
+                          GenerationReport& report,
                           const MaterialContext& material) {
     const SeedOptions& opts = options.seeds;
     const TessellationOptions& tess = options.tessellation;
@@ -524,27 +533,32 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
     if (options.orientations.source == "from_source" && !table.has_quat) {
         throw std::invalid_argument("GenerateMicrostructure: Orientations.source = "
                                     "\"from_source\" needs the qw, qx, qy, qz columns in the seed "
-                                    "table '" + opts.file.string() + "'");
+                                    "table '" +
+                                    opts.file.string() + "'");
     }
     if (options.regions.mode == "from_phase" && !table.has_phase) {
         throw std::invalid_argument("GenerateMicrostructure: Regions.mode = \"from_phase\" needs "
-                                    "a phase column in the seed table '" + opts.file.string() +
-                                    "'");
+                                    "a phase column in the seed table '" +
+                                    opts.file.string() + "'");
     }
     if (opts.size.distribution == "from_source" && !table.has_volume) {
         throw std::invalid_argument("GenerateMicrostructure: Seeds.Size.distribution = "
                                     "\"from_source\" needs a volume, radius or diameter column in "
-                                    "the seed table '" + opts.file.string() + "'");
+                                    "the seed table '" +
+                                    opts.file.string() + "'");
     }
     const bool per_seed = (tess.anisotropy_kind == "per_seed");
     if (per_seed && !table.has_shape) {
         throw std::invalid_argument("GenerateMicrostructure: Tessellation.anisotropy.kind = "
                                     "\"per_seed\" needs the shape columns m11, m22, m33, m23, m13, "
-                                    "m12 in the seed table '" + opts.file.string() + "'");
+                                    "m12 in the seed table '" +
+                                    opts.file.string() + "'");
     }
     if (table.has_shape && !per_seed) {
-        Warn(comm, report, "the shape columns of the seed table are ignored (they are used only "
-                           "with Tessellation.anisotropy.kind = \"per_seed\")");
+        Warn(comm,
+             report,
+             "the shape columns of the seed table are ignored (they are used only "
+             "with Tessellation.anisotropy.kind = \"per_seed\")");
         table.seeds.shape.clear();
     }
     if (table.has_weight && tess.metric == MetricType::VORONOI) {
@@ -573,8 +587,7 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
         filler_params.rng_seed = opts.rng_seed;
         filler_params.source_id_offset = max_id + 1;
         filler_params.min_distance_factor = opts.filler_min_distance_factor;
-        RoiFillerResult filled =
-            FillOutsideRoi(pmesh, comm, filler_params, num_table, &material);
+        RoiFillerResult filled = FillOutsideRoi(pmesh, comm, filler_params, num_table, &material);
         filler = std::move(filled.filler);
         out.roi_volume = filled.roi_material_volume;
         out.outside_volume = filled.outside_material_volume;
@@ -598,8 +611,7 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
     seeds.x.insert(seeds.x.end(), filler.x.begin(), filler.x.end());
     seeds.y.insert(seeds.y.end(), filler.y.begin(), filler.y.end());
     seeds.z.insert(seeds.z.end(), filler.z.begin(), filler.z.end());
-    seeds.source_id.insert(seeds.source_id.end(), filler.source_id.begin(),
-                           filler.source_id.end());
+    seeds.source_id.insert(seeds.source_id.end(), filler.source_id.begin(), filler.source_id.end());
     // Metric weight: table weights, and for the filler seeds the mean table weight. Weighted
     // metrics only see weight differences, so a filler weight of 0 next to table weights with a
     // large common offset C (e.g. w = r^2 + C) would empty every filler grain; the mean makes a
@@ -647,8 +659,8 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
             out.phase[i] = table.seeds.phase[i];
         }
         for (std::size_t j = 0; j < nf; ++j) {
-            out.phase[nt + j] =
-                options.regions.has_filler_phase ? options.regions.filler_phase : -1;
+            out.phase[nt + j] = options.regions.has_filler_phase ? options.regions.filler_phase
+                                                                 : -1;
         }
     }
 
@@ -673,8 +685,10 @@ TableSeeds ReadTableSeeds(const MicrostructureOptions& options, mfem::ParMesh& p
  * removes the tiny difference between the quadrature-point volumes of the ROI split and the
  * element volume sum. Host only; replicated inputs give identical targets on every rank.
  */
-SizeTargets MakeSeedTargets(const MicrostructureOptions& options, const SeedSet& seeds,
-                            double material_volume, const std::vector<double>& slot_volume,
+SizeTargets MakeSeedTargets(const MicrostructureOptions& options,
+                            const SeedSet& seeds,
+                            double material_volume,
+                            const std::vector<double>& slot_volume,
                             const TableSeeds* table) {
     if (options.seeds.size.polydisperse_placement) {
         return MakeSizeTargetsFromVolumes(slot_volume, material_volume);
@@ -710,9 +724,13 @@ SizeTargets MakeSeedTargets(const MicrostructureOptions& options, const SeedSet&
  *    current weights (table weights or the Laguerre starting weights w = r^2 when present); the
  *    fitted weights replace seeds.weight.
  */
-void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI_Comm comm,
-                 const std::vector<double>& target_volume, SeedSet& seeds,
-                 GenerationReport& report, const MaterialContext& material) {
+void RelaxAndFit(const MicrostructureOptions& options,
+                 mfem::ParMesh& pmesh,
+                 MPI_Comm comm,
+                 const std::vector<double>& target_volume,
+                 SeedSet& seeds,
+                 GenerationReport& report,
+                 const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const bool lloyd = tess.lloyd_iterations > 0;
     const bool fit = tess.fit_volumes.enabled && !tess.centroidal_power;
@@ -744,13 +762,13 @@ void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI
         lloyd_params.centroidal_power = tess.centroidal_power;
         lloyd_params.weight_fit = fit_params;
         lloyd_params.weight_fit.metric = MetricType::LAGUERRE;
-        seeds = RunLloyd(pmesh, comm, samples, seeds, lloyd_params, target_volume, &report.lloyd,
-                         &material);
+        seeds = RunLloyd(
+            pmesh, comm, samples, seeds, lloyd_params, target_volume, &report.lloyd, &material);
         report.ran_lloyd = true;
     }
     if (fit) {
-        const WeightFitResult result =
-            FitWeights(comm, samples, seeds, target_volume, seeds.weight, fit_params);
+        const WeightFitResult result = FitWeights(
+            comm, samples, seeds, target_volume, seeds.weight, fit_params);
         seeds.weight = result.weight;
         report.weight_fit = result.report;
         report.ran_weight_fit = true;
@@ -769,8 +787,10 @@ void RelaxAndFit(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI
  * piece for it. The cost is one box test per local element (plus exact tests for the few
  * elements whose box contains their grain's seed).
  */
-std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh, MPI_Comm comm,
-                                          const SeedSet& seeds, const TessellationLabels& labels,
+std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh,
+                                          MPI_Comm comm,
+                                          const SeedSet& seeds,
+                                          const TessellationLabels& labels,
                                           const MaterialContext& material) {
     const std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
     std::vector<std::uint64_t> anchor(static_cast<std::size_t>(labels.num_grains), none);
@@ -799,8 +819,12 @@ std::vector<std::uint64_t> SeedAnchorKeys(mfem::ParMesh& pmesh, MPI_Comm comm,
         }
     }
     if (!anchor.empty()) {
-        MPI_Allreduce(MPI_IN_PLACE, anchor.data(), static_cast<int>(anchor.size()), MPI_UINT64_T,
-                      MPI_MIN, comm);
+        MPI_Allreduce(MPI_IN_PLACE,
+                      anchor.data(),
+                      static_cast<int>(anchor.size()),
+                      MPI_UINT64_T,
+                      MPI_MIN,
+                      comm);
     }
     return anchor;
 }
@@ -829,7 +853,9 @@ int CountCoincidentSeeds(const SeedSet& seeds) {
  * the other distance modes, so a copy of the options with the mode reset is passed. Used as the
  * starting labels of the connected mode and as the fallback for unreached geodesic elements.
  */
-TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
+TessellationLabels StraightLineLabels(mfem::ParMesh& pmesh,
+                                      MPI_Comm comm,
+                                      const SeedSet& seeds,
                                       const TessellationOptions& tess,
                                       const MaterialContext& material) {
     TessellationOptions euclidean = tess;
@@ -873,8 +899,11 @@ bool GeodesicNeedsSeedLists(const TessellationOptions& tess, const SeedSet& seed
  * straight-line labels. Paths are measured in `metric` (ResolveGeodesicMetric,
  * labeling/geodesic_metric.hpp: the identity, or the Quadric tensor's stretch).
  */
-GeodesicLabels LabelGeodesic(const TessellationOptions& tess, mfem::ParMesh& pmesh, MPI_Comm comm,
-                             const SeedSet& seeds, const MaterialContext& material,
+GeodesicLabels LabelGeodesic(const TessellationOptions& tess,
+                             mfem::ParMesh& pmesh,
+                             MPI_Comm comm,
+                             const SeedSet& seeds,
+                             const MaterialContext& material,
                              const GeodesicMetric& metric) {
     GeodesicParameters params;
     params.context = &material;
@@ -974,9 +1003,12 @@ struct DistanceModeLabels {
  * Every step is partition independent (see the called functions), so the labels are the same for
  * every rank count.
  */
-DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                                       MPI_Comm comm, const SeedSet& seeds,
-                                       const MeshAdjacency& adjacency, GenerationReport& report,
+DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options,
+                                       mfem::ParMesh& pmesh,
+                                       MPI_Comm comm,
+                                       const SeedSet& seeds,
+                                       const MeshAdjacency& adjacency,
+                                       GenerationReport& report,
                                        const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const int num_seeds = static_cast<int>(seeds.Size());
@@ -1001,8 +1033,8 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
         params.max_rounds = tess.connected_max_rounds;
         params.sampling = tess.sampling;
         params.vote_levels = tess.vote_levels;
-        report.connected = ConstrainToConnectedCells(pmesh, comm, adjacency, seeds, tess,
-                                                     element_seed, params, &material);
+        report.connected = ConstrainToConnectedCells(
+            pmesh, comm, adjacency, seeds, tess, element_seed, params, &material);
         report.used_connected = true;
 
         // Step 3: compact grain ids over the seeds that still own elements
@@ -1024,10 +1056,12 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // because an earlier grain's sphere covered it across a void, although that grain would reach
     // it later (or never) along material paths. Only the labels below use path lengths; say so.
     if (options.seeds.placement == SeedPlacement::JOHNSON_MEHL) {
-        Warn(comm, report, "Johnson-Mehl with Tessellation.distance = \"geodesic\": nucleation "
-                           "still discards a candidate covered by an earlier grain's "
-                           "straight-line growth sphere, even across a void; only the final "
-                           "labels use path lengths inside the material");
+        Warn(comm,
+             report,
+             "Johnson-Mehl with Tessellation.distance = \"geodesic\": nucleation "
+             "still discards a candidate covered by an earlier grain's "
+             "straight-line growth sphere, even across a void; only the final "
+             "labels use path lengths inside the material");
     }
 
     // Step 1: path-length labels (the VertexField inside `geodesic` refers to pmesh and dies at
@@ -1036,15 +1070,16 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     // Quadric: paths are measured with the tensor (columnar / lamellar regularized, automatic
     // elongation from the part's extents; collective). Laguerre and weighted Quadric go to the
     // weighted solver inside LabelGeodesic.
-    const GeodesicMetric metric = ResolveGeodesicMetric(tess, pmesh, comm,
-                                                        static_cast<int>(seeds.Size()),
-                                                        material.mask);
+    const GeodesicMetric metric = ResolveGeodesicMetric(
+        tess, pmesh, comm, static_cast<int>(seeds.Size()), material.mask);
     report.geodesic_elongation = metric.elongation;
     report.geodesic_elongation_auto = metric.automatic;
     if (metric.clamped) {
-        Warn(comm, report, "Tessellation.geodesic.elongation = \"auto\" was limited to 1e4; "
-                           "columns (layers) may end inside the part. Use fewer, wider grains "
-                           "along the axis or the Euclidean distance");
+        Warn(comm,
+             report,
+             "Tessellation.geodesic.elongation = \"auto\" was limited to 1e4; "
+             "columns (layers) may end inside the part. Use fewer, wider grains "
+             "along the axis or the Euclidean distance");
     }
     GeodesicLabels geodesic = LabelGeodesic(tess, pmesh, comm, seeds, material, metric);
     report.used_geodesic = true;
@@ -1052,13 +1087,14 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     report.geodesic = geodesic.report;
     report.geodesic_seed_lists = GeodesicNeedsSeedLists(tess, seeds);
     if (geodesic.report.overflow_nodes > 0) {
-        Warn(comm, report, "geodesic seed lists overflowed at " +
-                               std::to_string(geodesic.report.overflow_nodes) +
-                               " node(s): more than Tessellation.geodesic.max_seeds_per_node = " +
-                               std::to_string(tess.geodesic_max_seeds_per_node) +
-                               " seeds could still win there and the worst were dropped, so some "
-                               "grains may be cut short and the result may depend on the rank "
-                               "count; raise max_seeds_per_node");
+        Warn(comm,
+             report,
+             "geodesic seed lists overflowed at " + std::to_string(geodesic.report.overflow_nodes) +
+                 " node(s): more than Tessellation.geodesic.max_seeds_per_node = " +
+                 std::to_string(tess.geodesic_max_seeds_per_node) +
+                 " seeds could still win there and the worst were dropped, so some "
+                 "grains may be cut short and the result may depend on the rank "
+                 "count; raise max_seeds_per_node");
     }
     report.num_unreached_elements = geodesic.report.unreached_elements;
     report.num_unlabeled_elements = geodesic.report.unlabeled_elements;
@@ -1090,8 +1126,8 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options, mfe
     out.labels.num_coincident_seeds = num_coincident;
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
-    out.local_split_elements =
-        (rank == 0) ? static_cast<long long>(geodesic.report.split_elements) : 0;
+    out.local_split_elements = (rank == 0) ? static_cast<long long>(geodesic.report.split_elements)
+                                           : 0;
     out.labels.num_split_elements = static_cast<int>(out.local_split_elements);
     out.seed_anchor_key = geodesic.sources.source_element_key;
     return out;
@@ -1133,16 +1169,16 @@ FragmentCleanupParameters CleanupParameters(const MicrostructureOptions& options
  * writes the passthrough grains there).
  */
 struct ActiveGrains {
-    mfem::Array<int> element_grain;            ///< every local element: grain, 0 when inactive
+    mfem::Array<int> element_grain; ///< every local element: grain, 0 when inactive
     int num_grains = 0;
-    std::vector<std::int64_t> source_id;       ///< stable id (seed, feature or derived)
-    std::vector<double> source_quat;           ///< 4 per grain: measured orientation (or 0)
-    std::vector<char> has_source_quat;         ///< 1 when source_quat holds a measured one
-    std::vector<int> phase;                    ///< phase or -1
-    std::vector<char> filler;                  ///< 1 for filler grains
-    std::vector<int> seed;                     ///< parent seed index, -1 for voxel grains
-    std::vector<std::int64_t> feature;         ///< voxel feature id, -1 for seed grains
-    std::shared_ptr<MeshAdjacency> adjacency;  ///< face adjacency of the whole mesh
+    std::vector<std::int64_t> source_id;      ///< stable id (seed, feature or derived)
+    std::vector<double> source_quat;          ///< 4 per grain: measured orientation (or 0)
+    std::vector<char> has_source_quat;        ///< 1 when source_quat holds a measured one
+    std::vector<int> phase;                   ///< phase or -1
+    std::vector<char> filler;                 ///< 1 for filler grains
+    std::vector<int> seed;                    ///< parent seed index, -1 for voxel grains
+    std::vector<std::int64_t> feature;        ///< voxel feature id, -1 for seed grains
+    std::shared_ptr<MeshAdjacency> adjacency; ///< face adjacency of the whole mesh
     /** Quadrature vote: local elements cut by a grain boundary (summed by the caller). */
     long long local_split_elements = 0;
 };
@@ -1164,8 +1200,10 @@ struct ActiveGrains {
  * Finally the per-grain tables: parent seed, source id, measured orientation and phase of the
  * parent seed (seed tables), and the filler flag (parent seed index >= number of table rows).
  */
-ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            MPI_Comm comm, GenerationReport& report,
+ActiveGrains LabelFromSeeds(const MicrostructureOptions& options,
+                            mfem::ParMesh& pmesh,
+                            MPI_Comm comm,
+                            GenerationReport& report,
                             const MaterialContext& material) {
     const TessellationOptions& tess = options.tessellation;
     const bool table_source = (options.seeds.source == "file");
@@ -1187,15 +1225,15 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     std::vector<double> slot_volume;
     std::unique_ptr<TableSeeds> table;
     if (table_source) {
-        table =
-            std::make_unique<TableSeeds>(ReadTableSeeds(options, pmesh, comm, report, material));
+        table = std::make_unique<TableSeeds>(
+            ReadTableSeeds(options, pmesh, comm, report, material));
         seeds = table->seeds;
     } else if (johnson_mehl) {
         seeds = GenerateJohnsonMehl(options, pmesh, report, material);
         report.seeding.material_volume = material_volume;
     } else {
-        seeds = GeneratePlacedSeeds(options, pmesh, comm, material_volume, slot_volume, report,
-                                    material);
+        seeds = GeneratePlacedSeeds(
+            options, pmesh, comm, material_volume, slot_volume, report, material);
     }
     if (seeds.Size() == 0) {
         // Only possible when stalls are allowed (or a nucleation run ends before its first
@@ -1209,16 +1247,18 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     // table supplied weights
     std::vector<double> target_volume;
     if (size_targets) {
-        const SizeTargets targets =
-            MakeSeedTargets(options, seeds, material_volume, slot_volume, table.get());
+        const SizeTargets targets = MakeSeedTargets(
+            options, seeds, material_volume, slot_volume, table.get());
         target_volume = targets.volume;
         if (tess.metric == MetricType::LAGUERRE) {
             if (seeds.weight.empty()) {
                 seeds.weight = targets.initial_weight;
             } else {
-                Warn(comm, report, "the seed table weights are used as the Laguerre weights; the "
-                                   "size targets' starting weights w = r^2 are not used for the "
-                                   "table seeds");
+                Warn(comm,
+                     report,
+                     "the seed table weights are used as the Laguerre weights; the "
+                     "size targets' starting weights w = r^2 are not used for the "
+                     "table seeds");
                 // Filler seeds: their own target weight shifted by the mean offset of the table
                 // weights from the table targets' weights, so a common offset C of the table
                 // weights is carried over (only weight differences matter)
@@ -1261,8 +1301,8 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     // Steps 6-8: labels and compact grain ids (collective), by distance mode. With periodic axes
     // the labeler builds the periodic images itself and maps their labels back to the original
     // seeds.
-    const DistanceModeLabels mode =
-        LabelByDistanceMode(options, pmesh, comm, seeds, *out.adjacency, report, material);
+    const DistanceModeLabels mode = LabelByDistanceMode(
+        options, pmesh, comm, seeds, *out.adjacency, report, material);
     const TessellationLabels& labels = mode.labels;
     report.periodic_layers = labels.periodic_layers;
     report.num_periodic_images = labels.num_periodic_images;
@@ -1310,9 +1350,12 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options, mfem::ParMesh&
     for (std::size_t g = 0; g < labels.grain_seed.size(); ++g) {
         labeled_source_id[g] = seeds.source_id[static_cast<std::size_t>(labels.grain_seed[g])];
     }
-    FragmentCleanupResult cleaned =
-        CleanupFragments(*out.adjacency, labels.element_grain, labels.num_grains, labeled_source_id,
-                         cleanup_params, material.mask);
+    FragmentCleanupResult cleaned = CleanupFragments(*out.adjacency,
+                                                     labels.element_grain,
+                                                     labels.num_grains,
+                                                     labeled_source_id,
+                                                     cleanup_params,
+                                                     material.mask);
     report.cleanup = cleaned.report;
 
     // Per-grain tables. Grain g descends from input grain grain_parent[g-1], whose seed is
@@ -1389,8 +1432,10 @@ VoxelMapParameters MakeVoxelMapParameters(const MicrostructureOptions& options) 
  * from_phase regions); then the per-grain tables of the final grains from their parent features
  * (a piece split off a feature keeps the feature's orientation and phase).
  */
-ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                             MPI_Comm comm, GenerationReport& report,
+ActiveGrains LabelFromVoxels(const MicrostructureOptions& options,
+                             mfem::ParMesh& pmesh,
+                             MPI_Comm comm,
+                             GenerationReport& report,
                              const MaterialContext& material) {
     const VoxelMapParameters map = MakeVoxelMapParameters(options);
     VoxelLabelParameters label_params;
@@ -1400,12 +1445,11 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
 
     // Labels from the voxels, then compact grain ids in ascending feature id
     const VoxelGridInfo grid = ReadVoxelGridInfo(map, comm);
-    const VoxelLabels labels =
-        LabelElementsFromVoxels(pmesh, comm, map, grid, label_params, material.mask);
+    const VoxelLabels labels = LabelElementsFromVoxels(
+        pmesh, comm, map, grid, label_params, material.mask);
     mfem::Array<int> element_grain;
     std::vector<std::int64_t> grain_feature;
-    CompactFeatureLabels(comm, labels.element_feature, element_grain, grain_feature,
-                         material.mask);
+    CompactFeatureLabels(comm, labels.element_feature, element_grain, grain_feature, material.mask);
     const int num_labeled = static_cast<int>(grain_feature.size());
 
     // Report: grid and fill statistics; the read volume is per rank, so also give global sums
@@ -1427,8 +1471,8 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
     ActiveGrains out;
     out.adjacency = std::make_shared<MeshAdjacency>(pmesh);
     const FragmentCleanupParameters cleanup_params = CleanupParameters(options);
-    FragmentCleanupResult cleaned = CleanupFragments(*out.adjacency, element_grain, num_labeled,
-                                                     grain_feature, cleanup_params, material.mask);
+    FragmentCleanupResult cleaned = CleanupFragments(
+        *out.adjacency, element_grain, num_labeled, grain_feature, cleanup_params, material.mask);
     report.cleanup = cleaned.report;
 
     // The features the final grains descend from (a grain merged away entirely by the cleanup
@@ -1510,9 +1554,13 @@ ActiveGrains LabelFromVoxels(const MicrostructureOptions& options, mfem::ParMesh
  *    region 1 lists the distinct phases present.
  * Host only except GrainVolumes (collective) for phase_fractions.
  */
-void AssignRegions(const MicrostructureOptions& options, mfem::ParMesh& pmesh, MPI_Comm comm,
-                   const ActiveGrains& active, MicrostructureResult& result,
-                   GenerationReport& report, const MaterialContext& material) {
+void AssignRegions(const MicrostructureOptions& options,
+                   mfem::ParMesh& pmesh,
+                   MPI_Comm comm,
+                   const ActiveGrains& active,
+                   MicrostructureResult& result,
+                   GenerationReport& report,
+                   const MaterialContext& material) {
     const RegionOptions& regions = options.regions;
     const auto num_grains = static_cast<std::size_t>(active.num_grains);
     result.grain_phase = active.phase;
@@ -1534,8 +1582,8 @@ void AssignRegions(const MicrostructureOptions& options, mfem::ParMesh& pmesh, M
     // Synthetic phases: greedy by deficit over the grains, visited in a random order keyed by
     // their source ids (regions/region_assigner.hpp)
     if (regions.mode == "phase_fractions") {
-        const std::vector<double> volume =
-            GrainVolumes(pmesh, comm, active.element_grain, active.num_grains, material);
+        const std::vector<double> volume = GrainVolumes(
+            pmesh, comm, active.element_grain, active.num_grains, material);
         PhaseFractionParameters params;
         params.phase_id = regions.phase_ids;
         params.fraction = regions.phase_fractions;
@@ -1587,7 +1635,8 @@ void AssignRegions(const MicrostructureOptions& options, mfem::ParMesh& pmesh, M
  */
 void AppendPassthroughGrains(const MicrostructureOptions& options,
                              const std::vector<int>& passthrough_attributes,
-                             MicrostructureResult& result, std::vector<int>& grain_seed,
+                             MicrostructureResult& result,
+                             std::vector<int>& grain_seed,
                              std::vector<std::int64_t>& grain_feature) {
     for (const int attribute : passthrough_attributes) {
         const int region = options.mesh.passthrough_attributes.at(attribute);
@@ -1614,8 +1663,8 @@ void AppendPassthroughGrains(const MicrostructureOptions& options,
         }
         throw std::invalid_argument(
             "GenerateMicrostructure: the phase regions and Mesh.passthrough_attributes regions "
-            "together must be exactly 1.." + std::to_string(num_regions) + "; unused region ids: " +
-            missing);
+            "together must be exactly 1.." +
+            std::to_string(num_regions) + "; unused region ids: " + missing);
     }
     // New regions (passthrough only): no phases, not crystalline
     result.region_phases.resize(static_cast<std::size_t>(num_regions));
@@ -1665,9 +1714,12 @@ namespace {
  *  5. A mesh that had no Nodes gets the fitted positions as its vertices and loses the Nodes
  *     again, so the caller's mesh keeps its kind (order-1 H1 Nodes: dof v is vertex v).
  */
-void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh& pmesh,
-                            MPI_Comm comm, const std::vector<int>& grain_seed,
-                            int num_passthrough, GenerationReport& report,
+void FitConformalBoundaries(const MicrostructureOptions& options,
+                            mfem::ParMesh& pmesh,
+                            MPI_Comm comm,
+                            const std::vector<int>& grain_seed,
+                            int num_passthrough,
+                            GenerationReport& report,
                             MicrostructureResult& result) {
     // Step 1
     bool bad_type = false;
@@ -1675,11 +1727,12 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
         const mfem::Geometry::Type g = pmesh.GetElementGeometry(e);
         bad_type = bad_type || (g != mfem::Geometry::CUBE && g != mfem::Geometry::TETRAHEDRON);
     }
-    ThrowIfAnyRank(comm, bad_type,
-                   "GenerateMicrostructure: Conformal.enabled needs a hex or tet mesh");
+    ThrowIfAnyRank(
+        comm, bad_type, "GenerateMicrostructure: Conformal.enabled needs a hex or tet mesh");
     mfem::GridFunction* nodes = pmesh.GetNodes();
     const bool had_nodes = nodes != nullptr;
-    ThrowIfAnyRank(comm, had_nodes && nodes->FESpace()->GetMaxElementOrder() > 2,
+    ThrowIfAnyRank(comm,
+                   had_nodes && nodes->FESpace()->GetMaxElementOrder() > 2,
                    "GenerateMicrostructure: Conformal.enabled supports meshes of order 1 and 2 "
                    "(Nodes of order 3 and higher are not supported yet)");
 
@@ -1694,15 +1747,19 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
     setup.per_seed_shape = !report.seeds.shape.empty();
     LabelRepairOptions repair_options;
     repair_options.min_grain_elements = std::max(1, options.cleanup.min_grain_elements);
-    repair_options.targets.analytic =
-        !UsesVoxelMap(options) && options.tessellation.distance != DistanceMode::GEODESIC;
+    repair_options.targets.analytic = !UsesVoxelMap(options) &&
+                                      options.tessellation.distance != DistanceMode::GEODESIC;
     repair_options.targets.smoothed = true;
     for (int g = result.num_grains - num_passthrough + 1; g <= result.num_grains; ++g) {
         repair_options.labels.fixed_labels.push_back(g); // the passthrough grains come last
     }
-    LabelRepairResult repair =
-        RepairLabels(pmesh, result.element_grain, options.tessellation.metric, report.seeds,
-                     setup, grain_seed, repair_options);
+    LabelRepairResult repair = RepairLabels(pmesh,
+                                            result.element_grain,
+                                            options.tessellation.metric,
+                                            report.seeds,
+                                            setup,
+                                            grain_seed,
+                                            repair_options);
 
     // Step 4
     report.conformal_smoothed_nodes = repair.targets->Summary().smoothed;
@@ -1790,8 +1847,8 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
         for (const auto& entry : options.mesh.passthrough_attributes) {
             passthrough_attributes.push_back(entry.first); // std::map: ascending
         }
-        domain = std::make_unique<AttributeDomain>(pmesh, options.mesh.active_attributes,
-                                                   passthrough_attributes);
+        domain = std::make_unique<AttributeDomain>(
+            pmesh, options.mesh.active_attributes, passthrough_attributes);
         report.used_attribute_domain = true;
         report.active_attributes = domain->ActiveAttributes();
         report.passthrough_attributes = domain->PassthroughAttributes();
@@ -1825,8 +1882,8 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     if (options.orientations.source != "from_source") {
         std::fill(use_source_quat.begin(), use_source_quat.end(), 0);
     }
-    AssignMixedGrainOrientations(options.seeds.rng_seed, active.source_id, active.source_quat,
-                                 use_source_quat, result);
+    AssignMixedGrainOrientations(
+        options.seeds.rng_seed, active.source_id, active.source_quat, use_source_quat, result);
     result.grain_filler = active.filler;
 
     // Steps 11-12: phases and regions of the active grains
@@ -1843,16 +1900,20 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     long long local_counts[3] = {pmesh.GetNE(), num_active_local, active.local_split_elements};
     if (domain) {
         result.element_grain = domain->ToParent(active.element_grain, active.num_grains);
-        AppendPassthroughGrains(options, passthrough_attributes, result, grain_seed,
-                                grain_feature);
+        AppendPassthroughGrains(options, passthrough_attributes, result, grain_seed, grain_feature);
     } else {
         result.element_grain = active.element_grain;
     }
 
     // Step 14: conformal grain boundaries (moves the mesh nodes; may flip a few elements)
     if (options.conformal.enabled) {
-        FitConformalBoundaries(options, pmesh, comm, grain_seed,
-                               static_cast<int>(passthrough_attributes.size()), report, result);
+        FitConformalBoundaries(options,
+                               pmesh,
+                               comm,
+                               grain_seed,
+                               static_cast<int>(passthrough_attributes.size()),
+                               report,
+                               result);
         // Face areas of the fitted geometry (no periodic axes with Conformal.enabled)
         adjacency = std::make_shared<const MeshAdjacency>(pmesh);
     }

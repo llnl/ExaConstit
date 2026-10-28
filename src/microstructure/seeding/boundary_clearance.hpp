@@ -1,17 +1,16 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-
 #include "mfem.hpp"
+
+#include <array>
+#include <cstdint>
+#include <vector>
 
 #include "axom/primal/geometry/BoundingBox.hpp"
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/primal/geometry/Triangle.hpp"
 #include "axom/spin/BVH.hpp"
-
-#include <array>
-#include <cstdint>
-#include <vector>
+#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file boundary_clearance.hpp
@@ -101,7 +100,9 @@ public:
      *        between an active and an inactive element is a bonded interface (e.g. the top of a
      *        build plate), not a surface, so it is never used. nullptr = every element.
      */
-    BoundaryClearance(const mfem::Mesh& mesh, double clearance, bool straight_sided,
+    BoundaryClearance(const mfem::Mesh& mesh,
+                      double clearance,
+                      bool straight_sided,
                       const ElementMask* mask = nullptr);
 
     /** @brief Number of local surface triangles. */
@@ -114,15 +115,18 @@ public:
      * triangle is < c. Bit layout as in MaterialPointLocator::MarkInside (word i / 64, bit i % 64);
      * other bits are unchanged. Host only, not collective.
      */
-    void MarkNear(std::int64_t n, const double* x, const double* y, const double* z,
+    void MarkNear(std::int64_t n,
+                  const double* x,
+                  const double* y,
+                  const double* z,
                   std::uint64_t* near_mask) const;
 
 private:
-    double m_clearance;                     ///< c
-    std::vector<TriangleType> m_triangles;  ///< local surface triangles
-    std::vector<BoxType> m_boxes;           ///< bounding box of each triangle
-    BoxType m_bounds;                       ///< union of the triangle boxes
-    axom::spin::BVH<3, ExecSpace> m_bvh;    ///< BVH over m_boxes (if any triangles)
+    double m_clearance;                    ///< c
+    std::vector<TriangleType> m_triangles; ///< local surface triangles
+    std::vector<BoxType> m_boxes;          ///< bounding box of each triangle
+    BoxType m_bounds;                      ///< union of the triangle boxes
+    axom::spin::BVH<3, ExecSpace> m_bvh;   ///< BVH over m_boxes (if any triangles)
 };
 
 } // namespace exaconstit::microstructure

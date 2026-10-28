@@ -22,17 +22,6 @@
  */
 #include "microstructure/labeling/connected_labeler.hpp"
 
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -45,6 +34,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -159,8 +159,12 @@ struct ExclusionLists {
  * Query k = j * repeat + q (point q of elems[j]) gets ids[offsets[k] .. offsets[k+1] - 1] = the
  * list of elems[j]. Host loop; the arrays are moved to the device by the search.
  */
-void BuildExclusionCsr(const ExclusionLists& lists, const int* elems, int num_elems, int repeat,
-                       mfem::Array<int>& offsets, mfem::Array<int>& ids) {
+void BuildExclusionCsr(const ExclusionLists& lists,
+                       const int* elems,
+                       int num_elems,
+                       int repeat,
+                       mfem::Array<int>& offsets,
+                       mfem::Array<int>& ids) {
     // Total size first, so both arrays are allocated once
     long long total = 0;
     for (int j = 0; j < num_elems; ++j) {
@@ -201,8 +205,12 @@ void BuildExclusionCsr(const ExclusionLists& lists, const int* elems, int num_el
  * A named function (not a lambda inside the dispatch lambdas) because CUDA does not allow a device
  * lambda to be defined inside a generic lambda.
  */
-void GatherSelectedPoints(const QuadraturePointSamples& points, const mfem::Array<int>& rel,
-                          int nq, mfem::Vector& x, mfem::Vector& y, mfem::Vector& z,
+void GatherSelectedPoints(const QuadraturePointSamples& points,
+                          const mfem::Array<int>& rel,
+                          int nq,
+                          mfem::Vector& x,
+                          mfem::Vector& y,
+                          mfem::Vector& z,
                           mfem::Vector& w) {
     const int num_sel = rel.Size();
     const int n = num_sel * nq;
@@ -243,8 +251,11 @@ void GatherSelectedPoints(const QuadraturePointSamples& points, const mfem::Arra
  * device); the largest total wins, an exactly equal total goes to the lower seed index. No scratch
  * memory, so it runs on a GPU. winner[j] = -1 when no point voted.
  */
-void VoteSelected(int num_sel, int nq, const mfem::Array<BestPair>& best,
-                  const mfem::Vector& weight, mfem::Array<int>& winner) {
+void VoteSelected(int num_sel,
+                  int nq,
+                  const mfem::Array<BestPair>& best,
+                  const mfem::Vector& weight,
+                  mfem::Array<int>& winner) {
     winner.SetSize(num_sel);
     if (num_sel == 0) {
         return;
@@ -298,11 +309,11 @@ struct RoundContext {
     int num_elements = 0;
     int num_seeds = 0;
     ConnectedLabelParameters params;
-    std::vector<std::uint64_t> keys;      ///< element keys, size NE
-    std::vector<int> anchor_local;        ///< size N: local element holding seed s's anchor, or -1
-    std::vector<std::uint64_t> anchor_key;///< size N: anchor key of every seed (replicated)
-    std::vector<char> exempt;             ///< size NE: 1 for unanchored bodies, inactive elements
-    const ElementMask* mask = nullptr;    ///< active elements (nullptr = every element)
+    std::vector<std::uint64_t> keys;       ///< element keys, size NE
+    std::vector<int> anchor_local;         ///< size N: local element holding seed s's anchor, or -1
+    std::vector<std::uint64_t> anchor_key; ///< size N: anchor key of every seed (replicated)
+    std::vector<char> exempt;              ///< size NE: 1 for unanchored bodies, inactive elements
+    const ElementMask* mask = nullptr;     ///< active elements (nullptr = every element)
     const ElementSamples* centroids = nullptr; ///< element centroids (any memory space)
     QuadraturePointSampler* sampler = nullptr; ///< vote sampling only, null on empty ranks
 };
@@ -321,8 +332,10 @@ struct RoundContext {
  * Not collective. Returns new_label[j] for movable[j] (-1 = every seed excluded).
  */
 template <typename Index>
-std::vector<int> RelabelMovable(const Index& index, const RoundContext& ctx,
-                                const ExclusionLists& lists, const std::vector<int>& movable) {
+std::vector<int> RelabelMovable(const Index& index,
+                                const RoundContext& ctx,
+                                const ExclusionLists& lists,
+                                const std::vector<int>& movable) {
     const int m = static_cast<int>(movable.size());
     std::vector<int> new_label(static_cast<std::size_t>(m), -1);
     if (m == 0) {
@@ -373,8 +386,8 @@ std::vector<int> RelabelMovable(const Index& index, const RoundContext& ctx,
             // Memory of this element's searched points, including its list copy per point
             const int e = movable[static_cast<std::size_t>(stop)];
             const auto list_len = static_cast<std::size_t>(lists.Length(e));
-            const std::size_t cost =
-                static_cast<std::size_t>(nq) * (VOTE_BYTES_PER_POINT + 4 * list_len);
+            const std::size_t cost = static_cast<std::size_t>(nq) *
+                                     (VOTE_BYTES_PER_POINT + 4 * list_len);
             if (stop > pos && bytes + cost > VOTE_CHUNK_BYTES) {
                 break;
             }
@@ -528,14 +541,15 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
     const int ne = pmesh.GetNE();
     const bool bad_size = static_cast<int>(element_key.size()) != ne || centroid_x.Size() != ne ||
                           centroid_y.Size() != ne || centroid_z.Size() != ne;
-    ThrowIfAnyRank(comm, bad_size,
+    ThrowIfAnyRank(comm,
+                   bad_size,
                    "SeedAnchorElementKeys: element_key and the centroids must have one entry per "
                    "local element");
     const int n = static_cast<int>(seeds.Size());
 
     // Step 2: containing element
-    std::vector<std::uint64_t> anchor =
-        ContainingElementKeys(pmesh, comm, seeds, &element_key, context);
+    std::vector<std::uint64_t> anchor = ContainingElementKeys(
+        pmesh, comm, seeds, &element_key, context);
 
     // Step 3: seeds outside the material go to the nearest element centroid
     std::vector<int> outside;
@@ -551,8 +565,8 @@ std::vector<std::uint64_t> SeedAnchorElementKeys(mfem::ParMesh& pmesh,
     centroids.cx = centroid_x;
     centroids.cy = centroid_y;
     centroids.cz = centroid_z;
-    const NearestKeys nearest = NearestElementCentroidKeys(pmesh, comm, seeds, outside, &centroids,
-                                                           &element_key, ContextMask(context));
+    const NearestKeys nearest = NearestElementCentroidKeys(
+        pmesh, comm, seeds, outside, &centroids, &element_key, ContextMask(context));
     for (std::size_t k = 0; k < outside.size(); ++k) {
         anchor[static_cast<std::size_t>(outside[k])] = nearest.key[k];
     }
@@ -593,13 +607,14 @@ std::vector<std::uint64_t> ConnectedAnchorKeys(mfem::ParMesh& pmesh,
     for (int e = 0; !bad && e < ne; ++e) {
         bad = ElementIsActive(mask, e) && (label[e] < 0 || label[e] >= n);
     }
-    ThrowIfAnyRank(comm, bad,
+    ThrowIfAnyRank(comm,
+                   bad,
                    "ConnectedAnchorKeys: element_seed, element_key and the centroids must have one "
                    "entry per local element, with labels in [0, N)");
 
     // Step 2: the containing element, if it carries the seed's own label
-    const std::vector<std::uint64_t> containing =
-        ContainingElementKeys(pmesh, comm, seeds, &element_key, context);
+    const std::vector<std::uint64_t> containing = ContainingElementKeys(
+        pmesh, comm, seeds, &element_key, context);
     std::vector<std::uint64_t> anchor(static_cast<std::size_t>(n), NO_KEY);
     for (int e = 0; e < ne; ++e) {
         if (!ElementIsActive(mask, e)) {
@@ -715,7 +730,8 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     // Step 1b: inputs (reduced, so every rank throws together)
     const int ne = pmesh.GetNE();
     const int n = static_cast<int>(seeds.Size());
-    ThrowIfAnyRank(comm, &adjacency.GetParMesh() != &pmesh || adjacency.NumElements() != ne,
+    ThrowIfAnyRank(comm,
+                   &adjacency.GetParMesh() != &pmesh || adjacency.NumElements() != ne,
                    "ConstrainToConnectedCells: the adjacency must describe the given mesh");
     bool bad_labels = element_seed.Size() != ne;
     if (!bad_labels && ne > 0) {
@@ -725,7 +741,8 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
             bad_labels = bad_labels || (active && (in[e] < 0 || in[e] >= n));
         }
     }
-    ThrowIfAnyRank(comm, bad_labels,
+    ThrowIfAnyRank(comm,
+                   bad_labels,
                    "ConstrainToConnectedCells: element_seed must hold one seed index in [0, N) "
                    "per local element");
 
@@ -741,8 +758,15 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     ElementSamples centroids;
     ComputeElementSamples(pmesh, -1, centroids);
     ctx.centroids = &centroids;
-    ctx.anchor_key = ConnectedAnchorKeys(pmesh, comm, seeds, element_seed, ctx.keys, centroids.cx,
-                                         centroids.cy, centroids.cz, context);
+    ctx.anchor_key = ConnectedAnchorKeys(pmesh,
+                                         comm,
+                                         seeds,
+                                         element_seed,
+                                         ctx.keys,
+                                         centroids.cx,
+                                         centroids.cy,
+                                         centroids.cz,
+                                         context);
 
     std::vector<std::pair<std::uint64_t, int>> key_to_element(static_cast<std::size_t>(ne));
     for (int e = 0; e < ne; ++e) {
@@ -752,7 +776,8 @@ ConnectedLabelReport ConstrainToConnectedCells(mfem::ParMesh& pmesh,
     ctx.anchor_local.assign(static_cast<std::size_t>(n), -1);
     for (int s = 0; s < n; ++s) {
         const std::uint64_t key = ctx.anchor_key[static_cast<std::size_t>(s)];
-        const auto it = std::lower_bound(key_to_element.begin(), key_to_element.end(),
+        const auto it = std::lower_bound(key_to_element.begin(),
+                                         key_to_element.end(),
                                          std::make_pair(key, std::numeric_limits<int>::min()));
         if (key != NO_KEY && it != key_to_element.end() && it->first == key) {
             ctx.anchor_local[static_cast<std::size_t>(s)] = it->second;

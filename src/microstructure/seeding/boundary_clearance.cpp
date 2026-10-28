@@ -1,15 +1,14 @@
 #include "microstructure/seeding/boundary_clearance.hpp"
 
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-
-#include "axom/primal/operators/closest_point.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+
+#include "axom/primal/operators/closest_point.hpp"
+#include "axom/primal/operators/squared_distance.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -62,14 +61,14 @@ int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
     const double normal[3] = {diag_a[1] * diag_b[2] - diag_a[2] * diag_b[1],
                               diag_a[2] * diag_b[0] - diag_a[0] * diag_b[2],
                               diag_a[0] * diag_b[1] - diag_a[1] * diag_b[0]};
-    const double normal_len =
-        std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    const double normal_len = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] +
+                                        normal[2] * normal[2]);
     if (!(normal_len > 0.0) || !(size_sq > 0.0)) {
         return 1; // degenerate face: nothing sensible to refine
     }
-    const double warp =
-        std::fabs(twist[0] * normal[0] + twist[1] * normal[1] + twist[2] * normal[2]) /
-        (4.0 * normal_len);
+    const double warp = std::fabs(twist[0] * normal[0] + twist[1] * normal[1] +
+                                  twist[2] * normal[2]) /
+                        (4.0 * normal_len);
     const double allowed = BOUNDARY_WARP_REL_TOL * std::sqrt(size_sq);
     if (warp <= allowed) {
         return 1;
@@ -109,8 +108,10 @@ int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
  *       the error is the sag of one sub-triangle, see the header).
  *  4. Build the BVH over the triangle boxes (axom::spin::BVH::initialize, BVH.hpp:427).
  */
-BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
-                                     bool straight_sided, const ElementMask* mask)
+BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh,
+                                     double clearance,
+                                     bool straight_sided,
+                                     const ElementMask* mask)
     : m_clearance(clearance) {
     if (!(clearance > 0.0)) {
         throw std::invalid_argument("BoundaryClearance: the clearance must be positive");
@@ -170,27 +171,26 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
         } else {
             mesh.GetFaceTransformation(f, &face_trans);
         }
-        mfem::RefinedGeometry* refined =
-            mfem::GlobGeometryRefiner.Refine(geom, face_subdivisions);
+        mfem::RefinedGeometry* refined = mfem::GlobGeometryRefiner.Refine(geom, face_subdivisions);
         face_points.resize(static_cast<std::size_t>(refined->RefPts.GetNPoints()));
         for (int q = 0; q < refined->RefPts.GetNPoints(); q++) {
             face_trans.Transform(refined->RefPts.IntPoint(q), x);
-            face_points[static_cast<std::size_t>(q)] = PointType {x(0), x(1), x(2)};
+            face_points[static_cast<std::size_t>(q)] = PointType{x(0), x(1), x(2)};
         }
 
         // Step 3b: triangles from the sub-elements (RefGeoms lists 3 or 4 point indices each)
         const mfem::Array<int>& sub = refined->RefGeoms;
         if (geom == mfem::Geometry::TRIANGLE) {
             for (int s = 0; s + 2 < sub.Size(); s += 3) {
-                m_triangles.emplace_back(face_points[sub[s]], face_points[sub[s + 1]],
-                                         face_points[sub[s + 2]]);
+                m_triangles.emplace_back(
+                    face_points[sub[s]], face_points[sub[s + 1]], face_points[sub[s + 2]]);
             }
         } else if (geom == mfem::Geometry::SQUARE) {
             for (int s = 0; s + 3 < sub.Size(); s += 4) {
-                m_triangles.emplace_back(face_points[sub[s]], face_points[sub[s + 1]],
-                                         face_points[sub[s + 2]]);
-                m_triangles.emplace_back(face_points[sub[s]], face_points[sub[s + 2]],
-                                         face_points[sub[s + 3]]);
+                m_triangles.emplace_back(
+                    face_points[sub[s]], face_points[sub[s + 1]], face_points[sub[s + 2]]);
+                m_triangles.emplace_back(
+                    face_points[sub[s]], face_points[sub[s + 2]], face_points[sub[s + 3]]);
             }
         } else {
             throw std::runtime_error("BoundaryClearance: unsupported face geometry");
@@ -223,8 +223,11 @@ BoundaryClearance::BoundaryClearance(const mfem::Mesh& mesh, double clearance,
  *  3. Exact distance: axom::primal::closest_point(p, triangle) (closest_point.hpp:164) gives the
  *     closest point q of the triangle, and |p - q|^2 < c^2 marks the point as too close.
  */
-void BoundaryClearance::MarkNear(std::int64_t n, const double* x, const double* y,
-                                 const double* z, std::uint64_t* near_mask) const {
+void BoundaryClearance::MarkNear(std::int64_t n,
+                                 const double* x,
+                                 const double* y,
+                                 const double* z,
+                                 std::uint64_t* near_mask) const {
     if (m_triangles.empty() || n == 0) {
         return;
     }
@@ -236,7 +239,7 @@ void BoundaryClearance::MarkNear(std::int64_t n, const double* x, const double* 
     BoxType reach = m_bounds;
     reach.expand(m_clearance);
     for (std::int64_t i = 0; i < n; i++) {
-        const PointType p {x[i], y[i], z[i]};
+        const PointType p{x[i], y[i], z[i]};
         if (!reach.contains(p)) {
             continue;
         }
@@ -255,8 +258,7 @@ void BoundaryClearance::MarkNear(std::int64_t n, const double* x, const double* 
     axom::Array<axom::IndexType> offsets(num_queries, num_queries);
     axom::Array<axom::IndexType> counts(num_queries, num_queries);
     axom::Array<axom::IndexType> candidates;
-    m_bvh.findBoundingBoxes(offsets.view(), counts.view(), candidates, num_queries,
-                            queries.data());
+    m_bvh.findBoundingBoxes(offsets.view(), counts.view(), candidates, num_queries, queries.data());
 
     // Step 3: exact squared distance to each candidate triangle
     const double clearance_sq = m_clearance * m_clearance;

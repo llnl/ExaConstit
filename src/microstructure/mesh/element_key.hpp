@@ -89,8 +89,8 @@
  * bits; a first rounded key used a quantum of 2^-40 h, which proved too fine for coordinates far
  * from the origin and was coarsened to the one above. Keys are therefore different numbers now:
  * element-weighted seed streams (and so element-weighted seeds) and the smallest-key tie-breaks
- * of fragment cleanup changed once for every mesh. They are again the same for every rank count, and now also for meshes with Nodes
- * whose vertex array is stale or partition dependent.
+ * of fragment cleanup changed once for every mesh. They are again the same for every rank count,
+ * and now also for meshes with Nodes whose vertex array is stale or partition dependent.
  *
  * Failure modes: a collision (two elements with the same key) is not detected. It can only happen
  * by a hash collision (probability above) or for duplicated or degenerate elements (corners

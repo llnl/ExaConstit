@@ -8,14 +8,14 @@
  */
 #include "microstructure/orientation/orientation_assigner.hpp"
 
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
-
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -133,8 +133,8 @@ void AssignGrainOrientations(const OrientationOptions& orientations,
         if (random) {
             // Stream of this grain's source id: independent of grain numbering, rank count and
             // call order
-            const CounterRng rng(rng_seed, RngPurpose::ORIENTATION,
-                                 static_cast<std::uint64_t>(grain_source_id[g]));
+            const CounterRng rng(
+                rng_seed, RngPurpose::ORIENTATION, static_cast<std::uint64_t>(grain_source_id[g]));
             // Drawn, then normalized on the host in double precision like every other row, so
             // the unit norm does not depend on the accuracy of sin/cos/sqrt where it was drawn
             double drawn[4];
@@ -180,8 +180,8 @@ void AssignMixedGrainOrientations(std::uint64_t rng_seed,
             CopyNormalizedQuaternion(&source_quat[4 * g], q, g);
         } else {
             // Generated grain: random orientation of its own source-id stream
-            const CounterRng rng(rng_seed, RngPurpose::ORIENTATION,
-                                 static_cast<std::uint64_t>(grain_source_id[g]));
+            const CounterRng rng(
+                rng_seed, RngPurpose::ORIENTATION, static_cast<std::uint64_t>(grain_source_id[g]));
             // Drawn, then normalized on the host in double precision like every other row, so
             // the unit norm does not depend on the accuracy of sin/cos/sqrt where it was drawn
             double drawn[4];

@@ -180,10 +180,10 @@ struct MicrostructureResult {
      * @brief Size num_grains: phase id of grain g at index g-1, or -1 when the grain has no
      * phase. User-given phases are >= 1 (seed tables, Regions.phases, filler_phase); a voxel
      * map's values are stored as read, and a phase < 1 is refused only when regions are built
-     * from the phases (Regions.mode = "from_phase"). Phases come from a seed table's phase column, from a voxel map's per-feature
-     * phases (read whenever the file has them, in every region mode), from Regions.filler_phase
-     * for filler grains, or from the synthetic phase fractions; -1 when no phase data exists and
-     * for passthrough grains.
+     * from the phases (Regions.mode = "from_phase"). Phases come from a seed table's phase column,
+     * from a voxel map's per-feature phases (read whenever the file has them, in every region
+     * mode), from Regions.filler_phase for filler grains, or from the synthetic phase fractions; -1
+     * when no phase data exists and for passthrough grains.
      */
     std::vector<int> grain_phase;
     /**

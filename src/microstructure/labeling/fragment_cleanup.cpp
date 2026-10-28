@@ -1,8 +1,5 @@
 #include "microstructure/labeling/fragment_cleanup.hpp"
 
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -16,6 +13,9 @@
 #include <stdexcept>
 #include <tuple>
 #include <utility>
+
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -133,8 +133,14 @@ std::vector<std::int64_t> AllGatherInt64(const std::vector<std::int64_t>& local,
 
     // Step 3: move the data
     std::vector<std::int64_t> all(static_cast<std::size_t>(total));
-    MPI_Allgatherv(local.data(), local_count, MPI_INT64_T, all.data(), counts.data(),
-                   displs.data(), MPI_INT64_T, comm);
+    MPI_Allgatherv(local.data(),
+                   local_count,
+                   MPI_INT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_INT64_T,
+                   comm);
     return all;
 }
 
@@ -145,8 +151,8 @@ std::vector<std::int64_t> AllGatherInt64(const std::vector<std::int64_t>& local,
  * fragment's element count or of a face count after AllGatherInt64. Integer sums are exact and
  * independent of order, so the result does not depend on the rank count.
  */
-std::vector<std::int64_t> CombineRecords(const std::vector<std::int64_t>& flat, int stride,
-                                         int key_len) {
+std::vector<std::int64_t>
+CombineRecords(const std::vector<std::int64_t>& flat, int stride, int key_len) {
     const std::size_t s = static_cast<std::size_t>(stride);
     const std::size_t num_records = flat.size() / s;
     std::vector<std::size_t> order(num_records);
@@ -213,16 +219,22 @@ void CheckAllRanks(bool bad, const std::string& message, MPI_Comm comm) {
  *  of rank-boundary crossings on a path from the smallest-key element. When the loop stops, the
  *  ghost ids received in the last round are final too (nobody changed after sending them).
  */
-int ComponentsImpl(const MeshAdjacency& adjacency, const int* label, const int* ghost_label,
-                   const std::vector<std::uint64_t>& key, std::vector<std::uint64_t>& component,
-                   std::vector<std::uint64_t>& ghost_component, const int* void_label) {
+int ComponentsImpl(const MeshAdjacency& adjacency,
+                   const int* label,
+                   const int* ghost_label,
+                   const std::vector<std::uint64_t>& key,
+                   std::vector<std::uint64_t>& component,
+                   std::vector<std::uint64_t>& ghost_component,
+                   const int* void_label) {
     const int ne = adjacency.NumElements();
     const int* offsets = adjacency.Offsets().HostRead();
     const int* neighbors = adjacency.Neighbors().HostRead();
 
     // Elements carrying the void label (inactive under an element mask) join nothing: each stays
     // a group of its own, so a face to them is a free surface
-    auto is_void = [&](int l) { return void_label != nullptr && l == *void_label; };
+    auto is_void = [&](int l) {
+        return void_label != nullptr && l == *void_label;
+    };
 
     // Pass 1: local groups of equally labeled, face-connected elements
     UnionFind groups(ne);
@@ -300,14 +312,14 @@ struct CleanupState {
     int ne = 0;
     const int* offsets = nullptr;
     const int* neighbors = nullptr;
-    std::vector<std::uint64_t> key;    ///< size NE, element keys
-    mfem::Array<int> label;            ///< size NE, working labels 1..num_labels; 0 = inactive
-    mfem::Array<int> ghost_label;      ///< size NG, refreshed by RefreshGhostLabels
-    int num_labels = 0;                ///< working labels in use are 1..num_labels
+    std::vector<std::uint64_t> key; ///< size NE, element keys
+    mfem::Array<int> label;         ///< size NE, working labels 1..num_labels; 0 = inactive
+    mfem::Array<int> ghost_label;   ///< size NG, refreshed by RefreshGhostLabels
+    int num_labels = 0;             ///< working labels in use are 1..num_labels
     int num_input_grains = 0;
-    std::vector<int> parent;           ///< index label-1: input grain (1-based) it came from
-    std::vector<std::int64_t> source;  ///< index label-1: source id
-    std::vector<std::int64_t> splits;  ///< index input grain-1: fragments split off so far
+    std::vector<int> parent;          ///< index label-1: input grain (1-based) it came from
+    std::vector<std::int64_t> source; ///< index label-1: source id
+    std::vector<std::int64_t> splits; ///< index input grain-1: fragments split off so far
     const std::vector<std::uint64_t>* anchor = nullptr; ///< null unless KeepRule::SEED_ELEMENT
     /**
      * Size NE (SPLIT_LARGE_MERGE_TINY only, else empty): 1 for the elements of fragments that
@@ -342,8 +354,7 @@ std::vector<std::int64_t> GlobalLabelCounts(const CleanupState& state) {
         }
     }
     std::vector<std::int64_t> global(local.size(), 0);
-    MPI_Allreduce(local.data(), global.data(), state.num_labels, MPI_INT64_T, MPI_SUM,
-                  state.comm);
+    MPI_Allreduce(local.data(), global.data(), state.num_labels, MPI_INT64_T, MPI_SUM, state.comm);
     return global;
 }
 
@@ -378,10 +389,8 @@ std::vector<Fragment> FragmentTable(const CleanupState& state,
     }
     std::vector<std::uint64_t> global_lo(num_labels, 0);
     std::vector<std::uint64_t> global_hi(num_labels, 0);
-    MPI_Allreduce(lo.data(), global_lo.data(), state.num_labels, MPI_UINT64_T, MPI_MIN,
-                  state.comm);
-    MPI_Allreduce(hi.data(), global_hi.data(), state.num_labels, MPI_UINT64_T, MPI_MAX,
-                  state.comm);
+    MPI_Allreduce(lo.data(), global_lo.data(), state.num_labels, MPI_UINT64_T, MPI_MIN, state.comm);
+    MPI_Allreduce(hi.data(), global_hi.data(), state.num_labels, MPI_UINT64_T, MPI_MAX, state.comm);
 
     // Step 2: local parts of those grains' fragments, keyed by (label, id)
     std::map<std::pair<int, std::uint64_t>, std::array<std::int64_t, 3>> local;
@@ -397,8 +406,7 @@ std::vector<Fragment> FragmentTable(const CleanupState& state,
         std::array<std::int64_t, 3>& entry = local[{l, component[static_cast<std::size_t>(e)]}];
         entry[0] += 1;
         const bool is_anchor = state.anchor != nullptr && l <= state.num_input_grains &&
-                               state.key[static_cast<std::size_t>(e)] ==
-                                   (*state.anchor)[li];
+                               state.key[static_cast<std::size_t>(e)] == (*state.anchor)[li];
         entry[1] += is_anchor ? 1 : 0;
         const bool is_tiny = !state.tiny_element.empty() &&
                              state.tiny_element[static_cast<std::size_t>(e)] != 0;
@@ -414,14 +422,16 @@ std::vector<Fragment> FragmentTable(const CleanupState& state,
         flat.push_back(item.second[1]);
         flat.push_back(item.second[2]);
     }
-    const std::vector<std::int64_t> combined =
-        CombineRecords(AllGatherInt64(flat, state.comm), 5, 2);
+    const std::vector<std::int64_t> combined = CombineRecords(
+        AllGatherInt64(flat, state.comm), 5, 2);
 
     // Step 4: unpack and sort by (label, unsigned id)
     std::vector<Fragment> table;
     for (std::size_t r = 0; r + 4 < combined.size(); r += 5) {
-        table.push_back({static_cast<int>(combined[r]), BitsToUnsigned(combined[r + 1]),
-                         combined[r + 2], combined[r + 3] > 0,
+        table.push_back({static_cast<int>(combined[r]),
+                         BitsToUnsigned(combined[r + 1]),
+                         combined[r + 2],
+                         combined[r + 3] > 0,
                          combined[r + 4] == combined[r + 2]});
     }
     std::sort(table.begin(), table.end(), [](const Fragment& a, const Fragment& b) {
@@ -498,7 +508,8 @@ std::map<int, std::int64_t> GrainTotals(const std::vector<Fragment>& table) {
  * Both tests use the replicated integer counts; the fraction test count < fraction * total is
  * evaluated in the same floating-point operations on every rank, so every rank decides alike.
  */
-bool IsTinyFragment(const Fragment& f, std::int64_t grain_total,
+bool IsTinyFragment(const Fragment& f,
+                    std::int64_t grain_total,
                     const FragmentCleanupParameters& params) {
     if (f.count < static_cast<std::int64_t>(params.min_fragment_elements)) {
         return true;
@@ -531,14 +542,15 @@ int NewGrainFromFragment(CleanupState& state, int old_label) {
 using FragmentKey = std::pair<int, std::uint64_t>;
 
 /** Relabels every local element whose (label, fragment id) is in `new_label_of_fragment`. */
-void RelabelFragments(CleanupState& state, const std::vector<std::uint64_t>& component,
+void RelabelFragments(CleanupState& state,
+                      const std::vector<std::uint64_t>& component,
                       const std::map<FragmentKey, int>& new_label_of_fragment) {
     if (new_label_of_fragment.empty()) {
         return;
     }
     for (int e = 0; e < state.ne; e++) {
-        const auto it =
-            new_label_of_fragment.find({state.label[e], component[static_cast<std::size_t>(e)]});
+        const auto it = new_label_of_fragment.find(
+            {state.label[e], component[static_cast<std::size_t>(e)]});
         if (it != new_label_of_fragment.end()) {
             state.label[e] = it->second;
         }
@@ -561,7 +573,8 @@ struct FaceCount {
  */
 template <typename MovingNeighbor>
 std::map<std::pair<std::int64_t, int>, FaceCount>
-GatherFaceCounts(const CleanupState& state, const std::vector<std::int64_t>& piece_of_element,
+GatherFaceCounts(const CleanupState& state,
+                 const std::vector<std::int64_t>& piece_of_element,
                  MovingNeighbor moving_neighbor) {
     // Local counts keyed by (piece, neighbor label, stable flag)
     std::map<std::tuple<std::int64_t, int, int>, std::int64_t> local;
@@ -589,8 +602,8 @@ GatherFaceCounts(const CleanupState& state, const std::vector<std::int64_t>& pie
         flat.push_back(std::get<2>(item.first));
         flat.push_back(item.second);
     }
-    const std::vector<std::int64_t> combined =
-        CombineRecords(AllGatherInt64(flat, state.comm), 4, 3);
+    const std::vector<std::int64_t> combined = CombineRecords(
+        AllGatherInt64(flat, state.comm), 4, 3);
 
     std::map<std::pair<std::int64_t, int>, FaceCount> counts;
     for (std::size_t r = 0; r + 3 < combined.size(); r += 4) {
@@ -622,7 +635,8 @@ MergeDecision DecideMerge(const std::map<std::pair<std::int64_t, int>, FaceCount
     std::int64_t total = 0;
     // The map is sorted by (piece, label): walk this piece's entries in increasing label
     for (auto it = counts.lower_bound({piece, std::numeric_limits<int>::min()});
-         it != counts.end() && it->first.first == piece; ++it) {
+         it != counts.end() && it->first.first == piece;
+         ++it) {
         total += it->second.stable + it->second.moving;
         if (it->second.stable > best) {
             best = it->second.stable;
@@ -644,7 +658,8 @@ int MostFacesLabel(const std::map<std::pair<std::int64_t, int>, FaceCount>& coun
     int target = 0;
     std::int64_t best = 0;
     for (auto it = counts.lower_bound({piece, std::numeric_limits<int>::min()});
-         it != counts.end() && it->first.first == piece; ++it) {
+         it != counts.end() && it->first.first == piece;
+         ++it) {
         const std::int64_t faces = it->second.stable + it->second.moving;
         if (faces > best) {
             best = faces;
@@ -664,7 +679,8 @@ int MostFacesLabel(const std::map<std::pair<std::int64_t, int>, FaceCount>& coun
  * a "large" piece and split it). Host only; the table is replicated, so every rank marks alike.
  * Returns the table with the tiny flags set.
  */
-std::vector<Fragment> MarkTinyElements(CleanupState& state, const std::vector<Fragment>& table,
+std::vector<Fragment> MarkTinyElements(CleanupState& state,
+                                       const std::vector<Fragment>& table,
                                        const std::vector<std::uint64_t>& component,
                                        const FragmentCleanupParameters& params) {
     const std::map<int, std::int64_t> total = GrainTotals(table);
@@ -709,7 +725,8 @@ std::vector<Fragment> MarkTinyElements(CleanupState& state, const std::vector<Fr
  * NONE: one search, for the report only.
  * Collective.
  */
-void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
+void FragmentPhase(CleanupState& state,
+                   const FragmentCleanupParameters& params,
                    FragmentCleanupReport& report) {
     std::vector<std::uint64_t> component;
     std::vector<std::uint64_t> ghost_component;
@@ -720,9 +737,13 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
         // Step 1: fragments of the current labels
         RefreshGhostLabels(state);
         const int void_label = VOID_LABEL;
-        const int propagation_rounds =
-            ComponentsImpl(*state.adjacency, state.label.HostRead(), state.ghost_label.HostRead(),
-                           state.key, component, ghost_component, &void_label);
+        const int propagation_rounds = ComponentsImpl(*state.adjacency,
+                                                      state.label.HostRead(),
+                                                      state.ghost_label.HostRead(),
+                                                      state.key,
+                                                      component,
+                                                      ghost_component,
+                                                      &void_label);
         report.max_propagation_rounds = std::max(report.max_propagation_rounds, propagation_rounds);
         std::vector<Fragment> table = FragmentTable(state, component);
         if (first_search && split_large) {
@@ -783,8 +804,8 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
         }
         std::vector<std::int64_t> piece(static_cast<std::size_t>(state.ne), -1);
         for (int e = 0; e < state.ne; e++) {
-            const auto it =
-                extra_index.find({state.label[e], component[static_cast<std::size_t>(e)]});
+            const auto it = extra_index.find(
+                {state.label[e], component[static_cast<std::size_t>(e)]});
             if (it != extra_index.end()) {
                 piece[static_cast<std::size_t>(e)] = static_cast<std::int64_t>(it->second);
             }
@@ -807,8 +828,8 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
                 report.fragments_merged += 1;
                 progress = true;
             } else if (d.isolated) {
-                new_label[{extra[i].label, extra[i].id}] =
-                    NewGrainFromFragment(state, extra[i].label);
+                new_label[{extra[i].label, extra[i].id}] = NewGrainFromFragment(state,
+                                                                                extra[i].label);
                 report.fragments_split += 1;
                 progress = true;
             }
@@ -820,14 +841,14 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
             std::size_t best = 0;
             for (std::size_t i = 1; i < extra.size(); i++) {
                 const bool larger = extra[i].count > extra[best].count;
-                const bool tie_smaller_id =
-                    extra[i].count == extra[best].count && extra[i].id < extra[best].id;
+                const bool tie_smaller_id = extra[i].count == extra[best].count &&
+                                            extra[i].id < extra[best].id;
                 if (larger || tie_smaller_id) {
                     best = i;
                 }
             }
-            new_label[{extra[best].label, extra[best].id}] =
-                MostFacesLabel(counts, static_cast<std::int64_t>(best));
+            new_label[{extra[best].label, extra[best].id}] = MostFacesLabel(
+                counts, static_cast<std::int64_t>(best));
             report.fragments_merged += 1;
         }
 
@@ -848,7 +869,8 @@ void FragmentPhase(CleanupState& state, const FragmentCleanupParameters& params,
  *   4. relabel.
  * Merge targets are never candidates, so no grain moves twice in one round. Collective.
  */
-void SmallGrainPhase(CleanupState& state, const FragmentCleanupParameters& params,
+void SmallGrainPhase(CleanupState& state,
+                     const FragmentCleanupParameters& params,
                      FragmentCleanupReport& report) {
     if (params.min_grain_elements <= 1) {
         return;
@@ -973,8 +995,8 @@ int LabelComponents(const MeshAdjacency& adjacency,
     const int ne = adjacency.NumElements();
     const bool bad = element_label.Size() != ne || static_cast<int>(element_key.size()) != ne ||
                      (mask != nullptr && mask->active.Size() != 0 && mask->active.Size() != ne);
-    CheckAllRanks(bad, "LabelComponents: inputs must have one entry per local element",
-                  adjacency.GetComm());
+    CheckAllRanks(
+        bad, "LabelComponents: inputs must have one entry per local element", adjacency.GetComm());
     // With a mask, inactive elements carry the void label (also on their ghost copies, through
     // the exchange) and join nothing
     const bool masked = mask != nullptr && mask->active.Size() != 0;
@@ -988,9 +1010,13 @@ int LabelComponents(const MeshAdjacency& adjacency,
     mfem::Array<int> ghost_label;
     adjacency.ExchangeLabels(used, ghost_label);
     std::vector<std::uint64_t> ghost;
-    const int rounds =
-        ComponentsImpl(adjacency, used.HostRead(), ghost_label.HostRead(), element_key, component,
-                       ghost, masked ? &void_label : nullptr);
+    const int rounds = ComponentsImpl(adjacency,
+                                      used.HostRead(),
+                                      ghost_label.HostRead(),
+                                      element_key,
+                                      component,
+                                      ghost,
+                                      masked ? &void_label : nullptr);
     if (ghost_component != nullptr) {
         *ghost_component = std::move(ghost);
     }

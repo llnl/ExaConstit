@@ -1,21 +1,21 @@
 #include "microstructure/mesh/preflight.hpp"
 
-#include "microstructure/mesh/mesh_sampler.hpp"
-
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
 
+#include "microstructure/mesh/mesh_sampler.hpp"
+
 namespace exaconstit::microstructure {
 
 namespace {
 
 /*
- * ElementPoints / GetElementPoints: derivatives of an element's shape functions at the quadrature points
- * and at the nodal points plus corners, per distinct FiniteElement (MFEM shares one object per
- * geometry and order in a collection, so a mesh has one or a few entries). dshape(k, j, q) is
+ * ElementPoints / GetElementPoints: derivatives of an element's shape functions at the quadrature
+ * points and at the nodal points plus corners, per distinct FiniteElement (MFEM shares one object
+ * per geometry and order in a collection, so a mesh has one or a few entries). dshape(k, j, q) is
  * d(shape k)/d(xi_j) at point q, the layout FiniteElement::CalcDShape writes (ndof x dim).
  */
 struct ElementPoints {
@@ -158,8 +158,8 @@ PreflightReport CheckMesh(const mfem::Mesh& mesh, MPI_Comm comm) {
     // (discontinuous) Nodes, detected with FiniteElementSpace::IsDGSpace() (`fespace.hpp:1519`).
     const bool local_is_3d = (mesh.Dimension() == 3 && mesh.SpaceDimension() == 3) || ne == 0;
     const bool local_nonconforming = mesh.Nonconforming();
-    const bool local_discontinuous =
-        mesh.GetNodes() != nullptr && mesh.GetNodes()->FESpace()->IsDGSpace();
+    const bool local_discontinuous = mesh.GetNodes() != nullptr &&
+                                     mesh.GetNodes()->FESpace()->IsDGSpace();
 
     // Step 4: global reductions, one MPI_Allreduce per reduction operator.
     //  - flags (0/1, MAX = "true on any rank"): [not 3D, nonconforming, discontinuous]
@@ -172,7 +172,8 @@ PreflightReport CheckMesh(const mfem::Mesh& mesh, MPI_Comm comm) {
     MPI_Allreduce(&local_geometry_mask, &report.geometry_mask, 1, MPI_INT, MPI_BOR, comm);
     MPI_Allreduce(&local_min_detj, &report.min_detj, 1, MPI_DOUBLE, MPI_MIN, comm);
     std::int64_t counts[3] = {static_cast<std::int64_t>(report.local_bad_elements.size()),
-                              static_cast<std::int64_t>(ne), local_folded};
+                              static_cast<std::int64_t>(ne),
+                              local_folded};
     MPI_Allreduce(MPI_IN_PLACE, counts, 3, MPI_INT64_T, MPI_SUM, comm);
 
     report.is_3d = flags[0] == 0;

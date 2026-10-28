@@ -106,7 +106,8 @@ void ValidateSizeTargetParameters(const SizeTargetParameters& params);
  * @return targets for the N seeds (see SizeTargets).
  * @throws std::invalid_argument for N == 0, a non-positive material volume or invalid params.
  */
-SizeTargets MakeSizeTargets(const std::vector<std::int64_t>& source_id, double material_volume,
+SizeTargets MakeSizeTargets(const std::vector<std::int64_t>& source_id,
+                            double material_volume,
                             const SizeTargetParameters& params);
 
 /**

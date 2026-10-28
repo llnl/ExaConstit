@@ -3,19 +3,19 @@
  */
 #include "microstructure/conformal/node_labels.hpp"
 
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <map>
 #include <numeric>
 #include <set>
-#include <utility>
 #include <stdexcept>
+#include <utility>
 #include <vector>
+
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -84,7 +84,8 @@ std::vector<Surface> GroupSurfaces(const std::vector<double>& normals, double co
         }
         if (s.planar) {
             std::copy(&normals[3 * static_cast<std::size_t>(root)],
-                      &normals[3 * static_cast<std::size_t>(root)] + 3, s.normal);
+                      &normals[3 * static_cast<std::size_t>(root)] + 3,
+                      s.normal);
         } else {
             const double len = std::sqrt(s.normal[0] * s.normal[0] + s.normal[1] * s.normal[1] +
                                          s.normal[2] * s.normal[2]);
@@ -131,7 +132,8 @@ namespace {
 /** @brief Collective check of the element labels: one per local element, all >= 1. */
 void CheckElementLabels(const mfem::ParMesh& pmesh, const mfem::Array<int>& element_label) {
     const MPI_Comm comm = pmesh.GetComm();
-    ThrowIfAnyRank(comm, element_label.Size() != pmesh.GetNE(),
+    ThrowIfAnyRank(comm,
+                   element_label.Size() != pmesh.GetNE(),
                    "NodeLabels: element_label needs one entry per local element");
     bool bad_label = false;
     for (int e = 0; e < element_label.Size(); ++e) {
@@ -142,17 +144,20 @@ void CheckElementLabels(const mfem::ParMesh& pmesh, const mfem::Array<int>& elem
 
 } // namespace
 
-NodeLabels::NodeLabels(mfem::ParMesh& pmesh, const mfem::Array<int>& element_label,
+NodeLabels::NodeLabels(mfem::ParMesh& pmesh,
+                       const mfem::Array<int>& element_label,
                        const NodeLabelOptions& options) {
     const MPI_Comm comm = pmesh.GetComm();
     CheckElementLabels(pmesh, element_label);
     const double angle = options.feature_angle_degrees;
-    ThrowIfAnyRank(comm, !(angle > 0.0 && angle < 90.0),
+    ThrowIfAnyRank(comm,
+                   !(angle > 0.0 && angle < 90.0),
                    "NodeLabels: feature_angle_degrees must be in (0, 90)");
 
     m_feature_cosine = std::cos(angle * PI / 180.0);
     m_fixed_labels = options.fixed_labels;
-    ThrowIfAnyRank(comm, !std::is_sorted(m_fixed_labels.begin(), m_fixed_labels.end()),
+    ThrowIfAnyRank(comm,
+                   !std::is_sorted(m_fixed_labels.begin(), m_fixed_labels.end()),
                    "NodeLabels: fixed_labels must be ascending");
 
     m_field = std::make_unique<VertexField>(pmesh, options.nodes);
@@ -193,8 +198,10 @@ void NodeLabels::FindSurfaceFaces() {
         int e1 = -1;
         int e2 = -1;
         pmesh.GetFaceElements(f, &e1, &e2);
-        m_surface_faces[static_cast<std::size_t>(f)] =
-            (e2 < 0 && shared[static_cast<std::size_t>(f)] == 0) ? 1 : 0;
+        m_surface_faces[static_cast<std::size_t>(f)] = (e2 < 0 &&
+                                                        shared[static_cast<std::size_t>(f)] == 0)
+                                                           ? 1
+                                                           : 0;
     }
 
     // Step 2
@@ -236,11 +243,12 @@ void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
     CheckElementLabels(m_field->Mesh(), element_label);
     bool moved_fixed = false;
     for (int e = 0; e < element_label.Size(); ++e) {
-        moved_fixed = moved_fixed || (element_label[e] != m_element_label[e] &&
-                                      (IsFixedLabel(element_label[e]) ||
-                                       IsFixedLabel(m_element_label[e])));
+        moved_fixed = moved_fixed ||
+                      (element_label[e] != m_element_label[e] &&
+                       (IsFixedLabel(element_label[e]) || IsFixedLabel(m_element_label[e])));
     }
-    ThrowIfAnyRank(m_field->Comm(), moved_fixed,
+    ThrowIfAnyRank(m_field->Comm(),
+                   moved_fixed,
                    "NodeLabels::SetElementLabels: elements of fixed labels cannot change");
     m_element_label = element_label;
     BuildLabelSets(element_label);
@@ -305,8 +313,10 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     for (int v = 0; v < nv; ++v) {
         auto& list = counts[static_cast<std::size_t>(v)];
         for (int k = recv_off[static_cast<std::size_t>(v)];
-             k < recv_off[static_cast<std::size_t>(v) + 1]; k += 2) {
-            add(list, static_cast<int>(recv[static_cast<std::size_t>(k)]),
+             k < recv_off[static_cast<std::size_t>(v) + 1];
+             k += 2) {
+            add(list,
+                static_cast<int>(recv[static_cast<std::size_t>(k)]),
                 static_cast<int>(recv[static_cast<std::size_t>(k) + 1]));
         }
         // Fixed labels leave the set when the node has another label (their interfaces are
@@ -356,8 +366,8 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
 
     // Step 2
     std::vector<std::vector<double>> normals(static_cast<std::size_t>(nv));
-    const mfem::FiniteElementSpace* node_fes =
-        field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace() : nullptr;
+    const mfem::FiniteElementSpace* node_fes = field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace()
+                                                                     : nullptr;
     mfem::IsoparametricTransformation trans;
     mfem::Array<int> face_nodes;
     mfem::Vector ortho(3);
@@ -369,8 +379,7 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
         int e2 = -1;
         pmesh.GetFaceElements(f, &e1, &e2);
         pmesh.GetFaceTransformation(f, &trans);
-        const mfem::IntegrationPoint& center =
-            mfem::Geometries.GetCenter(pmesh.GetFaceGeometry(f));
+        const mfem::IntegrationPoint& center = mfem::Geometries.GetCenter(pmesh.GetFaceGeometry(f));
         trans.SetIntPoint(&center);
         mfem::CalcOrtho(trans.Jacobian(), ortho); // points out of e1
         const int from = out_of[static_cast<std::size_t>(f)];
@@ -412,7 +421,8 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     for (int v = 0; v < nv; ++v) {
         auto& list = normals[static_cast<std::size_t>(v)];
         for (int k = recv_off[static_cast<std::size_t>(v)];
-             k < recv_off[static_cast<std::size_t>(v) + 1]; k += 3) {
+             k < recv_off[static_cast<std::size_t>(v) + 1];
+             k += 3) {
             AddDistinctNormal(list, &recv[static_cast<std::size_t>(k)]);
         }
         SortNormals(list);
@@ -458,8 +468,8 @@ void NodeLabels::FindPinches() {
     };
 
     // Step 2: entries per node, 4 doubles each: (kind, key hi, key lo, label or other key)
-    const mfem::FiniteElementSpace* node_fes =
-        field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace() : nullptr;
+    const mfem::FiniteElementSpace* node_fes = field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace()
+                                                                     : nullptr;
     const int* en_off = field.ElementVertexOffsets().HostRead();
     const int* en = field.ElementVertices().HostRead();
     const int* off = adj.Offsets().HostRead();

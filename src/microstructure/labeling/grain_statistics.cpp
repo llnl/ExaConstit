@@ -14,11 +14,6 @@
  */
 #include "microstructure/labeling/grain_statistics.hpp"
 
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/util/fixed_point.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -32,6 +27,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/util/fixed_point.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -239,8 +239,8 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
             if (grain[e] >= other) {
                 continue; // same grain, or counted from the other side
             }
-            const double area =
-                curved ? face_area[k] : CanonicalFaceArea(pmesh, *coords, face_index[k]);
+            const double area = curved ? face_area[k]
+                                       : CanonicalFaceArea(pmesh, *coords, face_index[k]);
             faces.push_back({grain[e], other, area});
             local_max_area = std::max(local_max_area, area);
         }
@@ -254,9 +254,8 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
     MPI_Allreduce(&local_count, &total_count, 1, MPI_LONG_LONG, MPI_SUM, comm);
     // A single grain has no pairs; a zero largest area (degenerate faces) still needs a valid
     // scale, any positive bound will do then
-    const FixedPointScale scale =
-        FixedPointScale::ForRange(0.0, (max_area > 0.0) ? max_area : 1.0,
-                                  std::max<long long>(total_count, 1));
+    const FixedPointScale scale = FixedPointScale::ForRange(
+        0.0, (max_area > 0.0) ? max_area : 1.0, std::max<long long>(total_count, 1));
 
     // Step 4b: this rank's integer sums per pair, flattened into records (a, b, sum, count)
     std::map<std::pair<int, int>, std::pair<std::int64_t, std::int64_t>> local_pairs;
@@ -301,8 +300,15 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
         running += counts[r];
     }
     std::vector<std::int64_t> received(static_cast<std::size_t>(total_values));
-    MPI_Gatherv(send.data(), static_cast<int>(send.size()), MPI_INT64_T, received.data(),
-                counts.data(), displacements.data(), MPI_INT64_T, root, comm);
+    MPI_Gatherv(send.data(),
+                static_cast<int>(send.size()),
+                MPI_INT64_T,
+                received.data(),
+                counts.data(),
+                displacements.data(),
+                MPI_INT64_T,
+                root,
+                comm);
 
     // Step 4d (root): merge by exact integer addition (a pair whose faces lie on several ranks
     // arrives once per rank); std::map keeps the pairs sorted by (a, b). Step 5 (root): pair
@@ -311,8 +317,7 @@ GrainStatistics ComputeGrainStatistics(const MeshAdjacency& adjacency,
     if (rank == root) {
         std::map<std::pair<int, int>, std::pair<std::int64_t, std::int64_t>> pairs;
         for (std::size_t i = 0; i + 3 < received.size(); i += 4) {
-            auto& entry =
-                pairs[{static_cast<int>(received[i]), static_cast<int>(received[i + 1])}];
+            auto& entry = pairs[{static_cast<int>(received[i]), static_cast<int>(received[i + 1])}];
             entry.first += received[i + 2];
             entry.second += received[i + 3];
         }
@@ -366,8 +371,8 @@ TargetVolumeComparison CompareWithTargetVolumes(const std::vector<double>& grain
     // Relative errors, seed by seed
     double sum = 0.0;
     for (std::size_t s = 0; s < seed_target_volume.size(); ++s) {
-        const double error =
-            std::fabs(out.seed_volume[s] - seed_target_volume[s]) / seed_target_volume[s];
+        const double error = std::fabs(out.seed_volume[s] - seed_target_volume[s]) /
+                             seed_target_volume[s];
         sum += error;
         if (out.seed_volume[s] == 0.0) {
             out.num_empty_seeds += 1;

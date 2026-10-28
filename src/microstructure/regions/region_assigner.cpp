@@ -1,13 +1,13 @@
 #include "microstructure/regions/region_assigner.hpp"
 
-#include "microstructure/util/counter_rng.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/util/counter_rng.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -94,10 +94,10 @@ RegionAssignment AssignRegionsFromPhases(const std::vector<int>& grain_phase,
         // Every entry must be well formed, also those of phases no grain has
         for (const auto& entry : params.phase_to_region) {
             if (entry.first < 1 || entry.second < 1) {
-                throw std::invalid_argument(
-                    "AssignRegionsFromPhases: phase_to_region entry " +
-                    std::to_string(entry.first) + " -> " + std::to_string(entry.second) +
-                    " is invalid (phase ids and region ids must be >= 1)");
+                throw std::invalid_argument("AssignRegionsFromPhases: phase_to_region entry " +
+                                            std::to_string(entry.first) + " -> " +
+                                            std::to_string(entry.second) +
+                                            " is invalid (phase ids and region ids must be >= 1)");
             }
         }
         // Every present phase must be listed
@@ -159,8 +159,8 @@ RegionAssignment AssignRegionsFromPhases(const std::vector<int>& grain_phase,
                 ", which mix crystalline and non-crystalline phases; one region is one material "
                 "model, so map them to different regions");
         }
-        result.region_crystalline[static_cast<std::size_t>(r - 1)] =
-            (num_non_crystalline > 0) ? 0 : 1;
+        result.region_crystalline[static_cast<std::size_t>(r - 1)] = (num_non_crystalline > 0) ? 0
+                                                                                               : 1;
     }
 
     // Step 4: per-grain regions
@@ -210,8 +210,8 @@ PhaseFractionResult AssignPhaseFractions(const std::vector<double>& grain_volume
         std::sort(sorted_ids.begin(), sorted_ids.end());
         const auto dup = std::adjacent_find(sorted_ids.begin(), sorted_ids.end());
         if (dup != sorted_ids.end()) {
-            throw std::invalid_argument("AssignPhaseFractions: source id " +
-                                        std::to_string(*dup) + " is used by more than one grain");
+            throw std::invalid_argument("AssignPhaseFractions: source id " + std::to_string(*dup) +
+                                        " is used by more than one grain");
         }
     }
     // ... and phases
@@ -229,8 +229,8 @@ PhaseFractionResult AssignPhaseFractions(const std::vector<double>& grain_volume
     for (std::size_t k = 0; k < num_phases; k++) {
         const int phase = params.phase_id[k];
         if (phase < 1 || !seen_phases.insert(phase).second) {
-            throw std::invalid_argument("AssignPhaseFractions: phase id " +
-                                        std::to_string(phase) + " is < 1 or repeated");
+            throw std::invalid_argument("AssignPhaseFractions: phase id " + std::to_string(phase) +
+                                        " is < 1 or repeated");
         }
         const double f = params.fraction[k];
         if (!(f > 0.0) || !std::isfinite(f)) {
@@ -254,8 +254,8 @@ PhaseFractionResult AssignPhaseFractions(const std::vector<double>& grain_volume
     // Step 2: random but input-order-independent visit order
     std::vector<std::uint64_t> key(num_grains);
     for (std::size_t g = 0; g < num_grains; g++) {
-        const CounterRng rng(params.rng_seed, RngPurpose::PHASE,
-                             static_cast<std::uint64_t>(grain_source_id[g]));
+        const CounterRng rng(
+            params.rng_seed, RngPurpose::PHASE, static_cast<std::uint64_t>(grain_source_id[g]));
         const PhiloxBlock bits = rng.Block(0);
         key[g] = (static_cast<std::uint64_t>(bits.v[0]) << 32) | bits.v[1];
     }

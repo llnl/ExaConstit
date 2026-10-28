@@ -1,16 +1,17 @@
 #pragma once
 
 #include "mfem.hpp"
+
 #include "RAJA/config.hpp"
+
+#include <stdexcept>
+#include <string>
+#include <utility>
 
 #include "axom/config.hpp"
 #include "axom/core/execution/execution_space.hpp"
 #include "axom/core/execution/runtime_policy.hpp"
 #include "axom/core/memory_management.hpp"
-
-#include <stdexcept>
-#include <string>
-#include <utility>
 
 /**
  * @file exec_dispatch.hpp

@@ -19,15 +19,9 @@
  * count: rank 0 writes, then broadcasts whether the write succeeded (RootWriteSucceeded), so
  * every rank fails together if it did not.
  */
-#include "microstructure/io/voxel_map_io.hpp"
 #include "utilities/auto_mesh.hpp"
 
-#include "common/voxel_fixture.hpp"
-
-#include "axom/config.hpp"
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
@@ -38,6 +32,11 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "axom/config.hpp"
+#include "common/voxel_fixture.hpp"
+#include "microstructure/io/voxel_map_io.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -84,25 +83,33 @@ void WriteTwoPhaseDream3d(const fs::path& path) {
     const std::string dc = "/DataContainers/ImageDataContainer";
     const std::int64_t dims[3] = {vf::NX, vf::NY, vf::NZ};
     const float origin[3] = {0.0f, 0.0f, 0.0f};
-    const float spacing[3] = {static_cast<float>(vf::H), static_cast<float>(vf::H),
-                              static_cast<float>(vf::H)};
+    const float spacing[3] = {
+        static_cast<float>(vf::H), static_cast<float>(vf::H), static_cast<float>(vf::H)};
     w.Dataset(dc + "/_SIMPL_GEOMETRY/DIMENSIONS", H5T_STD_I64LE, H5T_NATIVE_INT64, {3}, dims);
     w.Dataset(dc + "/_SIMPL_GEOMETRY/ORIGIN", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, origin);
-    w.Dataset(dc + "/_SIMPL_GEOMETRY/SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3},
-              spacing);
+    w.Dataset(dc + "/_SIMPL_GEOMETRY/SPACING", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, {3}, spacing);
     // Per-voxel feature ids (shape nz, ny, nx, 1; x fastest), with the hole (id 0)
     const std::vector<int> ids = vf::AsInt32(map.ids);
-    w.Dataset(dc + "/CellData/FeatureIds", H5T_STD_I32LE, H5T_NATIVE_INT,
-              {vf::NZ, vf::NY, vf::NX, 1}, ids.data());
+    w.Dataset(dc + "/CellData/FeatureIds",
+              H5T_STD_I32LE,
+              H5T_NATIVE_INT,
+              {vf::NZ, vf::NY, vf::NX, 1},
+              ids.data());
     // Per-feature rows: row r is feature id r, row 0 unused
     const std::vector<float> quats = vf::Dream3dQuatsXyzw();
-    w.Dataset(dc + "/CellFeatureData/AvgQuats", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT,
-              {vf::kRows, 4}, quats.data());
+    w.Dataset(dc + "/CellFeatureData/AvgQuats",
+              H5T_IEEE_F32LE,
+              H5T_NATIVE_FLOAT,
+              {vf::kRows, 4},
+              quats.data());
     std::vector<int> phases(vf::kRows, 0);
     for (const int id : vf::kFeatureId) {
         phases[static_cast<std::size_t>(id)] = TwoPhase(id);
     }
-    w.Dataset(dc + "/CellFeatureData/Phases", H5T_STD_I32LE, H5T_NATIVE_INT, {vf::kRows, 1},
+    w.Dataset(dc + "/CellFeatureData/Phases",
+              H5T_STD_I32LE,
+              H5T_NATIVE_INT,
+              {vf::kRows, 1},
               phases.data());
 }
 #endif
@@ -134,8 +141,8 @@ TEST(EndToEndInputs, TwoPhaseDream3d) {
             write_error = e.what();
         }
     }
-    ASSERT_TRUE(RootWriteSucceeded(written)) << "rank 0 could not write " << path << " "
-                                             << write_error;
+    ASSERT_TRUE(RootWriteSucceeded(written))
+        << "rank 0 could not write " << path << " " << write_error;
 
     // Read back with the declarations the end-to-end input uses
     ms::VoxelMapParameters params;
@@ -149,8 +156,8 @@ TEST(EndToEndInputs, TwoPhaseDream3d) {
     EXPECT_EQ(grid.dims, (std::array<std::int64_t, 3>{vf::NX, vf::NY, vf::NZ}));
     EXPECT_EQ(grid.spacing, (std::array<double, 3>{vf::H, vf::H, vf::H}));
     EXPECT_EQ(grid.origin, (std::array<double, 3>{0.0, 0.0, 0.0}));
-    const ms::VoxelFeatureTable features =
-        ms::ReadVoxelFeatures(params, grid, vf::kUsedIds, MPI_COMM_WORLD);
+    const ms::VoxelFeatureTable features = ms::ReadVoxelFeatures(
+        params, grid, vf::kUsedIds, MPI_COMM_WORLD);
     std::map<std::int64_t, std::size_t> row;
     for (std::size_t k = 0; k < features.id.size(); ++k) {
         row[features.id[k]] = k;
@@ -247,14 +254,13 @@ TEST(EndToEndInputs, SpparksDump) {
     bool written = true;
     if (Rank() == 0) {
         std::ofstream out(path);
-        out << "ITEM: TIMESTEP\n0 0\nITEM: NUMBER OF ATOMS\n" << n * n * n
-            << "\nITEM: BOX BOUNDS\n0 8\n0 8\n0 8\nITEM: ATOMS id type x y z\n";
+        out << "ITEM: TIMESTEP\n0 0\nITEM: NUMBER OF ATOMS\n"
+            << n * n * n << "\nITEM: BOX BOUNDS\n0 8\n0 8\n0 8\nITEM: ATOMS id type x y z\n";
         int id = 1;
         for (int k = 0; k < n; ++k) {
             for (int j = 0; j < n; ++j) {
                 for (int i = 0; i < n; ++i) {
-                    out << id++ << " " << spin(i, j, k) << " " << i << " " << j << " " << k
-                        << "\n";
+                    out << id++ << " " << spin(i, j, k) << " " << i << " " << j << " " << k << "\n";
                 }
             }
         }

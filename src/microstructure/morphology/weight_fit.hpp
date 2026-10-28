@@ -1,12 +1,12 @@
 #pragma once
 
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file weight_fit.hpp
@@ -172,7 +172,9 @@ struct WeightFitResult {
  * @param shape       per-seed Quadric tensors (SeedSet::shape, 6 per seed) or empty.
  * @return gamma0 (> 0).
  */
-double InitialInverseStiffness(MetricType metric, double mean_volume, const MetricSetup& setup,
+double InitialInverseStiffness(MetricType metric,
+                               double mean_volume,
+                               const MetricSetup& setup,
                                const std::vector<double>& shape);
 
 /**
@@ -202,7 +204,9 @@ void ValidateWeightFitParameters(const WeightFitParameters& params);
  * @throws std::invalid_argument (on all ranks) for inconsistent sizes, invalid targets, weights
  *         or parameters, and the sample/label errors of CellMeasureAccumulator.
  */
-WeightFitResult FitWeights(MPI_Comm comm, const WeightedSamples& samples, const SeedSet& seeds,
+WeightFitResult FitWeights(MPI_Comm comm,
+                           const WeightedSamples& samples,
+                           const SeedSet& seeds,
                            const std::vector<double>& target_volume,
                            const std::vector<double>& initial_weight,
                            const WeightFitParameters& params);

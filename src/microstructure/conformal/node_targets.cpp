@@ -3,17 +3,16 @@
  */
 #include "microstructure/conformal/node_targets.hpp"
 
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/conformal/manifold_projector.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
-#include "axom/core.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
+
+#include "axom/core.hpp"
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/conformal/manifold_projector.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -49,8 +48,11 @@ public:
     virtual void Evaluate(const std::vector<NodeLabelQuery>& queries,
                           std::vector<NodeTargetResult>& out) const = 0;
     /** @brief NodeTargets::NearbySeeds; empty lists without analytic boundaries. */
-    virtual void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
-                             std::vector<int>& offsets, std::vector<int>& seeds) const {
+    virtual void NearbySeeds(const std::vector<int>& nodes,
+                             int max_seeds,
+                             double reach,
+                             std::vector<int>& offsets,
+                             std::vector<int>& seeds) const {
         (void)max_seeds;
         (void)reach;
         offsets.assign(nodes.size() + 1, 0);
@@ -120,19 +122,26 @@ bool SmoothedFallback(const NodeTargetResult& r) {
 template <typename Metric>
 class EvaluatorImpl final : public NodeTargets::Evaluator {
 public:
-    EvaluatorImpl(const NodeLabels& labels, const SurfacePatches& patches, const mfem::Vector& h,
-                  const SeedSet& seeds, const MetricSetup& setup,
-                  const std::vector<int>& grain_seed, const NodeTargetOptions& options)
+    EvaluatorImpl(const NodeLabels& labels,
+                  const SurfacePatches& patches,
+                  const mfem::Vector& h,
+                  const SeedSet& seeds,
+                  const MetricSetup& setup,
+                  const std::vector<int>& grain_seed,
+                  const NodeTargetOptions& options)
         : m_labels(labels), m_patches(patches), m_h(h), m_grain_seed(grain_seed),
           m_options(options) {
-        m_index.Build(seeds, setup, options.num_bins,
-                      axom::execution_space<axom::SEQ_EXEC>::allocatorID());
+        m_index.Build(
+            seeds, setup, options.num_bins, axom::execution_space<axom::SEQ_EXEC>::allocatorID());
     }
 
     void Evaluate(const std::vector<NodeLabelQuery>& queries,
                   std::vector<NodeTargetResult>& out) const override;
-    void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
-                     std::vector<int>& offsets, std::vector<int>& seeds) const override;
+    void NearbySeeds(const std::vector<int>& nodes,
+                     int max_seeds,
+                     double reach,
+                     std::vector<int>& offsets,
+                     std::vector<int>& seeds) const override;
 
 private:
     /** @brief Steps before the foreign check for one query; true = candidate (FIT so far). */
@@ -147,7 +156,8 @@ private:
 };
 
 template <typename Metric>
-bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
+bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q,
+                                    int* node_seeds,
                                     NodeTargetResult& r) const {
     const int v = q.node;
     const int n = q.num_labels;
@@ -231,8 +241,7 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
                 double p[3];
                 double nrm[3];
                 bool interior = false;
-                const double dist =
-                    m_patches.ClosestPoint(v, y, p, nrm, interior, s - surf_off[v]);
+                const double dist = m_patches.ClosestPoint(v, y, p, nrm, interior, s - surf_off[v]);
                 if (!interior && dist > tol) {
                     for (int d = 0; d < 3; ++d) {
                         nrm[d] = (y[d] - p[d]) / dist;
@@ -243,8 +252,8 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
                 dist_max = std::max(dist_max, dist);
             }
             double y_new[3];
-            result =
-                ProjectOntoManifold(f, rows, num_rows, x, tol, m_options.max_iterations, y_new);
+            result = ProjectOntoManifold(
+                f, rows, num_rows, x, tol, m_options.max_iterations, y_new);
             if (result != ProjectionResult::CONVERGED) {
                 break;
             }
@@ -311,7 +320,8 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
     std::vector<int> own_seeds;
     for (int i = 0; i < nq; ++i) {
         int node_seeds[NODE_QUERY_LABELS];
-        if (Project(queries[static_cast<std::size_t>(i)], node_seeds,
+        if (Project(queries[static_cast<std::size_t>(i)],
+                    node_seeds,
                     out[static_cast<std::size_t>(i)])) {
             const int n = queries[static_cast<std::size_t>(i)].num_labels;
             candidates.push_back({i, static_cast<int>(own_seeds.size()), n});
@@ -375,8 +385,10 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
  * f_1 is linear; a first-order estimate otherwise), kept when it is at most `reach` element sizes.
  */
 template <typename Metric>
-void EvaluatorImpl<Metric>::NearbySeeds(const std::vector<int>& nodes, int max_seeds,
-                                        double reach, std::vector<int>& offsets,
+void EvaluatorImpl<Metric>::NearbySeeds(const std::vector<int>& nodes,
+                                        int max_seeds,
+                                        double reach,
+                                        std::vector<int>& offsets,
                                         std::vector<int>& seeds) const {
     const int nq = static_cast<int>(nodes.size());
     offsets.assign(nodes.size() + 1, 0);
@@ -459,8 +471,11 @@ void EvaluatorImpl<Metric>::NearbySeeds(const std::vector<int>& nodes, int max_s
  *     the smoothed staircase when asked for, then Evaluate on every node's own label set.
  *  5. Summary.
  */
-NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const SeedSet& seeds,
-                         const MetricSetup& setup, const std::vector<int>& grain_seed,
+NodeTargets::NodeTargets(const NodeLabels& labels,
+                         MetricType metric,
+                         const SeedSet& seeds,
+                         const MetricSetup& setup,
+                         const std::vector<int>& grain_seed,
                          const NodeTargetOptions& options)
     : m_labels(labels), m_options(options) {
     const VertexField& field = labels.Field();
@@ -475,8 +490,9 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
                    "NodeTargets: max_move and tolerance must be > 0, max_iterations and num_bins "
                    ">= 1");
     ThrowIfAnyRank(comm, options.analytic && num_seeds < 1, "NodeTargets: the seed set is empty");
-    ThrowIfAnyRank(comm, options.smoothed && (options.smoothing.steps < 0 ||
-                                              !(options.smoothing.max_move > 0.0)),
+    ThrowIfAnyRank(comm,
+                   options.smoothed &&
+                       (options.smoothing.steps < 0 || !(options.smoothing.max_move > 0.0)),
                    "NodeTargets: smoothing steps must be >= 0 and max_move > 0");
     bool bad_seed = false;
     for (const int s : grain_seed) {
@@ -494,8 +510,8 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
     ComputeMeshSize();
 
     // Step 3 (the selection depends only on the surfaces, identical on every copy)
-    const double reach =
-        std::max(options.max_move, options.smoothed ? options.smoothing.max_move : 0.0);
+    const double reach = std::max(options.max_move,
+                                  options.smoothed ? options.smoothing.max_move : 0.0);
     m_patch_rings = PatchRingsFor(reach, field.LatticeOrder());
     m_patches = MakeCurvedPatches(labels, m_patch_rings);
 
@@ -503,8 +519,8 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
     if (options.analytic) {
         DispatchMetric(metric, [&](auto metric_tag) {
             using Metric = decltype(metric_tag);
-            m_evaluator = std::make_unique<EvaluatorImpl<Metric>>(labels, *m_patches, m_h, seeds,
-                                                                  setup, grain_seed, options);
+            m_evaluator = std::make_unique<EvaluatorImpl<Metric>>(
+                labels, *m_patches, m_h, seeds, setup, grain_seed, options);
         });
     } else {
         m_evaluator = std::make_unique<NonAnalyticEvaluator>(labels, *m_patches);
@@ -512,8 +528,8 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
     // Smoothed staircase (collective) before Evaluate, which falls back to it
     m_smoothed.assign(static_cast<std::size_t>(nv), 0);
     if (options.smoothed) {
-        SmoothGrainBoundaries(labels, *m_patches, m_h, options.smoothing, m_smoothed_target,
-                              m_smoothed);
+        SmoothGrainBoundaries(
+            labels, *m_patches, m_h, options.smoothing, m_smoothed_target, m_smoothed);
     }
     const int* off = labels.LabelOffsets().HostRead();
     std::vector<NodeLabelQuery> queries(static_cast<std::size_t>(nv));
@@ -609,20 +625,23 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
 
 NodeTargets::~NodeTargets() = default;
 
-std::vector<NodeTargetResult> NodeTargets::EvaluateAnalytic(
-    const std::vector<NodeLabelQuery>& queries) const {
+std::vector<NodeTargetResult>
+NodeTargets::EvaluateAnalytic(const std::vector<NodeLabelQuery>& queries) const {
     std::vector<NodeTargetResult> out;
     m_evaluator->Evaluate(queries, out);
     return out;
 }
 
-void NodeTargets::NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
-                              std::vector<int>& offsets, std::vector<int>& seeds) const {
+void NodeTargets::NearbySeeds(const std::vector<int>& nodes,
+                              int max_seeds,
+                              double reach,
+                              std::vector<int>& offsets,
+                              std::vector<int>& seeds) const {
     m_evaluator->NearbySeeds(nodes, max_seeds, reach, offsets, seeds);
 }
 
-std::vector<NodeTargetResult> NodeTargets::Evaluate(
-    const std::vector<NodeLabelQuery>& queries) const {
+std::vector<NodeTargetResult>
+NodeTargets::Evaluate(const std::vector<NodeLabelQuery>& queries) const {
     std::vector<NodeTargetResult> out;
     m_evaluator->Evaluate(queries, out);
     if (!m_options.smoothed) {
@@ -636,13 +655,15 @@ std::vector<NodeTargetResult> NodeTargets::Evaluate(
         const int v = q.node;
         if (m_smoothed[static_cast<std::size_t>(v)] == 0 || !SmoothedFallback(out[i]) ||
             q.num_labels != m_labels.NumLabels(v) ||
-            !std::equal(items + off[v], items + off[v] + std::min(q.num_labels, NODE_QUERY_LABELS),
+            !std::equal(items + off[v],
+                        items + off[v] + std::min(q.num_labels, NODE_QUERY_LABELS),
                         q.labels)) {
             continue;
         }
         out[i].status = TargetStatus::FIT;
         out[i].reason = TargetReason::NONE;
-        std::copy(m_smoothed_target.HostRead() + 3 * v, m_smoothed_target.HostRead() + 3 * v + 3,
+        std::copy(m_smoothed_target.HostRead() + 3 * v,
+                  m_smoothed_target.HostRead() + 3 * v + 3,
                   out[i].target);
     }
     return out;
@@ -722,8 +743,12 @@ void NodeTargets::BuildSummary() {
             ratio = std::max(ratio, std::sqrt(d2) / m_h(v));
         }
     }
-    MPI_Allreduce(MPI_IN_PLACE, counts, NUM_TARGET_STATUSES + NUM_TARGET_REASONS + 1,
-                  MPI_INT64_T, MPI_SUM, field.Comm());
+    MPI_Allreduce(MPI_IN_PLACE,
+                  counts,
+                  NUM_TARGET_STATUSES + NUM_TARGET_REASONS + 1,
+                  MPI_INT64_T,
+                  MPI_SUM,
+                  field.Comm());
     MPI_Allreduce(MPI_IN_PLACE, &ratio, 1, MPI_DOUBLE, MPI_MAX, field.Comm());
     for (int k = 0; k < NUM_TARGET_STATUSES; ++k) {
         m_summary.status[static_cast<std::size_t>(k)] = counts[k];

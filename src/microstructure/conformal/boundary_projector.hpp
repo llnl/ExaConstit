@@ -1,14 +1,14 @@
 #pragma once
 
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>
+
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
 
 /**
  * @file boundary_projector.hpp
@@ -109,8 +109,10 @@ public:
      * @throws std::invalid_argument on every rank if `selected` has the wrong size or `rings` is
      *         out of range.
      */
-    SurfacePatches(const VertexField& field, const std::vector<char>& selected,
-                   const std::vector<char>* surface_faces = nullptr, int rings = 1,
+    SurfacePatches(const VertexField& field,
+                   const std::vector<char>& selected,
+                   const std::vector<char>* surface_faces = nullptr,
+                   int rings = 1,
                    const PatchSurfaces* surfaces = nullptr);
 
     /** @brief Number of patches of node v: 0 when not selected, else 1 without PatchSurfaces
@@ -143,8 +145,8 @@ public:
      * @param k        the patch (surface k of the node with PatchSurfaces).
      * @return |y - p|, or a negative value for an empty patch.
      */
-    double ClosestPoint(int v, const double y[3], double p[3], double normal[3], bool& interior,
-                        int k = 0) const;
+    double ClosestPoint(
+        int v, const double y[3], double p[3], double normal[3], bool& interior, int k = 0) const;
 
 private:
     std::vector<int> m_patch_offsets; ///< per node, first patch (NV + 1)
@@ -174,14 +176,23 @@ bool CurvedPatchesReady(const NodeLabels& labels, const SurfacePatches& patches,
  * `max_iterations` steps are done. Axis-normal planes restore that coordinate of x0 bit for bit.
  * Host.
  */
-void ProjectOnNodeSurfaces(const NodeLabels& labels, const SurfacePatches& patches, int v,
-                           const double* x0, double tol, int max_iterations, double y[3]);
+void ProjectOnNodeSurfaces(const NodeLabels& labels,
+                           const SurfacePatches& patches,
+                           int v,
+                           const double* x0,
+                           double tol,
+                           int max_iterations,
+                           double y[3]);
 
 /**
  * @brief Closest point p of y on the triangle (a, b, c), with `interior` true when p is inside
  * the triangle (not on an edge or corner). Host.
  */
-void ClosestPointOnTriangle(const double y[3], const double a[3], const double b[3],
-                            const double c[3], double p[3], bool& interior);
+void ClosestPointOnTriangle(const double y[3],
+                            const double a[3],
+                            const double b[3],
+                            const double c[3],
+                            double p[3],
+                            bool& interior);
 
 } // namespace exaconstit::microstructure

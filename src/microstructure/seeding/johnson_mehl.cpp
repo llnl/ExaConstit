@@ -17,13 +17,6 @@
  */
 #include "microstructure/seeding/johnson_mehl.hpp"
 
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-#include "microstructure/util/collective_errors.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -31,6 +24,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include "microstructure/util/collective_errors.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -89,8 +89,11 @@ public:
      * @param speed  growth speed v.
      * @param seeds  the nuclei (x, y, z, nucleation_time are read); must outlive the grid.
      */
-    NucleusGrid(const std::array<double, 3>& lo, const std::array<double, 3>& hi, double h,
-                double speed, const SeedSet& seeds)
+    NucleusGrid(const std::array<double, 3>& lo,
+                const std::array<double, 3>& hi,
+                double h,
+                double speed,
+                const SeedSet& seeds)
         : m_lo(lo), m_speed(speed), m_seeds(seeds) {
         // Grow h until the number of cells is acceptable, then count cells per axis
         double edge = h;
@@ -112,8 +115,8 @@ public:
 
     /** Files nucleus i (already appended to the SeedSet) under its cell. */
     void Insert(int i) {
-        const std::int64_t c[3] = {Cell(m_seeds.x[i], 0), Cell(m_seeds.y[i], 1),
-                                   Cell(m_seeds.z[i], 2)};
+        const std::int64_t c[3] = {
+            Cell(m_seeds.x[i], 0), Cell(m_seeds.y[i], 1), Cell(m_seeds.z[i], 2)};
         m_cells[static_cast<std::size_t>(Index(c[0], c[1], c[2]))].push_back(i);
         if (m_count == 0) {
             m_earliest = m_seeds.nucleation_time[i];
@@ -205,14 +208,13 @@ public:
             const double dx = x[0] - m_seeds.x[j];
             const double dy = x[1] - m_seeds.y[j];
             const double dz = x[2] - m_seeds.z[j];
-            const double arrival =
-                m_seeds.nucleation_time[j] + std::sqrt(dx * dx + dy * dy + dz * dz) / m_speed;
+            const double arrival = m_seeds.nucleation_time[j] +
+                                   std::sqrt(dx * dx + dy * dy + dz * dz) / m_speed;
             best = std::min(best, arrival);
         };
 
         const std::int64_t center[3] = {Cell(x[0], 0), Cell(x[1], 1), Cell(x[2], 2)};
-        const std::int64_t max_ring =
-            std::max({m_num_cells[0], m_num_cells[1], m_num_cells[2]});
+        const std::int64_t max_ring = std::max({m_num_cells[0], m_num_cells[1], m_num_cells[2]});
         for (std::int64_t r = 0; r <= max_ring; r++) {
             // Stop: nothing in ring r or beyond can beat the best arrival time
             if (r >= 1 && m_earliest + static_cast<double>(r - 1) * m_h / m_speed >= best) {
@@ -230,16 +232,16 @@ public:
             for (std::int64_t dk = -r; dk <= r; dk++) {
                 for (std::int64_t dj = -r; dj <= r; dj++) {
                     for (std::int64_t di = -r; di <= r; di++) {
-                        const std::int64_t ring =
-                            std::max({std::abs(di), std::abs(dj), std::abs(dk)});
+                        const std::int64_t ring = std::max(
+                            {std::abs(di), std::abs(dj), std::abs(dk)});
                         if (ring != r) {
                             continue;
                         }
                         const std::int64_t i = center[0] + di;
                         const std::int64_t j = center[1] + dj;
                         const std::int64_t k = center[2] + dk;
-                        if (i < 0 || j < 0 || k < 0 || i >= m_num_cells[0] ||
-                            j >= m_num_cells[1] || k >= m_num_cells[2]) {
+                        if (i < 0 || j < 0 || k < 0 || i >= m_num_cells[0] || j >= m_num_cells[1] ||
+                            k >= m_num_cells[2]) {
                             continue;
                         }
                         for (const int n : m_cells[static_cast<std::size_t>(Index(i, j, k))]) {
@@ -301,8 +303,10 @@ private:
  * A rank without elements contributes -infinity. The maximum of doubles is exact and
  * order-independent, so all ranks get the same value for any partition.
  */
-double CompletionTimeBound(const MaterialPointLocator& locator, const NucleusGrid& grid,
-                           double speed, MPI_Comm comm) {
+double CompletionTimeBound(const MaterialPointLocator& locator,
+                           const NucleusGrid& grid,
+                           double speed,
+                           MPI_Comm comm) {
     double local_max = -std::numeric_limits<double>::infinity();
     for (int e = 0; e < locator.NumElements(); e++) {
         if (!locator.ElementActive(e)) {
@@ -424,8 +428,10 @@ double JohnsonMehlGrainDensity(double nucleation_rate, double growth_speed) {
  *     The decision in (d) depends only on replicated counts, so all ranks make the collective
  *     call together.
  */
-SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
-                                 const JohnsonMehlParameters& params, JohnsonMehlReport* report,
+SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh,
+                                 MPI_Comm comm,
+                                 const JohnsonMehlParameters& params,
+                                 JohnsonMehlReport* report,
                                  const MaterialContext* context) {
     // ---- Step 1: parameters ----
     ValidateJohnsonMehlParameters(params);
@@ -435,8 +441,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
     rep.completion_time_bound = std::numeric_limits<double>::infinity();
     const double speed = params.growth_speed;
     const double rate_max = params.nucleation_rate;
-    const std::int64_t max_candidates =
-        (params.max_candidates > 0) ? params.max_candidates : DEFAULT_MAX_CANDIDATES;
+    const std::int64_t max_candidates = (params.max_candidates > 0) ? params.max_candidates
+                                                                    : DEFAULT_MAX_CANDIDATES;
 
     // ---- Step 2: local setup (may fail on some ranks only) ----
     // Straight-sided or curved (active elements) is decided over all ranks (collective), so
@@ -450,8 +456,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
     std::string setup_error;
     try {
         if (!shared_locator) {
-            locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided,
-                                                                 ContextMask(context));
+            locator_ptr = std::make_unique<MaterialPointLocator>(
+                local_mesh, straight_sided, ContextMask(context));
         }
     } catch (const std::exception& error) {
         setup_error = std::string("GenerateJohnsonMehlSeeds: mesh setup failed: ") + error.what();
@@ -522,8 +528,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
 
     // ---- Step 5: batches of candidates ----
     const double inv_box_rate = 1.0 / (rate_max * box_volume); // mean waiting time
-    std::int64_t next_k = 0;         // index of the next candidate to generate
-    double previous_time = 0.0;      // birth time of the last generated candidate
+    std::int64_t next_k = 0;    // index of the next candidate to generate
+    double previous_time = 0.0; // birth time of the last generated candidate
     std::int64_t batch_size = FIRST_BATCH;
     std::int64_t accepted_at_last_bound = 0;
     bool stop = false;
@@ -540,9 +546,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
             rep.stop = JohnsonMehlStop::STALLED;
             if (!params.allow_stall) {
                 throw std::runtime_error(
-                    "GenerateJohnsonMehlSeeds: stall cap reached after " +
-                    std::to_string(next_k) + " candidates with " +
-                    std::to_string(seeds.Size()) +
+                    "GenerateJohnsonMehlSeeds: stall cap reached after " + std::to_string(next_k) +
+                    " candidates with " + std::to_string(seeds.Size()) +
                     " nuclei; increase max_candidates, set end_time, or check that the "
                     "sampling box overlaps the material");
             }
@@ -555,13 +560,12 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
         ct.clear();
         bool time_limit = false;
         for (std::int64_t i = 0; i < wanted; i++) {
-            const CounterRng rng(params.rng_seed, RngPurpose::JOHNSON_MEHL,
-                                 static_cast<std::uint64_t>(next_k + i));
+            const CounterRng rng(
+                params.rng_seed, RngPurpose::JOHNSON_MEHL, static_cast<std::uint64_t>(next_k + i));
             // Exponential waiting time: -ln(1 - u) with u in [0, 1), so the log is finite
             const double waiting = -std::log(1.0 - rng.UniformDouble(1)) * inv_box_rate;
             const double t = previous_time + waiting;
-            if ((params.end_time > 0.0 && t > params.end_time) ||
-                t > rep.completion_time_bound) {
+            if ((params.end_time > 0.0 && t > params.end_time) || t > rep.completion_time_bound) {
                 time_limit = true;
                 rep.stop = (params.end_time > 0.0 && t > params.end_time)
                                ? JohnsonMehlStop::END_TIME
@@ -583,8 +587,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
         mask.assign(static_cast<std::size_t>(words), 0);
         if (n > 0) {
             locator.MarkInside(n, cx.data(), cy.data(), cz.data(), mask.data());
-            MPI_Allreduce(MPI_IN_PLACE, mask.data(), static_cast<int>(words), MPI_UINT64_T,
-                          MPI_BOR, comm);
+            MPI_Allreduce(
+                MPI_IN_PLACE, mask.data(), static_cast<int>(words), MPI_UINT64_T, MPI_BOR, comm);
         }
 
         // Step 5c: filters in candidate order (identical on every rank)
@@ -610,8 +614,8 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
                         ") = " + std::to_string(rate) +
                         " is outside [0, nucleation_rate]; nucleation_rate must bound it");
                 }
-                const CounterRng rng(params.rng_seed, RngPurpose::JOHNSON_MEHL,
-                                     static_cast<std::uint64_t>(k));
+                const CounterRng rng(
+                    params.rng_seed, RngPurpose::JOHNSON_MEHL, static_cast<std::uint64_t>(k));
                 if (!(rng.UniformDouble(2) * rate_max < rate)) {
                     rep.rejected_by_rate++;
                     continue;
@@ -671,10 +675,12 @@ SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
  * ParMesh overload: the local part of a ParMesh is an mfem::Mesh; its communicator is the one the
  * mesh is distributed over.
  */
-SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh, const JohnsonMehlParameters& params,
-                                 JohnsonMehlReport* report, const MaterialContext* context) {
-    return GenerateJohnsonMehlSeeds(static_cast<const mfem::Mesh&>(pmesh), pmesh.GetComm(),
-                                    params, report, context);
+SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh,
+                                 const JohnsonMehlParameters& params,
+                                 JohnsonMehlReport* report,
+                                 const MaterialContext* context) {
+    return GenerateJohnsonMehlSeeds(
+        static_cast<const mfem::Mesh&>(pmesh), pmesh.GetComm(), params, report, context);
 }
 
 } // namespace exaconstit::microstructure

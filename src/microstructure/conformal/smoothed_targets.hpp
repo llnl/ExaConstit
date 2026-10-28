@@ -1,10 +1,10 @@
 #pragma once
 
-#include "microstructure/conformal/node_labels.hpp"
-
 #include "mfem.hpp"
 
 #include <vector>
+
+#include "microstructure/conformal/node_labels.hpp"
 
 /**
  * @file smoothed_targets.hpp
@@ -76,8 +76,11 @@ struct SmoothingParameters {
  * @param moved    out: per node, 1 when the node takes part in the smoothing (a grain boundary node
  *                 as defined in the file comment), else 0.
  */
-void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patches,
-                           const mfem::Vector& h, const SmoothingParameters& params,
-                           mfem::Vector& smoothed, std::vector<char>& moved);
+void SmoothGrainBoundaries(const NodeLabels& labels,
+                           const SurfacePatches& patches,
+                           const mfem::Vector& h,
+                           const SmoothingParameters& params,
+                           mfem::Vector& smoothed,
+                           std::vector<char>& moved);
 
 } // namespace exaconstit::microstructure

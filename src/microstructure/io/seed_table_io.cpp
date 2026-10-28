@@ -1,8 +1,5 @@
 #include "microstructure/io/seed_table_io.hpp"
 
-#include "microstructure/io/microstructure_file_io.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -16,6 +13,9 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+
+#include "microstructure/io/microstructure_file_io.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 /*
  * Implementation notes (see seed_table_io.hpp for the file format).
@@ -131,8 +131,8 @@ bool IsOtherOrientationColumn(const std::string& name) {
         }
     }
     // Rotation matrix entries r<i><j>, i, j in 1..3
-    if (name.size() == 3 && name[0] == 'r' && name[1] >= '1' && name[1] <= '3' &&
-        name[2] >= '1' && name[2] <= '3') {
+    if (name.size() == 3 && name[0] == 'r' && name[1] >= '1' && name[1] <= '3' && name[2] >= '1' &&
+        name[2] <= '3') {
         return true;
     }
     return false;
@@ -187,14 +187,25 @@ ColumnMap ReadHeader(const std::string& line, const std::string& where) {
     map.num_fields = names.size();
 
     // Pointers to the slots of the known names, so step 2 is a single lookup
-    std::map<std::string, int*> known = {
-        {"x", &map.x},           {"y", &map.y},           {"z", &map.z},
-        {"id", &map.id},         {"qw", &map.quat[0]},    {"qx", &map.quat[1]},
-        {"qy", &map.quat[2]},    {"qz", &map.quat[3]},    {"phase", &map.phase},
-        {"weight", &map.weight}, {"volume", &map.volume}, {"radius", &map.radius},
-        {"diameter", &map.diameter}, {"m11", &map.shape[0]}, {"m22", &map.shape[1]},
-        {"m33", &map.shape[2]},  {"m23", &map.shape[3]},  {"m13", &map.shape[4]},
-        {"m12", &map.shape[5]}};
+    std::map<std::string, int*> known = {{"x", &map.x},
+                                         {"y", &map.y},
+                                         {"z", &map.z},
+                                         {"id", &map.id},
+                                         {"qw", &map.quat[0]},
+                                         {"qx", &map.quat[1]},
+                                         {"qy", &map.quat[2]},
+                                         {"qz", &map.quat[3]},
+                                         {"phase", &map.phase},
+                                         {"weight", &map.weight},
+                                         {"volume", &map.volume},
+                                         {"radius", &map.radius},
+                                         {"diameter", &map.diameter},
+                                         {"m11", &map.shape[0]},
+                                         {"m22", &map.shape[1]},
+                                         {"m33", &map.shape[2]},
+                                         {"m23", &map.shape[3]},
+                                         {"m13", &map.shape[4]},
+                                         {"m12", &map.shape[5]}};
 
     // Steps 1 and 2: one name at a time
     std::vector<std::string> seen;
@@ -247,8 +258,9 @@ ColumnMap ReadHeader(const std::string& line, const std::string& where) {
         }
     }
     if (quat_count != 0 && quat_count != 4) {
-        throw std::runtime_error(where + ": incomplete quaternion: the columns qw, qx, qy, qz "
-                                         "must all be present or all absent (missing: " +
+        throw std::runtime_error(where +
+                                 ": incomplete quaternion: the columns qw, qx, qy, qz "
+                                 "must all be present or all absent (missing: " +
                                  quat_missing + ")");
     }
     const char* shape_names[6] = {"m11", "m22", "m33", "m23", "m13", "m12"};
@@ -262,16 +274,18 @@ ColumnMap ReadHeader(const std::string& line, const std::string& where) {
         }
     }
     if (shape_count != 0 && shape_count != 6) {
-        throw std::runtime_error(where + ": incomplete shape tensor: the columns m11, m22, m33, "
-                                         "m23, m13, m12 must all be present or all absent "
-                                         "(missing: " +
+        throw std::runtime_error(where +
+                                 ": incomplete shape tensor: the columns m11, m22, m33, "
+                                 "m23, m13, m12 must all be present or all absent "
+                                 "(missing: " +
                                  shape_missing + ")");
     }
-    const int size_count =
-        (map.volume >= 0 ? 1 : 0) + (map.radius >= 0 ? 1 : 0) + (map.diameter >= 0 ? 1 : 0);
+    const int size_count = (map.volume >= 0 ? 1 : 0) + (map.radius >= 0 ? 1 : 0) +
+                           (map.diameter >= 0 ? 1 : 0);
     if (size_count > 1) {
-        throw std::runtime_error(where + ": at most one size column is allowed (volume, radius "
-                                         "or diameter), found " +
+        throw std::runtime_error(where +
+                                 ": at most one size column is allowed (volume, radius "
+                                 "or diameter), found " +
                                  std::to_string(size_count));
     }
     return map;
@@ -282,7 +296,8 @@ ColumnMap ReadHeader(const std::string& line, const std::string& where) {
  * divided by its largest diagonal entry (making the test and the inverse independent of the
  * length unit), then checked by Sylvester's criterion (all leading principal minors positive:
  * m11 > 0, m11 m22 - m12^2 > 0, det M > 0). The inverse is the adjugate (matrix of cofactors)
- * divided by the determinant, written out entry by entry, and divided by the scale again. Returns false for a non-SPD or non-finite M.
+ * divided by the determinant, written out entry by entry, and divided by the scale again. Returns
+ * false for a non-SPD or non-finite M.
  */
 bool InvertShapeTensor(const double m_in[6], double a[6]) {
     // Divide by the largest diagonal entry first, so the minors are of order 1 whatever the
@@ -494,7 +509,7 @@ SeedTable ParseSeedTableFile(const SeedTableParameters& params,
 
         // Size: one of volume, radius, diameter, stored as a volume in mesh units
         if (table.has_volume) {
-            const int index = (map.volume >= 0) ? map.volume
+            const int index = (map.volume >= 0)   ? map.volume
                               : (map.radius >= 0) ? map.radius
                                                   : map.diameter;
             const char* name = (map.volume >= 0)   ? "volume"
@@ -783,8 +798,7 @@ void WriteSeedTable(const std::filesystem::path& path, const SeedTable& table) {
 
     std::ofstream out(path);
     if (!out) {
-        throw std::runtime_error("WriteSeedTable: cannot open '" + path.string() +
-                                 "' for writing");
+        throw std::runtime_error("WriteSeedTable: cannot open '" + path.string() + "' for writing");
     }
 
     // Comment and header
@@ -844,9 +858,8 @@ void WriteSeedTable(const std::filesystem::path& path, const SeedTable& table) {
  * per-seed array is compacted in place with a running "write" index (multi-component arrays move
  * all components of a seed together). Arrays that are empty stay empty.
  */
-std::int64_t KeepSeedsInBox(SeedTable& table,
-                            const std::array<double, 3>& lo,
-                            const std::array<double, 3>& hi) {
+std::int64_t
+KeepSeedsInBox(SeedTable& table, const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
     SeedSet& s = table.seeds;
     const std::size_t n = s.Size();
 

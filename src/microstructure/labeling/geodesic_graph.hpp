@@ -1,14 +1,14 @@
 #pragma once
 
-#include "microstructure/labeling/geodesic_common.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+
+#include "microstructure/labeling/geodesic_common.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file geodesic_graph.hpp
@@ -109,8 +109,9 @@
  * **Scope.** Voronoi (a_i = 0), Additive (distance - a_i) and, through GeodesicParameters::stretch
  * (edge lengths |S (u - v)|, labeling/geodesic_metric.hpp), Quadric with one global tensor and no
  * weights; no periodic axes; passthrough parts are excluded with an element mask
- * (GeodesicParameters::context), so paths stay inside the active material. A body of the mesh with no seed keeps T = +infinity
- * and label -1, and its elements get element_seed = -1 (the driver decides what to do with them).
+ * (GeodesicParameters::context), so paths stay inside the active material. A body of the mesh with
+ * no seed keeps T = +infinity and label -1, and its elements get element_seed = -1 (the driver
+ * decides what to do with them).
  */
 
 namespace exaconstit::microstructure {

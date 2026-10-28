@@ -19,14 +19,7 @@
  */
 #include "microstructure/labeling/voxel_labeler.hpp"
 
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
-
-#include <math.h>
 
 #include <algorithm>
 #include <array>
@@ -34,10 +27,16 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <math.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -71,15 +70,15 @@ constexpr double k_tile_margin = 1.0e-6;
  * (mfem::Array<int>::Read()).
  */
 struct TileLookup {
-    double origin[3];     ///< grid lower corner (mesh units)
-    double spacing[3];    ///< voxel edge lengths (mesh units)
-    double dims_d[3];     ///< voxel counts of the grid, as doubles for the range test
-    long long dims[3];    ///< voxel counts of the grid
-    long long tile;       ///< tile edge length in voxels
-    long long t0[3];      ///< first tile index of the offset table per axis
-    long long range[3];   ///< tile counts of the offset table per axis
-    const int* offsets;   ///< range[0]*range[1]*range[2] entries
-    const int* ids;       ///< tile data
+    double origin[3];   ///< grid lower corner (mesh units)
+    double spacing[3];  ///< voxel edge lengths (mesh units)
+    double dims_d[3];   ///< voxel counts of the grid, as doubles for the range test
+    long long dims[3];  ///< voxel counts of the grid
+    long long tile;     ///< tile edge length in voxels
+    long long t0[3];    ///< first tile index of the offset table per axis
+    long long range[3]; ///< tile counts of the offset table per axis
+    const int* offsets; ///< range[0]*range[1]*range[2] entries
+    const int* ids;     ///< tile data
 
     /**
      * @brief Label of the point (x, y, z): the feature id (> 0), k_no_vote, k_outside_grid or
@@ -90,9 +89,9 @@ struct TileLookup {
      */
     MFEM_HOST_DEVICE int operator()(double x, double y, double z) const {
         const double p[3] = {x, y, z};
-        long long v[3];  // voxel index
-        long long t[3];  // tile index
-        long long e[3];  // extents of that tile (edge tiles are smaller)
+        long long v[3]; // voxel index
+        long long t[3]; // tile index
+        long long e[3]; // extents of that tile (edge tiles are smaller)
         // Grid test on every axis first (a point outside the grid never votes)
         for (int d = 0; d < 3; ++d) {
             const double f = floor((p[d] - origin[d]) / spacing[d]);
@@ -130,8 +129,11 @@ struct TileLookup {
  * A named function (not a lambda inside a lambda) so the device lambda is defined at function
  * scope, which CUDA requires.
  */
-void LabelPoints(const TileLookup& lookup, const mfem::Vector& x, const mfem::Vector& y,
-                 const mfem::Vector& z, mfem::Array<int>& label) {
+void LabelPoints(const TileLookup& lookup,
+                 const mfem::Vector& x,
+                 const mfem::Vector& y,
+                 const mfem::Vector& z,
+                 mfem::Array<int>& label) {
     const int n = x.Size();
     label.SetSize(n);
     if (n == 0) {
@@ -142,7 +144,9 @@ void LabelPoints(const TileLookup& lookup, const mfem::Vector& x, const mfem::Ve
     const double* pz = z.Read();
     int* out = label.Write();
     const TileLookup lk = lookup;
-    mfem::forall(n, [=] MFEM_HOST_DEVICE(int i) { out[i] = lk(px[i], py[i], pz[i]); });
+    mfem::forall(n, [=] MFEM_HOST_DEVICE(int i) {
+        out[i] = lk(px[i], py[i], pz[i]);
+    });
 }
 
 /**
@@ -162,9 +166,14 @@ void LabelPoints(const TileLookup& lookup, const mfem::Vector& x, const mfem::Ve
  * @param element_outside output: points of the element outside the grid.
  * @param element_bad     output: 1 if a point fell on a tile that was not read.
  */
-void VoteChunk(int chunk_begin, int chunk_elems, int nq, const mfem::Array<int>& label,
-               const mfem::Vector& weight, mfem::Array<int>& element_feature,
-               mfem::Array<int>& element_outside, mfem::Array<int>& element_bad) {
+void VoteChunk(int chunk_begin,
+               int chunk_elems,
+               int nq,
+               const mfem::Array<int>& label,
+               const mfem::Vector& weight,
+               mfem::Array<int>& element_feature,
+               mfem::Array<int>& element_outside,
+               mfem::Array<int>& element_bad) {
     const int* point_label = label.Read();
     const double* point_weight = weight.Read();
     // ReadWrite: the arrays cover all local elements; only this chunk's entries are written
@@ -208,8 +217,7 @@ void VoteChunk(int chunk_begin, int chunk_elems, int nq, const mfem::Array<int>&
                 }
             }
             // Larger total wins; exact tie -> lower feature id
-            if (winner == 0 || total > winner_weight ||
-                (total == winner_weight && lab < winner)) {
+            if (winner == 0 || total > winner_weight || (total == winner_weight && lab < winner)) {
                 winner = lab;
                 winner_weight = total;
             }
@@ -270,7 +278,11 @@ public:
             return;
         }
         if (!m_sampler) {
-            visit(0, m_num_elements, m_centroids.cx, m_centroids.cy, m_centroids.cz,
+            visit(0,
+                  m_num_elements,
+                  m_centroids.cx,
+                  m_centroids.cy,
+                  m_centroids.cz,
                   m_centroids.volume);
             return;
         }
@@ -305,13 +317,17 @@ struct TileGrid {
  * unique, then merged into the running list, so memory grows with the touched tiles plus one
  * chunk.
  */
-std::vector<std::int64_t> MarkTiles(const SamplePoints& points, const VoxelGridInfo& grid,
-                                    const TileGrid& tiles) {
+std::vector<std::int64_t>
+MarkTiles(const SamplePoints& points, const VoxelGridInfo& grid, const TileGrid& tiles) {
     std::vector<std::int64_t> touched;
     std::vector<std::int64_t> chunk_marks;
     std::vector<std::int64_t> merged;
-    points.ForEachChunk([&](int, int, const mfem::Vector& x, const mfem::Vector& y,
-                            const mfem::Vector& z, const mfem::Vector&) {
+    points.ForEachChunk([&](int,
+                            int,
+                            const mfem::Vector& x,
+                            const mfem::Vector& y,
+                            const mfem::Vector& z,
+                            const mfem::Vector&) {
         const int n = x.Size();
         const double* coords[3] = {x.HostRead(), y.HostRead(), z.HostRead()};
         chunk_marks.clear();
@@ -347,7 +363,10 @@ std::vector<std::int64_t> MarkTiles(const SamplePoints& points, const VoxelGridI
         std::sort(chunk_marks.begin(), chunk_marks.end());
         chunk_marks.erase(std::unique(chunk_marks.begin(), chunk_marks.end()), chunk_marks.end());
         merged.clear();
-        std::set_union(touched.begin(), touched.end(), chunk_marks.begin(), chunk_marks.end(),
+        std::set_union(touched.begin(),
+                       touched.end(),
+                       chunk_marks.begin(),
+                       chunk_marks.end(),
                        std::back_inserter(merged));
         touched.swap(merged);
     });
@@ -370,8 +389,10 @@ struct TileStore {
  * (< 2^31) and stores them (ids <= 0 as 0). Throws on a local failure (the caller makes it
  * collective).
  */
-TileStore ReadTiles(const VoxelMapParameters& map, const VoxelGridInfo& grid,
-                    const TileGrid& tiles, const std::vector<std::int64_t>& touched) {
+TileStore ReadTiles(const VoxelMapParameters& map,
+                    const VoxelGridInfo& grid,
+                    const TileGrid& tiles,
+                    const std::vector<std::int64_t>& touched) {
     TileStore store;
     if (touched.empty()) {
         return store;
@@ -470,10 +491,15 @@ std::int64_t GlobalSum(std::int64_t value, MPI_Comm comm) {
  * @param num_outside     points outside the grid (local).
  * @param any_bad         true if a point fell on a tile that was not read (consistency check).
  */
-void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
-                 const VoxelLabelParameters& params, const VoxelGridInfo& grid,
-                 mfem::Array<int>& element_feature, VoxelLabels& result,
-                 std::int64_t& num_outside, bool& any_bad, const ElementMask* mask) {
+void VoteLocally(mfem::ParMesh& pmesh,
+                 const VoxelMapParameters& map,
+                 const VoxelLabelParameters& params,
+                 const VoxelGridInfo& grid,
+                 mfem::Array<int>& element_feature,
+                 VoxelLabels& result,
+                 std::int64_t& num_outside,
+                 bool& any_bad,
+                 const ElementMask* mask) {
     const int ne = pmesh.GetNE();
     element_feature.SetSize(ne);
     num_outside = 0;
@@ -515,10 +541,20 @@ void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
     mfem::Array<int> element_bad(ne);
     mfem::Array<int> point_label;
     const int nq = points.PointsPerElement();
-    points.ForEachChunk([&](int begin, int end, const mfem::Vector& x, const mfem::Vector& y,
-                            const mfem::Vector& z, const mfem::Vector& weight) {
+    points.ForEachChunk([&](int begin,
+                            int end,
+                            const mfem::Vector& x,
+                            const mfem::Vector& y,
+                            const mfem::Vector& z,
+                            const mfem::Vector& weight) {
         LabelPoints(lookup, x, y, z, point_label);
-        VoteChunk(begin, end - begin, nq, point_label, weight, element_feature, element_outside,
+        VoteChunk(begin,
+                  end - begin,
+                  nq,
+                  point_label,
+                  weight,
+                  element_feature,
+                  element_outside,
                   element_bad);
     });
 
@@ -546,8 +582,11 @@ void VoteLocally(mfem::ParMesh& pmesh, const VoxelMapParameters& map,
  * round's labels; sum the newly assigned elements over all ranks; stop when that sum is 0.
  * The adjacency is built only if some rank has an unvoted element.
  */
-void FillFromNeighbors(mfem::ParMesh& pmesh, MPI_Comm comm, mfem::Array<int>& element_feature,
-                       VoxelLabels& result, const ElementMask* mask) {
+void FillFromNeighbors(mfem::ParMesh& pmesh,
+                       MPI_Comm comm,
+                       mfem::Array<int>& element_feature,
+                       VoxelLabels& result,
+                       const ElementMask* mask) {
     const int ne = element_feature.Size();
     int* current = element_feature.HostReadWrite();
 
@@ -680,8 +719,8 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
     bool any_bad = false;
     std::string error;
     try {
-        VoteLocally(pmesh, map, params, grid, result.element_feature, result, local_outside,
-                    any_bad, mask);
+        VoteLocally(
+            pmesh, map, params, grid, result.element_feature, result, local_outside, any_bad, mask);
     } catch (const std::exception& e) {
         error = e.what();
         if (error.empty()) {
@@ -728,7 +767,8 @@ void CompactFeatureLabels(MPI_Comm comm,
     for (int e = 0; e < ne; ++e) {
         local_bad = local_bad || (ElementIsActive(mask, e) && feature[e] < 1);
     }
-    ThrowIfAnyRank<std::invalid_argument>(comm, local_bad,
+    ThrowIfAnyRank<std::invalid_argument>(comm,
+                                          local_bad,
                                           "CompactFeatureLabels: a feature id < 1 on at least "
                                           "one rank (every element must have a grain)");
 
@@ -758,8 +798,14 @@ void CompactFeatureLabels(MPI_Comm comm,
         throw std::runtime_error("CompactFeatureLabels: too many distinct ids to gather");
     }
     std::vector<int> all_ids(static_cast<std::size_t>(total), 0);
-    MPI_Allgatherv(local_ids.data(), local_count, MPI_INT, all_ids.data(), counts.data(),
-                   displs.data(), MPI_INT, comm);
+    MPI_Allgatherv(local_ids.data(),
+                   local_count,
+                   MPI_INT,
+                   all_ids.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_INT,
+                   comm);
 
     // Step 4: global ascending distinct list
     std::sort(all_ids.begin(), all_ids.end());

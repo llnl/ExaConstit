@@ -21,6 +21,22 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <map>
+#include <memory>
+#include <mpi.h>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/labeling/tessellation_labeler.hpp"
 #include "microstructure/mesh/element_key.hpp"
@@ -28,24 +44,7 @@
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/util/counter_rng.hpp"
-
-#include "mfem.hpp"
-
 #include <gtest/gtest.h>
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <map>
-#include <string>
-#include <set>
-#include <limits>
-#include <memory>
-#include <mpi.h>
-#include <utility>
-#include <vector>
 
 namespace ms = exaconstit::microstructure;
 
@@ -65,7 +64,9 @@ struct GridMesh {
  */
 template <typename Kept>
 GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int num_cells = 0;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -74,9 +75,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
             }
         }
     }
-    GridMesh grid{mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1),
-                             tets ? 6 * num_cells : num_cells, 0, 3),
-                  {}};
+    GridMesh grid{
+        mfem::Mesh(3, (nx + 1) * (ny + 1) * (nz + 1), tets ? 6 * num_cells : num_cells, 0, 3), {}};
     mfem::Mesh& mesh = grid.mesh;
     for (int k = 0; k <= nz; k++) {
         for (int j = 0; j <= ny; j++) {
@@ -101,8 +101,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
                     mesh.AddHex(hex);
                     grid.cell.push_back({i, j, k});
                 } else {
-                    const int orders[6][3] = {{1, 2, 4}, {1, 4, 2}, {2, 1, 4},
-                                              {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
+                    const int orders[6][3] = {
+                        {1, 2, 4}, {1, 4, 2}, {2, 1, 4}, {2, 4, 1}, {4, 1, 2}, {4, 2, 1}};
                     for (const auto& o : orders) {
                         const int tet[4] = {c[0], c[o[0]], c[o[0] + o[1]], c[7]};
                         mesh.AddTet(tet);
@@ -123,7 +123,9 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
 
 /** Full box of nx x ny x nz cells. */
 GridMesh Box(int nx, int ny, int nz, double h, bool tets) {
-    return BuildGrid(nx, ny, nz, h, tets, [](int, int, int) { return true; });
+    return BuildGrid(nx, ny, nz, h, tets, [](int, int, int) {
+        return true;
+    });
 }
 
 /**
@@ -192,9 +194,13 @@ struct SerialResult {
  * Runs CleanupFragments on `serial` distributed over `comm` with the serial labels
  * `serial_grain`, and gathers the result into serial order on every rank. Collective over comm.
  */
-SerialResult RunCleanup(mfem::Mesh& serial, MPI_Comm comm, const std::vector<int>& serial_grain,
-                        int num_grains, const std::vector<std::int64_t>& source,
-                        const ms::FragmentCleanupParameters& params, bool empty_last_rank) {
+SerialResult RunCleanup(mfem::Mesh& serial,
+                        MPI_Comm comm,
+                        const std::vector<int>& serial_grain,
+                        int num_grains,
+                        const std::vector<std::int64_t>& source,
+                        const ms::FragmentCleanupParameters& params,
+                        bool empty_last_rank) {
     Distributed d = empty_last_rank ? DistributeWithEmptyLastRank(serial, comm)
                                     : Distribute(serial, comm);
     const int ne = d.pmesh->GetNE();
@@ -203,8 +209,8 @@ SerialResult RunCleanup(mfem::Mesh& serial, MPI_Comm comm, const std::vector<int
         local[e] = serial_grain[static_cast<std::size_t>(d.order.local_to_serial[e])];
     }
     const ms::MeshAdjacency adjacency(*d.pmesh);
-    const ms::FragmentCleanupResult result =
-        ms::CleanupFragments(adjacency, local, num_grains, source, params);
+    const ms::FragmentCleanupResult result = ms::CleanupFragments(
+        adjacency, local, num_grains, source, params);
 
     SerialResult out;
     out.grain = ms::GatherToSerial(comm, d.order, result.element_grain, 0);
@@ -222,15 +228,17 @@ SerialResult RunCleanup(mfem::Mesh& serial, MPI_Comm comm, const std::vector<int
  * last rank is empty) and over MPI_COMM_SELF (the np = 1 reference); all three must agree exactly
  * in labels, grain tables and report counts. Returns the MPI_COMM_WORLD result.
  */
-SerialResult RunAndCompare(mfem::Mesh& serial, const std::vector<int>& serial_grain,
-                           int num_grains, const std::vector<std::int64_t>& source,
+SerialResult RunAndCompare(mfem::Mesh& serial,
+                           const std::vector<int>& serial_grain,
+                           int num_grains,
+                           const std::vector<std::int64_t>& source,
                            const ms::FragmentCleanupParameters& params) {
-    const SerialResult world =
-        RunCleanup(serial, MPI_COMM_WORLD, serial_grain, num_grains, source, params, false);
-    const SerialResult scattered =
-        RunCleanup(serial, MPI_COMM_WORLD, serial_grain, num_grains, source, params, true);
-    const SerialResult self =
-        RunCleanup(serial, MPI_COMM_SELF, serial_grain, num_grains, source, params, false);
+    const SerialResult world = RunCleanup(
+        serial, MPI_COMM_WORLD, serial_grain, num_grains, source, params, false);
+    const SerialResult scattered = RunCleanup(
+        serial, MPI_COMM_WORLD, serial_grain, num_grains, source, params, true);
+    const SerialResult self = RunCleanup(
+        serial, MPI_COMM_SELF, serial_grain, num_grains, source, params, false);
     for (const SerialResult* other : {&scattered, &self}) {
         EXPECT_EQ(world.grain, other->grain);
         EXPECT_EQ(world.num_grains, other->num_grains);
@@ -421,9 +429,9 @@ TEST(MeshAdjacency, MatchesSerialFaceGraph) {
                 std::vector<std::pair<std::uint64_t, double>> row;
                 for (int k = adj.Offsets()[e]; k < adj.Offsets()[e + 1]; k++) {
                     const int n = adj.Neighbors()[k];
-                    const std::uint64_t nkey =
-                        adj.IsGhost(n) ? ghost_keys[static_cast<std::size_t>(n - ne)]
-                                       : keys[static_cast<std::size_t>(n)];
+                    const std::uint64_t nkey = adj.IsGhost(n)
+                                                   ? ghost_keys[static_cast<std::size_t>(n - ne)]
+                                                   : keys[static_cast<std::size_t>(n)];
                     row.emplace_back(nkey, adj.FaceAreas()[k]);
                 }
                 std::sort(row.begin(), row.end());
@@ -515,11 +523,12 @@ TEST(FragmentCleanup, ConstructedDisconnectedGrain) {
     ms::FragmentCleanupParameters split;
     split.policy = ms::FragmentPolicy::SPLIT;
     const SerialResult a = RunAndCompare(grid.mesh, label, 2, source, split);
-    expect_labels(a, [](int i) { return i < 2 ? 3 : (i < 4 ? 2 : 1); });
+    expect_labels(a, [](int i) {
+        return i < 2 ? 3 : (i < 4 ? 2 : 1);
+    });
     EXPECT_EQ(a.num_grains, 3);
     EXPECT_EQ(a.parent, (std::vector<int>{1, 2, 1}));
-    EXPECT_EQ(a.source,
-              (std::vector<std::int64_t>{10, 20, ms::DeriveFragmentSourceId(10, 1)}));
+    EXPECT_EQ(a.source, (std::vector<std::int64_t>{10, 20, ms::DeriveFragmentSourceId(10, 1)}));
     EXPECT_LT(a.source[2], 0); // derived ids are negative, never a generated (>= 0) id
     EXPECT_EQ(a.report.fragments_found, 1);
     EXPECT_EQ(a.report.fragments_split, 1);
@@ -528,7 +537,9 @@ TEST(FragmentCleanup, ConstructedDisconnectedGrain) {
     ms::FragmentCleanupParameters merge;
     merge.policy = ms::FragmentPolicy::MERGE;
     const SerialResult b = RunAndCompare(grid.mesh, label, 2, source, merge);
-    expect_labels(b, [](int i) { return i < 4 ? 2 : 1; });
+    expect_labels(b, [](int i) {
+        return i < 4 ? 2 : 1;
+    });
     EXPECT_EQ(b.num_grains, 2);
     EXPECT_EQ(b.source, source);
     EXPECT_EQ(b.report.fragments_merged, 1);
@@ -540,17 +551,23 @@ TEST(FragmentCleanup, ConstructedDisconnectedGrain) {
     anchored.keep = ms::KeepRule::SEED_ELEMENT;
     anchored.grain_anchor_key = {ms::ElementKey(grid.mesh, left_block_elements[3]), 0};
     const SerialResult c = RunAndCompare(grid.mesh, label, 2, source, anchored);
-    expect_labels(c, [](int i) { return i < 2 ? 1 : (i < 4 ? 2 : 3); });
+    expect_labels(c, [](int i) {
+        return i < 2 ? 1 : (i < 4 ? 2 : 3);
+    });
     EXPECT_EQ(c.parent, (std::vector<int>{1, 2, 1}));
 
     anchored.policy = ms::FragmentPolicy::MERGE;
     const SerialResult c2 = RunAndCompare(grid.mesh, label, 2, source, anchored);
-    expect_labels(c2, [](int i) { return i < 2 ? 1 : 2; });
+    expect_labels(c2, [](int i) {
+        return i < 2 ? 1 : 2;
+    });
 
     ms::FragmentCleanupParameters split_min = split;
     split_min.min_grain_elements = 9;
     const SerialResult e = RunAndCompare(grid.mesh, label, 2, source, split_min);
-    expect_labels(e, [](int) { return 1; });
+    expect_labels(e, [](int) {
+        return 1;
+    });
     EXPECT_EQ(e.num_grains, 1);
     EXPECT_EQ(e.parent, (std::vector<int>{1}));
     EXPECT_EQ(e.source, (std::vector<std::int64_t>{10}));
@@ -588,7 +605,9 @@ TEST(FragmentCleanup, SimultaneousMergesUseStableNeighbors) {
 // left out, so cell 4 is a separate body) labeled 1 1 2 _ 1: grain 1 has the fragments
 // {0, 1} (kept, larger) and {4}, which touches nothing; with MERGE it is split off as grain 3.
 TEST(FragmentCleanup, IsolatedFragmentIsSplit) {
-    GridMesh grid = BuildGrid(5, 1, 1, 1.0, false, [](int i, int, int) { return i != 3; });
+    GridMesh grid = BuildGrid(5, 1, 1, 1.0, false, [](int i, int, int) {
+        return i != 3;
+    });
     const std::vector<int> label = {1, 1, 2, 1};
     ms::FragmentCleanupParameters merge;
     merge.policy = ms::FragmentPolicy::MERGE;
@@ -715,8 +734,8 @@ TEST(FragmentCleanup, UShapedVoronoiCellAcrossGap) {
     seeds.z = {0.5, 0.5, 0.5, 0.5};
     seeds.source_id = {0, 1, 2, 3};
     ms::TessellationOptions tessellation;
-    const ms::TessellationLabels labels =
-        ms::LabelTessellation(grid.mesh, MPI_COMM_SELF, seeds, tessellation);
+    const ms::TessellationLabels labels = ms::LabelTessellation(
+        grid.mesh, MPI_COMM_SELF, seeds, tessellation);
     ASSERT_EQ(labels.num_grains, 4); // same on every rank: labeled locally on MPI_COMM_SELF
     std::vector<int> label(static_cast<std::size_t>(grid.mesh.GetNE()));
     const int* lg = labels.element_grain.HostRead();
@@ -783,8 +802,8 @@ TEST(FragmentCleanup, RandomVoronoiRankInvariance) {
             seeds.source_id.push_back(i);
         }
         ms::TessellationOptions tessellation;
-        const ms::TessellationLabels labels =
-            ms::LabelTessellation(grid.mesh, MPI_COMM_SELF, seeds, tessellation);
+        const ms::TessellationLabels labels = ms::LabelTessellation(
+            grid.mesh, MPI_COMM_SELF, seeds, tessellation);
         std::vector<int> label(static_cast<std::size_t>(grid.mesh.GetNE()));
         const int* lg = labels.element_grain.HostRead();
         for (int e = 0; e < grid.mesh.GetNE(); e++) {
@@ -800,8 +819,8 @@ TEST(FragmentCleanup, RandomVoronoiRankInvariance) {
                 ms::FragmentCleanupParameters params;
                 params.policy = policy;
                 params.min_grain_elements = min_elements;
-                const SerialResult r =
-                    RunAndCompare(grid.mesh, label, labels.num_grains, source, params);
+                const SerialResult r = RunAndCompare(
+                    grid.mesh, label, labels.num_grains, source, params);
                 EXPECT_TRUE(AllGrainsConnected(grid.mesh, r.grain));
                 const std::vector<int> sizes = GrainSizes(r.grain, r.num_grains);
                 int small = 0;
@@ -1012,12 +1031,18 @@ TEST(MeshAdjacency, PeriodicTetMeshAndRemotePairs) {
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
     std::vector<int> displs(static_cast<std::size_t>(nranks), 0);
     for (int r = 1; r < nranks; r++) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r - 1)] + counts[static_cast<std::size_t>(r - 1)];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r - 1)] +
+                                              counts[static_cast<std::size_t>(r - 1)];
     }
     std::vector<std::int64_t> all(static_cast<std::size_t>(displs.back() + counts.back()));
-    MPI_Allgatherv(flat.data(), count, MPI_INT64_T, all.data(), counts.data(), displs.data(),
-                   MPI_INT64_T, MPI_COMM_WORLD);
+    MPI_Allgatherv(flat.data(),
+                   count,
+                   MPI_INT64_T,
+                   all.data(),
+                   counts.data(),
+                   displs.data(),
+                   MPI_INT64_T,
+                   MPI_COMM_WORLD);
     std::multiset<std::pair<std::int64_t, std::int64_t>> forward;
     std::multiset<std::pair<std::int64_t, std::int64_t>> backward;
     for (std::size_t k = 0; k + 1 < all.size(); k += 2) {

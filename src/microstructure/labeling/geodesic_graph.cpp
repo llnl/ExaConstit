@@ -15,8 +15,6 @@
  */
 #include "microstructure/labeling/geodesic_graph.hpp"
 
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -29,6 +27,8 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -79,12 +79,12 @@ template <typename Visit>
 inline void ForEachGraphNeighbor(const GraphView& g, int v, Visit&& visit) {
     for (int ke = g.vert_elem_offsets[v]; ke < g.vert_elem_offsets[v + 1]; ++ke) {
         const int e = g.vert_elems[ke];
-        g.cells.ForEachCellOfIncidence(v, e, g.cells.LatticeOfIncidence(ke),
-                                       [&](const int* others, const int*, int n) {
-            for (int i = 0; i < n; ++i) {
-                visit(others[i]);
-            }
-        });
+        g.cells.ForEachCellOfIncidence(
+            v, e, g.cells.LatticeOfIncidence(ke), [&](const int* others, const int*, int n) {
+                for (int i = 0; i < n; ++i) {
+                    visit(others[i]);
+                }
+            });
     }
 }
 
@@ -148,7 +148,9 @@ void LocalDijkstra(const GraphView& g, double* t, const std::vector<int>& starts
  * @param order reached vertices sorted by (T, vertex id).
  * @return true if any label changed.
  */
-bool LocalLabelPass(const GraphView& g, const double* t, int* label,
+bool LocalLabelPass(const GraphView& g,
+                    const double* t,
+                    int* label,
                     const std::vector<int>& order) {
     bool changed = false;
     for (const int u : order) {
@@ -189,8 +191,11 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
  *     until no label changes anywhere.
  *  5. Element labels (centroid or vote) and the global statistics.
  */
-GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
-                                  bool additive, const GeodesicParameters& params) {
+GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh,
+                                  MPI_Comm comm,
+                                  const SeedSet& seeds,
+                                  bool additive,
+                                  const GeodesicParameters& params) {
     // Step 1: parameters (seeds are validated by InitializeSources)
     if (params.max_rounds < 1) {
         throw std::invalid_argument("LabelGeodesicGraph: max_rounds must be >= 1");
@@ -211,20 +216,19 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
         int same_comm = MPI_UNEQUAL;
         MPI_Comm_compare(comm, pmesh.GetComm(), &same_comm);
         if (same_comm != MPI_IDENT && same_comm != MPI_CONGRUENT) {
-            throw std::invalid_argument(
-                "LabelGeodesicGraph: comm must be the mesh communicator");
+            throw std::invalid_argument("LabelGeodesicGraph: comm must be the mesh communicator");
         }
     }
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field =
-        std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
+    result.field = std::make_unique<VertexField>(
+        pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
     field.SetMetricStretch(params.stretch); // identity = plain lengths (Voronoi, Additive)
     const std::vector<double> no_weights;
-    result.sources =
-        field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
+    result.sources = field.InitializeSources(
+        seeds, additive ? seeds.weight : no_weights, params.context);
     result.report.seeds_outside_material = result.sources.num_seeds_outside;
 
     const int nv = field.NumVertices();
@@ -253,7 +257,8 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
         }
         // any_change is global, so every rank takes this branch together
         ThrowIfAnyRank<std::runtime_error>(
-            comm, round >= params.max_rounds,
+            comm,
+            round >= params.max_rounds,
             "LabelGeodesicGraph: max_rounds exceeded in the distance rounds");
         starts.clear();
         for (int v = 0; v < nv; ++v) {
@@ -290,7 +295,8 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
             break;
         }
         ThrowIfAnyRank<std::runtime_error>(
-            comm, round >= params.max_rounds,
+            comm,
+            round >= params.max_rounds,
             "LabelGeodesicGraph: max_rounds exceeded in the label rounds");
     }
     // A reached vertex left without a label (degenerate mesh only) becomes -1 and is counted
@@ -316,8 +322,8 @@ GeodesicLabels LabelGeodesicGraph(mfem::ParMesh& pmesh, MPI_Comm comm, const See
     // Step 5: element labels and statistics
     std::int64_t split = 0;
     if (params.sampling == SamplingMode::QUADRATURE_VOTE) {
-        split = field.LabelElementsByVote(params.vote_levels, params.max_points_per_chunk,
-                                          result.element_seed);
+        split = field.LabelElementsByVote(
+            params.vote_levels, params.max_points_per_chunk, result.element_seed);
     } else {
         field.LabelElementCentroids(result.element_seed);
     }

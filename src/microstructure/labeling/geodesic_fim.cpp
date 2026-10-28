@@ -22,10 +22,6 @@
  */
 #include "microstructure/labeling/geodesic_fim.hpp"
 
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-#include "microstructure/labeling/fim_scan.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -35,6 +31,10 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/fim_scan.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -65,9 +65,13 @@ constexpr int MAX_ELEMENT_VERTICES = 8;
  * `lattice` is v's lattice point in e (FieldCellView::LatticeOfIncidence of the incidence).
  * Host and device (called inside the mfem::forall sweep).
  */
-MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view, int v, int e,
-                                                   int lattice, const double* xyz,
-                                                   const double* t, int* mask) {
+MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view,
+                                                   int v,
+                                                   int e,
+                                                   int lattice,
+                                                   const double* xyz,
+                                                   const double* t,
+                                                   int* mask) {
     const double inf = EikonalInfinity();
     const double* xv = &xyz[3 * v];
     double best = inf;
@@ -121,8 +125,11 @@ MFEM_HOST_DEVICE inline double IncidenceCandidates(const FieldCellView& view, in
  * collective. cand_value / cand_mask must be sized to the number of incidences and initialized
  * (+infinity / 0) before the first sweep.
  */
-void CandidateSweep(const VertexField& field, const mfem::Array<int>& changed,
-                    mfem::Vector& cand_value, mfem::Array<int>& cand_mask, mfem::Vector& t_new) {
+void CandidateSweep(const VertexField& field,
+                    const mfem::Array<int>& changed,
+                    mfem::Vector& cand_value,
+                    mfem::Array<int>& cand_mask,
+                    mfem::Vector& t_new) {
     const int nv = field.NumVertices();
     t_new.SetSize(nv);
     t_new.UseDevice(true);
@@ -167,8 +174,7 @@ void CandidateSweep(const VertexField& field, const mfem::Array<int>& changed,
  * vertices. Comparisons only (no arithmetic), so it adds no rounding. One mfem::forall iteration
  * per vertex. Not collective (the caller reduces m over the ranks).
  */
-void SmallestCandidate(const VertexField& field, const mfem::Vector& cand_value,
-                       mfem::Vector& m) {
+void SmallestCandidate(const VertexField& field, const mfem::Vector& cand_value, mfem::Vector& m) {
     const int nv = field.NumVertices();
     m.SetSize(nv);
     m.UseDevice(true);
@@ -218,9 +224,14 @@ void SmallestCandidate(const VertexField& field, const mfem::Vector& cand_value,
  * (FilterUpwind, across ranks) come from one kernel and agree bitwise. One mfem::forall
  * iteration per vertex. Not collective.
  */
-void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vector& cand_value,
-                const mfem::Array<int>& cand_mask, mfem::Array<int>& upwind_mask,
-                mfem::Vector& incidence_best, mfem::Vector& local_best, mfem::Array<int>& label) {
+void UpwindSets(const VertexField& field,
+                const mfem::Vector& m,
+                const mfem::Vector& cand_value,
+                const mfem::Array<int>& cand_mask,
+                mfem::Array<int>& upwind_mask,
+                mfem::Vector& incidence_best,
+                mfem::Vector& local_best,
+                mfem::Array<int>& label) {
     const int nv = field.NumVertices();
     const int num_incidences = field.VertexElements().Size();
     upwind_mask.SetSize(num_incidences);
@@ -300,8 +311,10 @@ void UpwindSets(const VertexField& field, const mfem::Vector& m, const mfem::Vec
  * the other incidences are cleared. Comparisons only (of values computed by UpwindSets). One
  * mfem::forall iteration per vertex. Not collective.
  */
-void FilterUpwind(const VertexField& field, const mfem::Vector& incidence_best,
-                  const mfem::Vector& best, mfem::Array<int>& upwind_mask) {
+void FilterUpwind(const VertexField& field,
+                  const mfem::Vector& incidence_best,
+                  const mfem::Vector& best,
+                  mfem::Array<int>& upwind_mask) {
     const int nv = field.NumVertices();
     if (nv == 0) {
         return;
@@ -325,7 +338,8 @@ void FilterUpwind(const VertexField& field, const mfem::Vector& incidence_best,
  * incidence, decoded by FieldCellView::NeighborNode. One mfem::forall iteration per vertex. Not
  * collective.
  */
-void LabelSweep(const VertexField& field, const mfem::Array<int>& upwind_mask,
+void LabelSweep(const VertexField& field,
+                const mfem::Array<int>& upwind_mask,
                 mfem::Array<int>& label_new) {
     const int nv = field.NumVertices();
     label_new.SetSize(nv);
@@ -426,8 +440,11 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
  *   - phase arrays kept alive after their phase (t_new, changed, the stored candidates
  *     cand_value / cand_mask during the label rounds, label_new), which could be released early.
  */
-GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedSet& seeds,
-                                bool additive, const GeodesicParameters& params) {
+GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh,
+                                MPI_Comm comm,
+                                const SeedSet& seeds,
+                                bool additive,
+                                const GeodesicParameters& params) {
     // Step 1: parameters (seeds are validated by InitializeSources)
     if (params.max_rounds < 1) {
         throw std::invalid_argument("LabelGeodesicFim: max_rounds must be >= 1");
@@ -461,19 +478,20 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
                                 pmesh.GetElement(e)->GetNVertices() > MAX_ELEMENT_VERTICES;
         }
         ThrowIfAnyRank<std::runtime_error>(
-            comm, too_many_vertices,
+            comm,
+            too_many_vertices,
             "LabelGeodesicFim: elements with more than 8 vertices are not supported");
     }
 
     // Step 2: vertex field and sources
     GeodesicLabels result;
-    result.field =
-        std::make_unique<VertexField>(pmesh, params.field_nodes, ContextMask(params.context));
+    result.field = std::make_unique<VertexField>(
+        pmesh, params.field_nodes, ContextMask(params.context));
     VertexField& field = *result.field;
     field.SetMetricStretch(params.stretch); // identity = plain lengths (Voronoi, Additive)
     const std::vector<double> no_weights;
-    result.sources =
-        field.InitializeSources(seeds, additive ? seeds.weight : no_weights, params.context);
+    result.sources = field.InitializeSources(
+        seeds, additive ? seeds.weight : no_weights, params.context);
     result.report.seeds_outside_material = result.sources.num_seeds_outside;
     const int nv = field.NumVertices();
     const double tolerance = params.tolerance * MetricDiameter(field, comm);
@@ -536,7 +554,8 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
         }
         // any_change is global, so every rank takes this branch together
         ThrowIfAnyRank<std::runtime_error>(
-            comm, round >= params.max_rounds,
+            comm,
+            round >= params.max_rounds,
             "LabelGeodesicFim: max_rounds exceeded in the distance rounds");
     }
 
@@ -548,8 +567,8 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     mfem::Array<int> label_start;
     mfem::Vector incidence_best;
     mfem::Vector arrival_best;
-    UpwindSets(field, m, cand_value, cand_mask, upwind_mask, incidence_best, arrival_best,
-               label_start);
+    UpwindSets(
+        field, m, cand_value, cand_mask, upwind_mask, incidence_best, arrival_best, label_start);
     field.ReduceSharedMinimum(arrival_best);
     FilterUpwind(field, incidence_best, arrival_best, upwind_mask);
     {
@@ -578,7 +597,8 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
             break;
         }
         ThrowIfAnyRank<std::runtime_error>(
-            comm, round >= params.max_rounds,
+            comm,
+            round >= params.max_rounds,
             "LabelGeodesicFim: max_rounds exceeded in the label rounds");
     }
     // A reached vertex left without a label (degenerate mesh only) becomes -1 and is counted
@@ -607,8 +627,8 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh, MPI_Comm comm, const SeedS
     // Step 5: element labels and statistics
     std::int64_t split = 0;
     if (params.sampling == SamplingMode::QUADRATURE_VOTE) {
-        split = field.LabelElementsByVote(params.vote_levels, params.max_points_per_chunk,
-                                          result.element_seed);
+        split = field.LabelElementsByVote(
+            params.vote_levels, params.max_points_per_chunk, result.element_seed);
     } else {
         field.LabelElementCentroids(result.element_seed);
     }

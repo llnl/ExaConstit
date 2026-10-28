@@ -3,16 +3,15 @@
  */
 #include "microstructure/conformal/conformal_fitter.hpp"
 
-#include "microstructure/conformal/boundary_projector.hpp"
-
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <map>
 #include <memory>
 #include <vector>
+
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -97,7 +96,9 @@ std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
 }
 
 /** @brief Node positions in node order (3 per node) from the Nodes grid function. */
-void GatherPositions(const mfem::GridFunction& nodes, const mfem::FiniteElementSpace& fes, int nv,
+void GatherPositions(const mfem::GridFunction& nodes,
+                     const mfem::FiniteElementSpace& fes,
+                     int nv,
                      std::vector<double>& out) {
     out.resize(3 * static_cast<std::size_t>(nv));
     for (int v = 0; v < nv; ++v) {
@@ -113,7 +114,8 @@ void GatherPositions(const mfem::GridFunction& nodes, const mfem::FiniteElementS
  * gathered on every rank and the smallest (distance, then position) wins, so every copy decides
  * the same way. Clears marker[v] for the losers.
  */
-void KeepClosestQuadPointNodes(const NodeLabels& labels, const NodeTargets& targets,
+void KeepClosestQuadPointNodes(const NodeLabels& labels,
+                               const NodeTargets& targets,
                                mfem::Array<bool>& marker) {
     const VertexField& field = labels.Field();
     const MPI_Comm comm = field.Comm();
@@ -123,7 +125,9 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels, const NodeTargets& targ
     const int* owned = field.OwnedVertexMarker().HostRead();
     const int* loff = labels.LabelOffsets().HostRead();
     const int* litems = labels.Labels().HostRead();
-    const auto is_quad = [&](int v) { return marker[v] && labels.NumLabels(v) == 4; };
+    const auto is_quad = [&](int v) {
+        return marker[v] && labels.NumLabels(v) == 4;
+    };
     std::vector<double> mine;
     for (int v = 0; v < nv; ++v) {
         if (!is_quad(v) || owned[v] == 0) {
@@ -144,16 +148,18 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels, const NodeTargets& targ
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
     std::vector<int> displs(static_cast<std::size_t>(size), 0);
     for (int r = 1; r < size; ++r) {
-        displs[static_cast<std::size_t>(r)] =
-            displs[static_cast<std::size_t>(r) - 1] + counts[static_cast<std::size_t>(r) - 1];
+        displs[static_cast<std::size_t>(r)] = displs[static_cast<std::size_t>(r) - 1] +
+                                              counts[static_cast<std::size_t>(r) - 1];
     }
     std::vector<double> all(static_cast<std::size_t>(displs.back() + counts.back()));
-    MPI_Allgatherv(mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(),
-                   MPI_DOUBLE, comm);
+    MPI_Allgatherv(
+        mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(), MPI_DOUBLE, comm);
     std::map<std::array<int, 4>, std::array<double, 4>> best; // labels -> (d2, x, y, z)
     for (std::size_t k = 0; k + 8 <= all.size(); k += 8) {
-        const std::array<int, 4> key = {static_cast<int>(all[k]), static_cast<int>(all[k + 1]),
-                                        static_cast<int>(all[k + 2]), static_cast<int>(all[k + 3])};
+        const std::array<int, 4> key = {static_cast<int>(all[k]),
+                                        static_cast<int>(all[k + 1]),
+                                        static_cast<int>(all[k + 2]),
+                                        static_cast<int>(all[k + 3])};
         const std::array<double, 4> val = {all[k + 4], all[k + 5], all[k + 6], all[k + 7]};
         const auto it = best.find(key);
         if (it == best.end() || val < it->second) {
@@ -164,8 +170,8 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels, const NodeTargets& targ
         if (!is_quad(v)) {
             continue;
         }
-        const std::array<int, 4> key = {litems[loff[v]], litems[loff[v] + 1], litems[loff[v] + 2],
-                                        litems[loff[v] + 3]};
+        const std::array<int, 4> key = {
+            litems[loff[v]], litems[loff[v] + 1], litems[loff[v] + 2], litems[loff[v] + 3]};
         const auto it = best.find(key);
         marker[v] = it != best.end() && it->second[1] == xyz[3 * v] &&
                     it->second[2] == xyz[3 * v + 1] && it->second[3] == xyz[3 * v + 2];
@@ -196,8 +202,10 @@ namespace {
 enum class PassKind { ALL, LINEAR_VERTICES, CURVATURE };
 
 /** @brief One fitting pass (the file comment) from the current Nodes. */
-ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
-                           const ConformalFitOptions& options, PassKind kind_of_pass) {
+ConformalFitReport FitPass(mfem::ParMesh& pmesh,
+                           const NodeTargets& targets,
+                           const ConformalFitOptions& options,
+                           PassKind kind_of_pass) {
     const bool vertices_only = kind_of_pass == PassKind::LINEAR_VERTICES;
     const bool curvature = kind_of_pass == PassKind::CURVATURE;
     const MPI_Comm comm = pmesh.GetComm();
@@ -206,11 +214,13 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
 
     // Step 1
     auto* nodes = dynamic_cast<mfem::ParGridFunction*>(pmesh.GetNodes());
-    ThrowIfAnyRank(comm, nodes == nullptr || &field.Mesh() != &pmesh,
+    ThrowIfAnyRank(comm,
+                   nodes == nullptr || &field.Mesh() != &pmesh,
                    "FitConformal: the mesh needs Nodes (a ParGridFunction; call "
                    "ParMesh::SetCurvature(1)) and must be the mesh of the targets");
     mfem::ParFiniteElementSpace& fes = *nodes->ParFESpace();
-    ThrowIfAnyRank(comm, !field.UsesMeshNodes() || field.NumVertices() != fes.GetNDofs(),
+    ThrowIfAnyRank(comm,
+                   !field.UsesMeshNodes() || field.NumVertices() != fes.GetNDofs(),
                    "FitConformal: the node labels must use the mesh Nodes "
                    "(FieldNodes::MESH_NODES)");
     ThrowIfAnyRank(comm,
@@ -281,10 +291,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
     // Sliding nodes: their surfaces (planes with offsets at the input position, or the curved
     // surfaces' input faces, MakeCurvedPatches: on a feature edge of a curved boundary the node
     // slides along the edge) and the normals of the penalty (tilted planes, curved surfaces)
-    const std::unique_ptr<SurfacePatches> patches_ptr =
-        MakeCurvedPatches(labels, targets.PatchRings());
+    const std::unique_ptr<SurfacePatches> patches_ptr = MakeCurvedPatches(labels,
+                                                                          targets.PatchRings());
     const SurfacePatches& patches = *patches_ptr;
-    std::vector<std::array<double, 8>> planes(static_cast<std::size_t>(nv)); // n0 c0 n1 c1
+    std::vector<std::array<double, 8>> planes(static_cast<std::size_t>(nv));  // n0 c0 n1 c1
     std::vector<std::array<double, 7>> penalty(static_cast<std::size_t>(nv)); // count, n0, n1
     for (int v = 0; v < nv; ++v) {
         const Slide kind = slide[static_cast<std::size_t>(v)];
@@ -327,11 +337,12 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                     const double a[3] = {q[3] - q[0], q[4] - q[1], q[5] - q[2]};
                     const double b[3] = {q[6] - q[0], q[7] - q[1], q[8] - q[2]};
                     // Orient like the surface normal (faces of interfaces can point either way)
-                    const double c[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                    const double c[3] = {a[1] * b[2] - a[2] * b[1],
+                                         a[2] * b[0] - a[0] * b[2],
                                          a[0] * b[1] - a[1] * b[0]};
                     const double* ns = surf_normal + 3 * s;
                     const double sign = (c[0] * ns[0] + c[1] * ns[1] + c[2] * ns[2] < 0.0) ? -1.0
-                                                                                        : 1.0;
+                                                                                           : 1.0;
                     for (int d = 0; d < 3; ++d) {
                         n[d] += sign * c[d];
                     }
@@ -365,9 +376,13 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 const double c[2] = {pl[3], pl[7]};
                 ProjectOntoPlanes(n, c, surf_off[v + 1] - surf_off[v], y);
             } else {
-                ProjectOnNodeSurfaces(labels, patches, v, xyz0 + 3 * v,
+                ProjectOnNodeSurfaces(labels,
+                                      patches,
+                                      v,
+                                      xyz0 + 3 * v,
                                       1e-10 * targets.MeshSize(v),
-                                      SURFACE_PROJECTION_ITERATIONS, y);
+                                      SURFACE_PROJECTION_ITERATIONS,
+                                      y);
             }
             for (int d = 0; d < 3; ++d) {
                 const int vd = fes.DofToVDof(v, d);
@@ -449,8 +464,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
         for (std::size_t i = 0; i < queries.size(); ++i) {
             const int v = queries[i].node;
             for (int d = 0; d < 3; ++d) {
-                pull[3 * static_cast<std::size_t>(v) + d] =
-                    (res[i].status == TargetStatus::FIT) ? res[i].target[d] : here[3 * v + d];
+                pull[3 * static_cast<std::size_t>(v) + d] = (res[i].status == TargetStatus::FIT)
+                                                                ? res[i].target[d]
+                                                                : here[3 * v + d];
             }
         }
     }
@@ -460,8 +476,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
     std::unique_ptr<mfem::ParFiniteElementSpace> linear_fes;
     if (vertices_only) {
         linear_fec = std::make_unique<mfem::H1_FECollection>(1, 3);
-        linear_fes = std::make_unique<mfem::ParFiniteElementSpace>(&pmesh, linear_fec.get(), 3,
-                                                                   fes.GetOrdering());
+        linear_fes = std::make_unique<mfem::ParFiniteElementSpace>(
+            &pmesh, linear_fec.get(), 3, fes.GetOrdering());
     }
     mfem::ParFiniteElementSpace& sfes = vertices_only ? *linear_fes : fes;
     const int sn = sfes.GetNDofs();
@@ -556,8 +572,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 for (int d = 0; d < 3; ++d) {
                     const int vd = sfes.DofToVDof(v, d);
                     k_local(vd) = k;
-                    load_local(vd) =
-                        k * (pull[3 * static_cast<std::size_t>(v) + d] - x0(fes.DofToVDof(v, d)));
+                    load_local(vd) = k * (pull[3 * static_cast<std::size_t>(v) + d] -
+                                          x0(fes.DofToVDof(v, d)));
                 }
             }
             u = 0.0;
@@ -605,8 +621,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 }
             }
             diag.Finalize();
-            mfem::HypreParMatrix P(comm, sfes.GlobalTrueVSize(), sfes.GetTrueDofOffsets(),
-                                   &diag);
+            mfem::HypreParMatrix P(comm, sfes.GlobalTrueVSize(), sfes.GetTrueDofOffsets(), &diag);
             std::unique_ptr<mfem::HypreParMatrix> AP(mfem::ParAdd(&A, &P));
             B += load_true;
             // l1 Gauss-Seidel (one of mechanics' preconditioners): the same fit as BoomerAMG in
@@ -661,8 +676,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
             ElementQuality(pmesh, e, q, ar, det);
             const auto es = static_cast<std::size_t>(e);
             sj_limit[es] = std::min(floor, (1.0 - POOR_INPUT_SLACK) * q);
-            const double ar_slack =
-                (ar > MESH_ASPECT_RATIO_MAX) ? POOR_INPUT_ASPECT_SLACK : POOR_INPUT_SLACK;
+            const double ar_slack = (ar > MESH_ASPECT_RATIO_MAX) ? POOR_INPUT_ASPECT_SLACK
+                                                                 : POOR_INPUT_SLACK;
             ar_limit[es] = std::max(MESH_ASPECT_RATIO_MAX, (1.0 + ar_slack) * ar);
             if (tets) {
                 eta_limit[es] = std::min(MESH_MEAN_RATIO_FLOOR_TET,
@@ -710,8 +725,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                     const double a = ar_e[static_cast<std::size_t>(e)];
                     if (options.stiffening_exponent > 0.0 && q < STIFFEN_BELOW) {
                         const double ratio = STIFFEN_BELOW / std::max(q, 0.01);
-                        const double f =
-                            std::min(MAX_STIFFNESS, std::pow(ratio, options.stiffening_exponent));
+                        const double f = std::min(MAX_STIFFNESS,
+                                                  std::pow(ratio, options.stiffening_exponent));
                         quality_factor(e) = std::max(quality_factor(e), f);
                     }
                     // A poor input element (its limit relaxed to its input value) that broke its
@@ -722,10 +737,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                         quality_factor(e) = std::min(MAX_STIFFNESS, 2.0 * quality_factor(e));
                     }
                     const auto es = static_cast<std::size_t>(e);
-                    const bool near = tets
-                                          ? eta_e[es] < eta_limit[es] + BACKOFF_MARGIN
-                                          : (q < sj_limit[es] + BACKOFF_MARGIN ||
-                                             a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN);
+                    const bool near = tets ? eta_e[es] < eta_limit[es] + BACKOFF_MARGIN
+                                           : (q < sj_limit[es] + BACKOFF_MARGIN ||
+                                              a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN);
                     if (!ok && near) {
                         bool fitted = false;
                         for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
@@ -809,8 +823,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
  * sharp local spike that folds the element), then, with the vertices fixed, the other nodal
  * points are pulled onto the grain boundaries, which adds their curvature.
  */
-ConformalFitReport FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets,
-                                const ConformalFitOptions& options) {
+ConformalFitReport
+FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets, const ConformalFitOptions& options) {
     if (targets.Labels().Field().LatticeOrder() == 1) {
         return FitPass(pmesh, targets, options, PassKind::ALL);
     }

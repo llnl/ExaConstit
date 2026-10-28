@@ -19,12 +19,7 @@
  * Runs as a normal MPI program (registered at np 1 in test_options.cmake, also run by hand at
  * np 2). Nothing here communicates; MPI is needed only because warnings are printed on rank 0.
  */
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/microstructure_options.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <cmath>
 #include <filesystem>
@@ -35,6 +30,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -268,19 +267,41 @@ TEST(MicrostructureOptions, ValidationFailures) {
     using O = ms::MicrostructureOptions;
 
     // Unknown spellings of string-valued options (each is a typo of a real choice).
-    EXPECT_FALSE(validate_with([](O& o) { o.exec = "seq"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.mesh.type = "cubit"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.source = "dream3d"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.sampling_domain = "box"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.lattice_type = "diamond"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.fragments = "drop"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.orientations.source = "file"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.regions.mode = "multi"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.output.grain_file = "yes"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.exec = "seq";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.mesh.type = "cubit";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.source = "dream3d";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.sampling_domain = "box";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.lattice_type = "diamond";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.fragments = "drop";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.orientations.source = "file";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.regions.mode = "multi";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.output.grain_file = "yes";
+    }));
 
     // Nothing to label: zero random seeds, or an auto box with zero elements along y.
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.num_seeds = 0; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.mesh.nxyz[1] = 0; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.num_seeds = 0;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.mesh.nxyz[1] = 0;
+    }));
 
     // Mesh inputs that cannot be opened: a missing file, a file mesh without floc, and a parallel
     // prefix whose part 0 ("no_such_prefix.000000") does not exist.
@@ -288,21 +309,33 @@ TEST(MicrostructureOptions, ValidationFailures) {
         o.mesh.type = "file";
         o.mesh.floc = "no_such_mesh.mesh";
     }));
-    EXPECT_FALSE(validate_with([](O& o) { o.mesh.type = "file"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.mesh.type = "file";
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.mesh.type = "parallel";
         o.mesh.floc = "no_such_prefix.";
     }));
 
     // Output settings out of range: negative part count, gzip levels outside 0-9, no basename.
-    EXPECT_FALSE(validate_with([](O& o) { o.output.num_parts = -1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.output.compression = 10; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.output.compression = -1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.output.basename.clear(); }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.output.num_parts = -1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.output.compression = 10;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.output.compression = -1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.output.basename.clear();
+    }));
 
     // Seed source and placement must agree: file placement with random seeds, and a seed table
     // that does not exist.
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.placement = ms::SeedPlacement::FILE; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.placement = ms::SeedPlacement::FILE;
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.seeds.source = "file";
         o.seeds.placement = ms::SeedPlacement::FILE;
@@ -312,7 +345,9 @@ TEST(MicrostructureOptions, ValidationFailures) {
     // Seed spacing and sampling box: a negative absolute distance, and boxes with no extent
     // (hi == lo along x) or inverted (hi < lo along z), which could never receive a seed. A
     // proper box validates.
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.min_distance = -1.0; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.min_distance = -1.0;
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.seeds.use_sampling_box = true;
         o.seeds.sampling_box_lo = {0.5, 0.0, 0.0};
@@ -330,9 +365,15 @@ TEST(MicrostructureOptions, ValidationFailures) {
     }));
 
     // Tessellation: no seed group, and the two non-positive-definite tensors described above.
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.num_bins = 0; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.global_tensor = {1, 1, -1, 0, 0, 0}; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.global_tensor = {1, 1, 1, 0, 0, 2}; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.num_bins = 0;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.global_tensor = {1, 1, -1, 0, 0, 0};
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.global_tensor = {1, 1, 1, 0, 0, 2};
+    }));
 
     // A seed table that exists is fine without num_seeds (the grain count is the table's row
     // count). Only existence is checked here, so any file in test/data serves as a stand-in.
@@ -376,24 +417,46 @@ TEST(MicrostructureOptions, NonFiniteValuesFailValidation) {
     using O = ms::MicrostructureOptions;
 
     // Box size of the auto mesh.
-    EXPECT_FALSE(validate_with([nan](O& o) { o.mesh.mxyz[0] = nan; }));
-    EXPECT_FALSE(validate_with([inf](O& o) { o.mesh.mxyz[2] = inf; }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.mesh.mxyz[0] = nan;
+    }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.mesh.mxyz[2] = inf;
+    }));
     // Seed spacing, lattice jitter, and the seed-table transform.
-    EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.min_distance_factor = nan; }));
-    EXPECT_FALSE(validate_with([inf](O& o) { o.seeds.boundary_clearance = inf; }));
-    EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.min_distance = nan; }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.seeds.min_distance_factor = nan;
+    }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.seeds.boundary_clearance = inf;
+    }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.seeds.min_distance = nan;
+    }));
     EXPECT_FALSE(validate_with([inf](O& o) {
         o.seeds.use_sampling_box = true;
         o.seeds.sampling_box_hi = {inf, 1.0, 1.0};
     }));
-    EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.lattice_jitter = nan; }));
-    EXPECT_FALSE(validate_with([nan](O& o) { o.seeds.units_scale = nan; }));
-    EXPECT_FALSE(validate_with([inf](O& o) { o.seeds.units_scale = inf; }));
-    EXPECT_FALSE(validate_with([inf](O& o) { o.seeds.translate[1] = -inf; }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.seeds.lattice_jitter = nan;
+    }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.seeds.units_scale = nan;
+    }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.seeds.units_scale = inf;
+    }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.seeds.translate[1] = -inf;
+    }));
     // Anisotropy tensor: inf on the diagonal would otherwise pass all three minor tests
     // (inf > 0), and NaN off the diagonal makes the minors NaN.
-    EXPECT_FALSE(validate_with([inf](O& o) { o.tessellation.global_tensor[0] = inf; }));
-    EXPECT_FALSE(validate_with([nan](O& o) { o.tessellation.global_tensor[5] = nan; }));
+    EXPECT_FALSE(validate_with([inf](O& o) {
+        o.tessellation.global_tensor[0] = inf;
+    }));
+    EXPECT_FALSE(validate_with([nan](O& o) {
+        o.tessellation.global_tensor[5] = nan;
+    }));
 
     // The same path from an actual TOML file: `nan` parses as a float and is then rejected.
     auto from_file = FromString(R"(
@@ -463,13 +526,11 @@ global_tensor = [3, 3, 3, 0, 0, 0]
 // cast 4294967302 = 2^32 + 6 to 6 without complaint, so a typo would become a valid-looking value.
 TEST(MicrostructureOptions, ShapeAndRangeErrors) {
     EXPECT_THROW(FromString("[Mesh.Auto]\nncuts = [2, 2]\n"), std::invalid_argument);
-    EXPECT_THROW(FromString("[Tessellation]\nperiodic = [true, false]\n"),
-                 std::invalid_argument);
+    EXPECT_THROW(FromString("[Tessellation]\nperiodic = [true, false]\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Output]\ncompression = 4294967302\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Output]\nnum_parts = 3000000000\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Tessellation]\nnum_bins = -3000000000\n"), std::invalid_argument);
-    EXPECT_THROW(FromString("[Cleanup]\nmin_grain_elements = 2147483648\n"),
-                 std::invalid_argument);
+    EXPECT_THROW(FromString("[Cleanup]\nmin_grain_elements = 2147483648\n"), std::invalid_argument);
     EXPECT_THROW(FromString("[Mesh.Auto]\nncuts = [2, 4294967298, 2]\n"), std::invalid_argument);
     // The largest int is still accepted.
     EXPECT_EQ(FromString("[Output]\nnum_parts = 2147483647\n").output.num_parts, 2147483647);
@@ -716,11 +777,19 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
     using O = ms::MicrostructureOptions;
 
     // Spellings and ranges
-    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.keep_component = "first"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.keep_component = "first";
+    }));
     // What "auto" calls a tiny piece: a count >= 0 and a fraction in [0, 1] (NaN rejected)
-    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_elements = -1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_fraction = 1.5; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.cleanup.min_fragment_fraction = -0.1; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.min_fragment_elements = -1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.min_fragment_fraction = 1.5;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.cleanup.min_fragment_fraction = -0.1;
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.cleanup.min_fragment_fraction = std::numeric_limits<double>::quiet_NaN();
     }));
@@ -728,19 +797,41 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
         o.cleanup.min_fragment_elements = 0;
         o.cleanup.min_fragment_fraction = 1.0;
     }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.vote_levels = 4; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.vote_levels = -1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.anisotropy_kind = "fibrous"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.samples = "nodes"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.tolerance = 0.0; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.max_iterations = -1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.lloyd_iterations = -2; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.distribution = "gamma"; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.sigma = -0.1; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.mean_diameter = -1.0; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.vote_levels = 4;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.vote_levels = -1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.anisotropy_kind = "fibrous";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.fit_volumes.samples = "nodes";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.fit_volumes.tolerance = 0.0;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.fit_volumes.max_iterations = -1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.lloyd_iterations = -2;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.distribution = "gamma";
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.sigma = -0.1;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.mean_diameter = -1.0;
+    }));
 
     // Columnar / lamellar need the Quadric metric and a nonzero direction
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.anisotropy_kind = "columnar"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.anisotropy_kind = "columnar";
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.tessellation.metric = ms::MetricType::QUADRIC;
         o.tessellation.anisotropy_kind = "lamellar";
@@ -756,7 +847,9 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
 
     // Fitting needs weights; Lloyd needs Voronoi or Laguerre; centroidal power needs Lloyd and
     // Laguerre; neither works with periodic images
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.fit_volumes.enabled = true; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.fit_volumes.enabled = true;
+    }));
     EXPECT_TRUE(validate_with([](O& o) {
         o.tessellation.metric = ms::MetricType::LAGUERRE;
         o.tessellation.fit_volumes.enabled = true;
@@ -794,11 +887,15 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
         o.seeds.size.mean_volume = 0.1;
     }));
     // from_source needs a seed table
-    EXPECT_FALSE(validate_with([](O& o) { o.seeds.size.distribution = "from_source"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.seeds.size.distribution = "from_source";
+    }));
 
     // Polydisperse placement: feasible exclusion factor (kappa^3 <= 0.3), a random placement,
     // and no competing fixed minimum distance
-    EXPECT_TRUE(validate_with([](O& o) { o.seeds.size.polydisperse_placement = true; }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+    }));
     EXPECT_FALSE(validate_with([](O& o) {
         o.seeds.size.polydisperse_placement = true;
         o.seeds.size.exclusion_factor = 0.7; // 0.343 > 0.3
@@ -852,7 +949,9 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
     }));
 
     // Orientations from the source need a seed table (generated seeds carry none)
-    EXPECT_FALSE(validate_with([](O& o) { o.orientations.source = "from_source"; }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.orientations.source = "from_source";
+    }));
     EXPECT_TRUE(validate_with([](O& o) {
         o.orientations.source = "from_source";
         o.seeds.num_seeds = 0;
@@ -870,12 +969,18 @@ TEST(MicrostructureOptions, Stage1bcValidationFailures) {
     }));
 
     // Periodic face matching tolerance in (0, 0.5)
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 0.0; }));
-    EXPECT_FALSE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 0.5; }));
-    EXPECT_TRUE(validate_with([](O& o) { o.tessellation.periodic_tolerance = 1e-3; }));
-    EXPECT_EQ(FromString("[Tessellation]\nperiodic_tolerance = 1e-4\n")
-                  .tessellation.periodic_tolerance,
-              1e-4);
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.periodic_tolerance = 0.0;
+    }));
+    EXPECT_FALSE(validate_with([](O& o) {
+        o.tessellation.periodic_tolerance = 0.5;
+    }));
+    EXPECT_TRUE(validate_with([](O& o) {
+        o.tessellation.periodic_tolerance = 1e-3;
+    }));
+    EXPECT_EQ(
+        FromString("[Tessellation]\nperiodic_tolerance = 1e-4\n").tessellation.periodic_tolerance,
+        1e-4);
     EXPECT_EQ(ms::MicrostructureOptions{}.tessellation.periodic_tolerance, 1e-6);
 }
 
@@ -933,14 +1038,13 @@ TEST(MicrostructureOptions, PhaseToRegionFile) {
     const fs::path dir = "test_options_data";
     fs::create_directories(dir);
     auto write = [&](const std::string& name, const std::string& text) {
-        const fs::path path =
-            dir / (name + "_np" + std::to_string(size) + "_r" + std::to_string(rank) + ".txt");
+        const fs::path path = dir / (name + "_np" + std::to_string(size) + "_r" +
+                                     std::to_string(rank) + ".txt");
         std::ofstream(path) << text;
         return path.string();
     };
     const std::string good = write("good", "# phase region\n1 1\n\n3 1\n  7\t2\n3 1\n");
-    const auto options =
-        FromString("[Regions]\nphase_to_region_file = \"" + good + "\"\n");
+    const auto options = FromString("[Regions]\nphase_to_region_file = \"" + good + "\"\n");
     EXPECT_EQ(options.regions.phase_to_region, (std::map<int, int>{{1, 1}, {3, 1}, {7, 2}}));
     EXPECT_EQ(options.regions.phase_to_region_file, fs::path(good));
 
@@ -956,7 +1060,8 @@ TEST(MicrostructureOptions, PhaseToRegionFile) {
         }
     }
     EXPECT_THROW(FromString("[Regions]\nphase_to_region = { \"1\" = 1 }\n"
-                            "phase_to_region_file = \"" + good + "\"\n"),
+                            "phase_to_region_file = \"" +
+                            good + "\"\n"),
                  std::invalid_argument);
 }
 
@@ -1123,8 +1228,12 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
     };
     EXPECT_TRUE(check(table_options(), roi));
     EXPECT_FALSE(check(ValidAutoOptions(), roi)); // ROI needs a seed table
-    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.fill_outside_roi = "random"; }));
-    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.fill_outside_roi = "everywhere"; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.seeds.fill_outside_roi = "random";
+    }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.seeds.fill_outside_roi = "everywhere";
+    }));
     EXPECT_FALSE(check(table_options(), [&](O& o) {
         roi(o);
         o.seeds.roi_hi = {0.5, 0.0, 0.5};
@@ -1134,21 +1243,29 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.seeds.filler_num_seeds = -1;
     }));
     // A seed table keeps its measured positions
-    EXPECT_FALSE(check(table_options(), [](O& o) { o.tessellation.lloyd_iterations = 2; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.tessellation.lloyd_iterations = 2;
+    }));
     // Per-seed tensors: quadric metric and a seed table
     EXPECT_TRUE(check(table_options(), [](O& o) {
         o.tessellation.metric = ms::MetricType::QUADRIC;
         o.tessellation.anisotropy_kind = "per_seed";
     }));
-    EXPECT_FALSE(check(table_options(), [](O& o) { o.tessellation.anisotropy_kind = "per_seed"; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.tessellation.anisotropy_kind = "per_seed";
+    }));
     EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.metric = ms::MetricType::QUADRIC;
         o.tessellation.anisotropy_kind = "per_seed";
     }));
 
     // Voxel maps: declarations for DREAM.3D quaternions, sane parameters, no tessellation keys
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.file = "missing.h5"; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.format = "vtk"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.file = "missing.h5";
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.format = "vtk";
+    }));
     EXPECT_FALSE(check(voxel_options(), [](O& o) {
         o.voxel_map.format = "dream3d";
         o.orientations.source = "from_source";
@@ -1164,29 +1281,49 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.voxel_map.quat_layout = "xyzw";
         o.voxel_map.conjugate = 0;
     }));
-    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.orientations.source = "from_source"; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.quat_layout = "zyxw"; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.units_scale = 0.0; }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.orientations.source = "from_source";
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.quat_layout = "zyxw";
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.units_scale = 0.0;
+    }));
     EXPECT_FALSE(check(voxel_options(), [](O& o) {
         o.voxel_map.has_spacing = true;
         o.voxel_map.spacing = {1.0, -1.0, 1.0};
     }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.vote_levels = 4; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.tile_size = 0; }));
-    EXPECT_FALSE(
-        check(voxel_options(), [](O& o) { o.tessellation.metric = ms::MetricType::LAGUERRE; }));
-    EXPECT_FALSE(
-        check(voxel_options(), [](O& o) { o.tessellation.periodic = {true, false, false}; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.cleanup.keep_component = "seed"; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.vote_levels = 4;
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.tile_size = 0;
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.tessellation.metric = ms::MetricType::LAGUERRE;
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.tessellation.periodic = {true, false, false};
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.cleanup.keep_component = "seed";
+    }));
     EXPECT_FALSE(check(voxel_options(), [&](O& o) {
         o.seeds.source = "file";
         o.seeds.placement = ms::SeedPlacement::FILE;
         o.seeds.file = table;
     }));
-    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.seeds.num_seeds = 7; })); // warning only
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.seeds.num_seeds = 7;
+    })); // warning only
     // Canonical maps store w x y z: other declarations contradict the format
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.quat_layout = "xyzw"; }));
-    EXPECT_FALSE(check(voxel_options(), [](O& o) { o.voxel_map.conjugate = 1; }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.quat_layout = "xyzw";
+    }));
+    EXPECT_FALSE(check(voxel_options(), [](O& o) {
+        o.voxel_map.conjugate = 1;
+    }));
     EXPECT_TRUE(check(voxel_options(), [](O& o) {
         o.voxel_map.quat_layout = "wxyz";
         o.voxel_map.conjugate = 0;
@@ -1198,20 +1335,32 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
     }));
     // Size-related keys are ignored with a warning (connected / geodesic distance is refused:
     // see Stage1eValidationFailures)
-    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.seeds.size.mean_diameter = 0.2; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.source.type = "voxels"; }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.seeds.size.mean_diameter = 0.2;
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.source.type = "voxels";
+    }));
 
     // Regions
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.regions.mode = "from_phase"; }));
-    EXPECT_TRUE(check(table_options(), [](O& o) { o.regions.mode = "from_phase"; }));
-    EXPECT_TRUE(check(voxel_options(), [](O& o) { o.regions.mode = "from_phase"; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.regions.mode = "from_phase";
+    }));
+    EXPECT_TRUE(check(table_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+    }));
+    EXPECT_TRUE(check(voxel_options(), [](O& o) {
+        o.regions.mode = "from_phase";
+    }));
     auto fractions = [](O& o) {
         o.regions.mode = "phase_fractions";
         o.regions.phase_ids = {1, 2};
         o.regions.phase_fractions = {0.7, 0.3};
     };
     EXPECT_TRUE(check(ValidAutoOptions(), fractions));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.regions.mode = "phase_fractions"; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.regions.mode = "phase_fractions";
+    }));
     EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
         fractions(o);
         o.regions.phase_fractions = {0.7, 0.4};
@@ -1248,7 +1397,9 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.regions.non_crystalline_phases = {2};
     }));
     // Polydisperse placement has nothing to place with a seed table
-    EXPECT_FALSE(check(table_options(), [](O& o) { o.seeds.size.polydisperse_placement = true; }));
+    EXPECT_FALSE(check(table_options(), [](O& o) {
+        o.seeds.size.polydisperse_placement = true;
+    }));
     EXPECT_FALSE(check(table_options(), [](O& o) {
         o.regions.mode = "from_phase";
         o.regions.phase_to_region = {{0, 0}};
@@ -1291,13 +1442,25 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
     }));
 
     // Passthrough attributes
-    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
-    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 1}}; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 2}};
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 1}};
+    }));
     // single mode: grains are region 1, so region 3 without a region 2 leaves a gap
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 3}}; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{0, 2}}; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 0}}; }));
-    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) { o.mesh.active_attributes = {0}; }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 3}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{0, 2}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 0}};
+    }));
+    EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.active_attributes = {0};
+    }));
     EXPECT_FALSE(check(ValidAutoOptions(), [](O& o) {
         o.mesh.active_attributes = {1, 2};
         o.mesh.passthrough_attributes = {{2, 2}};
@@ -1332,8 +1495,8 @@ TEST(MicrostructureOptions, ParseStage1dExamples) {
     table.seeds.file = dir / table.seeds.file;
     EXPECT_TRUE(table.validate());
 
-    const auto fractions =
-        ms::MicrostructureOptions::parse_options_file(dir / "phase_fractions_auto.toml");
+    const auto fractions = ms::MicrostructureOptions::parse_options_file(
+        dir / "phase_fractions_auto.toml");
     EXPECT_EQ(fractions.regions.phase_ids, (std::vector<int>{1, 2}));
     EXPECT_EQ(fractions.regions.phase_fractions, (std::vector<double>{0.6, 0.4}));
     EXPECT_EQ(fractions.regions.non_crystalline_phases, (std::vector<int>{2}));
@@ -1372,13 +1535,13 @@ TEST(MicrostructureOptions, Stage1eKeysParse) {
     EXPECT_EQ(defaults.tessellation.connected_max_rounds, 16);
     EXPECT_EQ(defaults.tessellation.geodesic_solver, "fim");
 
-    const auto connected =
-        FromString("[Tessellation]\ndistance = \"connected\"\nconnected_max_rounds = 3\n");
+    const auto connected = FromString(
+        "[Tessellation]\ndistance = \"connected\"\nconnected_max_rounds = 3\n");
     EXPECT_EQ(connected.tessellation.distance, ms::DistanceMode::CONNECTED);
     EXPECT_EQ(connected.tessellation.connected_max_rounds, 3);
 
-    const auto geodesic =
-        FromString("[Tessellation]\ndistance = \"geodesic\"\ngeodesic = {solver = \"graph\"}\n");
+    const auto geodesic = FromString(
+        "[Tessellation]\ndistance = \"geodesic\"\ngeodesic = {solver = \"graph\"}\n");
     EXPECT_EQ(geodesic.tessellation.distance, ms::DistanceMode::GEODESIC);
     EXPECT_EQ(geodesic.tessellation.geodesic_solver, "graph");
     const auto typo = FromString("[Tessellation]\ngeodesic = {solver = \"dijkstra\"}\n");
@@ -1441,7 +1604,9 @@ TEST(MicrostructureOptions, ConformalParseAndValidation) {
     EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.distance = ms::DistanceMode::GEODESIC;
     }));
-    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.mesh.passthrough_attributes = {{2, 2}}; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.mesh.passthrough_attributes = {{2, 2}};
+    }));
     EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.seeds.num_seeds = 0;
         o.source.type = "voxel_map";
@@ -1458,14 +1623,20 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
         mutate(o);
         return o.validate();
     };
-    auto connected = [](O& o) { o.tessellation.distance = ms::DistanceMode::CONNECTED; };
-    auto geodesic = [](O& o) { o.tessellation.distance = ms::DistanceMode::GEODESIC; };
+    auto connected = [](O& o) {
+        o.tessellation.distance = ms::DistanceMode::CONNECTED;
+    };
+    auto geodesic = [](O& o) {
+        o.tessellation.distance = ms::DistanceMode::GEODESIC;
+    };
     EXPECT_TRUE(check(ValidAutoOptions(), connected));
     EXPECT_TRUE(check(ValidAutoOptions(), geodesic));
 
     for (const auto mode : {ms::DistanceMode::CONNECTED, ms::DistanceMode::GEODESIC}) {
         SCOPED_TRACE(mode == ms::DistanceMode::CONNECTED ? "connected" : "geodesic");
-        auto with_mode = [mode](O& o) { o.tessellation.distance = mode; };
+        auto with_mode = [mode](O& o) {
+            o.tessellation.distance = mode;
+        };
         EXPECT_FALSE(check(ValidAutoOptions(), [&](O& o) {
             with_mode(o);
             o.tessellation.periodic = {false, true, false};
@@ -1564,16 +1735,17 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
     }));
     // Per-seed tensors: seed lists, FIM only
     for (const char* solver : {"fim", "graph"}) {
-        EXPECT_EQ(check(ValidAutoOptions(), [&](O& o) {
-                      geodesic(o);
-                      o.seeds.num_seeds = 0;
-                      o.seeds.source = "file";
-                      o.seeds.placement = ms::SeedPlacement::FILE;
-                      o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
-                      o.tessellation.metric = ms::MetricType::QUADRIC;
-                      o.tessellation.anisotropy_kind = "per_seed";
-                      o.tessellation.geodesic_solver = solver;
-                  }),
+        EXPECT_EQ(check(ValidAutoOptions(),
+                        [&](O& o) {
+                            geodesic(o);
+                            o.seeds.num_seeds = 0;
+                            o.seeds.source = "file";
+                            o.seeds.placement = ms::SeedPlacement::FILE;
+                            o.seeds.file = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
+                            o.tessellation.metric = ms::MetricType::QUADRIC;
+                            o.tessellation.anisotropy_kind = "per_seed";
+                            o.tessellation.geodesic_solver = solver;
+                        }),
                   std::string(solver) == "fim");
     }
 
@@ -1633,8 +1805,12 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
     rounds.tessellation.connected_max_rounds = 1001;
     EXPECT_FALSE(rounds.validate(&problems));
     EXPECT_EQ(problems.size(), 1u);
-    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.tessellation.geodesic_solver = "graph"; }));
-    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) { o.tessellation.connected_max_rounds = 3; }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.geodesic_solver = "graph";
+    }));
+    EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
+        o.tessellation.connected_max_rounds = 3;
+    }));
 }
 
 // The Stage 1e example files parse to the values they spell out and validate once the mesh path
@@ -1654,8 +1830,8 @@ TEST(MicrostructureOptions, ParseStage1eExamples) {
     geodesic.mesh.floc = dir / geodesic.mesh.floc;
     EXPECT_TRUE(geodesic.validate());
 
-    auto jm =
-        ms::MicrostructureOptions::parse_options_file(dir / "geodesic_johnson_mehl_ushape.toml");
+    auto jm = ms::MicrostructureOptions::parse_options_file(dir /
+                                                            "geodesic_johnson_mehl_ushape.toml");
     EXPECT_EQ(jm.tessellation.distance, ms::DistanceMode::GEODESIC);
     EXPECT_EQ(jm.tessellation.metric, ms::MetricType::ADDITIVE);
     EXPECT_EQ(jm.seeds.placement, ms::SeedPlacement::JOHNSON_MEHL);
@@ -1673,9 +1849,8 @@ TEST(MicrostructureOptions, ParseStage1eExamples) {
 TEST(MicrostructureOptions, OptionsTemplateDocumentsTheDefaults) {
     // Parse with stderr captured: unknown keys and validation warnings are MFEM warnings on rank 0
     ::testing::internal::CaptureStderr();
-    const auto parsed =
-        ms::MicrostructureOptions::parse_options_file(fs::path(MS_TEST_SOURCE_DIR) /
-                                                      "microstructure_options.toml");
+    const auto parsed = ms::MicrostructureOptions::parse_options_file(
+        fs::path(MS_TEST_SOURCE_DIR) / "microstructure_options.toml");
     const bool valid = parsed.validate();
     const std::string messages = ::testing::internal::GetCapturedStderr();
     EXPECT_TRUE(valid);

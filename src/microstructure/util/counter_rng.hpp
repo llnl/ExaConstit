@@ -85,8 +85,8 @@ namespace detail {
 // Random123's PHILOX_M4x32_0/1 and PHILOX_W32_0/1). Changing any of them changes every stream.
 constexpr std::uint32_t PHILOX_M0 = 0xD2511F53u;
 constexpr std::uint32_t PHILOX_M1 = 0xCD9E8D57u;
-constexpr std::uint32_t PHILOX_W0 = 0x9E3779B9u; // golden ratio
-constexpr std::uint32_t PHILOX_W1 = 0xBB67AE85u; // sqrt(3) - 1
+constexpr std::uint32_t PHILOX_W0 = 0x9E3779B9u;          // golden ratio
+constexpr std::uint32_t PHILOX_W1 = 0xBB67AE85u;          // sqrt(3) - 1
 constexpr double INV_2_POW_53 = 1.0 / 9007199254740992.0; // 2^-53
 
 } // namespace detail
@@ -124,8 +124,8 @@ MFEM_HOST_DEVICE inline double BitsToUnitDouble(std::uint32_t hi, std::uint32_t 
  * @param key1 high 32 bits of the key.
  * @return 128 random bits.
  */
-MFEM_HOST_DEVICE inline PhiloxBlock Philox4x32_10(PhiloxBlock ctr, std::uint32_t key0,
-                                                  std::uint32_t key1) {
+MFEM_HOST_DEVICE inline PhiloxBlock
+Philox4x32_10(PhiloxBlock ctr, std::uint32_t key0, std::uint32_t key1) {
     for (int round = 0; round < 10; ++round) {
         // Key schedule: round 0 uses the user key, every later round adds the Weyl constants
         if (round > 0) {

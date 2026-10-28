@@ -19,8 +19,8 @@
  *    and its volume (E1); a grain one element thick is reported as under-resolved and its grain
  *    boundary nodes are held (E5).
  *  - Jittered tets (8^3 x 6 Kuhn mesh with interior vertices moved up to 0.2 element sizes): poor
- *    input tets below the mean ratio floor, the fit still reduces the deviation by a quarter or more
- *    and keeps the limits relative to the input.
+ *    input tets below the mean ratio floor, the fit still reduces the deviation by a quarter or
+ * more and keeps the limits relative to the input.
  *  - Order-2 Nodes (hex 6^3, 8 grains): every nodal point is fitted (more than twice the fitted
  *    nodes of order 1), the limits hold, no element folds on a denser Gauss-Lobatto grid, box faces
  *    are kept, and WORLD agrees with SELF to the solver tolerance.
@@ -43,19 +43,12 @@
  *  - With CONFORMAL_DUMP_DIR set, ConformalFit.DumpSlices writes the elements of a polycrystal
  *    before and after fitting (label, quality, original center, corners) for plotting
  *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _WALL, _SMOOTHED, _MESH (a mesh file)
- *    select the case; _SMOOTHED fits to the smoothed staircase instead of the analytic boundaries); skipped
- *    otherwise.
+ *    select the case; _SMOOTHED fits to the smoothed staircase instead of the analytic boundaries);
+ * skipped otherwise.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/conformal/conformal_fitter.hpp"
-#include "microstructure/conformal/label_repair.hpp"
-#include "microstructure/conformal/quality.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -67,6 +60,12 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/conformal/conformal_fitter.hpp"
+#include "microstructure/conformal/label_repair.hpp"
+#include "microstructure/conformal/quality.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -161,7 +160,9 @@ double InterfaceArea(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int a
         g(e) = labels[e];
     }
     g.ExchangeFaceNbrData();
-    const auto pair = [&](int la, int lb) { return (la == a && lb == b) || (la == b && lb == a); };
+    const auto pair = [&](int la, int lb) {
+        return (la == a && lb == b) || (la == b && lb == a);
+    };
     const auto face_area = [&](mfem::ElementTransformation& t, mfem::Geometry::Type geom) {
         const mfem::IntegrationRule& ir = mfem::IntRules.Get(geom, 4);
         double area = 0.0;
@@ -202,17 +203,25 @@ struct Fitted {
     mfem::Vector x0; ///< node positions before fitting (Nodes layout)
 };
 
-void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+void WriteElements(mfem::ParMesh& pmesh,
+                   const mfem::Array<int>& labels,
+                   const mfem::Vector& x0,
                    const std::string& path);
-void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+void WriteSections(mfem::ParMesh& pmesh,
+                   const mfem::Array<int>& labels,
+                   const mfem::Vector& x0,
                    const std::string& path);
 
 /**
  * Distribute round robin on `comm`, label (Voronoi of `seeds`), repair, fit. With `dump_before`
  * set, the repaired labels on the unfitted mesh are written there first (DumpSlices).
  */
-Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
-           const std::string& dump_before = "", bool smoothed_only = false, int order = 1,
+Fitted Fit(mfem::Mesh& serial,
+           MPI_Comm comm,
+           const ms::SeedSet& seeds,
+           const std::string& dump_before = "",
+           bool smoothed_only = false,
+           int order = 1,
            ms::MetricType metric = ms::MetricType::VORONOI) {
     int size = 1;
     MPI_Comm_size(comm, &size);
@@ -297,17 +306,17 @@ double WorstRankDifference(const Fitted& dist, const Fitted& self) {
     const mfem::GridFunction& xs = *self.pmesh->GetNodes();
     const mfem::FiniteElementSpace& fs = *xs.FESpace();
     for (int v = 0; v < fs.GetNDofs(); ++v) {
-        const double p0[3] = {self.x0(fs.DofToVDof(v, 0)), self.x0(fs.DofToVDof(v, 1)),
-                              self.x0(fs.DofToVDof(v, 2))};
-        moved[MakeKey(p0)] = {xs(fs.DofToVDof(v, 0)), xs(fs.DofToVDof(v, 1)),
-                              xs(fs.DofToVDof(v, 2))};
+        const double p0[3] = {
+            self.x0(fs.DofToVDof(v, 0)), self.x0(fs.DofToVDof(v, 1)), self.x0(fs.DofToVDof(v, 2))};
+        moved[MakeKey(p0)] = {
+            xs(fs.DofToVDof(v, 0)), xs(fs.DofToVDof(v, 1)), xs(fs.DofToVDof(v, 2))};
     }
     const mfem::GridFunction& xd = *dist.pmesh->GetNodes();
     const mfem::FiniteElementSpace& fd = *xd.FESpace();
     double worst = 0.0;
     for (int v = 0; v < fd.GetNDofs(); ++v) {
-        const double p0[3] = {dist.x0(fd.DofToVDof(v, 0)), dist.x0(fd.DofToVDof(v, 1)),
-                              dist.x0(fd.DofToVDof(v, 2))};
+        const double p0[3] = {
+            dist.x0(fd.DofToVDof(v, 0)), dist.x0(fd.DofToVDof(v, 1)), dist.x0(fd.DofToVDof(v, 2))};
         const auto& q = moved.at(MakeKey(p0));
         for (int d = 0; d < 3; ++d) {
             worst = std::max(worst,
@@ -357,8 +366,12 @@ void CheckBisector(mfem::Mesh& serial, bool tet, double fit_ratio) {
     if (mfem::Mpi::Root()) {
         std::printf("bisector: deviation %.3f -> %.3f h (max %.3f), sj %.3f, rounds %d, "
                     "solves %d\n",
-                    r.initial_deviation, r.mean_deviation, r.max_deviation,
-                    r.quality_after.min_scaled_jacobian, r.rounds, r.solves);
+                    r.initial_deviation,
+                    r.mean_deviation,
+                    r.max_deviation,
+                    r.quality_after.min_scaled_jacobian,
+                    r.rounds,
+                    r.solves);
     }
 }
 
@@ -395,8 +408,8 @@ void CheckTricrystal(mfem::Element::Type type, int n) {
             continue;
         }
         const double h = f.repair.targets->MeshSize(v);
-        const double d0 =
-            std::hypot(f.x0(fes.DofToVDof(v, 0)) - cx, f.x0(fes.DofToVDof(v, 1)) - cy);
+        const double d0 = std::hypot(f.x0(fes.DofToVDof(v, 0)) - cx,
+                                     f.x0(fes.DofToVDof(v, 1)) - cy);
         const double d1 = std::hypot(x(fes.DofToVDof(v, 0)) - cx, x(fes.DofToVDof(v, 1)) - cy);
         sums[0] += d0 / h;
         sums[1] += d1 / h;
@@ -413,8 +426,13 @@ void CheckTricrystal(mfem::Element::Type type, int n) {
     if (mfem::Mpi::Root()) {
         std::printf("tricrystal %s %d^3: %d triple line nodes, distance to the line %.3f -> %.3f h "
                     "(max %.3f); deviation %.3f -> %.3f h\n",
-                    tet ? "tet" : "hex", n, static_cast<int>(sums[2]), sums[0] / sums[2],
-                    sums[1] / sums[2], worst, f.report.initial_deviation,
+                    tet ? "tet" : "hex",
+                    n,
+                    static_cast<int>(sums[2]),
+                    sums[0] / sums[2],
+                    sums[1] / sums[2],
+                    worst,
+                    f.report.initial_deviation,
                     f.report.mean_deviation);
     }
 }
@@ -442,7 +460,10 @@ double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
     surfaces.normals = &nl.SurfaceNormals();
     surfaces.min_cosine = nl.FeatureCosine();
     const ms::SurfacePatches patches(
-        field, std::vector<char>(static_cast<std::size_t>(field.NumVertices()), 1), nullptr, 2,
+        field,
+        std::vector<char>(static_cast<std::size_t>(field.NumVertices()), 1),
+        nullptr,
+        2,
         &surfaces);
     const int* surf_off = nl.SurfaceOffsets().HostRead();
     const double* normal = nl.SurfaceNormals().HostRead();
@@ -478,14 +499,14 @@ double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
             if (planar[s] == 0) {
                 double p[3], pn[3];
                 bool interior = false;
-                dist = std::max(dist,
-                                patches.ClosestPoint(v, y, p, pn, interior, s - surf_off[v]));
+                dist = std::max(dist, patches.ClosestPoint(v, y, p, pn, interior, s - surf_off[v]));
                 continue;
             }
             const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-            dist = std::max(dist, std::fabs(n[0] * (y[0] - y0[0]) + n[1] * (y[1] - y0[1]) +
-                                            n[2] * (y[2] - y0[2])) /
-                                      len);
+            dist = std::max(
+                dist,
+                std::fabs(n[0] * (y[0] - y0[0]) + n[1] * (y[1] - y0[1]) + n[2] * (y[2] - y0[2])) /
+                    len);
         }
         worst = std::max(worst, dist / f.repair.targets->MeshSize(v));
         moved += (same || field.OwnedVertexMarker().HostRead()[v] == 0) ? 0 : 1;
@@ -527,9 +548,15 @@ void CheckCurved(mfem::Element::Type type, int n, double shear) {
     if (mfem::Mpi::Root()) {
         std::printf("curved %s: deviation %.3f -> %.3f h (max %.3f), sj %.3f -> %.3f, rounds %d, "
                     "surface drift %.2e h, moved on surface %d\n",
-                    type == mfem::Element::TETRAHEDRON ? "tet" : "hex", r.initial_deviation,
-                    r.mean_deviation, r.max_deviation, r.quality_before.min_scaled_jacobian,
-                    r.quality_after.min_scaled_jacobian, r.rounds, drift, moved);
+                    type == mfem::Element::TETRAHEDRON ? "tet" : "hex",
+                    r.initial_deviation,
+                    r.mean_deviation,
+                    r.max_deviation,
+                    r.quality_before.min_scaled_jacobian,
+                    r.quality_after.min_scaled_jacobian,
+                    r.rounds,
+                    drift,
+                    moved);
     }
 }
 
@@ -632,7 +659,11 @@ TEST(ConformalFit, CurvedBoundaryConvergence) {
         if (mfem::Mpi::Root()) {
             std::printf("curved boundary n = %d: area error staircase %.4f, fitted %.4f; volume "
                         "error staircase %.4f, fitted %.4f\n",
-                        n, stair_area, fit_area, stair_volume, fit_volume);
+                        n,
+                        stair_area,
+                        fit_area,
+                        stair_volume,
+                        fit_volume);
         }
     }
     EXPECT_LT(volume_errors[1], 0.5 * volume_errors[0]);
@@ -653,8 +684,12 @@ TEST(ConformalFit, HexPolycrystal) {
     if (mfem::Mpi::Root()) {
         std::printf("polycrystal: deviation %.3f -> %.3f h (max %.3f), sj %.3f, <0.5 %.4f, rounds "
                     "%d, solves %d\n",
-                    r.initial_deviation, r.mean_deviation, r.max_deviation,
-                    r.quality_after.min_scaled_jacobian, below, r.rounds,
+                    r.initial_deviation,
+                    r.mean_deviation,
+                    r.max_deviation,
+                    r.quality_after.min_scaled_jacobian,
+                    below,
+                    r.rounds,
                     r.solves);
     }
 }
@@ -667,7 +702,8 @@ TEST(ConformalFit, ThinGrains) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(10, 10, 10, mfem::Element::HEXAHEDRON);
     const auto run = [&](double middle, double spread, double tilt) {
         ms::SeedSet s;
-        const double p[3][3] = {{middle - spread, 0.5 - tilt, 0.5}, {middle, 0.5, 0.5},
+        const double p[3][3] = {{middle - spread, 0.5 - tilt, 0.5},
+                                {middle, 0.5, 0.5},
                                 {middle + spread, 0.5 + tilt, 0.5 - 0.3 * tilt}};
         for (const auto& q : p) {
             s.x.push_back(q[0]);
@@ -705,9 +741,9 @@ TEST(ConformalFit, ThinGrains) {
 TEST(ConformalFit, JitteredTetPolycrystal) {
     // An unstructured-like tet mesh: the interior vertices of an 8^3 x 6 Kuhn mesh moved by up to
     // 0.2 element sizes (fixed pseudo-random sequence), so the worst tets start below the mean
-    // ratio floor, as in meshes from a mesh generator (a gmsh cube's worst tet: 0.33). The fit must still
-    // move the boundaries (it could hardly move with the scaled Jacobian rules), keep the limits
-    // relative to the input, and invert nothing.
+    // ratio floor, as in meshes from a mesh generator (a gmsh cube's worst tet: 0.33). The fit must
+    // still move the boundaries (it could hardly move with the scaled Jacobian rules), keep the
+    // limits relative to the input, and invert nothing.
     const int n = 8;
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::TETRAHEDRON);
     double r = 0.4321;
@@ -727,8 +763,10 @@ TEST(ConformalFit, JitteredTetPolycrystal) {
     EXPECT_EQ(FaceViolations(f), 0);
     if (mfem::Mpi::Root()) {
         std::printf("jittered tets: deviation %.3f -> %.3f h, mean ratio %.3f -> %.3f, rounds %d\n",
-                    r_fit.initial_deviation, r_fit.mean_deviation,
-                    r_fit.quality_before.min_mean_ratio, r_fit.quality_after.min_mean_ratio,
+                    r_fit.initial_deviation,
+                    r_fit.mean_deviation,
+                    r_fit.quality_before.min_mean_ratio,
+                    r_fit.quality_after.min_mean_ratio,
                     r_fit.rounds);
     }
 }
@@ -765,9 +803,13 @@ TEST(ConformalFit, HexOrderTwoPolycrystal) {
     if (mfem::Mpi::Root()) {
         std::printf("order 2: deviation %.3f -> %.3f h (max %.3f), sj %.3f, ar %.2f, rounds %d, "
                     "fitted nodes %lld (order 1: %lld)\n",
-                    r.initial_deviation, r.mean_deviation, r.max_deviation,
-                    r.quality_after.min_scaled_jacobian, r.quality_after.max_aspect_ratio,
-                    r.rounds, static_cast<long long>(r.fit_nodes),
+                    r.initial_deviation,
+                    r.mean_deviation,
+                    r.max_deviation,
+                    r.quality_after.min_scaled_jacobian,
+                    r.quality_after.max_aspect_ratio,
+                    r.rounds,
+                    static_cast<long long>(r.fit_nodes),
                     static_cast<long long>(linear.report.fit_nodes));
     }
 }
@@ -806,13 +848,11 @@ TEST(ConformalFit, HexCurvedWallRim) {
     const int* surf_off = nl.SurfaceOffsets().HostRead();
     const int* planar = nl.SurfacePlanar().HostRead();
     const int* owned = nl.Field().OwnedVertexMarker().HostRead();
-    const double n[3] = {seeds.x[1] - seeds.x[0], seeds.y[1] - seeds.y[0],
-                         seeds.z[1] - seeds.z[0]};
+    const double n[3] = {seeds.x[1] - seeds.x[0], seeds.y[1] - seeds.y[0], seeds.z[1] - seeds.z[0]};
     const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    const double c = 0.5 * ((seeds.x[1] * seeds.x[1] + seeds.y[1] * seeds.y[1] +
-                             seeds.z[1] * seeds.z[1]) -
-                            (seeds.x[0] * seeds.x[0] + seeds.y[0] * seeds.y[0] +
-                             seeds.z[0] * seeds.z[0]));
+    const double c =
+        0.5 * ((seeds.x[1] * seeds.x[1] + seeds.y[1] * seeds.y[1] + seeds.z[1] * seeds.z[1]) -
+               (seeds.x[0] * seeds.x[0] + seeds.y[0] * seeds.y[0] + seeds.z[0] * seeds.z[0]));
     const mfem::GridFunction& x = *f.pmesh->GetNodes();
     const mfem::FiniteElementSpace& fes = *x.FESpace();
     int rim = 0;
@@ -848,8 +888,12 @@ TEST(ConformalFit, HexCurvedWallRim) {
     if (mfem::Mpi::Root()) {
         std::printf("curved wall rim: %d rim nodes, distance to the bisector %.3f -> %.3f h; "
                     "deviation %.3f -> %.3f h, sj %.3f -> %.3f\n",
-                    rim, before / std::max(rim, 1), after / std::max(rim, 1), r.initial_deviation,
-                    r.mean_deviation, r.quality_before.min_scaled_jacobian,
+                    rim,
+                    before / std::max(rim, 1),
+                    after / std::max(rim, 1),
+                    r.initial_deviation,
+                    r.mean_deviation,
+                    r.quality_before.min_scaled_jacobian,
                     r.quality_after.min_scaled_jacobian);
     }
 }
@@ -860,16 +904,20 @@ TEST(ConformalFit, DumpSlices) {
         GTEST_SKIP();
     }
     const int n = std::getenv("CONFORMAL_DUMP_N") ? std::atoi(std::getenv("CONFORMAL_DUMP_N")) : 16;
-    const int grains =
-        std::getenv("CONFORMAL_DUMP_GRAINS") ? std::atoi(std::getenv("CONFORMAL_DUMP_GRAINS")) : 20;
-    const int skip =
-        std::getenv("CONFORMAL_DUMP_SKIP") ? std::atoi(std::getenv("CONFORMAL_DUMP_SKIP")) : 0;
+    const int grains = std::getenv("CONFORMAL_DUMP_GRAINS")
+                           ? std::atoi(std::getenv("CONFORMAL_DUMP_GRAINS"))
+                           : 20;
+    const int skip = std::getenv("CONFORMAL_DUMP_SKIP")
+                         ? std::atoi(std::getenv("CONFORMAL_DUMP_SKIP"))
+                         : 0;
     const bool tet = std::getenv("CONFORMAL_DUMP_TET") != nullptr;
     const bool curved = std::getenv("CONFORMAL_DUMP_CURVED") != nullptr;
     const char* mesh_file = std::getenv("CONFORMAL_DUMP_MESH");
     mfem::Mesh serial = (mesh_file != nullptr)
                             ? mfem::Mesh(mesh_file)
-                            : mfem::Mesh::MakeCartesian3D(n, n, n,
+                            : mfem::Mesh::MakeCartesian3D(n,
+                                                          n,
+                                                          n,
                                                           tet ? mfem::Element::TETRAHEDRON
                                                               : mfem::Element::HEXAHEDRON);
     ms::SeedSet seeds = ScatteredSeeds(grains, skip);
@@ -891,16 +939,22 @@ TEST(ConformalFit, DumpSlices) {
         }
     }
     const bool smoothed_only = std::getenv("CONFORMAL_DUMP_SMOOTHED") != nullptr;
-    const int order =
-        std::getenv("CONFORMAL_DUMP_ORDER") ? std::atoi(std::getenv("CONFORMAL_DUMP_ORDER")) : 1;
-    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only,
-                   order);
+    const int order = std::getenv("CONFORMAL_DUMP_ORDER")
+                          ? std::atoi(std::getenv("CONFORMAL_DUMP_ORDER"))
+                          : 1;
+    Fitted f = Fit(
+        serial, MPI_COMM_WORLD, seeds, std::string(dir) + "/orig.txt", smoothed_only, order);
     if (mfem::Mpi::Root() && std::getenv("CONFORMAL_DUMP_STATUS")) {
         const auto& ts = f.repair.targets->Summary();
-        std::printf("DUMP status: none %lld fit %lld over %lld held %lld fake %lld (smoothed %lld); "
-                    "reasons:",
-                    (long long)ts.status[0], (long long)ts.status[1], (long long)ts.status[2],
-                    (long long)ts.status[3], (long long)ts.status[4], (long long)ts.smoothed);
+        std::printf(
+            "DUMP status: none %lld fit %lld over %lld held %lld fake %lld (smoothed %lld); "
+            "reasons:",
+            (long long)ts.status[0],
+            (long long)ts.status[1],
+            (long long)ts.status[2],
+            (long long)ts.status[3],
+            (long long)ts.status[4],
+            (long long)ts.smoothed);
         for (int k = 0; k < ms::NUM_TARGET_REASONS; ++k) {
             std::printf(" %lld", (long long)ts.reason[static_cast<std::size_t>(k)]);
         }
@@ -917,16 +971,24 @@ TEST(ConformalFit, DumpSlices) {
     MPI_Allreduce(MPI_IN_PLACE, ar_counts, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     if (mfem::Mpi::Root()) {
         std::printf("DUMP aspect ratio: max %.2f, share > 3: %.4f, > 4: %.4f, > 5: %.4f\n",
-                    f.report.quality_after.max_aspect_ratio, ar_counts[0] / ar_counts[3],
-                    ar_counts[1] / ar_counts[3], ar_counts[2] / ar_counts[3]);
+                    f.report.quality_after.max_aspect_ratio,
+                    ar_counts[0] / ar_counts[3],
+                    ar_counts[1] / ar_counts[3],
+                    ar_counts[2] / ar_counts[3]);
     }
     if (mfem::Mpi::Root()) {
         const ms::ConformalFitReport& r = f.report;
         std::printf("DUMP %s %d^3 %d grains: deviation %.3f -> %.3f h (max %.3f), sj %.3f, rounds "
                     "%d, solves %d\n",
-                    tet ? "tet" : "hex", n, grains, r.initial_deviation, r.mean_deviation,
+                    tet ? "tet" : "hex",
+                    n,
+                    grains,
+                    r.initial_deviation,
+                    r.mean_deviation,
                     r.max_deviation,
-                    r.quality_after.min_scaled_jacobian, r.rounds, r.solves);
+                    r.quality_after.min_scaled_jacobian,
+                    r.rounds,
+                    r.solves);
     }
     WriteElements(*f.pmesh, f.labels, f.x0, std::string(dir) + "/fit.txt");
     if (!tet) {
@@ -937,7 +999,9 @@ TEST(ConformalFit, DumpSlices) {
 namespace {
 
 /** One line per local element: label, quality, original center, current corners (.r<rank>). */
-void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+void WriteElements(mfem::ParMesh& pmesh,
+                   const mfem::Array<int>& labels,
+                   const mfem::Vector& x0,
                    const std::string& path) {
     int rank = 0;
     MPI_Comm_rank(pmesh.GetComm(), &rank);
@@ -969,7 +1033,9 @@ void WriteElements(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const m
  * of the element's mid-section (reference z = 1/2) through the element map, so curved (order-2)
  * faces show as curves (.r<rank>).
  */
-void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const mfem::Vector& x0,
+void WriteSections(mfem::ParMesh& pmesh,
+                   const mfem::Array<int>& labels,
+                   const mfem::Vector& x0,
                    const std::string& path) {
     int rank = 0;
     MPI_Comm_rank(pmesh.GetComm(), &rank);
@@ -990,14 +1056,13 @@ void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const m
         }
         std::fprintf(out, "%d %.6g %.6g %.6g %.6g", labels[e], sj, c0[0], c0[1], c0[2]);
         mfem::ElementTransformation* T = pmesh.GetElementTransformation(e);
-        const double side[4][2][2] = {{{0, 0}, {1, 0}}, {{1, 0}, {1, 1}}, {{1, 1}, {0, 1}},
-                                      {{0, 1}, {0, 0}}};
+        const double side[4][2][2] = {
+            {{0, 0}, {1, 0}}, {{1, 0}, {1, 1}}, {{1, 1}, {0, 1}}, {{0, 1}, {0, 0}}};
         for (const auto& s : side) {
             for (int k = 0; k < 6; ++k) {
                 const double t = k / 6.0;
                 mfem::IntegrationPoint ip;
-                ip.Set3(s[0][0] + t * (s[1][0] - s[0][0]), s[0][1] + t * (s[1][1] - s[0][1]),
-                        0.5);
+                ip.Set3(s[0][0] + t * (s[1][0] - s[0][0]), s[0][1] + t * (s[1][1] - s[0][1]), 0.5);
                 T->Transform(ip, X);
                 std::fprintf(out, " %.8g %.8g", X(0), X(1));
             }

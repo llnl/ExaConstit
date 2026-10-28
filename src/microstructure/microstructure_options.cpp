@@ -39,8 +39,6 @@
 #include "microstructure/exec_dispatch.hpp"
 // The compile-time constant CONNECTED_MAX_ROUNDS_LIMIT only (header-only; ms_options does not
 // link ms_labeling)
-#include "microstructure/labeling/connected_limits.hpp"
-#include "microstructure/labeling/geodesic_limits.hpp"
 #include "options/option_util.hpp"
 
 #include "mfem.hpp"
@@ -58,6 +56,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/labeling/connected_limits.hpp"
+#include "microstructure/labeling/geodesic_limits.hpp"
 
 namespace fs = std::filesystem;
 
@@ -281,9 +282,8 @@ int key_to_int(const std::string& key, const std::string& full_key) {
  * @throws std::invalid_argument for a non-integer key or a value out of range; toml11 errors for
  *         a value that is not a TOML integer or a `key` that is not a table.
  */
-std::map<int, int> get_int_map(const toml::value& table,
-                               const std::string& key,
-                               const std::string& full_key) {
+std::map<int, int>
+get_int_map(const toml::value& table, const std::string& key, const std::string& full_key) {
     std::map<int, int> result;
     for (const auto& entry : toml::find(table, key).as_table()) {
         const int map_key = key_to_int(entry.first, full_key);
@@ -298,9 +298,8 @@ std::map<int, int> get_int_map(const toml::value& table,
  *
  * @throws std::invalid_argument for a value out of range; toml11 errors for non-integers.
  */
-std::vector<int> get_int_vector(const toml::value& table,
-                                const std::string& key,
-                                const std::string& full_key) {
+std::vector<int>
+get_int_vector(const toml::value& table, const std::string& key, const std::string& full_key) {
     std::vector<int> result;
     for (const std::int64_t value : toml::find<std::vector<std::int64_t>>(table, key)) {
         result.push_back(checked_int(value, full_key));
@@ -390,12 +389,12 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
     // (passthrough, attribute -> region). Ranges and overlaps are checked in validate(); whether
     // the attributes exist is only known once the mesh is read (mesh/attribute_domain.hpp).
     if (toml_input.contains("active_attributes")) {
-        mesh.active_attributes =
-            get_int_vector(toml_input, "active_attributes", "Mesh.active_attributes");
+        mesh.active_attributes = get_int_vector(
+            toml_input, "active_attributes", "Mesh.active_attributes");
     }
     if (toml_input.contains("passthrough_attributes")) {
-        mesh.passthrough_attributes =
-            get_int_map(toml_input, "passthrough_attributes", "Mesh.passthrough_attributes");
+        mesh.passthrough_attributes = get_int_map(
+            toml_input, "passthrough_attributes", "Mesh.passthrough_attributes");
     }
 
     // [Mesh.Auto]: box dimensions and element counts of the generated hex mesh.
@@ -603,8 +602,8 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
         seeds.filler_num_seeds = toml::find<std::int64_t>(toml_input, "filler_num_seeds");
     }
     if (toml_input.contains("filler_min_distance_factor")) {
-        seeds.filler_min_distance_factor =
-            get_number(toml::find(toml_input, "filler_min_distance_factor"));
+        seeds.filler_min_distance_factor = get_number(
+            toml::find(toml_input, "filler_min_distance_factor"));
     }
 
     // [Seeds.Size]: target grain size distribution (values checked in validate())
@@ -791,9 +790,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
 
     // Where each element is evaluated.
     if (toml_input.contains("sampling")) {
-        tess.sampling = string_to_ms_enum(toml::find<std::string>(toml_input, "sampling"),
-                                          sampling_map,
-                                          "Tessellation.sampling");
+        tess.sampling = string_to_ms_enum(
+            toml::find<std::string>(toml_input, "sampling"), sampling_map, "Tessellation.sampling");
     }
 
     // Periodicity flags, one per direction x, y, z.
@@ -810,25 +808,24 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
 
     // How distance is measured through (or around) the material.
     if (toml_input.contains("distance")) {
-        tess.distance = string_to_ms_enum(toml::find<std::string>(toml_input, "distance"),
-                                          distance_map,
-                                          "Tessellation.distance");
+        tess.distance = string_to_ms_enum(
+            toml::find<std::string>(toml_input, "distance"), distance_map, "Tessellation.distance");
     }
 
     // Distance-mode settings: the rounds cap of "connected" and the solver of "geodesic" (an
     // inline table, so later solver settings can join it). Ranges and spelling are checked in
     // validate(), so a typo is reported together with every other problem.
     if (toml_input.contains("connected_max_rounds")) {
-        tess.connected_max_rounds =
-            get_int(toml_input, "connected_max_rounds", "Tessellation.connected_max_rounds");
+        tess.connected_max_rounds = get_int(
+            toml_input, "connected_max_rounds", "Tessellation.connected_max_rounds");
     }
     if (toml_input.contains("geodesic")) {
         const auto& geodesic = toml::find(toml_input, "geodesic");
-        warn_unknown_keys(geodesic, "Tessellation.geodesic",
-                          {"solver", "elongation", "max_seeds_per_node"});
+        warn_unknown_keys(
+            geodesic, "Tessellation.geodesic", {"solver", "elongation", "max_seeds_per_node"});
         if (geodesic.contains("max_seeds_per_node")) {
-            tess.geodesic_max_seeds_per_node = get_int(geodesic, "max_seeds_per_node",
-                                                       "Tessellation.geodesic.max_seeds_per_node");
+            tess.geodesic_max_seeds_per_node = get_int(
+                geodesic, "max_seeds_per_node", "Tessellation.geodesic.max_seeds_per_node");
         }
         if (geodesic.contains("solver")) {
             tess.geodesic_solver = toml::find<std::string>(geodesic, "solver");
@@ -864,9 +861,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
     // Volume fitting, as an inline table.
     if (toml_input.contains("fit_volumes")) {
         const auto& fit = toml::find(toml_input, "fit_volumes");
-        warn_unknown_keys(fit,
-                          "Tessellation.fit_volumes",
-                          {"enabled", "tolerance", "max_iterations", "samples"});
+        warn_unknown_keys(
+            fit, "Tessellation.fit_volumes", {"enabled", "tolerance", "max_iterations", "samples"});
         if (fit.contains("enabled")) {
             tess.fit_volumes.enabled = toml::find<bool>(fit, "enabled");
         }
@@ -874,8 +870,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
             tess.fit_volumes.tolerance = get_number(toml::find(fit, "tolerance"));
         }
         if (fit.contains("max_iterations")) {
-            tess.fit_volumes.max_iterations =
-                get_int(fit, "max_iterations", "Tessellation.fit_volumes.max_iterations");
+            tess.fit_volumes.max_iterations = get_int(
+                fit, "max_iterations", "Tessellation.fit_volumes.max_iterations");
         }
         if (fit.contains("samples")) {
             tess.fit_volumes.samples = toml::find<std::string>(fit, "samples");
@@ -884,8 +880,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
 
     // Lloyd relaxation.
     if (toml_input.contains("lloyd_iterations")) {
-        tess.lloyd_iterations =
-            get_int(toml_input, "lloyd_iterations", "Tessellation.lloyd_iterations");
+        tess.lloyd_iterations = get_int(
+            toml_input, "lloyd_iterations", "Tessellation.lloyd_iterations");
     }
     if (toml_input.contains("centroidal_power")) {
         tess.centroidal_power = toml::find<bool>(toml_input, "centroidal_power");
@@ -929,10 +925,9 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
                        "microstructure_file"});
 
     // Accepted spellings of `mesh_format`.
-    static const std::map<std::string, MeshFormat> format_map = {
-        {"serial", MeshFormat::SERIAL},
-        {"parallel", MeshFormat::PARALLEL},
-        {"both", MeshFormat::BOTH}};
+    static const std::map<std::string, MeshFormat> format_map = {{"serial", MeshFormat::SERIAL},
+                                                                 {"parallel", MeshFormat::PARALLEL},
+                                                                 {"both", MeshFormat::BOTH}};
 
     OutputOptions output;
 
@@ -1118,11 +1113,10 @@ std::map<int, int> read_phase_to_region_file(const std::filesystem::path& path) 
         if (!(fields >> phase >> region) || (fields >> rest) || phase < INT_MIN ||
             phase > INT_MAX || region < INT_MIN || region > INT_MAX) {
             throw std::invalid_argument(where + ", line " + std::to_string(line_number) +
-                                        ": expected two integers 'phase region', found '" +
-                                        line + "'");
+                                        ": expected two integers 'phase region', found '" + line +
+                                        "'");
         }
-        const auto inserted =
-            result.emplace(static_cast<int>(phase), static_cast<int>(region));
+        const auto inserted = result.emplace(static_cast<int>(phase), static_cast<int>(region));
         if (!inserted.second && inserted.first->second != static_cast<int>(region)) {
             throw std::invalid_argument(where + ", line " + std::to_string(line_number) +
                                         ": phase " + std::to_string(phase) +
@@ -1150,19 +1144,23 @@ std::map<int, int> read_phase_to_region_file(const std::filesystem::path& path) 
 RegionOptions regions_from_toml(const toml::value& toml_input) {
     warn_unknown_keys(toml_input,
                       "Regions",
-                      {"mode", "non_crystalline_phases", "phase_to_region",
-                       "phase_to_region_file", "phases", "filler_phase"});
+                      {"mode",
+                       "non_crystalline_phases",
+                       "phase_to_region",
+                       "phase_to_region_file",
+                       "phases",
+                       "filler_phase"});
     RegionOptions regions;
     if (toml_input.contains("mode")) {
         regions.mode = toml::find<std::string>(toml_input, "mode");
     }
     if (toml_input.contains("non_crystalline_phases")) {
-        regions.non_crystalline_phases =
-            get_int_vector(toml_input, "non_crystalline_phases", "Regions.non_crystalline_phases");
+        regions.non_crystalline_phases = get_int_vector(
+            toml_input, "non_crystalline_phases", "Regions.non_crystalline_phases");
     }
     if (toml_input.contains("phase_to_region")) {
-        regions.phase_to_region =
-            get_int_map(toml_input, "phase_to_region", "Regions.phase_to_region");
+        regions.phase_to_region = get_int_map(
+            toml_input, "phase_to_region", "Regions.phase_to_region");
     }
     if (toml_input.contains("phase_to_region_file")) {
         if (toml_input.contains("phase_to_region")) {
@@ -1170,8 +1168,7 @@ RegionOptions regions_from_toml(const toml::value& toml_input) {
                                         "'Regions.phase_to_region' or "
                                         "'Regions.phase_to_region_file', not both");
         }
-        regions.phase_to_region_file =
-            toml::find<std::string>(toml_input, "phase_to_region_file");
+        regions.phase_to_region_file = toml::find<std::string>(toml_input, "phase_to_region_file");
         regions.phase_to_region = read_phase_to_region_file(regions.phase_to_region_file);
     }
     // Target fractions: an array of inline tables, each with an id and a fraction
@@ -1345,12 +1342,12 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
                            "min_fragment_elements",
                            "min_fragment_fraction"});
         if (cleanup.contains("min_fragment_elements")) {
-            options.cleanup.min_fragment_elements =
-                get_int(cleanup, "min_fragment_elements", "Cleanup.min_fragment_elements");
+            options.cleanup.min_fragment_elements = get_int(
+                cleanup, "min_fragment_elements", "Cleanup.min_fragment_elements");
         }
         if (cleanup.contains("min_fragment_fraction")) {
-            options.cleanup.min_fragment_fraction =
-                get_number(toml::find(cleanup, "min_fragment_fraction"));
+            options.cleanup.min_fragment_fraction = get_number(
+                toml::find(cleanup, "min_fragment_fraction"));
         }
         if (cleanup.contains("fragments")) {
             options.cleanup.fragments = toml::find<std::string>(cleanup, "fragments");
@@ -1359,8 +1356,8 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
             options.cleanup.keep_component = toml::find<std::string>(cleanup, "keep_component");
         }
         if (cleanup.contains("min_grain_elements")) {
-            options.cleanup.min_grain_elements =
-                get_int(cleanup, "min_grain_elements", "Cleanup.min_grain_elements");
+            options.cleanup.min_grain_elements = get_int(
+                cleanup, "min_grain_elements", "Cleanup.min_grain_elements");
         }
     }
 
@@ -1511,24 +1508,28 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // attributes exist in the mesh is checked when the mesh is read (AttributeDomain).
     for (const int attribute : mesh.active_attributes) {
         if (attribute <= 0) {
-            report_error(valid, "Mesh.active_attributes must be > 0 (got " +
-                                    std::to_string(attribute) + ")");
+            report_error(valid,
+                         "Mesh.active_attributes must be > 0 (got " + std::to_string(attribute) +
+                             ")");
         }
     }
     for (const auto& entry : mesh.passthrough_attributes) {
         if (entry.first <= 0) {
-            report_error(valid, "Mesh.passthrough_attributes: attribute " +
-                                    std::to_string(entry.first) + " must be > 0");
+            report_error(valid,
+                         "Mesh.passthrough_attributes: attribute " + std::to_string(entry.first) +
+                             " must be > 0");
         }
         if (entry.second < 1) {
-            report_error(valid, "Mesh.passthrough_attributes: region of attribute " +
-                                    std::to_string(entry.first) + " must be >= 1");
+            report_error(valid,
+                         "Mesh.passthrough_attributes: region of attribute " +
+                             std::to_string(entry.first) + " must be >= 1");
         }
         if (std::find(mesh.active_attributes.begin(), mesh.active_attributes.end(), entry.first) !=
             mesh.active_attributes.end()) {
-            report_error(valid, "Mesh attribute " + std::to_string(entry.first) +
-                                    " is listed in both active_attributes and "
-                                    "passthrough_attributes");
+            report_error(valid,
+                         "Mesh attribute " + std::to_string(entry.first) +
+                             " is listed in both active_attributes and "
+                             "passthrough_attributes");
         }
     }
     const bool passthrough = !mesh.passthrough_attributes.empty();
@@ -1566,9 +1567,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                          "quat_layout = \"xyzw\" and conjugate = true are not allowed");
         }
         // The microstructure file has fixed paths; the overrides exist for DREAM.3D files
-        if (map.format == "exaconstit" &&
-            (!map.feature_ids_path.empty() || !map.quats_path.empty() ||
-             !map.phases_path.empty())) {
+        if (map.format == "exaconstit" && (!map.feature_ids_path.empty() ||
+                                           !map.quats_path.empty() || !map.phases_path.empty())) {
             report_error(valid,
                          "VoxelMap.feature_ids_path, quats_path and phases_path apply to "
                          "format = \"dream3d\" only (an ExaConstit microstructure file has "
@@ -1613,8 +1613,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         // refusing them is safer than ignoring them (the user expects them to act).
         const auto refuse = [&](bool set, const std::string& what) {
             if (set) {
-                report_error(valid, what + " cannot be used with Source.type = \"voxel_map\" "
-                                           "(no seeds and no tessellation)");
+                report_error(valid,
+                             what + " cannot be used with Source.type = \"voxel_map\" "
+                                    "(no seeds and no tessellation)");
             }
         };
         refuse(seeds.source == "file", "Seeds.source = \"file\"");
@@ -1660,8 +1661,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // --- [Seeds] ----------------------------------------------------------------------------
     check_choice(valid, "Seeds.source", seeds.source, {"random", "file"});
     // A mean grain size (with num_seeds = 0) or Johnson-Mehl nucleation sets the seed count.
-    const bool count_from_size =
-        seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0;
+    const bool count_from_size = seeds.size.mean_diameter > 0.0 || seeds.size.mean_volume > 0.0;
     const bool johnson_mehl = (seeds.placement == SeedPlacement::JOHNSON_MEHL);
     if (voxel_source) {
         // No seeds: the voxel-map checks above cover [Seeds]
@@ -1696,8 +1696,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                          "Seeds.source = \"file\" (they would move the measured seed positions)");
         }
         if (johnson_mehl) {
-            report_error(valid, "Seeds.placement = \"johnson_mehl\" cannot be used with "
-                                "Seeds.source = \"file\"");
+            report_error(valid,
+                         "Seeds.placement = \"johnson_mehl\" cannot be used with "
+                         "Seeds.source = \"file\"");
         }
     }
 
@@ -1711,8 +1712,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             const double lo = seeds.roi_lo[d];
             const double hi = seeds.roi_hi[d];
             if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) {
-                report_error(valid,
-                             "Seeds.roi must be finite with hi > lo along every axis");
+                report_error(valid, "Seeds.roi must be finite with hi > lo along every axis");
                 break;
             }
         }
@@ -1786,10 +1786,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // [Seeds.Size]: a size distribution needs sensible parameters; the mean size is a length or
     // a volume, never both (they would contradict each other).
     const SeedSizeOptions& size = seeds.size;
-    check_choice(valid,
-                 "Seeds.Size.distribution",
-                 size.distribution,
-                 {"none", "lognormal", "from_source"});
+    check_choice(
+        valid, "Seeds.Size.distribution", size.distribution, {"none", "lognormal", "from_source"});
     if (size.distribution == "from_source" && seeds.source != "file") {
         report_error(valid,
                      "Seeds.Size.distribution = \"from_source\" needs Seeds.source = \"file\"");
@@ -1877,8 +1875,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         // Nucleation coverage and the candidate domain are not periodic: nuclei near one face
         // would not block or be blocked by nuclei near the opposite face.
         if (tessellation.periodic[0] || tessellation.periodic[1] || tessellation.periodic[2]) {
-            report_error(valid,
-                         "placement = \"johnson_mehl\" is not supported with periodic axes");
+            report_error(valid, "placement = \"johnson_mehl\" is not supported with periodic axes");
         }
         if (seeds.min_distance > 0.0 || seeds.min_distance_factor > 0.0 ||
             seeds.boundary_clearance > 0.0 || seeds.sampling_domain != "material" ||
@@ -1919,8 +1916,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                          "Tessellation.anisotropy.kind = \"per_seed\" needs metric = \"quadric\"");
         }
         if (seeds.source != "file") {
-            report_error(valid, "Tessellation.anisotropy.kind = \"per_seed\" needs "
-                                "Seeds.source = \"file\" (a table with shape columns)");
+            report_error(valid,
+                         "Tessellation.anisotropy.kind = \"per_seed\" needs "
+                         "Seeds.source = \"file\" (a table with shape columns)");
         }
     }
     if (tessellation.anisotropy_kind == "tensor" && tessellation.metric != MetricType::QUADRIC) {
@@ -1947,8 +1945,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
             length_sq += c * c;
         }
         if (!finite || !(length_sq > 0.0)) {
-            report_error(valid,
-                         "Tessellation.anisotropy axis/normal must be finite and nonzero");
+            report_error(valid, "Tessellation.anisotropy axis/normal must be finite and nonzero");
         }
     }
     if (!semidefinite_kind) {
@@ -2033,17 +2030,20 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     if (connected || geodesic) {
         const std::string mode = connected ? "\"connected\"" : "\"geodesic\"";
         if (any_periodic) {
-            report_error(valid, "Tessellation.distance = " + mode +
-                                    " cannot be combined with periodic axes");
+            report_error(valid,
+                         "Tessellation.distance = " + mode +
+                             " cannot be combined with periodic axes");
         }
         if (fit.enabled) {
-            report_error(valid, "Tessellation.distance = " + mode +
-                                    " cannot be combined with Tessellation.fit_volumes");
+            report_error(valid,
+                         "Tessellation.distance = " + mode +
+                             " cannot be combined with Tessellation.fit_volumes");
         }
         if (tessellation.lloyd_iterations > 0 || tessellation.centroidal_power) {
-            report_error(valid, "Tessellation.distance = " + mode +
-                                    " cannot be combined with Tessellation.lloyd_iterations / "
-                                    "centroidal_power");
+            report_error(valid,
+                         "Tessellation.distance = " + mode +
+                             " cannot be combined with Tessellation.lloyd_iterations / "
+                             "centroidal_power");
         }
     }
     // Geodesic Quadric measures paths with the tensor (labeling/geodesic_metric.hpp); columnar
@@ -2054,24 +2054,27 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     if (geodesic) {
         if (tessellation.metric == MetricType::LAGUERRE &&
             tessellation.geodesic_solver == "graph") {
-            report_error(valid, "Tessellation.distance = \"geodesic\" with metric = \"laguerre\" "
-                                "needs geodesic.solver = \"fim\" (the graph solver keeps one seed "
-                                "per node)");
+            report_error(valid,
+                         "Tessellation.distance = \"geodesic\" with metric = \"laguerre\" "
+                         "needs geodesic.solver = \"fim\" (the graph solver keeps one seed "
+                         "per node)");
         }
         if (tessellation.metric != MetricType::QUADRIC && tessellation.anisotropy_kind != "none") {
-            report_error(valid, "Tessellation.distance = \"geodesic\" with an anisotropy needs "
-                                "metric = \"quadric\"");
+            report_error(valid,
+                         "Tessellation.distance = \"geodesic\" with an anisotropy needs "
+                         "metric = \"quadric\"");
         }
-        if (tessellation.anisotropy_kind == "per_seed" &&
-            tessellation.geodesic_solver == "graph") {
-            report_error(valid, "Tessellation.distance = \"geodesic\" with anisotropy kind "
-                                "\"per_seed\" needs geodesic.solver = \"fim\"");
+        if (tessellation.anisotropy_kind == "per_seed" && tessellation.geodesic_solver == "graph") {
+            report_error(valid,
+                         "Tessellation.distance = \"geodesic\" with anisotropy kind "
+                         "\"per_seed\" needs geodesic.solver = \"fim\"");
         }
     }
     if (tessellation.geodesic_max_seeds_per_node < 1 ||
         tessellation.geodesic_max_seeds_per_node > GEODESIC_MAX_SEEDS_PER_NODE_LIMIT) {
-        report_error(valid, "Tessellation.geodesic.max_seeds_per_node must be in 1.." +
-                                std::to_string(GEODESIC_MAX_SEEDS_PER_NODE_LIMIT));
+        report_error(valid,
+                     "Tessellation.geodesic.max_seeds_per_node must be in 1.." +
+                         std::to_string(GEODESIC_MAX_SEEDS_PER_NODE_LIMIT));
     } else if (tessellation.geodesic_max_seeds_per_node !=
                    TessellationOptions{}.geodesic_max_seeds_per_node &&
                !(geodesic && (tessellation.metric == MetricType::LAGUERRE ||
@@ -2082,8 +2085,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     if (tessellation.geodesic_elongation != 0.0 &&
         !(tessellation.geodesic_elongation >= 1.0 &&
           tessellation.geodesic_elongation <= GEODESIC_MAX_ELONGATION)) {
-        report_error(valid, "Tessellation.geodesic.elongation must be \"auto\" or a number in "
-                            "[1, 1e4]");
+        report_error(valid,
+                     "Tessellation.geodesic.elongation must be \"auto\" or a number in "
+                     "[1, 1e4]");
     } else if (tessellation.geodesic_elongation != 0.0 &&
                !(geodesic && tessellation.metric == MetricType::QUADRIC && stretched_kind)) {
         WARNING_0_OPT("Warning: Tessellation.geodesic.elongation is ignored unless distance = "
@@ -2096,8 +2100,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // do not record which keys were written). A key never gets both.
     const TessellationOptions defaults;
     bool solver_ok = true;
-    check_choice(solver_ok, "Tessellation.geodesic.solver", tessellation.geodesic_solver,
-                 {"fim", "graph"});
+    check_choice(
+        solver_ok, "Tessellation.geodesic.solver", tessellation.geodesic_solver, {"fim", "graph"});
     if (!solver_ok) {
         valid = false;
     } else if (!geodesic && tessellation.geodesic_solver != defaults.geodesic_solver) {
@@ -2106,8 +2110,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     // The connected labeler's own bound (labeling/connected_limits.hpp; 16-64 is plenty)
     if (tessellation.connected_max_rounds < 0 ||
         tessellation.connected_max_rounds > CONNECTED_MAX_ROUNDS_LIMIT) {
-        report_error(valid, "Tessellation.connected_max_rounds must be in 0.." +
-                                std::to_string(CONNECTED_MAX_ROUNDS_LIMIT));
+        report_error(valid,
+                     "Tessellation.connected_max_rounds must be in 0.." +
+                         std::to_string(CONNECTED_MAX_ROUNDS_LIMIT));
     } else if (!connected && tessellation.connected_max_rounds != defaults.connected_max_rounds) {
         WARNING_0_OPT("Warning: Tessellation.connected_max_rounds is ignored unless distance = "
                       "\"connected\"");
@@ -2145,8 +2150,7 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     }
 
     // [Regions]: phases -> material regions
-    check_choice(
-        valid, "Regions.mode", regions.mode, {"single", "from_phase", "phase_fractions"});
+    check_choice(valid, "Regions.mode", regions.mode, {"single", "from_phase", "phase_fractions"});
     for (const int phase : regions.non_crystalline_phases) {
         if (phase < 1) {
             report_error(valid, "Regions.non_crystalline_phases must be >= 1");
@@ -2155,22 +2159,26 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
     }
     for (const auto& entry : regions.phase_to_region) {
         if (entry.first < 1 || entry.second < 1) {
-            report_error(valid, "Regions.phase_to_region needs phase ids >= 1 and region ids >= 1 "
-                                "(entry " + std::to_string(entry.first) + " = " +
-                                    std::to_string(entry.second) + ")");
+            report_error(valid,
+                         "Regions.phase_to_region needs phase ids >= 1 and region ids >= 1 "
+                         "(entry " +
+                             std::to_string(entry.first) + " = " + std::to_string(entry.second) +
+                             ")");
         }
     }
     // Phases from the data: only seed tables and voxel maps carry them
     if (regions.mode == "from_phase" && seeds.source != "file" && !voxel_source) {
-        report_error(valid, "Regions.mode = \"from_phase\" needs Seeds.source = \"file\" or "
-                            "Source.type = \"voxel_map\" (generated seeds have no phase)");
+        report_error(valid,
+                     "Regions.mode = \"from_phase\" needs Seeds.source = \"file\" or "
+                     "Source.type = \"voxel_map\" (generated seeds have no phase)");
     }
     // Synthetic phases: one positive fraction per distinct phase id, summing to 1
     if (regions.mode == "phase_fractions") {
         if (regions.phase_ids.empty() ||
             regions.phase_ids.size() != regions.phase_fractions.size()) {
-            report_error(valid, "Regions.mode = \"phase_fractions\" needs Regions.phases = "
-                                "[{id = .., fraction = ..}, ...]");
+            report_error(valid,
+                         "Regions.mode = \"phase_fractions\" needs Regions.phases = "
+                         "[{id = .., fraction = ..}, ...]");
         } else {
             double sum = 0.0;
             bool fractions_ok = true;
@@ -2179,8 +2187,9 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
                 sum += f;
             }
             if (!fractions_ok || !(std::fabs(sum - 1.0) <= 1.0e-6)) {
-                report_error(valid, "Regions.phases fractions must be > 0 and sum to 1 (within "
-                                    "1e-6)");
+                report_error(valid,
+                             "Regions.phases fractions must be > 0 and sum to 1 (within "
+                             "1e-6)");
             }
             std::vector<int> ids = regions.phase_ids;
             std::sort(ids.begin(), ids.end());
@@ -2212,35 +2221,41 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         for (const int phase : regions.phase_ids) {
             const auto it = regions.phase_to_region.find(phase);
             if (it == regions.phase_to_region.end()) {
-                report_error(valid, "Regions.phase_to_region has no entry for phase " +
-                                        std::to_string(phase) + " of Regions.phases");
+                report_error(valid,
+                             "Regions.phase_to_region has no entry for phase " +
+                                 std::to_string(phase) + " of Regions.phases");
             } else {
                 region_members[it->second].push_back(phase);
             }
         }
         if (!region_members.empty() &&
             region_members.rbegin()->first != static_cast<int>(region_members.size())) {
-            report_error(valid, "Regions.phase_to_region: the regions of the listed phases must "
-                                "be exactly 1..M (no unused region ids)");
+            report_error(valid,
+                         "Regions.phase_to_region: the regions of the listed phases must "
+                         "be exactly 1..M (no unused region ids)");
         }
         for (const auto& entry : region_members) {
             int amorphous = 0;
             for (const int phase : entry.second) {
                 amorphous += std::count(regions.non_crystalline_phases.begin(),
-                                        regions.non_crystalline_phases.end(), phase) > 0 ? 1 : 0;
+                                        regions.non_crystalline_phases.end(),
+                                        phase) > 0
+                                 ? 1
+                                 : 0;
             }
             if (amorphous > 0 && amorphous < static_cast<int>(entry.second.size())) {
-                report_error(valid, "Regions.phase_to_region: region " +
-                                        std::to_string(entry.first) +
-                                        " mixes crystalline and non-crystalline phases");
+                report_error(valid,
+                             "Regions.phase_to_region: region " + std::to_string(entry.first) +
+                                 " mixes crystalline and non-crystalline phases");
             }
         }
     }
     if (regions.mode == "from_phase" && seeds.fill_outside_roi == "random" &&
         !regions.has_filler_phase) {
-        report_error(valid, "Regions.mode = \"from_phase\" with Seeds.fill_outside_roi = "
-                            "\"random\" needs 'Regions.filler_phase' (filler grains have no "
-                            "measured phase)");
+        report_error(valid,
+                     "Regions.mode = \"from_phase\" with Seeds.fill_outside_roi = "
+                     "\"random\" needs 'Regions.filler_phase' (filler grains have no "
+                     "measured phase)");
     }
     // With a single phase region the region ids are known now: {1} plus the passthrough regions
     // must be exactly 1..R, so every [[Materials]] block is used
@@ -2252,9 +2267,10 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         std::sort(ids.begin(), ids.end());
         ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
         if (ids.back() != static_cast<int>(ids.size())) {
-            report_error(valid, "Mesh.passthrough_attributes: with Regions.mode = \"single\" the "
-                                "grains are region 1, so the passthrough regions must make the "
-                                "region ids exactly 1..R (no gaps)");
+            report_error(valid,
+                         "Mesh.passthrough_attributes: with Regions.mode = \"single\" the "
+                         "grains are region 1, so the passthrough regions must make the "
+                         "region ids exactly 1..R (no gaps)");
         }
     }
 
@@ -2278,8 +2294,8 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         report_error(valid, "Output.compression must be in 0-9");
     }
     check_choice(valid, "Output.grain_file", output.grain_file, {"auto", "true", "false"});
-    check_choice(valid, "Output.microstructure_file", output.microstructure_file,
-                 {"none", "grains"});
+    check_choice(
+        valid, "Output.microstructure_file", output.microstructure_file, {"none", "grains"});
     // Output.paraview and Output.grain_adjacency are plain booleans: every value is valid, and a
     // value of another TOML type is already rejected by the reader (output_from_toml).
 

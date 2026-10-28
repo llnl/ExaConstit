@@ -4,22 +4,20 @@
  * total in any order, so global sums (volumes, centroids) are bitwise reproducible across thread
  * schedules and MPI rank counts. The last test uses MPI and is run at np = 1..4.
  */
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/fixed_point.hpp"
-#include "microstructure/util/random_distributions.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
-
-#include <mpi.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mpi.h>
 #include <stdexcept>
 #include <vector>
+
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/fixed_point.hpp"
+#include "microstructure/util/random_distributions.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -178,8 +176,7 @@ TEST(FixedPoint, SumIsOrderIndependentWhereDoubleSumIsNot) {
             double_sums_differ = true;
         }
     }
-    EXPECT_TRUE(double_sums_differ)
-        << "test data too benign: double sums agree in every order";
+    EXPECT_TRUE(double_sums_differ) << "test data too benign: double sums agree in every order";
 
     // Fixed-point sums: bitwise identical decoded doubles in every order
     const double fixed_reference = FixedPointSum(orders[0], scale);
@@ -254,6 +251,5 @@ TEST(FixedPoint, MpiSumIsRankCountIndependent) {
     const double decoded = scale.DecodeSum(global_sum, global_count);
     EXPECT_EQ(decoded, FixedPointSum(all_values, scale));
     const double exact = ExactSum(all_values);
-    EXPECT_LE(std::abs(decoded - exact),
-              n * 0.5 * scale.Quantum() + 1.0e-12);
+    EXPECT_LE(std::abs(decoded - exact), n * 0.5 * scale.Quantum() + 1.0e-12);
 }

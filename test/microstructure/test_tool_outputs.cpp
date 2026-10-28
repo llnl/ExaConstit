@@ -14,16 +14,9 @@
  * (Stages 1b/1c) and test_tool_stage1d.cmake (Stage 1d).
  * Registered at 1-4 MPI ranks.
  */
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_types.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -40,6 +33,13 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -139,8 +139,11 @@ ms::PeriodicFaceParameters Pairing(const std::array<bool, 3>& periodic,
  * Statistics of `serial` labeled by `label`, distributed over `comm` (METIS or the empty-rank
  * partition), with optional periodic pairing. Collective over comm.
  */
-ms::GrainStatistics Statistics(mfem::Mesh& serial, MPI_Comm comm, const LabelFunction& label,
-                               int num_grains, bool empty_last_rank = false,
+ms::GrainStatistics Statistics(mfem::Mesh& serial,
+                               MPI_Comm comm,
+                               const LabelFunction& label,
+                               int num_grains,
+                               bool empty_last_rank = false,
                                const ms::PeriodicFaceParameters* periodic = nullptr) {
     Distributed d = empty_last_rank ? DistributeWithEmptyLastRank(serial, comm)
                                     : Distribute(serial, comm);
@@ -155,7 +158,8 @@ ms::GrainStatistics Statistics(mfem::Mesh& serial, MPI_Comm comm, const LabelFun
  * only on the root rank of the computing communicator, so `with_pairs` says whether `a` holds it
  * (rank 0 of MPI_COMM_WORLD for a distributed run); elsewhere `a`'s pair table must be empty.
  */
-void ExpectIdentical(const ms::GrainStatistics& a, const ms::GrainStatistics& b,
+void ExpectIdentical(const ms::GrainStatistics& a,
+                     const ms::GrainStatistics& b,
                      bool with_pairs = true) {
     EXPECT_EQ(a.num_grains, b.num_grains);
     EXPECT_EQ(a.num_elements, b.num_elements);
@@ -234,8 +238,8 @@ TEST(GrainStatistics, HalvesOfAHexBox) {
 
     for (const bool empty_last_rank : {false, true}) {
         SCOPED_TRACE(empty_last_rank ? "empty last rank" : "METIS partition");
-        ExpectIdentical(Statistics(serial, MPI_COMM_WORLD, HalfLabel, 2, empty_last_rank), alone,
-                        WorldRoot());
+        ExpectIdentical(
+            Statistics(serial, MPI_COMM_WORLD, HalfLabel, 2, empty_last_rank), alone, WorldRoot());
     }
 }
 
@@ -250,16 +254,16 @@ TEST(GrainStatistics, PeriodicPairsAddWrappedFaces) {
 
     const ms::PeriodicFaceParameters x_periodic = Pairing({true, false, false}, lo, hi);
     // Single-rank (MPI_COMM_SELF) results from identical input: the ASSERTs agree on all ranks
-    const ms::GrainStatistics alone_x =
-        Statistics(serial, MPI_COMM_SELF, HalfLabel, 2, false, &x_periodic);
+    const ms::GrainStatistics alone_x = Statistics(
+        serial, MPI_COMM_SELF, HalfLabel, 2, false, &x_periodic);
     ASSERT_EQ(alone_x.pair_a.size(), 1u);
     EXPECT_EQ(alone_x.pair_faces[0], 32);
     EXPECT_NEAR(alone_x.pair_area[0], 2.0, 1e-13);
     EXPECT_EQ(alone_x.num_neighbors, (std::vector<int>{1, 1}));
 
     const ms::PeriodicFaceParameters yz_periodic = Pairing({false, true, true}, lo, hi);
-    const ms::GrainStatistics alone_yz =
-        Statistics(serial, MPI_COMM_SELF, HalfLabel, 2, false, &yz_periodic);
+    const ms::GrainStatistics alone_yz = Statistics(
+        serial, MPI_COMM_SELF, HalfLabel, 2, false, &yz_periodic);
     ASSERT_EQ(alone_yz.pair_a.size(), 1u);
     EXPECT_EQ(alone_yz.pair_faces[0], 16);
     EXPECT_NEAR(alone_yz.pair_area[0], 1.0, 1e-13);
@@ -268,7 +272,8 @@ TEST(GrainStatistics, PeriodicPairsAddWrappedFaces) {
         SCOPED_TRACE(empty_last_rank ? "empty last rank" : "METIS partition");
         ExpectIdentical(
             Statistics(serial, MPI_COMM_WORLD, HalfLabel, 2, empty_last_rank, &x_periodic),
-            alone_x, WorldRoot());
+            alone_x,
+            WorldRoot());
     }
 }
 
@@ -353,7 +358,8 @@ TEST(GrainStatistics, TetMeshMatchesBruteForce) {
     for (const bool empty_last_rank : {false, true}) {
         SCOPED_TRACE(empty_last_rank ? "empty last rank" : "METIS partition");
         ExpectIdentical(Statistics(serial, MPI_COMM_WORLD, octant, num_grains, empty_last_rank),
-                        alone, WorldRoot());
+                        alone,
+                        WorldRoot());
     }
 }
 
@@ -384,8 +390,8 @@ double StoredOrientationFaceArea(const mfem::Mesh& mesh, int f) {
 // statistics of the two copies (same labels) must have bitwise identical pair areas, which only
 // holds because ComputeGrainStatistics orders the face corners canonically. (Mutation-checked:
 // with the canonical ordering removed this test fails.) A third copy with order-1 Nodes must
-// match too: order-1 Nodes are straight-sided and use the same canonical path. Each rank works alone (MPI_COMM_SELF)
-// on identical input, so the ASSERTs give the same verdict on every rank.
+// match too: order-1 Nodes are straight-sided and use the same canonical path. Each rank works
+// alone (MPI_COMM_SELF) on identical input, so the ASSERTs give the same verdict on every rank.
 TEST(GrainStatistics, FaceAreasIndependentOfStoredFaceOrientation) {
     mfem::Mesh original((data_dir / "cube_tet.mesh").string().c_str(), 1, 1, true);
     const int nv = original.GetNV();
@@ -397,15 +403,25 @@ TEST(GrainStatistics, FaceAreasIndependentOfStoredFaceOrientation) {
         const double* x = original.GetVertex(v);
         const double phase = 12.9898 * x[0] + 78.233 * x[1] + 37.719 * x[2];
         for (std::size_t d = 0; d < 3; ++d) {
-            vertex[static_cast<std::size_t>(v)][d] =
-                1.1 * x[d] + 0.003 * std::sin(phase + 1.7 * static_cast<double>(d));
+            vertex[static_cast<std::size_t>(v)][d] = 1.1 * x[d] +
+                                                     0.003 * std::sin(phase +
+                                                                      1.7 * static_cast<double>(d));
         }
     }
 
     // The 12 even permutations of (0, 1, 2, 3): orientation-preserving vertex reorderings
-    const int even[12][4] = {{0, 1, 2, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {1, 0, 3, 2},
-                             {1, 2, 0, 3}, {1, 3, 2, 0}, {2, 0, 1, 3}, {2, 1, 3, 0},
-                             {2, 3, 0, 1}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 2, 1, 0}};
+    const int even[12][4] = {{0, 1, 2, 3},
+                             {0, 2, 3, 1},
+                             {0, 3, 1, 2},
+                             {1, 0, 3, 2},
+                             {1, 2, 0, 3},
+                             {1, 3, 2, 0},
+                             {2, 0, 1, 3},
+                             {2, 1, 3, 0},
+                             {2, 3, 0, 1},
+                             {3, 0, 2, 1},
+                             {3, 1, 0, 2},
+                             {3, 2, 1, 0}};
     auto build = [&](bool rotate) {
         mfem::Mesh mesh(3, nv, ne, 0, 3);
         for (const auto& x : vertex) {
@@ -498,8 +514,8 @@ TEST(GrainStatistics, BadLabelsThrowOnAllRanks) {
 
     // The ranks are still in step after the throws: a valid collective call completes on every
     // rank and gives the two halves of HalvesOfAHexBox
-    const ms::GrainStatistics ok =
-        ms::ComputeGrainStatistics(adjacency, LabelElements(*d.pmesh, HalfLabel), 2);
+    const ms::GrainStatistics ok = ms::ComputeGrainStatistics(
+        adjacency, LabelElements(*d.pmesh, HalfLabel), 2);
     EXPECT_EQ(ok.num_elements, (std::vector<std::int64_t>{32, 32}));
     EXPECT_EQ(ok.num_neighbors, (std::vector<int>{1, 1}));
 }
@@ -508,8 +524,8 @@ TEST(GrainStatistics, BadLabelsThrowOnAllRanks) {
 // grain), grain 3 from seed 2; seed 1 lost all its elements. Seed volumes: 1 + 2 = 3, 0, 3 against
 // targets 3, 1, 2 give relative errors 0, 1 (empty seed) and 0.5: max 1 at seed 1, mean 0.5.
 TEST(TargetVolumes, ElementLevelErrors) {
-    const ms::TargetVolumeComparison cmp =
-        ms::CompareWithTargetVolumes({1.0, 2.0, 3.0}, {0, 0, 2}, {3.0, 1.0, 2.0});
+    const ms::TargetVolumeComparison cmp = ms::CompareWithTargetVolumes(
+        {1.0, 2.0, 3.0}, {0, 0, 2}, {3.0, 1.0, 2.0});
     EXPECT_EQ(cmp.num_seeds, 3);
     EXPECT_EQ(cmp.seed_volume, (std::vector<double>{3.0, 0.0, 3.0}));
     EXPECT_EQ(cmp.num_empty_seeds, 1);
@@ -518,8 +534,8 @@ TEST(TargetVolumes, ElementLevelErrors) {
     EXPECT_DOUBLE_EQ(cmp.mean_relative_error, 0.5);
 
     // Perfect volumes: zero error
-    const ms::TargetVolumeComparison exact =
-        ms::CompareWithTargetVolumes({0.25, 0.75}, {1, 0}, {0.75, 0.25});
+    const ms::TargetVolumeComparison exact = ms::CompareWithTargetVolumes(
+        {0.25, 0.75}, {1, 0}, {0.75, 0.25});
     EXPECT_EQ(exact.max_relative_error, 0.0);
     EXPECT_EQ(exact.num_empty_seeds, 0);
 

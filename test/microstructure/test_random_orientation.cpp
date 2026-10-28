@@ -3,15 +3,14 @@
  * (unit quaternions, w x y z, canonical sign w >= 0) from the counter-based RNG. Serial (runs
  * identically on every rank).
  */
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <cmath>
 #include <cstdint>
+
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 

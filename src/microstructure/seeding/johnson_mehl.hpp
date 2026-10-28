@@ -1,8 +1,5 @@
 #pragma once
 
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
@@ -11,6 +8,9 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
+
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file johnson_mehl.hpp
@@ -170,11 +170,11 @@ enum class JohnsonMehlStop {
  * @brief What GenerateJohnsonMehlSeeds did. Identical on every rank; counts are global.
  */
 struct JohnsonMehlReport {
-    std::int64_t candidates_generated = 0; ///< candidates drawn in the sampling box
+    std::int64_t candidates_generated = 0;   ///< candidates drawn in the sampling box
     std::int64_t candidates_in_material = 0; ///< of those, inside the material
-    std::int64_t rejected_by_rate = 0;     ///< in material, removed by the rate-function thinning
-    std::int64_t rejected_covered = 0;     ///< in material, already covered by a grain
-    std::int64_t accepted = 0;             ///< nuclei returned
+    std::int64_t rejected_by_rate = 0;       ///< in material, removed by the rate-function thinning
+    std::int64_t rejected_covered = 0;       ///< in material, already covered by a grain
+    std::int64_t accepted = 0;               ///< nuclei returned
     JohnsonMehlStop stop = JohnsonMehlStop::END_TIME; ///< stopping reason
     /** @brief Time of the last candidate examined (time units). */
     double last_candidate_time = 0.0;
@@ -240,13 +240,15 @@ struct JohnsonMehlReport {
  *         that is empty, not 3D or has a zero-volume sampling box, for a local setup failure on
  *         any rank (broadcast so all ranks throw together), and for a stall unless allow_stall.
  */
-SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh, MPI_Comm comm,
+SeedSet GenerateJohnsonMehlSeeds(const mfem::Mesh& local_mesh,
+                                 MPI_Comm comm,
                                  const JohnsonMehlParameters& params,
                                  JohnsonMehlReport* report = nullptr,
                                  const MaterialContext* context = nullptr);
 
 /** @brief GenerateJohnsonMehlSeeds over the ParMesh's own communicator. Collective. */
-SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh, const JohnsonMehlParameters& params,
+SeedSet GenerateJohnsonMehlSeeds(const mfem::ParMesh& pmesh,
+                                 const JohnsonMehlParameters& params,
                                  JohnsonMehlReport* report = nullptr,
                                  const MaterialContext* context = nullptr);
 

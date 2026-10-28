@@ -13,8 +13,6 @@
  */
 #include "microstructure/geometry/periodic_images.hpp"
 
-#include "microstructure/geometry/metric_functors.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -23,6 +21,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+
+#include "microstructure/geometry/metric_functors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -207,8 +207,8 @@ PeriodicBox PeriodicBoxFromMesh(const mfem::Mesh& local_mesh,
                 "PeriodicBoxFromMesh: the mesh has no nodes or non-finite coordinates");
         }
         if (periodic[d] && !(global_hi[d] > global_lo[d])) {
-            throw std::invalid_argument("PeriodicBoxFromMesh: periodic axis " +
-                                        std::to_string(d) + " has zero extent");
+            throw std::invalid_argument("PeriodicBoxFromMesh: periodic axis " + std::to_string(d) +
+                                        " has zero extent");
         }
         box.lo[d] = global_lo[d];
         box.hi[d] = global_hi[d];
@@ -268,8 +268,7 @@ PeriodicImages BuildPeriodicImages(const SeedSet& seeds,
         }
         length[d] = box.hi[d] - box.lo[d];
         if (!(length[d] > 0.0) || !std::isfinite(length[d])) {
-            throw std::invalid_argument("BuildPeriodicImages: periodic axis " +
-                                        std::to_string(d) +
+            throw std::invalid_argument("BuildPeriodicImages: periodic axis " + std::to_string(d) +
                                         " needs a positive, finite box length");
         }
         max_shift[d] = params.layers;
@@ -358,9 +357,8 @@ void MapImageLabelsToOriginal(const PeriodicImages& images, mfem::Array<int>& el
     const int* host_seed = element_seed.HostRead();
     for (int e = 0; e < num_elements; ++e) {
         if (host_seed[e] < -1 || host_seed[e] >= table_size) {
-            throw std::invalid_argument("MapImageLabelsToOriginal: element " +
-                                        std::to_string(e) + " has seed index " +
-                                        std::to_string(host_seed[e]) +
+            throw std::invalid_argument("MapImageLabelsToOriginal: element " + std::to_string(e) +
+                                        " has seed index " + std::to_string(host_seed[e]) +
                                         ", outside the image set");
         }
     }
@@ -460,8 +458,7 @@ int RequiredImageLayers(const PeriodicBox& box,
                 "RequiredImageLayers: a semidefinite quadric tensor that is not aligned with the "
                 "box axes has no finite number of periodic image layers that is guaranteed exact");
         }
-        const double needed =
-            std::sqrt(mu_max / mu_min) * radius / min_length * (1.0 + 1.0e-12);
+        const double needed = std::sqrt(mu_max / mu_min) * radius / min_length * (1.0 + 1.0e-12);
         if (needed > static_cast<double>(std::numeric_limits<int>::max() / 4)) {
             throw std::invalid_argument("RequiredImageLayers: the quadric tensor is too "
                                         "anisotropic for periodic images");

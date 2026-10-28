@@ -155,11 +155,8 @@ void ComputeElementSamples(mfem::Mesh& mesh, int quad_order, ElementSamples& out
  * @param out overwritten; see QuadraturePointSamples for the layout.
  * @throws std::runtime_error for an invalid range, a mixed-geometry or non-3D mesh.
  */
-void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
-                                   int quad_order,
-                                   int elem_begin,
-                                   int elem_end,
-                                   QuadraturePointSamples& out);
+void ComputeQuadraturePointSamples(
+    mfem::Mesh& mesh, int quad_order, int elem_begin, int elem_end, QuadraturePointSamples& out);
 
 /**
  * @brief Physical coordinates and weights w_q detJ_q of the points of a user-supplied

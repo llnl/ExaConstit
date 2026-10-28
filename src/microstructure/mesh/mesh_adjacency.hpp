@@ -199,7 +199,8 @@ public:
      *         on a periodic plane has no unique partner, or if a periodic axis has no face on its
      *         planes.
      */
-    MeshAdjacency(mfem::ParMesh& pmesh, const PeriodicFaceParameters& periodic,
+    MeshAdjacency(mfem::ParMesh& pmesh,
+                  const PeriodicFaceParameters& periodic,
                   int area_quad_order = -1);
 
     ~MeshAdjacency();
@@ -347,8 +348,8 @@ private:
      * local element, stored component-major in `local` (local[c * NE + e]); `ghost` receives
      * ghost[c * NG + g]. Collective.
      */
-    void ExchangeComponents(const double* local, int num_components,
-                            std::vector<double>& ghost) const;
+    void
+    ExchangeComponents(const double* local, int num_components, std::vector<double>& ghost) const;
 
     /** @brief Shared constructor body; `periodic` may be null (no pairing). Collective. */
     void Build(int area_quad_order, const PeriodicFaceParameters* periodic);
@@ -357,7 +358,8 @@ private:
      * @brief Finds the periodic face pairs and appends their adjacency entries; sets up the
      * periodic ghost exchange (see the periodic constructor). Collective.
      */
-    void PairPeriodicFaces(const PeriodicFaceParameters& periodic, int quad_order,
+    void PairPeriodicFaces(const PeriodicFaceParameters& periodic,
+                           int quad_order,
                            std::vector<Entry>& entries);
 
     mfem::ParMesh* m_pmesh = nullptr;

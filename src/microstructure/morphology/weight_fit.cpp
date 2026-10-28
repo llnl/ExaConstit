@@ -14,8 +14,6 @@
  */
 #include "microstructure/morphology/weight_fit.hpp"
 
-#include "microstructure/morphology/sample_labels.hpp"
-
 #include "mfem.hpp"
 
 #include <cmath>
@@ -23,6 +21,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/morphology/sample_labels.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -69,7 +69,9 @@ public:
      * the fixed-point scales of the accumulator. Collective (the accumulator reduces global
      * bounds). `samples` and `params` are referenced, not copied: they must outlive the object.
      */
-    DualObjective(MPI_Comm comm, const WeightedSamples& samples, const SeedSet& seeds,
+    DualObjective(MPI_Comm comm,
+                  const WeightedSamples& samples,
+                  const SeedSet& seeds,
                   const WeightFitParameters& params)
         : m_samples(samples), m_params(params),
           m_accumulator(comm, samples, static_cast<int>(seeds.Size())) {
@@ -90,8 +92,8 @@ public:
         m_work.weight = w;
         mfem::Array<int> labels;
         mfem::Vector min_f;
-        LabelSamples(m_samples, m_work, m_params.metric, m_params.setup, m_params.num_bins,
-                     labels, &min_f);
+        LabelSamples(
+            m_samples, m_work, m_params.metric, m_params.setup, m_params.num_bins, labels, &min_f);
         CellMeasures measures = m_accumulator.Measure(labels);
         integral_min_f = m_accumulator.Integrate(min_f);
         ++m_evaluations;
@@ -112,8 +114,10 @@ public:
      * @brief F, G and the error indicators from already measured cells (host only, no
      * communication): F = -(sum_i w_i V_i^target + integral), G_i = V_i - V_i^target.
      */
-    static Evaluation Assemble(const std::vector<double>& w, const std::vector<double>& target,
-                               CellMeasures measures, double integral) {
+    static Evaluation Assemble(const std::vector<double>& w,
+                               const std::vector<double>& target,
+                               CellMeasures measures,
+                               double integral) {
         Evaluation e;
         e.measures = std::move(measures);
         e.objective = -(Dot(w, target) + integral);
@@ -157,7 +161,8 @@ private:
  * matrix is formed; the cost is about 4 m N multiply-adds.
  */
 std::vector<double> TwoLoopDirection(const std::deque<CurvaturePair>& pairs,
-                                     const std::vector<double>& gradient, double gamma) {
+                                     const std::vector<double>& gradient,
+                                     double gamma) {
     std::vector<double> q = gradient;
     std::vector<double> alpha(pairs.size(), 0.0);
     for (std::size_t k = pairs.size(); k-- > 0;) {
@@ -197,7 +202,9 @@ void Record(WeightFitReport& report, const Evaluation& e) {
  * lamellar tensors; if it is not positive (invalid tensors are rejected later by the seed
  * search), 1 is used so the estimate stays finite.
  */
-double InitialInverseStiffness(MetricType metric, double mean_volume, const MetricSetup& setup,
+double InitialInverseStiffness(MetricType metric,
+                               double mean_volume,
+                               const MetricSetup& setup,
                                const std::vector<double>& shape) {
     const double size = std::cbrt(mean_volume);
     if (metric == MetricType::ADDITIVE) {
@@ -271,15 +278,17 @@ void ValidateWeightFitParameters(const WeightFitParameters& params) {
  *     c. Armijo backtracking: try alpha = 1, 1/2, 1/4, ... until
  *        F(w + alpha d) <= F(w) + c alpha (G . d), i.e. Phi rises by at least the fraction c of
  *        what its slope predicts, and F(w + alpha d) < F(w) strictly (in floating point the
- *        Armijo bound rounds to F(w) for tiny steps, which would accept "no change"). If all halvings fail with stored pairs, the pairs are dropped
- *        and the line search is retried once along the steepest direction; if that fails too,
- *        the samples cannot resolve a better answer and the fit stops;
- *     d. store the pair s = alpha d, y = G_new - G when y . s > 0 (positive curvature; for a
+ *        Armijo bound rounds to F(w) for tiny steps, which would accept "no change"). If all
+ * halvings fail with stored pairs, the pairs are dropped and the line search is retried once along
+ * the steepest direction; if that fails too, the samples cannot resolve a better answer and the fit
+ * stops; d. store the pair s = alpha d, y = G_new - G when y . s > 0 (positive curvature; for a
  *        concave Phi it is never negative, and it is zero on a sampling plateau, where the pair
  *        carries no information), keep the newest `history` pairs, and set the scalar
  *        gamma = (s . y) / (y . y), the inverse stiffness measured along the last step.
  */
-WeightFitResult FitWeights(MPI_Comm comm, const WeightedSamples& samples, const SeedSet& seeds,
+WeightFitResult FitWeights(MPI_Comm comm,
+                           const WeightedSamples& samples,
+                           const SeedSet& seeds,
                            const std::vector<double>& target_volume,
                            const std::vector<double>& initial_weight,
                            const WeightFitParameters& params) {
@@ -343,8 +352,8 @@ WeightFitResult FitWeights(MPI_Comm comm, const WeightedSamples& samples, const 
     const double mean_cell_volume = first.total_volume / static_cast<double>(n);
     Evaluation current = DualObjective::Assemble(w, target, std::move(first), first_integral);
     Record(report, current);
-    double gamma0 =
-        InitialInverseStiffness(params.metric, mean_cell_volume, params.setup, seeds.shape);
+    double gamma0 = InitialInverseStiffness(
+        params.metric, mean_cell_volume, params.setup, seeds.shape);
     if (params.initial_inverse_stiffness > 0.0) {
         gamma0 = params.initial_inverse_stiffness;
     }
@@ -403,8 +412,8 @@ WeightFitResult FitWeights(MPI_Comm comm, const WeightedSamples& samples, const 
                 // Strictly lower F as well: once c alpha slope is below the rounding unit of F,
                 // F + c alpha slope rounds to F and the Armijo test alone would accept a step
                 // that does not change Phi at all (an endless walk on a sampling plateau)
-                const bool sufficient =
-                    trial.objective <= current.objective + params.armijo_c * alpha * slope;
+                const bool sufficient = trial.objective <=
+                                        current.objective + params.armijo_c * alpha * slope;
                 if (sufficient && trial.objective < current.objective) {
                     accepted = true;
                     break;

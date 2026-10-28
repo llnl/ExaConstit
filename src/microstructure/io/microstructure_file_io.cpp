@@ -90,8 +90,7 @@ public:
         try {
             conduit::relay::io::hdf5_read_info(m_id, path, info);
         } catch (const std::exception& e) {
-            throw std::runtime_error(Prefix(m_path) + "cannot inspect '" + path + "': " +
-                                     e.what());
+            throw std::runtime_error(Prefix(m_path) + "cannot inspect '" + path + "': " + e.what());
         }
         return AsShape(info["num_elements"]);
     }
@@ -111,8 +110,8 @@ private:
 };
 
 /** @brief A string leaf (fixed or variable length). Throws if `node` is not a string. */
-std::string AsString(const std::filesystem::path& file, const conduit::Node& node,
-                     const std::string& path) {
+std::string
+AsString(const std::filesystem::path& file, const conduit::Node& node, const std::string& path) {
     if (!node.dtype().is_string()) {
         throw std::runtime_error(Prefix(file) + "'" + path + "' must be a string");
     }
@@ -120,8 +119,8 @@ std::string AsString(const std::filesystem::path& file, const conduit::Node& nod
 }
 
 /** @brief The values of an integer leaf, converted to int64, in stored (C) order. */
-std::vector<std::int64_t> AsInt64(const std::filesystem::path& file, const conduit::Node& node,
-                                  const std::string& path) {
+std::vector<std::int64_t>
+AsInt64(const std::filesystem::path& file, const conduit::Node& node, const std::string& path) {
     if (!node.dtype().is_integer()) {
         throw std::runtime_error(Prefix(file) + "'" + path + "' must store integers");
     }
@@ -133,8 +132,8 @@ std::vector<std::int64_t> AsInt64(const std::filesystem::path& file, const condu
 }
 
 /** @brief The values of a numeric leaf (integer or float), converted to double. */
-std::vector<double> AsDouble(const std::filesystem::path& file, const conduit::Node& node,
-                             const std::string& path) {
+std::vector<double>
+AsDouble(const std::filesystem::path& file, const conduit::Node& node, const std::string& path) {
     if (!node.dtype().is_number()) {
         throw std::runtime_error(Prefix(file) + "'" + path + "' must store numbers");
     }
@@ -146,8 +145,8 @@ std::vector<double> AsDouble(const std::filesystem::path& file, const conduit::N
 }
 
 /** @brief One number from a leaf that must hold exactly one value. */
-double OneDouble(const std::filesystem::path& file, const conduit::Node& node,
-                 const std::string& path) {
+double
+OneDouble(const std::filesystem::path& file, const conduit::Node& node, const std::string& path) {
     const std::vector<double> values = AsDouble(file, node, path);
     if (values.size() != 1) {
         throw std::runtime_error(Prefix(file) + "'" + path + "' must hold one number");
@@ -156,8 +155,8 @@ double OneDouble(const std::filesystem::path& file, const conduit::Node& node,
 }
 
 /** @brief One integer from a leaf that must hold exactly one value. */
-std::int64_t OneInt64(const std::filesystem::path& file, const conduit::Node& node,
-                      const std::string& path) {
+std::int64_t
+OneInt64(const std::filesystem::path& file, const conduit::Node& node, const std::string& path) {
     const std::vector<std::int64_t> values = AsInt64(file, node, path);
     if (values.size() != 1) {
         throw std::runtime_error(Prefix(file) + "'" + path + "' must hold one integer");
@@ -166,8 +165,10 @@ std::int64_t OneInt64(const std::filesystem::path& file, const conduit::Node& no
 }
 
 /** @brief The child `name` of `node`, or an error naming `path`/`name`. */
-const conduit::Node& Child(const std::filesystem::path& file, const conduit::Node& node,
-                           const std::string& path, const std::string& name) {
+const conduit::Node& Child(const std::filesystem::path& file,
+                           const conduit::Node& node,
+                           const std::string& path,
+                           const std::string& name) {
     if (!node.has_child(name)) {
         throw std::runtime_error(Prefix(file) + "no '" + path + "/" + name + "'");
     }
@@ -206,8 +207,11 @@ std::int64_t CheckHeader(const std::filesystem::path& path, const RelayFile& fil
  * (grains, per_grain) (as h5py writes a list of rows); for one value per grain also (grains,
  * 1). A transposed array, (per_grain, grains), is refused instead of being misread.
  */
-void CheckCount(const std::filesystem::path& file, const RelayFile& relay,
-                const std::string& path, std::size_t count, std::size_t per_grain,
+void CheckCount(const std::filesystem::path& file,
+                const RelayFile& relay,
+                const std::string& path,
+                std::size_t count,
+                std::size_t per_grain,
                 std::size_t grains) {
     const std::vector<std::int64_t> shape = relay.Shape(path);
     const auto g = static_cast<std::int64_t>(grains);
@@ -220,8 +224,8 @@ void CheckCount(const std::filesystem::path& file, const RelayFile& relay,
         for (std::size_t d = 0; d < shape.size(); ++d) {
             out << (d > 0 ? ", " : "") << shape[d];
         }
-        out << "); expected " << per_grain << " value(s) per grain, one row per grain: ("
-            << g * c << ")";
+        out << "); expected " << per_grain << " value(s) per grain, one row per grain: (" << g * c
+            << ")";
         out << " or (" << g << ", " << c << ")";
         out << ", for the " << grains << " grains of 'grains/id'";
         throw std::runtime_error(out.str());
@@ -229,12 +233,15 @@ void CheckCount(const std::filesystem::path& file, const RelayFile& relay,
 }
 
 /** @brief Throws unless every value is finite. */
-void CheckFinite(const std::filesystem::path& file, const std::string& path,
+void CheckFinite(const std::filesystem::path& file,
+                 const std::string& path,
                  const std::vector<double>& values) {
     for (std::size_t i = 0; i < values.size(); ++i) {
         if (!std::isfinite(values[i])) {
-            throw std::runtime_error(Prefix(file) + "'" + path + "' holds a value that is not "
-                                     "finite (entry " + std::to_string(i) + ")");
+            throw std::runtime_error(Prefix(file) + "'" + path +
+                                     "' holds a value that is not "
+                                     "finite (entry " +
+                                     std::to_string(i) + ")");
         }
     }
 }
@@ -321,8 +328,8 @@ MicrostructureGrainTable ReadMicrostructureGrainTable(const std::filesystem::pat
     }
     const auto dup = std::adjacent_find(sorted.begin(), sorted.end());
     if (dup != sorted.end()) {
-        throw std::runtime_error(Prefix(path) + "'grains/id' holds the id " +
-                                 std::to_string(*dup) + " more than once");
+        throw std::runtime_error(Prefix(path) + "'grains/id' holds the id " + std::to_string(*dup) +
+                                 " more than once");
     }
 
     if (grains.has_child("quat")) {
@@ -405,24 +412,24 @@ MicrostructureGrid ReadMicrostructureGrid(const std::filesystem::path& path) {
     const conduit::Node coords = file.Read(cs_path);
     const conduit::Node topo = file.Read(topo_path);
 
-    const std::string cs_type = AsString(path, Child(path, coords, cs_path, "type"),
-                                         cs_path + "/type");
+    const std::string cs_type = AsString(
+        path, Child(path, coords, cs_path, "type"), cs_path + "/type");
     if (cs_type != "uniform") {
         throw std::runtime_error(Prefix(path) + "'" + cs_path + "/type' is \"" + cs_type +
                                  "\"; only \"uniform\" grids are supported");
     }
-    const std::string topo_type = AsString(path, Child(path, topo, topo_path, "type"),
-                                           topo_path + "/type");
-    const std::string topo_cs = AsString(path, Child(path, topo, topo_path, "coordset"),
-                                         topo_path + "/coordset");
+    const std::string topo_type = AsString(
+        path, Child(path, topo, topo_path, "type"), topo_path + "/type");
+    const std::string topo_cs = AsString(
+        path, Child(path, topo, topo_path, "coordset"), topo_path + "/coordset");
     if (topo_type != "uniform" || topo_cs != "coords") {
         throw std::runtime_error(Prefix(path) + "'" + topo_path +
                                  "' must have type \"uniform\" and coordset \"coords\"");
     }
-    const std::string assoc = AsString(path, file.Read(field_path + "/association"),
-                                       field_path + "/association");
-    const std::string field_topo = AsString(path, file.Read(field_path + "/topology"),
-                                            field_path + "/topology");
+    const std::string assoc = AsString(
+        path, file.Read(field_path + "/association"), field_path + "/association");
+    const std::string field_topo = AsString(
+        path, file.Read(field_path + "/topology"), field_path + "/topology");
     if (assoc != "element" || field_topo != "topo") {
         throw std::runtime_error(Prefix(path) + "'" + field_path +
                                  "' must have association \"element\" (one grain id per cell) "
@@ -444,19 +451,19 @@ MicrostructureGrid ReadMicrostructureGrid(const std::filesystem::path& path) {
     const char* spacing_names[3] = {"dx", "dy", "dz"};
     for (int d = 0; d < 3; ++d) {
         const std::string dpath = cs_path + "/dims/" + dim_names[d];
-        const std::int64_t points =
-            OneInt64(path, Child(path, dims, cs_path + "/dims", dim_names[d]), dpath);
+        const std::int64_t points = OneInt64(
+            path, Child(path, dims, cs_path + "/dims", dim_names[d]), dpath);
         if (points < 2) {
-            throw std::runtime_error(Prefix(path) + "'" + dpath + "' is " +
-                                     std::to_string(points) +
+            throw std::runtime_error(Prefix(path) + "'" + dpath + "' is " + std::to_string(points) +
                                      "; it counts grid POINTS (cells + 1), so it must be >= 2");
         }
         grid.dims[d] = points - 1;
-        grid.origin[d] = OneDouble(path, Child(path, origin, cs_path + "/origin", origin_names[d]),
+        grid.origin[d] = OneDouble(path,
+                                   Child(path, origin, cs_path + "/origin", origin_names[d]),
                                    cs_path + "/origin/" + origin_names[d]);
-        grid.spacing[d] =
-            OneDouble(path, Child(path, spacing, cs_path + "/spacing", spacing_names[d]),
-                      cs_path + "/spacing/" + spacing_names[d]);
+        grid.spacing[d] = OneDouble(path,
+                                    Child(path, spacing, cs_path + "/spacing", spacing_names[d]),
+                                    cs_path + "/spacing/" + spacing_names[d]);
     }
     return grid;
 #else
@@ -503,9 +510,8 @@ void WriteMicrostructureFile(const std::filesystem::path& path,
     node["grains/id"].set_external(const_cast<std::int64_t*>(grains.id.data()), count);
     auto add = [&](const char* name, const std::vector<double>& v) {
         if (!v.empty()) {
-            node[std::string("grains/") + name].set_external(const_cast<double*>(v.data()),
-                                                              static_cast<conduit::index_t>(
-                                                                  v.size()));
+            node[std::string("grains/") + name].set_external(
+                const_cast<double*>(v.data()), static_cast<conduit::index_t>(v.size()));
         }
     };
     add("quat", grains.quat);

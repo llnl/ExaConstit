@@ -3,11 +3,11 @@
  */
 #include "microstructure/conformal/quality.hpp"
 
-#include "microstructure/util/collective_errors.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -47,8 +47,12 @@ mfem::DenseMatrix RegularTetInverse() {
  * ideal element (the identity for a hex corner, RegularTetInverse for a tet corner), so the
  * ideal element scores 1.
  */
-void CornerQuality(const double e[3][3], double scale, const mfem::DenseMatrix* w_inv,
-                   double& sj, double& ar, double& det) {
+void CornerQuality(const double e[3][3],
+                   double scale,
+                   const mfem::DenseMatrix* w_inv,
+                   double& sj,
+                   double& ar,
+                   double& det) {
     det = Det3(e[0], e[1], e[2]);
     const double lengths = Norm3(e[0]) * Norm3(e[1]) * Norm3(e[2]);
     sj = (lengths > 0.0) ? scale * det / lengths : -1.0;
@@ -77,8 +81,8 @@ void CornerQuality(const double e[3][3], double scale, const mfem::DenseMatrix* 
  * element map at the corner (columns = edges along the reference axes). Tet: the edges from the
  * corner to the three others, ordered so that the determinant has the sign of the element map.
  */
-void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio,
-                    double& min_det) {
+void ElementQuality(
+    mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio, double& min_det) {
     const mfem::Geometry::Type geom = mesh.GetElementBaseGeometry(e);
     if (geom != mfem::Geometry::CUBE && geom != mfem::Geometry::TETRAHEDRON) {
         throw std::invalid_argument("ElementQuality: only hex and tet elements are supported");
@@ -92,8 +96,8 @@ void ElementQuality(mfem::Mesh& mesh, int e, double& scaled_jacobian, double& as
     // included), where the edges are the Jacobian applied to the reference corner edges
     const mfem::GridFunction* nodes = mesh.GetNodes();
     const bool curved = nodes != nullptr && nodes->FESpace()->GetFE(e)->GetOrder() > 1;
-    const mfem::IntegrationRule* points =
-        curved ? &nodes->FESpace()->GetFE(e)->GetNodes() : corners;
+    const mfem::IntegrationRule* points = curved ? &nodes->FESpace()->GetFE(e)->GetNodes()
+                                                 : corners;
     if (geom == mfem::Geometry::CUBE) {
         for (int i = 0; i < points->GetNPoints(); ++i) {
             T->SetIntPoint(&points->IntPoint(i));
@@ -175,8 +179,10 @@ double ElementMeanRatio(mfem::Mesh& mesh, int e) {
     const mfem::GridFunction* nodes = mesh.GetNodes();
     const bool curved = nodes != nullptr && nodes->FESpace()->GetFE(e)->GetOrder() > 1;
     const bool tet = geom == mfem::Geometry::TETRAHEDRON;
-    const mfem::IntegrationRule* points =
-        (curved || !tet) ? (curved ? &nodes->FESpace()->GetFE(e)->GetNodes() : corners) : corners;
+    const mfem::IntegrationRule* points = (curved || !tet)
+                                              ? (curved ? &nodes->FESpace()->GetFE(e)->GetNodes()
+                                                        : corners)
+                                              : corners;
     static const mfem::DenseMatrix w_inv = RegularTetInverse();
     const int others[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
     double eta = HUGE_VAL;

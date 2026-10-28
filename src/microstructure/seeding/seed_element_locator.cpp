@@ -13,22 +13,21 @@
  */
 #include "microstructure/seeding/seed_element_locator.hpp"
 
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
-#include "axom/core.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-#include "axom/spin/BVH.hpp"
-
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
+
+#include "axom/core.hpp"
+#include "axom/primal/operators/squared_distance.hpp"
+#include "axom/spin/BVH.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -106,11 +105,16 @@ void CheckSeedIds(MPI_Comm comm, const std::vector<int>& seed_ids, int n, const 
  * @param best_d2, best_key outputs, size nq: DBL_MAX / NO_KEY when np == 0.
  * @param best_point       optional output, size nq: index of the winning point, -1 if none.
  */
-void LocalNearest(const std::vector<double>& px, const std::vector<double>& py,
-                  const std::vector<double>& pz, const std::vector<std::uint64_t>& keys,
-                  const std::vector<double>& qx, const std::vector<double>& qy,
-                  const std::vector<double>& qz, std::vector<double>& best_d2,
-                  std::vector<std::uint64_t>& best_key, std::vector<int>* best_point) {
+void LocalNearest(const std::vector<double>& px,
+                  const std::vector<double>& py,
+                  const std::vector<double>& pz,
+                  const std::vector<std::uint64_t>& keys,
+                  const std::vector<double>& qx,
+                  const std::vector<double>& qy,
+                  const std::vector<double>& qz,
+                  std::vector<double>& best_d2,
+                  std::vector<std::uint64_t>& best_key,
+                  std::vector<int>* best_point) {
     const std::size_t np = px.size();
     const std::size_t nq = qx.size();
     best_d2.assign(nq, DBL_MAX);
@@ -169,8 +173,8 @@ void LocalNearest(const std::vector<double>& px, const std::vector<double>& py,
  * keys of the ranks whose local d^2 equals the global one. Collective; updates both arrays.
  * Returns, per entry, whether this rank holds the winning key.
  */
-std::vector<char> ReduceNearest(MPI_Comm comm, std::vector<double>& d2,
-                                std::vector<std::uint64_t>& key) {
+std::vector<char>
+ReduceNearest(MPI_Comm comm, std::vector<double>& d2, std::vector<std::uint64_t>& key) {
     const int n = static_cast<int>(d2.size());
     std::vector<double> global_d2(d2);
     if (n > 0) {
@@ -226,7 +230,8 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
                                                  const std::vector<std::uint64_t>* element_key,
                                                  const MaterialContext* context) {
     const int ne = pmesh.GetNE();
-    ThrowIfAnyRank(comm, element_key != nullptr && static_cast<int>(element_key->size()) != ne,
+    ThrowIfAnyRank(comm,
+                   element_key != nullptr && static_cast<int>(element_key->size()) != ne,
                    "ContainingElementKeys: element_key must have one entry per local element");
     const int n = static_cast<int>(seeds.Size());
     std::vector<std::uint64_t> result(static_cast<std::size_t>(n), NO_KEY);
@@ -239,8 +244,9 @@ std::vector<std::uint64_t> ContainingElementKeys(mfem::ParMesh& pmesh,
     std::unique_ptr<MaterialPointLocator> owned_locator;
     const MaterialPointLocator& locator = ContextLocator(pmesh, comm, context, owned_locator);
     if (locator.NumActiveElements() > 0) {
-        const std::vector<std::uint64_t> computed =
-            (element_key == nullptr) ? ComputeElementKeys(pmesh) : std::vector<std::uint64_t>{};
+        const std::vector<std::uint64_t> computed = (element_key == nullptr)
+                                                        ? ComputeElementKeys(pmesh)
+                                                        : std::vector<std::uint64_t>{};
         const std::vector<std::uint64_t>& keys = (element_key == nullptr) ? computed : *element_key;
 
         // Candidate elements per seed from the boxes of the active elements (BVH index i is
@@ -294,10 +300,10 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
                                        const std::vector<std::uint64_t>* element_key,
                                        const ElementMask* mask) {
     const int ne = pmesh.GetNE();
-    const bool bad_size =
-        (element_key != nullptr && static_cast<int>(element_key->size()) != ne) ||
-        (centroids != nullptr && centroids->cx.Size() != ne);
-    ThrowIfAnyRank(comm, bad_size,
+    const bool bad_size = (element_key != nullptr && static_cast<int>(element_key->size()) != ne) ||
+                          (centroids != nullptr && centroids->cx.Size() != ne);
+    ThrowIfAnyRank(comm,
+                   bad_size,
                    "NearestElementCentroidKeys: centroids and element_key must have one entry per "
                    "local element");
     CheckSeedIds(comm, seed_ids, static_cast<int>(seeds.Size()), "NearestElementCentroidKeys");
@@ -308,8 +314,9 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
         ComputeElementSamples(pmesh, -1, computed_centroids);
     }
     const ElementSamples& c = (centroids != nullptr) ? *centroids : computed_centroids;
-    const std::vector<std::uint64_t> all_keys =
-        (element_key != nullptr) ? *element_key : ComputeElementKeys(pmesh);
+    const std::vector<std::uint64_t> all_keys = (element_key != nullptr)
+                                                    ? *element_key
+                                                    : ComputeElementKeys(pmesh);
     // Candidates: the active elements only (all of them without a mask)
     std::vector<std::uint64_t> keys;
     std::vector<double> px;
@@ -445,8 +452,8 @@ NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
         }
     }
     if (nq > 0) {
-        MPI_Allreduce(MPI_IN_PLACE, pos.data(), static_cast<int>(3 * nq), MPI_DOUBLE, MPI_MIN,
-                      comm);
+        MPI_Allreduce(
+            MPI_IN_PLACE, pos.data(), static_cast<int>(3 * nq), MPI_DOUBLE, MPI_MIN, comm);
     }
     out.position.resize(nq);
     for (std::size_t k = 0; k < nq; ++k) {

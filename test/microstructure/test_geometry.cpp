@@ -11,16 +11,7 @@
  * Serial tests on axom::SEQ_EXEC; the host std::mt19937_64 generator is used only to create
  * test inputs (with fixed seeds, so every run is identical).
  */
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
-
-#include "axom/core/execution/execution_space.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -29,6 +20,13 @@
 #include <random>
 #include <string>
 #include <vector>
+
+#include "axom/core/execution/execution_space.hpp"
+#include "axom/primal/operators/squared_distance.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 
@@ -205,8 +203,11 @@ Queries MakeQueries(const ms::SeedSet& s, int num_random, std::uint64_t rng_seed
  * floating-point expressions; any difference is a pruning error.
  */
 template <typename Metric>
-void ExpectMatchesBruteForce(const ms::SeedSet& s, const ms::MetricSetup& setup,
-                             const Queries& q, const std::string& label, int num_bins = 8) {
+void ExpectMatchesBruteForce(const ms::SeedSet& s,
+                             const ms::MetricSetup& setup,
+                             const Queries& q,
+                             const std::string& label,
+                             int num_bins = 8) {
     ms::SeedIndex<Exec, Metric> index;
     index.Build(s, setup, num_bins, HostAllocator());
     const int n = static_cast<int>(s.Size());
@@ -227,18 +228,21 @@ void ExpectMatchesBruteForce(const ms::SeedSet& s, const ms::MetricSetup& setup,
             ++failures;
             ADD_FAILURE() << label << ": query " << k << " (" << q.x(k) << ", " << q.y(k) << ", "
                           << q.z(k) << ") index (" << ws[k].id1 << ", " << ws[k].f1 << "; "
-                          << ws[k].id2 << ", " << ws[k].f2 << ") first-only (" << wo[k].id1
-                          << ", " << wo[k].f1 << ") brute force (" << ref.id1 << ", " << ref.f1
-                          << "; " << ref.id2 << ", " << ref.f2 << ")";
+                          << ws[k].id2 << ", " << ws[k].f2 << ") first-only (" << wo[k].id1 << ", "
+                          << wo[k].f1 << ") brute force (" << ref.id1 << ", " << ref.f1 << "; "
+                          << ref.id2 << ", " << ref.f2 << ")";
         }
     }
 }
 
 /** @brief Metric functor over host arrays (for tests of the functors themselves). */
 template <typename Metric>
-Metric HostMetric(const std::vector<double>& x, const std::vector<double>& y,
-                  const std::vector<double>& z, const std::vector<double>& w,
-                  const std::vector<double>& factor, int factor_stride) {
+Metric HostMetric(const std::vector<double>& x,
+                  const std::vector<double>& y,
+                  const std::vector<double>& z,
+                  const std::vector<double>& w,
+                  const std::vector<double>& factor,
+                  int factor_stride) {
     ms::SeedDeviceView v;
     v.x = x.data();
     v.y = y.data();
@@ -266,24 +270,24 @@ TEST(SeedIndex, MatchesBruteForceAllMetrics) {
     const int sizes[] = {1, 2, 1000, 20000};
     for (const int n : sizes) {
         for (const bool clustered : {false, true}) {
-            const std::string tag =
-                "N=" + std::to_string(n) + (clustered ? " clustered" : " uniform");
+            const std::string tag = "N=" + std::to_string(n) +
+                                    (clustered ? " clustered" : " uniform");
             const ms::SeedSet base = MakeSeeds(n, clustered, 1000 + n + (clustered ? 7 : 0));
             const Queries q = MakeQueries(base, n >= 20000 ? 600 : 1500, 77 + n);
             const double h = std::cbrt(1.0 / n); // mean seed spacing in the unit cube
 
-            ExpectMatchesBruteForce<ms::VoronoiMetric>(base, ms::MetricSetup{}, q,
-                                                       "Voronoi " + tag);
+            ExpectMatchesBruteForce<ms::VoronoiMetric>(
+                base, ms::MetricSetup{}, q, "Voronoi " + tag);
 
             ms::SeedSet lag = base;
             lag.weight = LogUniform(n, h * h, 5 + n);
-            ExpectMatchesBruteForce<ms::LaguerreMetric>(lag, ms::MetricSetup{}, q,
-                                                        "Laguerre " + tag);
+            ExpectMatchesBruteForce<ms::LaguerreMetric>(
+                lag, ms::MetricSetup{}, q, "Laguerre " + tag);
 
             ms::SeedSet add = base;
             add.weight = LogUniform(n, h, 9 + n);
-            ExpectMatchesBruteForce<ms::AdditiveMetric>(add, ms::MetricSetup{}, q,
-                                                        "Additive " + tag);
+            ExpectMatchesBruteForce<ms::AdditiveMetric>(
+                add, ms::MetricSetup{}, q, "Additive " + tag);
 
             // Quadric, global SPD tensor (eigenvalues 0.2 .. 3) plus Laguerre-like weights
             std::mt19937_64 gen(31 + n);
@@ -302,8 +306,8 @@ TEST(SeedIndex, MatchesBruteForceAllMetrics) {
             }
             ms::MetricSetup per_seed;
             per_seed.per_seed_shape = true;
-            ExpectMatchesBruteForce<ms::QuadricMetric>(mult, per_seed, q,
-                                                       "Quadric multiplicative " + tag);
+            ExpectMatchesBruteForce<ms::QuadricMetric>(
+                mult, per_seed, q, "Quadric multiplicative " + tag);
 
             // Quadric, per-seed random SPD tensors and weights
             ms::SeedSet shaped = lag;
@@ -311,15 +315,15 @@ TEST(SeedIndex, MatchesBruteForceAllMetrics) {
             for (int i = 0; i < n; ++i) {
                 RandomSpdTensor(gen, 0.1, 2.0, &shaped.shape[6 * i]);
             }
-            ExpectMatchesBruteForce<ms::QuadricMetric>(shaped, per_seed, q,
-                                                       "Quadric per-seed SPD " + tag);
+            ExpectMatchesBruteForce<ms::QuadricMetric>(
+                shaped, per_seed, q, "Quadric per-seed SPD " + tag);
 
             // Quadric, semidefinite global tensor A = I - e_z e_z^T (columnar grains along z)
             if (n <= 1000) {
                 ms::MetricSetup columnar;
                 columnar.global_tensor = {1.0, 1.0, 0.0, 0.0, 0.0, 0.0};
-                ExpectMatchesBruteForce<ms::QuadricMetric>(base, columnar, q,
-                                                           "Quadric columnar " + tag);
+                ExpectMatchesBruteForce<ms::QuadricMetric>(
+                    base, columnar, q, "Quadric columnar " + tag);
             }
         }
     }
@@ -366,8 +370,8 @@ TEST(SeedIndex, ResultIndependentOfBinCount) {
     s.weight = LogUniform(3000, 0.005, 99);
     const Queries q = MakeQueries(s, 1000, 5);
     for (const int bins : {1, 3, 8}) {
-        ExpectMatchesBruteForce<ms::LaguerreMetric>(s, ms::MetricSetup{}, q,
-                                                    "bins=" + std::to_string(bins), bins);
+        ExpectMatchesBruteForce<ms::LaguerreMetric>(
+            s, ms::MetricSetup{}, q, "bins=" + std::to_string(bins), bins);
     }
 }
 
@@ -569,8 +573,7 @@ TEST(SeedIndex, FindWithinMatchesBruteForce) {
 TEST(SeedIndex, BuildRejectsInvalidInput) {
     ms::SeedIndex<Exec, ms::QuadricMetric> index;
     ms::SeedSet empty;
-    EXPECT_THROW(index.Build(empty, ms::MetricSetup{}, 8, HostAllocator()),
-                 std::invalid_argument);
+    EXPECT_THROW(index.Build(empty, ms::MetricSetup{}, 8, HostAllocator()), std::invalid_argument);
 
     ms::SeedSet s = MakeSeeds(10, false, 1);
     EXPECT_THROW(index.Build(s, ms::MetricSetup{}, 0, HostAllocator()), std::invalid_argument);
@@ -623,9 +626,15 @@ void ExpectLowerBoundProperty(bool quadric_per_seed, double weight_scale, const 
         bound.mu_min = DBL_MAX;
         bound.mu_max = 0.0;
         for (int i = 0; i < ns; ++i) {
-            const double t[3] = {(i == 0) ? 0.0 : (i == 1) ? 1.0 : uni(gen),
-                                 (i == 0) ? 0.0 : (i == 1) ? 1.0 : uni(gen),
-                                 (i == 0) ? 0.0 : (i == 1) ? 1.0 : uni(gen)};
+            const double t[3] = {(i == 0)   ? 0.0
+                                 : (i == 1) ? 1.0
+                                            : uni(gen),
+                                 (i == 0)   ? 0.0
+                                 : (i == 1) ? 1.0
+                                            : uni(gen),
+                                 (i == 0)   ? 0.0
+                                 : (i == 1) ? 1.0
+                                            : uni(gen)};
             x[i] = lo[0] + t[0] * (hi[0] - lo[0]);
             y[i] = lo[1] + t[1] * (hi[1] - lo[1]);
             z[i] = lo[2] + t[2] * (hi[2] - lo[2]);
@@ -655,15 +664,15 @@ void ExpectLowerBoundProperty(bool quadric_per_seed, double weight_scale, const 
                     c = -0.5 + 2.0 * uni(gen);
                 }
             }
-            const double d2 =
-                axom::primal::squared_distance(Point3::make_point(p[0], p[1], p[2]), box);
+            const double d2 = axom::primal::squared_distance(Point3::make_point(p[0], p[1], p[2]),
+                                                             box);
             const double lb = metric.LowerBound(d2, bound);
             for (int i = 0; i < ns; ++i) {
                 const double f = metric.Eval(i, p[0], p[1], p[2]);
                 if (!(lb <= f) && violations < 5) {
                     ++violations;
-                    ADD_FAILURE() << name << ": LowerBound " << lb << " > f " << f
-                                  << " (trial " << trial << ", seed " << i << ")";
+                    ADD_FAILURE() << name << ": LowerBound " << lb << " > f " << f << " (trial "
+                                  << trial << ", seed " << i << ")";
                 }
             }
         }
@@ -709,7 +718,7 @@ TEST(MetricAnalytic, VoronoiBisectorPlane) {
         mfem::Array<ms::BestPair> best;
         index.FindBest(q.x, q.y, q.z, best, true);
         for (int k = 0; k < 10; ++k) {
-            EXPECT_EQ(best[3 * k].id1, 0);   // tie -> lowest index
+            EXPECT_EQ(best[3 * k].id1, 0); // tie -> lowest index
             EXPECT_EQ(best[3 * k].id2, 1);
             EXPECT_EQ(best[3 * k].f1, best[3 * k].f2);
             EXPECT_EQ(best[3 * k + 1].id1, left);
@@ -773,8 +782,18 @@ TEST(MetricAnalytic, MultiplicativeApolloniusSphere) {
     s.x = {0.3, 0.7};
     s.y = {0.5, 0.5};
     s.z = {0.5, 0.5};
-    s.shape = {1 / (la * la), 1 / (la * la), 1 / (la * la), 0, 0, 0,
-               1 / (lb * lb), 1 / (lb * lb), 1 / (lb * lb), 0, 0, 0};
+    s.shape = {1 / (la * la),
+               1 / (la * la),
+               1 / (la * la),
+               0,
+               0,
+               0,
+               1 / (lb * lb),
+               1 / (lb * lb),
+               1 / (lb * lb),
+               0,
+               0,
+               0};
     ms::MetricSetup per_seed;
     per_seed.per_seed_shape = true;
     ms::SeedIndex<Exec, ms::QuadricMetric> index;
@@ -802,11 +821,15 @@ TEST(MetricAnalytic, MultiplicativeApolloniusSphere) {
             u[d] /= un;
             on[d] = center[d] + radius * u[d];
         }
-        EXPECT_NEAR(metric.Eval(0, on[0], on[1], on[2]), metric.Eval(1, on[0], on[1], on[2]),
-                    1e-13);
-        q.Set(2 * j, center[0] + 0.99 * radius * u[0], center[1] + 0.99 * radius * u[1],
+        EXPECT_NEAR(
+            metric.Eval(0, on[0], on[1], on[2]), metric.Eval(1, on[0], on[1], on[2]), 1e-13);
+        q.Set(2 * j,
+              center[0] + 0.99 * radius * u[0],
+              center[1] + 0.99 * radius * u[1],
               center[2] + 0.99 * radius * u[2]);
-        q.Set(2 * j + 1, center[0] + 1.01 * radius * u[0], center[1] + 1.01 * radius * u[1],
+        q.Set(2 * j + 1,
+              center[0] + 1.01 * radius * u[0],
+              center[1] + 1.01 * radius * u[1],
               center[2] + 1.01 * radius * u[2]);
     }
     mfem::Array<ms::BestPair> best;
@@ -832,8 +855,8 @@ TEST(MetricAnalytic, AdditiveHyperboloid) {
     index.Build(s, ms::MetricSetup{}, 8, HostAllocator());
     const auto& metric = index.GetMetric();
 
-    const double cf = 0.2;  // half focal distance
-    const double A = 0.05;  // Delta / 2
+    const double cf = 0.2; // half focal distance
+    const double A = 0.05; // Delta / 2
     const double B = std::sqrt(cf * cf - A * A);
     std::mt19937_64 gen(9);
     std::uniform_real_distribution<double> uni(0.0, 1.0);
@@ -842,7 +865,8 @@ TEST(MetricAnalytic, AdditiveHyperboloid) {
     for (int j = 0; j < 25; ++j) {
         const double u = 1.5 * uni(gen);
         const double phi = 6.283185307179586 * uni(gen);
-        const double p[3] = {0.5 + A * std::cosh(u), 0.5 + B * std::sinh(u) * std::cos(phi),
+        const double p[3] = {0.5 + A * std::cosh(u),
+                             0.5 + B * std::sinh(u) * std::cos(phi),
                              0.5 + B * std::sinh(u) * std::sin(phi)};
         EXPECT_NEAR(metric.Eval(0, p[0], p[1], p[2]), metric.Eval(1, p[0], p[1], p[2]), 1e-14);
         double g0[3], g1[3], g[3];
@@ -889,7 +913,8 @@ TEST(MetricAnalytic, GlobalTensorIsTransformedVoronoi) {
         ts.z[i] = m[6] * s.x[i] + m[7] * s.y[i] + m[8] * s.z[i];
     }
     for (int k = 0; k < q.Size(); ++k) {
-        tq.Set(k, m[0] * q.x(k) + m[1] * q.y(k) + m[2] * q.z(k),
+        tq.Set(k,
+               m[0] * q.x(k) + m[1] * q.y(k) + m[2] * q.z(k),
                m[3] * q.x(k) + m[4] * q.y(k) + m[5] * q.z(k),
                m[6] * q.x(k) + m[7] * q.y(k) + m[8] * q.z(k));
     }
@@ -907,7 +932,8 @@ TEST(MetricAnalytic, GlobalTensorIsTransformedVoronoi) {
             ++differ;
             const auto& metric = quadric.GetMetric();
             EXPECT_NEAR(metric.Eval(bq[k].id1, q.x(k), q.y(k), q.z(k)),
-                        metric.Eval(bv[k].id1, q.x(k), q.y(k), q.z(k)), 1e-12)
+                        metric.Eval(bv[k].id1, q.x(k), q.y(k), q.z(k)),
+                        1e-12)
                 << "query " << k;
         }
     }
@@ -946,10 +972,14 @@ TEST(MetricFunctors, QuadricFactor) {
 
 // DispatchMetric selects the functor type matching the runtime MetricType.
 TEST(MetricFunctors, DispatchMetricSelectsType) {
-    const ms::MetricType types[4] = {ms::MetricType::VORONOI, ms::MetricType::LAGUERRE,
-                                     ms::MetricType::QUADRIC, ms::MetricType::ADDITIVE};
+    const ms::MetricType types[4] = {ms::MetricType::VORONOI,
+                                     ms::MetricType::LAGUERRE,
+                                     ms::MetricType::QUADRIC,
+                                     ms::MetricType::ADDITIVE};
     for (const ms::MetricType t : types) {
-        ms::DispatchMetric(t, [&](auto metric) { EXPECT_EQ(decltype(metric)::TYPE, t); });
+        ms::DispatchMetric(t, [&](auto metric) {
+            EXPECT_EQ(decltype(metric)::TYPE, t);
+        });
     }
 }
 

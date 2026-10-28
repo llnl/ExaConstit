@@ -11,16 +11,7 @@
  * Runs at 1-4 MPI ranks. Distributed results are combined over the ranks exactly as the seeding
  * code does (bitwise OR of the per-rank masks) and compared with the serial references.
  */
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/preflight.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/boundary_clearance.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -36,6 +27,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/seeding/boundary_clearance.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;
 namespace fs = std::filesystem;
@@ -87,8 +86,8 @@ std::unique_ptr<mfem::ParMesh> Distribute(mfem::Mesh& serial) {
 
 /** Output directory shared by all ranks of this run (created by rank 0, then a barrier). */
 fs::path SharedDir(const std::string& test) {
-    const fs::path dir =
-        fs::path("test_curved_geometry_output") / ("np" + std::to_string(NumRanks())) / test;
+    const fs::path dir = fs::path("test_curved_geometry_output") /
+                         ("np" + std::to_string(NumRanks())) / test;
     if (Rank() == 0) {
         fs::remove_all(dir);
         fs::create_directories(dir);
@@ -120,8 +119,8 @@ double BruteForceSurfaceDistance(mfem::Mesh& mesh, const std::array<double, 3>& 
             continue;
         }
         mfem::ElementTransformation* trans = mesh.GetFaceTransformation(f);
-        mfem::RefinedGeometry* refined =
-            mfem::GlobGeometryRefiner.Refine(mesh.GetFaceGeometry(f), dense);
+        mfem::RefinedGeometry* refined = mfem::GlobGeometryRefiner.Refine(mesh.GetFaceGeometry(f),
+                                                                          dense);
         trans->Transform(refined->RefPts, x);
         for (int q = 0; q < x.Width(); q++) {
             const double dx = x(0, q) - p[0];
@@ -330,10 +329,14 @@ TEST(CurvedGeometry, ClearanceBulgedSurface) {
         }
         const std::size_t n = px.size();
         std::vector<std::uint64_t> near((n + 63) / 64, 0);
-        clearance.MarkNear(static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(),
-                           near.data());
-        MPI_Allreduce(MPI_IN_PLACE, near.data(), static_cast<int>(near.size()), MPI_UINT64_T,
-                      MPI_BOR, MPI_COMM_WORLD);
+        clearance.MarkNear(
+            static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(), near.data());
+        MPI_Allreduce(MPI_IN_PLACE,
+                      near.data(),
+                      static_cast<int>(near.size()),
+                      MPI_UINT64_T,
+                      MPI_BOR,
+                      MPI_COMM_WORLD);
 
         int checked_mesh = 0;
         int checked_analytic = 0;
@@ -395,8 +398,14 @@ std::vector<double> GatherSorted(const std::vector<double>& local) {
         offsets[r] = offsets[r - 1] + counts[r - 1];
     }
     std::vector<double> all(static_cast<std::size_t>(offsets.back() + counts.back()));
-    MPI_Allgatherv(local.data(), count, MPI_DOUBLE, all.data(), counts.data(), offsets.data(),
-                   MPI_DOUBLE, MPI_COMM_WORLD);
+    MPI_Allgatherv(local.data(),
+                   count,
+                   MPI_DOUBLE,
+                   all.data(),
+                   counts.data(),
+                   offsets.data(),
+                   MPI_DOUBLE,
+                   MPI_COMM_WORLD);
     std::sort(all.begin(), all.end());
     return all;
 }
@@ -493,8 +502,8 @@ TEST(CurvedGeometry, CurvedElementBoxesContainElements) {
         mfem::DenseMatrix x;
         for (int e = 0; e < mesh.GetNE(); e++) {
             mesh.GetElementTransformation(e, &trans);
-            mfem::RefinedGeometry* fine =
-                mfem::GlobGeometryRefiner.Refine(mesh.GetElementGeometry(e), 24);
+            mfem::RefinedGeometry* fine = mfem::GlobGeometryRefiner.Refine(
+                mesh.GetElementGeometry(e), 24);
             trans.Transform(fine->RefPts, x);
             const auto& box = locator.ElementBox(e);
             for (int q = 0; q < x.Width(); q++) {
@@ -544,8 +553,8 @@ TEST(CurvedGeometry, PointsNearStronglyCurvedFace) {
             {
                 const ms::MaterialPointLocator locator(serial, false);
                 std::vector<std::uint64_t> inside((n + 63) / 64, 0);
-                locator.MarkInside(static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(),
-                                   inside.data());
+                locator.MarkInside(
+                    static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(), inside.data());
                 int wrong_before = 0;
                 for (std::size_t i = 0; i < n; i++) {
                     EXPECT_EQ(Bit(inside, i), expected[i] != 0)
@@ -570,10 +579,14 @@ TEST(CurvedGeometry, PointsNearStronglyCurvedFace) {
             auto pmesh = Distribute(serial);
             const ms::MaterialPointLocator locator(*pmesh, false);
             std::vector<std::uint64_t> inside((n + 63) / 64, 0);
-            locator.MarkInside(static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(),
-                               inside.data());
-            MPI_Allreduce(MPI_IN_PLACE, inside.data(), static_cast<int>(inside.size()),
-                          MPI_UINT64_T, MPI_BOR, MPI_COMM_WORLD);
+            locator.MarkInside(
+                static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(), inside.data());
+            MPI_Allreduce(MPI_IN_PLACE,
+                          inside.data(),
+                          static_cast<int>(inside.size()),
+                          MPI_UINT64_T,
+                          MPI_BOR,
+                          MPI_COMM_WORLD);
             for (std::size_t i = 0; i < n; i++) {
                 EXPECT_EQ(Bit(inside, i), expected[i] != 0)
                     << "distributed, type " << type << " point " << i;
@@ -610,9 +623,12 @@ TEST(CurvedGeometry, PerturbedElementsKeepInteriorPoints) {
         int order;
         double amp;
     };
-    const Case cases[] = {{mfem::Element::HEXAHEDRON, 2, 0.15}, {mfem::Element::HEXAHEDRON, 2, 0.3},
-                          {mfem::Element::HEXAHEDRON, 3, 0.15}, {mfem::Element::TETRAHEDRON, 2, 0.15},
-                          {mfem::Element::TETRAHEDRON, 2, 0.3}, {mfem::Element::TETRAHEDRON, 2, 0.45},
+    const Case cases[] = {{mfem::Element::HEXAHEDRON, 2, 0.15},
+                          {mfem::Element::HEXAHEDRON, 2, 0.3},
+                          {mfem::Element::HEXAHEDRON, 3, 0.15},
+                          {mfem::Element::TETRAHEDRON, 2, 0.15},
+                          {mfem::Element::TETRAHEDRON, 2, 0.3},
+                          {mfem::Element::TETRAHEDRON, 2, 0.45},
                           {mfem::Element::TETRAHEDRON, 3, 0.15}};
     for (const Case& c : cases) {
         const bool tet = c.type == mfem::Element::TETRAHEDRON;
@@ -714,8 +730,8 @@ TEST(CurvedGeometry, PointsInStronglyBentElement) {
         const std::size_t n = px.size();
         const ms::MaterialPointLocator locator(mesh, false);
         std::vector<std::uint64_t> inside((n + 63) / 64, 0);
-        locator.MarkInside(static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(),
-                           inside.data());
+        locator.MarkInside(
+            static_cast<std::int64_t>(n), px.data(), py.data(), pz.data(), inside.data());
         int wrong_before = 0;
         for (std::size_t i = 0; i < n; i++) {
             EXPECT_EQ(Bit(inside, i), expected[i] != 0) << "order " << order << " point " << i;
@@ -724,8 +740,7 @@ TEST(CurvedGeometry, PointsInStronglyBentElement) {
         }
         if (Rank() == 0) {
             std::cout << "[ info ] bent element, order " << order << ": " << n
-                      << " points, single-start Newton misclassified " << wrong_before
-                      << std::endl;
+                      << " points, single-start Newton misclassified " << wrong_before << std::endl;
         }
         EXPECT_GT(wrong_before, 0) << "the case no longer needs the Newton retries";
     }
@@ -766,8 +781,8 @@ TEST(CurvedGeometry, PreflightCatchesFoldBetweenQuadraturePoints) {
             mfem::IsoparametricTransformation trans;
             for (int e = 0; e < serial.GetNE(); e++) {
                 serial.GetElementTransformation(e, &trans);
-                const mfem::IntegrationRule& ir =
-                    mfem::IntRules.Get(serial.GetElementGeometry(e), quad_order);
+                const mfem::IntegrationRule& ir = mfem::IntRules.Get(serial.GetElementGeometry(e),
+                                                                     quad_order);
                 for (int q = 0; q < ir.GetNPoints(); q++) {
                     trans.SetIntPoint(&ir.IntPoint(q));
                     ASSERT_GT(trans.Weight(), 0.0) << "order " << order << " element " << e;
@@ -799,8 +814,8 @@ TEST(CurvedGeometry, PreflightCatchesFoldBetweenQuadraturePoints) {
 // (MPI_COMM_SELF) on every rank.
 TEST(CurvedGeometry, PreflightCatchesFoldAtNonCornerNode) {
     for (const bool edge : {true, false}) {
-        mfem::Mesh mesh =
-            mfem::Mesh::MakeCartesian3D(1, 1, 1, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
+        mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(
+            1, 1, 1, mfem::Element::HEXAHEDRON, 1.0, 1.0, 1.0, false);
         mesh.SetCurvature(2);
         mfem::GridFunction& nodes = *mesh.GetNodes();
         const mfem::FiniteElementSpace* fes = nodes.FESpace();
@@ -862,8 +877,10 @@ std::array<long, 2> PieceSizes(const fs::path& dir) {
             }
             long points = 0;
             long cells = 0;
-            std::sscanf(line.c_str() + pos, "<Piece NumberOfPoints=\"%ld\" NumberOfCells=\"%ld\"",
-                        &points, &cells);
+            std::sscanf(line.c_str() + pos,
+                        "<Piece NumberOfPoints=\"%ld\" NumberOfCells=\"%ld\"",
+                        &points,
+                        &cells);
             return {points, cells};
         }
     }

@@ -26,22 +26,7 @@
  */
 #include "microstructure/labeling/vertex_field.hpp"
 
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
-
 #include "mfem.hpp"
-
-#include "axom/core.hpp"
-#include "axom/primal/geometry/BoundingBox.hpp"
-#include "axom/primal/geometry/Point.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-#include "axom/spin/BVH.hpp"
-
-#include <math.h> // unqualified sqrt in device code (C math library)
 
 #include <algorithm>
 #include <array>
@@ -51,9 +36,22 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <math.h> // unqualified sqrt in device code (C math library)
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "axom/core.hpp"
+#include "axom/primal/geometry/BoundingBox.hpp"
+#include "axom/primal/geometry/Point.hpp"
+#include "axom/primal/operators/squared_distance.hpp"
+#include "axom/spin/BVH.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -74,8 +72,8 @@ using HostBVH = axom::spin::BVH<3, axom::SEQ_EXEC, double>;
  * xyz[3*v + d]. Written out in a fixed order (dx^2 + dy^2 + dz^2) so the same (point, node)
  * pair gives the same bits on every rank. Host and device.
  */
-MFEM_HOST_DEVICE inline double SquaredDistanceToVertex(const double* xyz, int v, double px,
-                                                       double py, double pz) {
+MFEM_HOST_DEVICE inline double
+SquaredDistanceToVertex(const double* xyz, int v, double px, double py, double pz) {
     const double dx = px - xyz[3 * v + 0];
     const double dy = py - xyz[3 * v + 1];
     const double dz = pz - xyz[3 * v + 2];
@@ -86,8 +84,8 @@ MFEM_HOST_DEVICE inline double SquaredDistanceToVertex(const double* xyz, int v,
  * @brief y = S p for the row-major 3x3 stretch S of VertexField::SetMetricStretch, written out
  * in a fixed order. Host and device.
  */
-MFEM_HOST_DEVICE inline void MapToMetric(const double* stretch, double px, double py, double pz,
-                                         double* y) {
+MFEM_HOST_DEVICE inline void
+MapToMetric(const double* stretch, double px, double py, double pz, double* y) {
     y[0] = stretch[0] * px + stretch[1] * py + stretch[2] * pz;
     y[1] = stretch[3] * px + stretch[4] * py + stretch[5] * pz;
     y[2] = stretch[6] * px + stretch[7] * py + stretch[8] * pz;
@@ -113,9 +111,13 @@ MFEM_HOST_DEVICE inline void MapToMetric(const double* stretch, double px, doubl
  * @param element_label output at chunk_begin .. chunk_begin + chunk_elems - 1.
  * @param element_split output: 1 where the element's points carried more than one label.
  */
-void VoteOnPointLabels(int chunk_begin, int chunk_elems, int nq,
-                       const mfem::Array<int>& point_label, const mfem::Vector& weight,
-                       mfem::Array<int>& element_label, mfem::Array<int>& element_split) {
+void VoteOnPointLabels(int chunk_begin,
+                       int chunk_elems,
+                       int nq,
+                       const mfem::Array<int>& point_label,
+                       const mfem::Vector& weight,
+                       mfem::Array<int>& element_label,
+                       mfem::Array<int>& element_split) {
     const int* lab = point_label.Read();
     const double* w = weight.Read();
     // ReadWrite: only this chunk's range of the whole-mesh arrays is written
@@ -157,8 +159,7 @@ void VoteOnPointLabels(int chunk_begin, int chunk_elems, int nq,
                 }
             }
             // Larger total wins; exact tie -> lower seed index
-            if (winner < 0 || total > winner_weight ||
-                (total == winner_weight && label < winner)) {
+            if (winner < 0 || total > winner_weight || (total == winner_weight && label < winner)) {
                 winner = label;
                 winner_weight = total;
             }
@@ -223,15 +224,14 @@ void ValidateSeeds(const SeedSet& seeds, const std::vector<double>& additive_wei
  * for correctness; the faces on the element boundary are the same up/down triangles either way.
  */
 void FillCellTypes(FieldCellView& view) {
-    static const int hex[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
-                                  {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
-    static const int tet[6][4][3] = {
-        {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}},  // up
-        {{1, 0, 0}, {0, 1, 1}, {1, 1, 0}, {0, 1, 0}},  // A B Q P
-        {{1, 0, 0}, {0, 1, 1}, {1, 0, 1}, {1, 1, 0}},  // A B R Q
-        {{1, 0, 0}, {0, 1, 1}, {0, 0, 1}, {1, 0, 1}},  // A B S R
-        {{1, 0, 0}, {0, 1, 1}, {0, 1, 0}, {0, 0, 1}},  // A B P S
-        {{1, 1, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}}; // down
+    static const int hex[8][3] = {
+        {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+    static const int tet[6][4][3] = {{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}},  // up
+                                     {{1, 0, 0}, {0, 1, 1}, {1, 1, 0}, {0, 1, 0}},  // A B Q P
+                                     {{1, 0, 0}, {0, 1, 1}, {1, 0, 1}, {1, 1, 0}},  // A B R Q
+                                     {{1, 0, 0}, {0, 1, 1}, {0, 0, 1}, {1, 0, 1}},  // A B S R
+                                     {{1, 0, 0}, {0, 1, 1}, {0, 1, 0}, {0, 0, 1}},  // A B P S
+                                     {{1, 1, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}}; // down
     if (view.tet == 0) {
         view.num_types = 1;
         view.nodes_per_cell = 8;
@@ -297,8 +297,7 @@ int FirstCellWithNode(const FieldCellView& view, int v, int e) {
  * eltrans.hpp:285-290). A point outside the element (e.g. the centroid of a strongly curved
  * element) ends on the element boundary, which is what the cell search wants. Host only.
  */
-mfem::IntegrationPoint ReferencePoint(mfem::ParMesh& mesh, int e, double px, double py,
-                                      double pz) {
+mfem::IntegrationPoint ReferencePoint(mfem::ParMesh& mesh, int e, double px, double py, double pz) {
     mfem::ElementTransformation* trans = mesh.GetElementTransformation(e);
     mfem::InverseElementTransformation inverse(trans);
     inverse.SetInitialGuessType(mfem::InverseElementTransformation::ClosestRefNode);
@@ -340,9 +339,13 @@ struct NearestNodeResult {
  * candidates; the flag is identical on all copies, so copies still agree. Collective (two
  * MPI_Allreduce calls). Host only.
  */
-NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, int num_nodes,
-                                    const std::vector<double>& qx, const std::vector<double>& qy,
-                                    const std::vector<double>& qz, const int* node_used) {
+NearestNodeResult NearestFieldNodes(MPI_Comm comm,
+                                    const mfem::Vector& coords,
+                                    int num_nodes,
+                                    const std::vector<double>& qx,
+                                    const std::vector<double>& qy,
+                                    const std::vector<double>& qz,
+                                    const int* node_used) {
     const std::size_t nq = qx.size();
     const double* xyz = coords.HostRead();
     std::vector<double> best_d2(nq, DBL_MAX);
@@ -362,10 +365,10 @@ NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, i
         std::vector<BvhBox> boxes(static_cast<std::size_t>(num_candidates));
         for (int c = 0; c < num_candidates; ++c) {
             const int v = candidate_node[static_cast<std::size_t>(c)];
-            keys[static_cast<std::size_t>(v)] =
-                VertexKey(xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]);
-            boxes[static_cast<std::size_t>(c)] =
-                BvhBox(BvhPoint {xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]});
+            keys[static_cast<std::size_t>(v)] = VertexKey(
+                xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]);
+            boxes[static_cast<std::size_t>(c)] = BvhBox(
+                BvhPoint{xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]});
         }
         HostBVH bvh;
         bvh.initialize(boxes.data(), static_cast<axom::IndexType>(num_candidates));
@@ -392,7 +395,7 @@ NearestNodeResult NearestFieldNodes(MPI_Comm comm, const mfem::Vector& coords, i
             auto predicate = [&](const BvhPoint& query, const BvhBox& box) -> bool {
                 return axom::primal::squared_distance(query, box) <= d2_best;
             };
-            traverser.traverse_tree(BvhPoint {qx[q], qy[q], qz[q]}, leaf_action, predicate);
+            traverser.traverse_tree(BvhPoint{qx[q], qy[q], qz[q]}, leaf_action, predicate);
             best_d2[q] = d2_best;
             best_key[q] = key_best;
             best_node[q] = node_best;
@@ -448,25 +451,29 @@ VertexField::VertexField(mfem::ParMesh& pmesh, FieldNodes field_nodes, const Ele
     // Step 1: checks that are the same on every rank or reduced
     const MPI_Comm comm = pmesh.GetComm();
     const bool not_3d = pmesh.Dimension() != 3 || pmesh.SpaceDimension() != 3;
-    ThrowIfAnyRank<std::runtime_error>(comm, not_3d,
-                                       "VertexField: only 3D volume meshes are supported");
-    ThrowIfAnyRank<std::runtime_error>(comm, pmesh.Nonconforming(),
-                   "VertexField: nonconforming meshes (hanging vertices) are not supported");
+    ThrowIfAnyRank<std::runtime_error>(
+        comm, not_3d, "VertexField: only 3D volume meshes are supported");
+    ThrowIfAnyRank<std::runtime_error>(
+        comm,
+        pmesh.Nonconforming(),
+        "VertexField: nonconforming meshes (hanging vertices) are not supported");
     mfem::GridFunction* nodes = pmesh.GetNodes();
-    const bool bad_nodes =
-        nodes != nullptr && nodes->FESpace()->FEColl()->GetContType() !=
-                                mfem::FiniteElementCollection::CONTINUOUS;
-    ThrowIfAnyRank<std::runtime_error>(comm, bad_nodes,
-                   "VertexField: discontinuous mesh Nodes (periodic meshes) are not supported");
+    const bool bad_nodes = nodes != nullptr && nodes->FESpace()->FEColl()->GetContType() !=
+                                                   mfem::FiniteElementCollection::CONTINUOUS;
+    ThrowIfAnyRank<std::runtime_error>(
+        comm,
+        bad_nodes,
+        "VertexField: discontinuous mesh Nodes (periodic meshes) are not supported");
     const bool has_nodes = AnyRank(nodes != nullptr, comm);
-    ThrowIfAnyRank<std::runtime_error>(comm, has_nodes && nodes == nullptr,
-                   "VertexField: the mesh has Nodes on some ranks only");
+    ThrowIfAnyRank<std::runtime_error>(
+        comm, has_nodes && nodes == nullptr, "VertexField: the mesh has Nodes on some ranks only");
 
     // Step 2: which field (the straightness of the active elements only), after the mask check
     m_num_elements = pmesh.GetNE();
     const bool bad_mask = mask != nullptr && mask->active.Size() != 0 &&
                           mask->active.Size() != m_num_elements;
-    ThrowIfAnyRank<std::invalid_argument>(comm, bad_mask,
+    ThrowIfAnyRank<std::invalid_argument>(comm,
+                                          bad_mask,
                                           "VertexField: the element mask needs one entry per "
                                           "local element");
     if (mask != nullptr) {
@@ -658,10 +665,13 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
 
     // Step 1: the space and the geometry
     m_node_fes = dynamic_cast<mfem::ParFiniteElementSpace*>(nodes.FESpace());
-    ThrowIfAnyRank<std::runtime_error>(comm, m_node_fes == nullptr,
-                   "VertexField: the nodal field needs mesh Nodes in a ParFiniteElementSpace");
-    ThrowIfAnyRank<std::runtime_error>(comm, m_node_fes->IsVariableOrder(),
-                   "VertexField: variable-order mesh Nodes are not supported");
+    ThrowIfAnyRank<std::runtime_error>(
+        comm,
+        m_node_fes == nullptr,
+        "VertexField: the nodal field needs mesh Nodes in a ParFiniteElementSpace");
+    ThrowIfAnyRank<std::runtime_error>(comm,
+                                       m_node_fes->IsVariableOrder(),
+                                       "VertexField: variable-order mesh Nodes are not supported");
     int geom_range[2] = {INT_MAX, INT_MAX}; // {min, -max} so one MIN reduction gives both
     for (int e = 0; e < m_num_elements; ++e) {
         if (!ElementActive(e)) {
@@ -674,10 +684,9 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
     MPI_Allreduce(MPI_IN_PLACE, geom_range, 2, MPI_INT, MPI_MIN, comm);
     const bool no_elements = geom_range[0] == INT_MAX;
     const int geom_code = no_elements ? static_cast<int>(mfem::Geometry::CUBE) : geom_range[0];
-    const bool supported = no_elements ||
-                           (geom_range[0] == -geom_range[1] &&
-                            (geom_code == mfem::Geometry::CUBE ||
-                             geom_code == mfem::Geometry::TETRAHEDRON));
+    const bool supported = no_elements || (geom_range[0] == -geom_range[1] &&
+                                           (geom_code == mfem::Geometry::CUBE ||
+                                            geom_code == mfem::Geometry::TETRAHEDRON));
     if (!supported) {
         // Same reduced values on every rank: every rank throws
         throw std::runtime_error("VertexField: the nodal (curved) field needs active elements "
@@ -813,8 +822,8 @@ void VertexField::BuildNodalField(mfem::GridFunction& nodes) {
         m_elem_vert_offsets[0] = 0;
         m_elem_verts.SetSize(0);
     }
-    ThrowIfAnyRank<std::runtime_error>(comm, bad_table,
-                   "VertexField: unexpected element dof table of the mesh Nodes space");
+    ThrowIfAnyRank<std::runtime_error>(
+        comm, bad_table, "VertexField: unexpected element dof table of the mesh Nodes space");
 
     // Step 4: node -> element CSR, and the lattice point of the node of every incidence
     BuildNodeToElementTable();
@@ -962,8 +971,7 @@ void VertexField::SetMetricStretch(const std::array<double, 9>& stretch) {
     const double* xyz = m_coords.HostRead();
     double* out = m_metric_coords.HostWrite();
     for (int v = 0; v < m_num_vertices; ++v) {
-        MapToMetric(m_stretch.data(), xyz[3 * v + 0], xyz[3 * v + 1], xyz[3 * v + 2],
-                    &out[3 * v]);
+        MapToMetric(m_stretch.data(), xyz[3 * v + 0], xyz[3 * v + 1], xyz[3 * v + 2], &out[3 * v]);
     }
 }
 
@@ -978,7 +986,8 @@ void VertexField::SetMetricStretch(const std::array<double, 9>& stretch) {
  * sends and receives with one tag, then a wait for all. Each shared node belongs to one group, so
  * it receives exactly (group size - 1) payloads.
  */
-void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& send,
+void VertexField::ExchangeSharedPayload(int width,
+                                        const std::vector<double>& send,
                                         std::vector<double>& recv,
                                         std::vector<int>& offsets) const {
     if (width < 1) {
@@ -1028,7 +1037,9 @@ void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& se
     constexpr int tag = 4711;
     for (int p = 1; p < num_lprocs; ++p) {
         auto& groups = groups_of[static_cast<std::size_t>(p)];
-        std::sort(groups.begin(), groups.end(), [&](int a, int b) { return key(a) < key(b); });
+        std::sort(groups.begin(), groups.end(), [&](int a, int b) {
+            return key(a) < key(b);
+        });
         std::size_t count = 0;
         for (const int g : groups) {
             count += static_cast<std::size_t>(group_ldof.RowSize(g));
@@ -1045,10 +1056,20 @@ void VertexField::ExchangeSharedPayload(int width, const std::vector<double>& se
         in[static_cast<std::size_t>(p)].resize(buf.size());
         const int rank = gt.GetNeighborRank(p);
         requests.emplace_back();
-        MPI_Irecv(in[static_cast<std::size_t>(p)].data(), static_cast<int>(buf.size()),
-                  MPI_DOUBLE, rank, tag, comm, &requests.back());
+        MPI_Irecv(in[static_cast<std::size_t>(p)].data(),
+                  static_cast<int>(buf.size()),
+                  MPI_DOUBLE,
+                  rank,
+                  tag,
+                  comm,
+                  &requests.back());
         requests.emplace_back();
-        MPI_Isend(buf.data(), static_cast<int>(buf.size()), MPI_DOUBLE, rank, tag, comm,
+        MPI_Isend(buf.data(),
+                  static_cast<int>(buf.size()),
+                  MPI_DOUBLE,
+                  rank,
+                  tag,
+                  comm,
                   &requests.back());
     }
     if (!requests.empty()) {
@@ -1117,14 +1138,17 @@ void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
     std::vector<int> in_size(static_cast<std::size_t>(num_lprocs), 0);
     for (int p = 1; p < num_lprocs; ++p) {
         auto& groups = groups_of[static_cast<std::size_t>(p)];
-        std::sort(groups.begin(), groups.end(), [&](int a, int b) { return key(a) < key(b); });
+        std::sort(groups.begin(), groups.end(), [&](int a, int b) {
+            return key(a) < key(b);
+        });
         auto& buf = out[static_cast<std::size_t>(p)];
         for (const int g : groups) {
             const int* row = group_ldof.GetRow(g);
             for (int j = 0; j < group_ldof.RowSize(g); ++j) {
                 const auto v = static_cast<std::size_t>(row[j]);
                 buf.push_back(static_cast<double>(send_offsets[v + 1] - send_offsets[v]));
-                buf.insert(buf.end(), send_items.begin() + send_offsets[v],
+                buf.insert(buf.end(),
+                           send_items.begin() + send_offsets[v],
                            send_items.begin() + send_offsets[v + 1]);
             }
         }
@@ -1137,10 +1161,20 @@ void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
     for (int p = 1; p < num_lprocs; ++p) {
         const int rank = gt.GetNeighborRank(p);
         requests.emplace_back();
-        MPI_Irecv(&in_size[static_cast<std::size_t>(p)], 1, MPI_INT, rank, size_tag, comm,
+        MPI_Irecv(&in_size[static_cast<std::size_t>(p)],
+                  1,
+                  MPI_INT,
+                  rank,
+                  size_tag,
+                  comm,
                   &requests.back());
         requests.emplace_back();
-        MPI_Isend(&out_size[static_cast<std::size_t>(p)], 1, MPI_INT, rank, size_tag, comm,
+        MPI_Isend(&out_size[static_cast<std::size_t>(p)],
+                  1,
+                  MPI_INT,
+                  rank,
+                  size_tag,
+                  comm,
                   &requests.back());
     }
     if (!requests.empty()) {
@@ -1152,11 +1186,21 @@ void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
         auto& buf = in[static_cast<std::size_t>(p)];
         buf.resize(static_cast<std::size_t>(in_size[static_cast<std::size_t>(p)]));
         requests.emplace_back();
-        MPI_Irecv(buf.data(), static_cast<int>(buf.size()), MPI_DOUBLE, rank, data_tag, comm,
+        MPI_Irecv(buf.data(),
+                  static_cast<int>(buf.size()),
+                  MPI_DOUBLE,
+                  rank,
+                  data_tag,
+                  comm,
                   &requests.back());
         requests.emplace_back();
-        MPI_Isend(out[static_cast<std::size_t>(p)].data(), out_size[static_cast<std::size_t>(p)],
-                  MPI_DOUBLE, rank, data_tag, comm, &requests.back());
+        MPI_Isend(out[static_cast<std::size_t>(p)].data(),
+                  out_size[static_cast<std::size_t>(p)],
+                  MPI_DOUBLE,
+                  rank,
+                  data_tag,
+                  comm,
+                  &requests.back());
     }
     if (!requests.empty()) {
         MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
@@ -1185,7 +1229,8 @@ void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
                     if (pass == 0) {
                         recv_offsets[v + 1] += count;
                     } else {
-                        std::copy(buf.data() + pos, buf.data() + pos + count,
+                        std::copy(buf.data() + pos,
+                                  buf.data() + pos + count,
                                   recv_items.data() + fill[v]);
                         fill[v] += count;
                     }
@@ -1199,11 +1244,13 @@ void VertexField::ExchangeSharedLists(const std::vector<int>& send_offsets,
 /*
  * SetSeedLists: copies of the lists and weights (host write, read by the labeling kernels).
  */
-void VertexField::SetSeedLists(int capacity, const mfem::Array<int>& seeds,
-                               const mfem::Vector& dist, const std::vector<double>& weights,
+void VertexField::SetSeedLists(int capacity,
+                               const mfem::Array<int>& seeds,
+                               const mfem::Vector& dist,
+                               const std::vector<double>& weights,
                                const std::vector<double>& seed_stretch) {
-    const std::size_t size =
-        static_cast<std::size_t>(capacity) * static_cast<std::size_t>(m_num_vertices);
+    const std::size_t size = static_cast<std::size_t>(capacity) *
+                             static_cast<std::size_t>(m_num_vertices);
     if (capacity < 1 || static_cast<std::size_t>(seeds.Size()) != size ||
         static_cast<std::size_t>(dist.Size()) != size || weights.empty()) {
         throw std::invalid_argument("VertexField::SetSeedLists: capacity must be >= 1, the lists "
@@ -1399,9 +1446,14 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             qy[static_cast<std::size_t>(j)] = seeds.y[s];
             qz[static_cast<std::size_t>(j)] = seeds.z[s];
         }
-        const NearestNodeResult nearest =
-            NearestFieldNodes(comm, m_coords, m_num_vertices, qx, qy, qz,
-                              HasMask() ? m_node_used.HostRead() : nullptr);
+        const NearestNodeResult nearest = NearestFieldNodes(comm,
+                                                            m_coords,
+                                                            m_num_vertices,
+                                                            qx,
+                                                            qy,
+                                                            qz,
+                                                            HasMask() ? m_node_used.HostRead()
+                                                                      : nullptr);
         // Step 3b: this rank's copy of that node (if any), then its elements' keys
         std::vector<std::uint64_t> snap_key(static_cast<std::size_t>(num_out), none);
         for (int j = 0; j < num_out; ++j) {
@@ -1412,8 +1464,8 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             snapped_node[static_cast<std::size_t>(outside[static_cast<std::size_t>(j)])] = v;
             for (int k = m_vert_elem_offsets[v]; k < m_vert_elem_offsets[v + 1]; ++k) {
                 const std::uint64_t key = keys[static_cast<std::size_t>(m_vert_elems[k])];
-                snap_key[static_cast<std::size_t>(j)] =
-                    std::min(snap_key[static_cast<std::size_t>(j)], key);
+                snap_key[static_cast<std::size_t>(j)] = std::min(
+                    snap_key[static_cast<std::size_t>(j)], key);
             }
         }
         MPI_Allreduce(MPI_IN_PLACE, snap_key.data(), num_out, MPI_UINT64_T, MPI_MIN, comm);
@@ -1434,8 +1486,8 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
         std::sort(sorted_keys.begin(), sorted_keys.end());
         for (int i = 0; i < n; ++i) {
             const std::uint64_t key = report.source_element_key[static_cast<std::size_t>(i)];
-            const auto it = std::lower_bound(sorted_keys.begin(), sorted_keys.end(),
-                                             std::make_pair(key, -1));
+            const auto it = std::lower_bound(
+                sorted_keys.begin(), sorted_keys.end(), std::make_pair(key, -1));
             if (it != sorted_keys.end() && it->first == key) {
                 report.source_element_local[static_cast<std::size_t>(i)] = it->second;
             }
@@ -1454,8 +1506,8 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             if (report.seed_outside[s] != 0) {
                 cell = FirstCellWithNode(view, snapped_node[s], e);
             } else {
-                const mfem::IntegrationPoint ip =
-                    ReferencePoint(m_pmesh, e, seeds.x[s], seeds.y[s], seeds.z[s]);
+                const mfem::IntegrationPoint ip = ReferencePoint(
+                    m_pmesh, e, seeds.x[s], seeds.y[s], seeds.z[s]);
                 cell = view.LocateCell(ip.x, ip.y, ip.z);
             }
         }
@@ -1526,8 +1578,9 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             const int nc = view.CellNodes(e, report.source_cell_local[s], corners);
             for (int k = 0; k < nc; ++k) {
                 const int v = corners[k];
-                const double value =
-                    std::sqrt(SquaredDistanceToVertex(xyz, v, ys[0], ys[1], ys[2])) - a;
+                const double value = std::sqrt(
+                                         SquaredDistanceToVertex(xyz, v, ys[0], ys[1], ys[2])) -
+                                     a;
                 // Lexicographic minimum: seeds come in increasing index, so "<" keeps the lower
                 // index on equal values
                 if (value < t[v]) {
@@ -1556,8 +1609,7 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
  * once (communication.cpp:1268). The before/after comparison is bitwise (+inf == +inf), and the
  * global "anything changed?" is an MPI_Allreduce (AnyRank).
  */
-bool VertexField::ReduceSharedImpl(bool reduce_T, bool reduce_labels,
-                                   mfem::Array<int>* changed) {
+bool VertexField::ReduceSharedImpl(bool reduce_T, bool reduce_labels, mfem::Array<int>* changed) {
     const mfem::GroupCommunicator& gcomm = *m_gcomm;
     double* t = m_T.HostReadWrite();
     int* lab = m_label.HostReadWrite();
@@ -1647,8 +1699,12 @@ void VertexField::ReduceSharedMinimum(mfem::Vector& values) const {
  * that reference point (FieldCellView::LocateCell on the host view); the points of element e are
  * (e - elem_begin) * points_per_element + q, as in LabelPoints.
  */
-void VertexField::PointCells(int elem_begin, int elem_end, int points_per_element,
-                             const mfem::Vector& x, const mfem::Vector& y, const mfem::Vector& z,
+void VertexField::PointCells(int elem_begin,
+                             int elem_end,
+                             int points_per_element,
+                             const mfem::Vector& x,
+                             const mfem::Vector& y,
+                             const mfem::Vector& z,
                              mfem::Array<int>& cells) const {
     const int num_points = (elem_end - elem_begin) * points_per_element;
     cells.SetSize(num_points);
@@ -1672,9 +1728,14 @@ void VertexField::PointCells(int elem_begin, int elem_end, int points_per_elemen
  * LabelPoints: argument checks, then (nodal field) the sub-cell of every point, found by
  * inverting the element maps (PointCells), then the kernel (LabelPointsImpl).
  */
-void VertexField::LabelPoints(int elem_begin, int elem_end, int points_per_element,
-                              const mfem::Vector& x, const mfem::Vector& y, const mfem::Vector& z,
-                              mfem::Array<int>& label, mfem::Vector* distance) const {
+void VertexField::LabelPoints(int elem_begin,
+                              int elem_end,
+                              int points_per_element,
+                              const mfem::Vector& x,
+                              const mfem::Vector& y,
+                              const mfem::Vector& z,
+                              mfem::Array<int>& label,
+                              mfem::Vector* distance) const {
     // Argument checks
     if (elem_begin < 0 || elem_end < elem_begin || elem_end > m_num_elements) {
         throw std::invalid_argument("VertexField::LabelPoints: invalid element range");
@@ -1696,11 +1757,11 @@ void VertexField::LabelPoints(int elem_begin, int elem_end, int points_per_eleme
     if (m_curved && num_points > 0) {
         mfem::Array<int> cells;
         PointCells(elem_begin, elem_end, points_per_element, x, y, z, cells);
-        LabelPointsImpl(elem_begin, elem_end, points_per_element, x, y, z, &cells, false, label,
-                        distance);
+        LabelPointsImpl(
+            elem_begin, elem_end, points_per_element, x, y, z, &cells, false, label, distance);
     } else {
-        LabelPointsImpl(elem_begin, elem_end, points_per_element, x, y, z, nullptr, false, label,
-                        distance);
+        LabelPointsImpl(
+            elem_begin, elem_end, points_per_element, x, y, z, nullptr, false, label, distance);
     }
 }
 
@@ -1719,13 +1780,18 @@ void VertexField::LabelPoints(int elem_begin, int elem_end, int points_per_eleme
  * value (a host constant), and inf + finite = inf, so unreached nodes never win against a reached
  * one.
  */
-void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_element,
-                                  const mfem::Vector& x, const mfem::Vector& y,
-                                  const mfem::Vector& z, const mfem::Array<int>* cells,
-                                  bool cells_repeat, mfem::Array<int>& label,
+void VertexField::LabelPointsImpl(int elem_begin,
+                                  int elem_end,
+                                  int points_per_element,
+                                  const mfem::Vector& x,
+                                  const mfem::Vector& y,
+                                  const mfem::Vector& z,
+                                  const mfem::Array<int>* cells,
+                                  bool cells_repeat,
+                                  mfem::Array<int>& label,
                                   mfem::Vector* distance) const {
-    const int num_points = (elem_end - elem_begin) * (elem_end > elem_begin ? points_per_element
-                                                                             : 0);
+    const int num_points = (elem_end - elem_begin) *
+                           (elem_end > elem_begin ? points_per_element : 0);
     label.SetSize(num_points);
     if (distance != nullptr) {
         distance->SetSize(num_points);
@@ -1757,8 +1823,8 @@ void VertexField::LabelPointsImpl(int elem_begin, int elem_end, int points_per_e
     const int* lseed = (cap > 0) ? m_list_seed.Read() : nullptr;
     const double* ldist = (cap > 0) ? m_list_dist.Read() : nullptr;
     const double* lweight = (cap > 0) ? m_list_weight.Read() : nullptr;
-    const double* lstretch =
-        (cap > 0 && m_list_stretch.Size() > 0) ? m_list_stretch.Read() : nullptr;
+    const double* lstretch = (cap > 0 && m_list_stretch.Size() > 0) ? m_list_stretch.Read()
+                                                                    : nullptr;
     const int* src_offsets = m_elem_src_offsets.Read();
     const int* src_seeds = m_elem_src_seeds.Read();
     const int* src_cell = m_elem_src_cell.Read();
@@ -1891,8 +1957,8 @@ void VertexField::LabelElementCentroids(mfem::Array<int>& element_label,
     }
     ElementSamples samples;
     ComputeElementSamples(m_pmesh, -1, samples);
-    LabelPoints(0, m_num_elements, 1, samples.cx, samples.cy, samples.cz, element_label,
-                element_distance);
+    LabelPoints(
+        0, m_num_elements, 1, samples.cx, samples.cy, samples.cz, element_label, element_distance);
     // Inactive elements: placeholder -1 (not material)
     SetInactiveValues(MaskOrNull(), element_label, -1);
 }
@@ -1906,7 +1972,8 @@ void VertexField::LabelElementCentroids(mfem::Array<int>& element_label,
  * reference points, identical for every element, give the cells without any inversion) and the
  * per-element vote (VoteOnPointLabels). Memory grows with the chunk, not with the whole mesh.
  */
-int VertexField::LabelElementsByVote(int levels, int max_points_per_chunk,
+int VertexField::LabelElementsByVote(int levels,
+                                     int max_points_per_chunk,
                                      mfem::Array<int>& element_label) const {
     // Argument checks (VoteRule checks levels and the geometry)
     if (levels < 0 || levels > 3) {
@@ -1950,10 +2017,18 @@ int VertexField::LabelElementsByVote(int levels, int max_points_per_chunk,
     for (int begin = 0; begin < m_num_elements; begin += chunk_elems) {
         const int end = std::min(m_num_elements, begin + chunk_elems);
         sampler.Sample(begin, end, points);
-        LabelPointsImpl(begin, end, nq, points.x, points.y, points.z,
-                        m_curved ? &rule_cells : nullptr, true, point_label, nullptr);
-        VoteOnPointLabels(begin, end - begin, nq, point_label, points.weight, element_label,
-                          element_split);
+        LabelPointsImpl(begin,
+                        end,
+                        nq,
+                        points.x,
+                        points.y,
+                        points.z,
+                        m_curved ? &rule_cells : nullptr,
+                        true,
+                        point_label,
+                        nullptr);
+        VoteOnPointLabels(
+            begin, end - begin, nq, point_label, points.weight, element_label, element_split);
     }
 
     // Inactive elements: placeholder -1, never split

@@ -34,26 +34,9 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
-#include "microstructure/io/microstructure_file_io.hpp"
-#include "microstructure/io/seed_table_io.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/orientation/orientation_assigner.hpp"
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_report.hpp"
 #include "utilities/auto_mesh.hpp"
 
-#include "common/voxel_fixture.hpp"
-
-#include "axom/config.hpp"
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
@@ -71,6 +54,22 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "axom/config.hpp"
+#include "common/voxel_fixture.hpp"
+#include "microstructure/io/microstructure_file_io.hpp"
+#include "microstructure/io/seed_table_io.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
+#include "microstructure/orientation/orientation_assigner.hpp"
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -116,13 +115,13 @@ std::string Num(double v) {
 
 /** Positions of the 8 "measured" seeds in the unit cube (generic: no exact ties). */
 const std::array<std::array<double, 3>, 8> kTablePos = {{{0.21, 0.19, 0.22},
-                                                          {0.76, 0.24, 0.31},
-                                                          {0.29, 0.71, 0.26},
-                                                          {0.81, 0.79, 0.18},
-                                                          {0.24, 0.32, 0.77},
-                                                          {0.69, 0.21, 0.79},
-                                                          {0.18, 0.82, 0.71},
-                                                          {0.77, 0.72, 0.78}}};
+                                                         {0.76, 0.24, 0.31},
+                                                         {0.29, 0.71, 0.26},
+                                                         {0.81, 0.79, 0.18},
+                                                         {0.24, 0.32, 0.77},
+                                                         {0.69, 0.21, 0.79},
+                                                         {0.18, 0.82, 0.71},
+                                                         {0.77, 0.72, 0.78}}};
 /** Their ids (not 0..7), phases {1, 3, 7} and table volumes (ratios 1..8). */
 const std::array<std::int64_t, 8> kTableId = {10, 4, 7, 22, 15, 3, 9, 30};
 const std::array<int, 8> kTablePhase = {1, 3, 7, 1, 3, 7, 1, 3};
@@ -167,9 +166,8 @@ void WriteSeedTables() {
         const auto& p = kTablePos[static_cast<std::size_t>(i)];
         const std::array<double, 4> q = TableQuat(i);
         measured << kTableId[static_cast<std::size_t>(i)] << ',' << Num(p[0]) << ',' << Num(p[1])
-                 << ',' << Num(p[2]) << ',' << Num(q[0]) << ',' << Num(q[1]) << ','
-                 << Num(q[2]) << ',' << Num(q[3]) << ',' << kTablePhase[static_cast<std::size_t>(i)]
-                 << "\n";
+                 << ',' << Num(p[2]) << ',' << Num(q[0]) << ',' << Num(q[1]) << ',' << Num(q[2])
+                 << ',' << Num(q[3]) << ',' << kTablePhase[static_cast<std::size_t>(i)] << "\n";
     }
     WriteText("measured.csv", measured.str());
 
@@ -289,8 +287,8 @@ Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm) {
 }
 
 /** Per-element values gathered into serial element order and broadcast to every rank. */
-std::vector<int> GatherToAll(MPI_Comm comm, const ms::SerialOrder& order,
-                             const mfem::Array<int>& local) {
+std::vector<int>
+GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>& local) {
     local.HostRead();
     std::vector<int> all = ms::GatherToSerial(comm, order, local, 0);
     int size = static_cast<int>(all.size());
@@ -363,8 +361,12 @@ Distributed DistributeWithOwners(mfem::Mesh& serial, const std::vector<int>& own
 mfem::Mesh UShape(int n) {
     const int nx = 3 * n, ny = 2 * n, nz = n;
     const double h = 1.0 / n;
-    auto kept = [n](int i, int j) { return !(i >= n && i < 2 * n && j >= n); };
-    auto vid = [&](int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); };
+    auto kept = [n](int i, int j) {
+        return !(i >= n && i < 2 * n && j >= n);
+    };
+    auto vid = [&](int i, int j, int k) {
+        return i + (nx + 1) * (j + (ny + 1) * k);
+    };
     int cells = 0;
     for (int k = 0; k < nz; ++k) {
         for (int j = 0; j < ny; ++j) {
@@ -385,10 +387,14 @@ mfem::Mesh UShape(int n) {
         for (int j = 0; j < ny; ++j) {
             for (int i = 0; i < nx; ++i) {
                 if (kept(i, j)) {
-                    const int hex[8] = {vid(i, j, k),         vid(i + 1, j, k),
-                                        vid(i + 1, j + 1, k), vid(i, j + 1, k),
-                                        vid(i, j, k + 1),     vid(i + 1, j, k + 1),
-                                        vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)};
+                    const int hex[8] = {vid(i, j, k),
+                                        vid(i + 1, j, k),
+                                        vid(i + 1, j + 1, k),
+                                        vid(i, j + 1, k),
+                                        vid(i, j, k + 1),
+                                        vid(i + 1, j, k + 1),
+                                        vid(i + 1, j + 1, k + 1),
+                                        vid(i, j + 1, k + 1)};
                     mesh.AddHex(hex);
                 }
             }
@@ -415,10 +421,11 @@ void ExpectUnitQuaternions(const ms::MicrostructureResult& result) {
  * Expects `q` (4 values, w x y z) to be the direction of `input`: input / |input| within 1e-15
  * per component, i.e. normalized, with the sign and component order of the input kept.
  */
-void ExpectNormalizedFrom(const double* q, const std::array<double, 4>& input,
+void ExpectNormalizedFrom(const double* q,
+                          const std::array<double, 4>& input,
                           const std::string& what) {
-    const double norm = std::sqrt(input[0] * input[0] + input[1] * input[1] +
-                                  input[2] * input[2] + input[3] * input[3]);
+    const double norm = std::sqrt(input[0] * input[0] + input[1] * input[1] + input[2] * input[2] +
+                                  input[3] * input[3]);
     for (std::size_t k = 0; k < 4; ++k) {
         EXPECT_NEAR(q[k], input[k] / norm, 1e-15) << what << " component " << k;
     }
@@ -500,14 +507,16 @@ ms::MicrostructureOptions TableOptions(const std::string& name) {
 }
 
 /** True when p lies strictly inside the box (lo, hi). */
-bool StrictlyInside(const std::array<double, 3>& p, const std::array<double, 3>& lo,
+bool StrictlyInside(const std::array<double, 3>& p,
+                    const std::array<double, 3>& lo,
                     const std::array<double, 3>& hi) {
     return p[0] > lo[0] && p[0] < hi[0] && p[1] > lo[1] && p[1] < hi[1] && p[2] > lo[2] &&
            p[2] < hi[2];
 }
 
 /** True when p lies in the closed box [lo, hi]. */
-bool InsideClosed(const std::array<double, 3>& p, const std::array<double, 3>& lo,
+bool InsideClosed(const std::array<double, 3>& p,
+                  const std::array<double, 3>& lo,
                   const std::array<double, 3>& hi) {
     return p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1] && p[2] >= lo[2] &&
            p[2] <= hi[2];
@@ -563,15 +572,16 @@ TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
     seeds.z = table.seeds.z;
     seeds.source_id = table.seeds.source_id;
     Distributed alone = Distribute(serial, MPI_COMM_SELF);
-    const ms::TessellationLabels direct =
-        ms::LabelTessellation(*alone.pmesh, MPI_COMM_SELF, seeds, options.tessellation);
+    const ms::TessellationLabels direct = ms::LabelTessellation(
+        *alone.pmesh, MPI_COMM_SELF, seeds, options.tessellation);
     EXPECT_EQ(GatherToAll(MPI_COMM_SELF, alone.order, direct.element_grain), runs.alone.labels);
 
     // Per grain: normalized table quaternion, table id, phase and mapped region of its seed
     for (int g = 0; g < result.num_grains; ++g) {
         const auto gi = static_cast<std::size_t>(g);
         const auto s = static_cast<std::size_t>(report.grain_seed[gi]);
-        const std::array<double, 4> input = {table.seeds.quat[4 * s], table.seeds.quat[4 * s + 1],
+        const std::array<double, 4> input = {table.seeds.quat[4 * s],
+                                             table.seeds.quat[4 * s + 1],
                                              table.seeds.quat[4 * s + 2],
                                              table.seeds.quat[4 * s + 3]};
         ExpectNormalizedFrom(&result.grain_quat[4 * gi], input, "grain " + std::to_string(g));
@@ -601,9 +611,10 @@ TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
             EXPECT_EQ(r2.grain_quat[4 * gi + 2], 0.0);
             EXPECT_EQ(r2.grain_quat[4 * gi + 3], 0.0);
         } else {
-            const std::array<double, 4> input = {
-                table.seeds.quat[4 * s], table.seeds.quat[4 * s + 1], table.seeds.quat[4 * s + 2],
-                table.seeds.quat[4 * s + 3]};
+            const std::array<double, 4> input = {table.seeds.quat[4 * s],
+                                                 table.seeds.quat[4 * s + 1],
+                                                 table.seeds.quat[4 * s + 2],
+                                                 table.seeds.quat[4 * s + 3]};
             ExpectNormalizedFrom(&r2.grain_quat[4 * gi], input, "grain " + std::to_string(g));
         }
     }
@@ -772,9 +783,8 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
     using voxel_fixture::NX;
     using voxel_fixture::NY;
     using voxel_fixture::NZ;
-    mfem::Mesh serial =
-        mfem::Mesh::MakeCartesian3D(NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H,
-                                    false);
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(
+        NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H, false);
     for (const bool dream3d : {false, true}) {
         SCOPED_TRACE(dream3d ? "dream3d" : "canonical");
         ms::MicrostructureOptions options;
@@ -802,8 +812,8 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
         const std::vector<std::int64_t>& filled = voxel_fixture::MapData().filled;
         int mismatches = 0;
         for (std::size_t e = 0; e < runs.alone.labels.size(); ++e) {
-            const auto it = std::find(voxel_fixture::kUsedIds.begin(),
-                                      voxel_fixture::kUsedIds.end(), filled[e]);
+            const auto it = std::find(
+                voxel_fixture::kUsedIds.begin(), voxel_fixture::kUsedIds.end(), filled[e]);
             const int grain = static_cast<int>(it - voxel_fixture::kUsedIds.begin()) + 1;
             mismatches += (runs.alone.labels[e] != grain) ? 1 : 0;
         }
@@ -819,8 +829,8 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
                     v = double(float(v));
                 }
             }
-            ExpectNormalizedFrom(&result.grain_quat[4 * gi], stored,
-                                 "feature " + std::to_string(feature));
+            ExpectNormalizedFrom(
+                &result.grain_quat[4 * gi], stored, "feature " + std::to_string(feature));
             const int phase = voxel_fixture::FeaturePhase(feature);
             EXPECT_EQ(result.grain_phase[gi], phase);
             EXPECT_EQ(result.grain_region[gi], phase == 3 ? 2 : 1);
@@ -840,9 +850,9 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
         EXPECT_EQ(one.alone.result.region_phases, (std::vector<std::vector<int>>{{1, 2, 3}}));
         for (int g = 0; g < one.alone.result.num_grains; ++g) {
             const auto gi = static_cast<std::size_t>(g);
-            EXPECT_EQ(one.alone.result.grain_phase[gi],
-                      voxel_fixture::FeaturePhase(
-                          static_cast<int>(one.alone.report.grain_feature[gi])));
+            EXPECT_EQ(
+                one.alone.result.grain_phase[gi],
+                voxel_fixture::FeaturePhase(static_cast<int>(one.alone.report.grain_feature[gi])));
         }
     }
 }
@@ -877,7 +887,6 @@ TEST(DriverStage1d, VoxelMapRefusals) {
     EXPECT_TRUE(Refused(*d.pmesh, laguerre));
 }
 
-
 // A voxel map with the two bottom element layers kept as a passthrough build plate (region 2).
 // The active elements are labeled exactly as on a mesh of the active layers alone (the voxels
 // are read by position, the fill does not cross the plate, and compaction, cleanup and the
@@ -889,16 +898,20 @@ TEST(DriverStage1d, VoxelMapWithPassthroughPlate) {
     using voxel_fixture::NY;
     using voxel_fixture::NZ;
     constexpr int PLATE_LAYERS = 2;
-    mfem::Mesh masked =
-        mfem::Mesh::MakeCartesian3D(NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H,
-                                    false);
+    mfem::Mesh masked = mfem::Mesh::MakeCartesian3D(
+        NX, NY, NZ, mfem::Element::HEXAHEDRON, NX * H, NY * H, NZ * H, false);
     for (int e = 0; e < masked.GetNE(); ++e) {
         masked.SetAttribute(e, e / (NX * NY) < PLATE_LAYERS ? 2 : 1); // x fastest, then y, z
     }
     masked.SetAttributes();
-    mfem::Mesh reference =
-        mfem::Mesh::MakeCartesian3D(NX, NY, NZ - PLATE_LAYERS, mfem::Element::HEXAHEDRON, NX * H,
-                                    NY * H, (NZ - PLATE_LAYERS) * H, false);
+    mfem::Mesh reference = mfem::Mesh::MakeCartesian3D(NX,
+                                                       NY,
+                                                       NZ - PLATE_LAYERS,
+                                                       mfem::Element::HEXAHEDRON,
+                                                       NX * H,
+                                                       NY * H,
+                                                       (NZ - PLATE_LAYERS) * H,
+                                                       false);
     reference.Transform([](const mfem::Vector& x, mfem::Vector& y) {
         y = x;
         y(2) += PLATE_LAYERS * H;
@@ -1097,10 +1110,10 @@ TEST(DriverStage1d, MicrostructureFileExportRoundTrip) {
         EXPECT_EQ(table.position[3 * g + 1], report.seeds.y[seed]);
         EXPECT_EQ(table.position[3 * g + 2], report.seeds.z[seed]);
     }
-    EXPECT_EQ(table.quat, std::vector<double>(result.grain_quat.begin(),
-                                              result.grain_quat.begin() +
-                                                  static_cast<std::ptrdiff_t>(4 * n)));
-    EXPECT_TRUE(table.phase.empty());  // no phase data in this run
+    EXPECT_EQ(table.quat,
+              std::vector<double>(result.grain_quat.begin(),
+                                  result.grain_quat.begin() + static_cast<std::ptrdiff_t>(4 * n)));
+    EXPECT_TRUE(table.phase.empty()); // no phase data in this run
     EXPECT_TRUE(table.weight.empty() && table.shape.empty() && table.volume.empty());
 
     const fs::path file = DataDir() / "export_microstructure.h5";
@@ -1140,7 +1153,9 @@ TEST(DriverStage1d, RefusedCombinations) {
     mfem::Mesh plate = PlateMesh();
     Distributed d = Distribute(plate, MPI_COMM_WORLD);
     using O = ms::MicrostructureOptions;
-    auto refused = [&](const O& options) { return Refused(*d.pmesh, options); };
+    auto refused = [&](const O& options) {
+        return Refused(*d.pmesh, options);
+    };
 
     O pass;
     pass.seeds.num_seeds = 5;
@@ -1268,8 +1283,8 @@ TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
     EXPECT_GE(pieces.size(), 2u);
     int derived = 0;
     for (const std::size_t g : pieces) {
-        ExpectNormalizedFrom(&result.grain_quat[4 * g], {0.5004, 0.5, -0.5, 0.5},
-                             "piece " + std::to_string(g + 1));
+        ExpectNormalizedFrom(
+            &result.grain_quat[4 * g], {0.5004, 0.5, -0.5, 0.5}, "piece " + std::to_string(g + 1));
         EXPECT_EQ(result.grain_phase[g], 3);
         EXPECT_EQ(result.grain_region[g], 2); // phases {1, 3} -> regions {1, 2}
         derived += (result.grain_source_id[g] != 42) ? 1 : 0;
@@ -1300,9 +1315,11 @@ TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
             SCOPED_TRACE("rng_seed " + std::to_string(key));
             // Random orientation of the derived id, normalized
             double expected[4];
-            ms::RandomQuaternion(ms::CounterRng(key, ms::RngPurpose::ORIENTATION,
+            ms::RandomQuaternion(ms::CounterRng(key,
+                                                ms::RngPurpose::ORIENTATION,
                                                 static_cast<std::uint64_t>(r.grain_source_id[g])),
-                                 0u, expected);
+                                 0u,
+                                 expected);
             ExpectNormalizedFrom(&r.grain_quat[4 * g],
                                  {expected[0], expected[1], expected[2], expected[3]},
                                  "split filler grain");
@@ -1365,8 +1382,9 @@ TEST(DriverStage1d, RankWithoutActiveElements) {
     std::vector<int> owner(static_cast<std::size_t>(serial.GetNE()));
     for (int e = 0; e < serial.GetNE(); ++e) {
         const bool plate = (e / 36) < 2;
-        owner[static_cast<std::size_t>(e)] =
-            (nranks == 1) ? 0 : (plate ? nranks - 1 : e % (nranks - 1));
+        owner[static_cast<std::size_t>(e)] = (nranks == 1)
+                                                 ? 0
+                                                 : (plate ? nranks - 1 : e % (nranks - 1));
     }
     ms::MicrostructureOptions base;
     base.seeds.num_seeds = 10;
@@ -1436,8 +1454,8 @@ TEST(DriverStage1d, RankWithoutActiveElements) {
 TEST(DriverStage1d, ExampleOptionsFilesRun) {
     for (const char* name : {"seed_table_auto.toml", "phase_fractions_auto.toml"}) {
         SCOPED_TRACE(name);
-        ms::MicrostructureOptions options =
-            ms::MicrostructureOptions::parse_options_file(data_dir / "microstructure" / name);
+        ms::MicrostructureOptions options = ms::MicrostructureOptions::parse_options_file(
+            data_dir / "microstructure" / name);
         if (!options.seeds.file.empty()) {
             options.seeds.file = data_dir / "microstructure" / options.seeds.file;
         }

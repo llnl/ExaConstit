@@ -1,15 +1,15 @@
 #pragma once
 
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <vector>
+
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file label_repair.hpp
@@ -131,8 +131,11 @@ struct LabelRepairResult {
  * @throws std::invalid_argument on every rank for invalid options or input (see NodeLabels and
  *         NodeTargets).
  */
-LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
-                               MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
+LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
+                               mfem::Array<int>& element_label,
+                               MetricType metric,
+                               const SeedSet& seeds,
+                               const MetricSetup& setup,
                                const std::vector<int>& grain_seed,
                                const LabelRepairOptions& options = {});
 
@@ -154,9 +157,13 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh, mfem::Array<int>& element_l
  * @param flipped per local element, in/out (resized to NE if empty).
  * @return the global number of flips.
  */
-std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh, mfem::Array<int>& element_label,
-                                MetricType metric, const SeedSet& seeds, const MetricSetup& setup,
-                                const std::vector<int>& grain_seed, double hysteresis,
+std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh,
+                                mfem::Array<int>& element_label,
+                                MetricType metric,
+                                const SeedSet& seeds,
+                                const MetricSetup& setup,
+                                const std::vector<int>& grain_seed,
+                                double hysteresis,
                                 std::vector<char>& flipped);
 
 } // namespace exaconstit::microstructure

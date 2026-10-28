@@ -1,11 +1,11 @@
 #include "microstructure/seeding/material_point_locator.hpp"
 
-#include "microstructure/mesh/straight_sided.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+
+#include "microstructure/mesh/straight_sided.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -117,7 +117,8 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  * (the same points as the refined grid used before the bulge margin, so the global mesh box of a
  * curved mesh did not change; only the element boxes did).
  */
-MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided,
+MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh,
+                                           bool straight_sided,
                                            const ElementMask* mask)
     : m_mesh(mesh) {
     m_num_elements = mesh.GetNE();
@@ -172,7 +173,7 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
             // in the convex hull of its corners). Without Nodes the corners are the vertices.
             ElementCornerPoints(mesh, e, corners);
             for (int k = 0; k < corners.Width(); k++) {
-                box.addPoint(PointType {corners(0, k), corners(1, k), corners(2, k)});
+                box.addPoint(PointType{corners(0, k), corners(1, k), corners(2, k)});
             }
             m_local_point_bounds.addBox(box);
         } else if (m_lattices[mesh.GetElementGeometry(e)].valid) {
@@ -187,11 +188,10 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
             // diagonal
             mesh.GetElementTransformation(e, &trans);
             const mfem::Geometry::Type geom = mesh.GetElementGeometry(e);
-            mfem::RefinedGeometry* refined =
-                mfem::GlobGeometryRefiner.Refine(geom, 2 * node_order);
+            mfem::RefinedGeometry* refined = mfem::GlobGeometryRefiner.Refine(geom, 2 * node_order);
             for (int q = 0; q < refined->RefPts.GetNPoints(); q++) {
                 trans.Transform(refined->RefPts.IntPoint(q), x);
-                box.addPoint(PointType {x(0), x(1), x(2)});
+                box.addPoint(PointType{x(0), x(1), x(2)});
             }
             m_local_point_bounds.addBox(box);
 
@@ -201,13 +201,13 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh, bool straight
             nodes->GetSubVector(vdofs, nodal_values);
             const int num_dofs = vdofs.Size() / 3;
             for (int k = 0; k < num_dofs; k++) {
-                box.addPoint(PointType {nodal_values(k), nodal_values(k + num_dofs),
-                                        nodal_values(k + 2 * num_dofs)});
+                box.addPoint(PointType{
+                    nodal_values(k), nodal_values(k + num_dofs), nodal_values(k + 2 * num_dofs)});
             }
 
             const auto range = box.range();
-            const double diagonal =
-                std::sqrt(range[0] * range[0] + range[1] * range[1] + range[2] * range[2]);
+            const double diagonal = std::sqrt(range[0] * range[0] + range[1] * range[1] +
+                                              range[2] * range[2]);
             box.expand(CURVED_BOX_PADDING * diagonal);
         }
         m_element_boxes[e] = box;
@@ -274,14 +274,15 @@ void MaterialPointLocator::BuildLattice(mfem::Geometry::Type geom, int n) {
     lattice.points.SetSize(static_cast<int>(ijk.size()));
     for (std::size_t q = 0; q < ijk.size(); q++) {
         mfem::IntegrationPoint& ip = lattice.points.IntPoint(static_cast<int>(q));
-        ip.Set3(static_cast<double>(ijk[q][0]) / n, static_cast<double>(ijk[q][1]) / n,
+        ip.Set3(static_cast<double>(ijk[q][0]) / n,
+                static_cast<double>(ijk[q][1]) / n,
                 static_cast<double>(ijk[q][2]) / n);
         ip.weight = 0.0; // not a quadrature rule
     }
 
     // Step 2: lattice edges along the 3 (hex) or 6 (tet) lattice directions
-    const int directions[6][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1},
-                                  {-1, 1, 0}, {-1, 0, 1}, {0, -1, 1}};
+    const int directions[6][3] = {
+        {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 1, 0}, {-1, 0, 1}, {0, -1, 1}};
     const int num_directions = is_hex ? 3 : 6;
     lattice.edge_a.clear();
     lattice.edge_b.clear();
@@ -381,7 +382,7 @@ void MaterialPointLocator::CurvedElementBox(int e, BoxType& box, BoxType& point_
         }
     };
     include(lattice_x);
-    point_box = BoxType(PointType {lo[0], lo[1], lo[2]}, PointType {hi[0], hi[1], hi[2]});
+    point_box = BoxType(PointType{lo[0], lo[1], lo[2]}, PointType{hi[0], hi[1], hi[2]});
     include(midpoint_x);
     include(nodal);
 
@@ -399,14 +400,13 @@ void MaterialPointLocator::CurvedElementBox(int e, BoxType& box, BoxType& point_
     for (int d = 0; d < 3; d++) {
         magnitude = std::max({magnitude, std::fabs(lo[d]), std::fabs(hi[d])});
     }
-    const double roundoff =
-        BOX_ROUNDOFF_EPS * std::numeric_limits<double>::epsilon() * magnitude;
+    const double roundoff = BOX_ROUNDOFF_EPS * std::numeric_limits<double>::epsilon() * magnitude;
     for (int d = 0; d < 3; d++) {
         const double margin = CURVED_BOX_MARGIN_FACTOR * deviation[d] + roundoff;
         lo[d] -= margin;
         hi[d] += margin;
     }
-    box = BoxType(PointType {lo[0], lo[1], lo[2]}, PointType {hi[0], hi[1], hi[2]});
+    box = BoxType(PointType{lo[0], lo[1], lo[2]}, PointType{hi[0], hi[1], hi[2]});
 }
 
 /*
@@ -422,8 +422,11 @@ void MaterialPointLocator::CurvedElementBox(int e, BoxType& box, BoxType& point_
  *  3. Exact test against each candidate element; stop at the first element that contains the
  *     point and set its bit.
  */
-void MaterialPointLocator::MarkInside(std::int64_t n, const double* x, const double* y,
-                                      const double* z, std::uint64_t* inside_mask) const {
+void MaterialPointLocator::MarkInside(std::int64_t n,
+                                      const double* x,
+                                      const double* y,
+                                      const double* z,
+                                      std::uint64_t* inside_mask) const {
     if (m_active_elements.empty() || n == 0) {
         return;
     }
@@ -434,7 +437,7 @@ void MaterialPointLocator::MarkInside(std::int64_t n, const double* x, const dou
     points.reserve(static_cast<std::size_t>(n));
     point_index.reserve(static_cast<std::size_t>(n));
     for (std::int64_t i = 0; i < n; i++) {
-        const PointType p {x[i], y[i], z[i]};
+        const PointType p{x[i], y[i], z[i]};
         if (m_local_bounds.contains(p)) {
             points.push_back(p);
             point_index.push_back(i);
@@ -510,8 +513,8 @@ bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& 
     const double l3 = Det3(a, b, r) / det;
     const double l0 = 1.0 - l1 - l2 - l3;
 
-    return l0 >= -TET_BARYCENTRIC_TOL && l1 >= -TET_BARYCENTRIC_TOL &&
-           l2 >= -TET_BARYCENTRIC_TOL && l3 >= -TET_BARYCENTRIC_TOL;
+    return l0 >= -TET_BARYCENTRIC_TOL && l1 >= -TET_BARYCENTRIC_TOL && l2 >= -TET_BARYCENTRIC_TOL &&
+           l3 >= -TET_BARYCENTRIC_TOL;
 }
 
 /*
@@ -588,8 +591,8 @@ bool MaterialPointLocator::PointInGeneralElement(int e, const std::array<double,
     trans.Transform(ip, mapped);
     const auto range = m_element_boxes[e].range();
     const double element_size = std::max({range[0], range[1], range[2]});
-    const double mismatch = std::max({std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]),
-                                      std::fabs(mapped(2) - p[2])});
+    const double mismatch = std::max(
+        {std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]), std::fabs(mapped(2) - p[2])});
     return mismatch <= PROJECTED_MISMATCH_TOL * element_size;
 }
 
@@ -693,7 +696,8 @@ bool MaterialPointLocator::PointInCurvedElement(int e, const std::array<double, 
     // Early reject: two different starts converged to the same unfolded root just outside the
     // element (see the function comment)
     if (first_near && second == mfem::InverseElementTransformation::Outside &&
-        std::max({std::fabs(ip.x - first_root.x), std::fabs(ip.y - first_root.y),
+        std::max({std::fabs(ip.x - first_root.x),
+                  std::fabs(ip.y - first_root.y),
                   std::fabs(ip.z - first_root.z)}) <= SAME_ROOT_TOL) {
         return false;
     }
@@ -739,14 +743,15 @@ bool MaterialPointLocator::PointInCurvedElement(int e, const std::array<double, 
     trans.Transform(ip, mapped);
     const auto range = m_element_boxes[e].range();
     const double element_size = std::max({range[0], range[1], range[2]});
-    const double mismatch = std::max({std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]),
-                                      std::fabs(mapped(2) - p[2])});
+    const double mismatch = std::max(
+        {std::fabs(mapped(0) - p[0]), std::fabs(mapped(1) - p[1]), std::fabs(mapped(2) - p[2])});
     return mismatch <= PROJECTED_MISMATCH_TOL * element_size;
 }
 
 /* ContextLocator: the shared locator when given; otherwise IsStraightSided over the context's
  * mask (collective) and a locator over that mask. */
-const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh, MPI_Comm comm,
+const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh,
+                                           MPI_Comm comm,
                                            const MaterialContext* context,
                                            std::unique_ptr<MaterialPointLocator>& owned) {
     if (context != nullptr && context->locator != nullptr) {

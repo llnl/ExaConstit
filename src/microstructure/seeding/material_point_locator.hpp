@@ -1,19 +1,18 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-
 #include "mfem.hpp"
-
-#include "axom/core.hpp"
-#include "axom/primal/geometry/BoundingBox.hpp"
-#include "axom/primal/geometry/Point.hpp"
-#include "axom/spin/BVH.hpp"
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
 #include <vector>
+
+#include "axom/core.hpp"
+#include "axom/primal/geometry/BoundingBox.hpp"
+#include "axom/primal/geometry/Point.hpp"
+#include "axom/spin/BVH.hpp"
+#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file material_point_locator.hpp
@@ -118,7 +117,8 @@ public:
      * @throws std::runtime_error if the mesh is not 3D; std::invalid_argument if a non-empty
      *         mask does not have one entry per local element.
      */
-    MaterialPointLocator(const mfem::Mesh& mesh, bool straight_sided,
+    MaterialPointLocator(const mfem::Mesh& mesh,
+                         bool straight_sided,
                          const ElementMask* mask = nullptr);
 
     /** @brief Number of local elements (active or not; element ids run over all of them). */
@@ -178,7 +178,10 @@ public:
      * @param x,y,z       point coordinates, n entries each (mesh length units).
      * @param inside_mask at least (n + 63) / 64 words.
      */
-    void MarkInside(std::int64_t n, const double* x, const double* y, const double* z,
+    void MarkInside(std::int64_t n,
+                    const double* x,
+                    const double* y,
+                    const double* z,
                     std::uint64_t* inside_mask) const;
 
     /**
@@ -207,11 +210,11 @@ private:
      * for geometries that are not present or not hex/tet.
      */
     struct ReferenceLattice {
-        bool valid = false;            ///< built for this geometry
-        mfem::IntegrationRule points;  ///< (n+1)^3 (hex) or (n+1)(n+2)(n+3)/6 (tet) points
+        bool valid = false;              ///< built for this geometry
+        mfem::IntegrationRule points;    ///< (n+1)^3 (hex) or (n+1)(n+2)(n+3)/6 (tet) points
         mfem::IntegrationRule midpoints; ///< one per lattice edge
-        std::vector<int> edge_a;       ///< first end of each edge (index into points)
-        std::vector<int> edge_b;       ///< second end of each edge
+        std::vector<int> edge_a;         ///< first end of each edge (index into points)
+        std::vector<int> edge_b;         ///< second end of each edge
     };
 
     /** @brief Builds m_lattices[geom] for lattice size n (see ReferenceLattice). */
@@ -224,18 +227,18 @@ private:
      */
     void CurvedElementBox(int e, BoxType& box, BoxType& point_box) const;
 
-    const mfem::Mesh& m_mesh;                 ///< the local mesh (not owned)
-    int m_num_elements = 0;                   ///< local element count
-    bool m_straight_sided = true;             ///< element = convex hull of its corners
-    std::vector<BoxType> m_element_boxes;     ///< one box per local element (empty if inactive)
-    std::vector<char> m_active_flags;         ///< per local element, empty = all active
-    std::vector<int> m_active_elements;       ///< local ids of the active elements, increasing
-    std::vector<BoxType> m_active_boxes;      ///< BVH input with a mask (empty: all active)
-    BoxType m_local_bounds;                   ///< union of the element boxes
-    BoxType m_local_point_bounds;             ///< box of the evaluated points (no padding)
+    const mfem::Mesh& m_mesh;             ///< the local mesh (not owned)
+    int m_num_elements = 0;               ///< local element count
+    bool m_straight_sided = true;         ///< element = convex hull of its corners
+    std::vector<BoxType> m_element_boxes; ///< one box per local element (empty if inactive)
+    std::vector<char> m_active_flags;     ///< per local element, empty = all active
+    std::vector<int> m_active_elements;   ///< local ids of the active elements, increasing
+    std::vector<BoxType> m_active_boxes;  ///< BVH input with a mask (empty: all active)
+    BoxType m_local_bounds;               ///< union of the element boxes
+    BoxType m_local_point_bounds;         ///< box of the evaluated points (no padding)
     /** @brief Reference lattices of the curved path, indexed by mfem::Geometry::Type. */
     std::array<ReferenceLattice, mfem::Geometry::NumGeom> m_lattices;
-    axom::spin::BVH<3, ExecSpace> m_bvh;      ///< BVH over m_active_boxes (if any)
+    axom::spin::BVH<3, ExecSpace> m_bvh; ///< BVH over m_active_boxes (if any)
 };
 
 /**
@@ -278,7 +281,8 @@ inline const ElementMask* ContextMask(const MaterialContext* context) {
  * @param owned   receives the locator when one has to be built; kept alive by the caller.
  * @return the locator to use.
  */
-const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh, MPI_Comm comm,
+const MaterialPointLocator& ContextLocator(const mfem::Mesh& mesh,
+                                           MPI_Comm comm,
                                            const MaterialContext* context,
                                            std::unique_ptr<MaterialPointLocator>& owned);
 

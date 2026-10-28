@@ -1,5 +1,12 @@
 #include "microstructure/seeding/seed_generators.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
@@ -10,13 +17,6 @@
 #include "microstructure/util/counter_rng.hpp"
 #include "microstructure/util/fixed_point.hpp"
 #include "microstructure/util/random_distributions.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <memory>
-#include <sstream>
-#include <stdexcept>
 
 /*
  * Implementation notes (see seed_generators.hpp for the user-level description).
@@ -157,9 +157,9 @@ struct MeshSummary {
      */
     std::array<double, 3> reach_lo;
     std::array<double, 3> reach_hi;
-    double volume = 0.0;                  ///< material volume V (fixed-point sum)
-    std::int64_t num_elements = 0;        ///< global element count
-    std::int64_t num_nonpositive = 0;     ///< global count of elements with volume <= 0 (or NaN)
+    double volume = 0.0;              ///< material volume V (fixed-point sum)
+    std::int64_t num_elements = 0;    ///< global element count
+    std::int64_t num_nonpositive = 0; ///< global count of elements with volume <= 0 (or NaN)
 };
 
 /*
@@ -181,8 +181,8 @@ struct MeshSummary {
  *     the RSA distance, batch sizes, the fallback decision) is bitwise identical for any rank
  *     count.
  */
-MeshSummary SummarizeMesh(const MaterialPointLocator& locator, const ElementSamples& samples,
-                          MPI_Comm comm) {
+MeshSummary
+SummarizeMesh(const MaterialPointLocator& locator, const ElementSamples& samples, MPI_Comm comm) {
     MeshSummary summary;
     const int ne = locator.NumElements();
     const int num_active = locator.NumActiveElements();
@@ -261,16 +261,19 @@ public:
      * @param grid_lo,grid_hi box of the RSA hash grid (the period along periodic axes).
      * @param periodic periodic axes.
      */
-    SeedAcceptor(std::int64_t target, double min_distance, const std::array<double, 3>& grid_lo,
-                 const std::array<double, 3>& grid_hi, const std::array<bool, 3>& periodic,
+    SeedAcceptor(std::int64_t target,
+                 double min_distance,
+                 const std::array<double, 3>& grid_lo,
+                 const std::array<double, 3>& grid_hi,
+                 const std::array<bool, 3>& periodic,
                  const std::vector<double>& rsa_radius = {})
         : m_target(target), m_radius(rsa_radius) {
         if (!m_radius.empty()) {
             // Polydisperse: cells of twice the largest radius keep overlapping pairs in
             // neighboring cells (MinDistanceGrid::OverlapsAny)
             const double max_radius = *std::max_element(m_radius.begin(), m_radius.end());
-            m_grid = std::make_unique<MinDistanceGrid>(grid_lo, grid_hi, 2.0 * max_radius,
-                                                       periodic);
+            m_grid = std::make_unique<MinDistanceGrid>(
+                grid_lo, grid_hi, 2.0 * max_radius, periodic);
         } else if (min_distance > 0.0) {
             m_grid = std::make_unique<MinDistanceGrid>(grid_lo, grid_hi, min_distance, periodic);
         }
@@ -292,7 +295,9 @@ public:
      * stall outcome independent of how the stream was cut into batches or windows (whose sizes
      * may depend on floating-point sums). Updates the report counters.
      */
-    void Offer(const CandidateBatch& batch, const BatchMask& mask, std::int64_t cap,
+    void Offer(const CandidateBatch& batch,
+               const BatchMask& mask,
+               std::int64_t cap,
                SeedingReport& report) {
         for (std::int64_t i = 0; i < batch.Size(); i++) {
             if (Full() || report.candidates_generated >= cap) {
@@ -355,9 +360,9 @@ struct SeedingContext {
     bool material_mode;                 ///< sampling_domain == "material"
     std::array<double, 3> box_lo;       ///< sampling box
     std::array<double, 3> box_hi;
-    double volume_ref;                  ///< V used for d, lattice spacing and the guard
-    double min_distance;                ///< d
-    std::int64_t candidate_cap;         ///< stall cap
+    double volume_ref;          ///< V used for d, lattice spacing and the guard
+    double min_distance;        ///< d
+    std::int64_t candidate_cap; ///< stall cap
 };
 
 /*
@@ -380,8 +385,11 @@ struct SeedingContext {
  * positions), and their in-domain bit stays 0. Without an exclusion box nothing of this runs, so
  * the default path is unchanged.
  */
-void ClassifyBatch(const SeedingContext& ctx, const CandidateBatch& batch, bool test_inside,
-                   bool filter_box, BatchMask& mask) {
+void ClassifyBatch(const SeedingContext& ctx,
+                   const CandidateBatch& batch,
+                   bool test_inside,
+                   bool filter_box,
+                   BatchMask& mask) {
     const std::int64_t n = batch.Size();
     mask.Reset(n);
 
@@ -425,8 +433,7 @@ void ClassifyBatch(const SeedingContext& ctx, const CandidateBatch& batch, bool 
             }
         }
     } else if (test_inside) {
-        ctx.locator->MarkInside(n, batch.x.data(), batch.y.data(), batch.z.data(),
-                                mask.InDomain());
+        ctx.locator->MarkInside(n, batch.x.data(), batch.y.data(), batch.z.data(), mask.InDomain());
     } else {
         for (std::int64_t i = 0; i < n; i++) {
             bool in_box = true;
@@ -444,15 +451,19 @@ void ClassifyBatch(const SeedingContext& ctx, const CandidateBatch& batch, bool 
 
     // Near-surface bits
     if (ctx.clearance) {
-        ctx.clearance->MarkNear(n, batch.x.data(), batch.y.data(), batch.z.data(),
-                                mask.NearSurface());
+        ctx.clearance->MarkNear(
+            n, batch.x.data(), batch.y.data(), batch.z.data(), mask.NearSurface());
     }
 
     // Global OR over ranks when any bit is rank-local
     if ((test_inside || ctx.clearance) && mask.words > 0) {
         // 2 * words <= 2 * 2^24 / 64 = 2^19 (max_batch_size is capped at 2^24), so it fits an int
-        MPI_Allreduce(MPI_IN_PLACE, mask.bits.data(), static_cast<int>(2 * mask.words),
-                      MPI_UINT64_T, MPI_BOR, ctx.comm);
+        MPI_Allreduce(MPI_IN_PLACE,
+                      mask.bits.data(),
+                      static_cast<int>(2 * mask.words),
+                      MPI_UINT64_T,
+                      MPI_BOR,
+                      ctx.comm);
     }
 }
 
@@ -466,7 +477,9 @@ enum class RunStatus { DONE, STALLED, FALLBACK };
  * speed and memory, never which seeds are accepted, because candidates are always taken in index
  * order.
  */
-std::int64_t NextBatchSize(const SeedingContext& ctx, std::int64_t remaining, double rate,
+std::int64_t NextBatchSize(const SeedingContext& ctx,
+                           std::int64_t remaining,
+                           double rate,
                            std::int64_t left_under_cap) {
     const double wanted = 1.2 * static_cast<double>(remaining) / std::max(rate, 1.0e-12) + 256.0;
     const std::int64_t max_batch = ctx.params->max_batch_size;
@@ -487,7 +500,9 @@ std::int64_t NextBatchSize(const SeedingContext& ctx, std::int64_t remaining, do
  * 2^20 candidates were examined, if the measured fraction inside the material is below
  * fallback_acceptance (the caller then restarts with element-weighted sampling).
  */
-RunStatus RunRejection(const SeedingContext& ctx, double prior_rate, SeedAcceptor& acceptor,
+RunStatus RunRejection(const SeedingContext& ctx,
+                       double prior_rate,
+                       SeedAcceptor& acceptor,
                        SeedingReport& report) {
     const SeedingParameters& params = *ctx.params;
     CandidateBatch batch;
@@ -507,24 +522,25 @@ RunStatus RunRejection(const SeedingContext& ctx, double prior_rate, SeedAccepto
         }
 
         // Size of this batch from the acceptance rate so far
-        const double rate =
-            (report.candidates_generated > 0)
-                ? double(acceptor.NumAccepted() + 1) / double(report.candidates_generated + 1)
-                : prior_rate;
-        const std::int64_t size = NextBatchSize(ctx, params.num_seeds - acceptor.NumAccepted(),
-                                                rate, ctx.candidate_cap - next_k);
+        const double rate = (report.candidates_generated > 0)
+                                ? double(acceptor.NumAccepted() + 1) /
+                                      double(report.candidates_generated + 1)
+                                : prior_rate;
+        const std::int64_t size = NextBatchSize(
+            ctx, params.num_seeds - acceptor.NumAccepted(), rate, ctx.candidate_cap - next_k);
 
         // Candidate positions c_k = lo + U_k (hi - lo)
         batch.Clear();
         for (std::int64_t i = 0; i < size; i++) {
             const std::int64_t k = next_k + i;
-            const CounterRng rng(params.rng_seed, RngPurpose::SEED_POSITION,
-                                 static_cast<std::uint64_t>(k));
+            const CounterRng rng(
+                params.rng_seed, RngPurpose::SEED_POSITION, static_cast<std::uint64_t>(k));
             double u[3];
             UniformUnitCube(rng, 0, u);
             batch.Push(ctx.box_lo[0] + u[0] * (ctx.box_hi[0] - ctx.box_lo[0]),
                        ctx.box_lo[1] + u[1] * (ctx.box_hi[1] - ctx.box_lo[1]),
-                       ctx.box_lo[2] + u[2] * (ctx.box_hi[2] - ctx.box_lo[2]), k);
+                       ctx.box_lo[2] + u[2] * (ctx.box_hi[2] - ctx.box_lo[2]),
+                       k);
         }
 
         // Global classification, then in-order acceptance
@@ -561,10 +577,8 @@ LatticeDefinition MakeLattice(const std::string& type) {
         lattice.basis = {{0.0, 0.0, 0.0}, {0.5, 0.5, 0.0}, {0.5, 0.0, 0.5}, {0.0, 0.5, 0.5}};
     } else { // "hcp" (validated before)
         lattice.cell_aspect = {1.0, std::sqrt(3.0), std::sqrt(8.0 / 3.0)};
-        lattice.basis = {{0.0, 0.0, 0.0},
-                         {0.5, 0.5, 0.0},
-                         {0.5, 1.0 / 6.0, 0.5},
-                         {0.0, 2.0 / 3.0, 0.5}};
+        lattice.basis = {
+            {0.0, 0.0, 0.0}, {0.5, 0.5, 0.0}, {0.5, 1.0 / 6.0, 0.5}, {0.0, 2.0 / 3.0, 0.5}};
     }
     return lattice;
 }
@@ -594,8 +608,8 @@ void RunLattice(const SeedingContext& ctx, SeedAcceptor& acceptor, SeedingReport
     const std::int64_t nb = static_cast<std::int64_t>(lattice.basis.size());
 
     // Step 1: lattice parameter and cell edge lengths
-    const double aspect_volume =
-        lattice.cell_aspect[0] * lattice.cell_aspect[1] * lattice.cell_aspect[2];
+    const double aspect_volume = lattice.cell_aspect[0] * lattice.cell_aspect[1] *
+                                 lattice.cell_aspect[2];
     const double a = std::cbrt(double(nb) * ctx.volume_ref /
                                (double(params.num_seeds) * aspect_volume));
     report.lattice_parameter = a;
@@ -632,8 +646,8 @@ void RunLattice(const SeedingContext& ctx, SeedAcceptor& acceptor, SeedingReport
             // Step 3: jitter offsets (zero without jitter)
             double jitter[3] = {0.0, 0.0, 0.0};
             if (params.lattice_jitter > 0.0) {
-                const CounterRng rng(params.rng_seed, RngPurpose::LATTICE_JITTER,
-                                     static_cast<std::uint64_t>(idx));
+                const CounterRng rng(
+                    params.rng_seed, RngPurpose::LATTICE_JITTER, static_cast<std::uint64_t>(idx));
                 double u[3];
                 UniformUnitCube(rng, 0, u);
                 for (int d = 0; d < 3; d++) {
@@ -707,9 +721,14 @@ bool ArrivalBefore(const Arrival& a, const Arrival& b) {
  * between partitions only for a point within round-off of a face).
  * RNG blocks: (j, 0) is the arrival time; attempt m uses blocks (j, 1 + 2m) and (j, 2 + 2m).
  */
-void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& locator, int e,
-                          const CounterRng& rng, std::uint32_t j, double q,
-                          const double centroid[3], double out[3]) {
+void SamplePointInElement(const mfem::Mesh& mesh,
+                          const MaterialPointLocator& locator,
+                          int e,
+                          const CounterRng& rng,
+                          std::uint32_t j,
+                          double q,
+                          const double centroid[3],
+                          double out[3]) {
     if (locator.StraightSided() && mesh.GetElementGeometry(e) == mfem::Geometry::TETRAHEDRON) {
         const PhiloxBlock b0 = rng.Block(j, 1);
         const PhiloxBlock b1 = rng.Block(j, 2);
@@ -840,8 +859,10 @@ void SamplePointInElement(const mfem::Mesh& mesh, const MaterialPointLocator& lo
  *  4. The sorted arrivals get consecutive stream indices (their source_id), are classified
  *     (user sampling box, surface clearance) and offered in order.
  */
-RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
-                             const ElementSamples& samples, SeedAcceptor& acceptor,
+RunStatus RunElementWeighted(const SeedingContext& ctx,
+                             const mfem::Mesh& mesh,
+                             const ElementSamples& samples,
+                             SeedAcceptor& acceptor,
                              SeedingReport& report) {
     const SeedingParameters& params = *ctx.params;
     const int ne = ctx.locator->NumElements();
@@ -892,7 +913,8 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
 
     // Step 2 setup: first arrival time of every contributing element, +inf for the others
     auto exponential = [&](int e, std::uint32_t j) {
-        const CounterRng rng(params.rng_seed, RngPurpose::ELEMENT_WEIGHTED_POSITION,
+        const CounterRng rng(params.rng_seed,
+                             RngPurpose::ELEMENT_WEIGHTED_POSITION,
                              key[static_cast<std::size_t>(e)]);
         const PhiloxBlock b = rng.Block(j, 0);
         return -std::log(1.0 - BitsToUnitDouble(b.v[0], b.v[1]));
@@ -930,13 +952,13 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
         }
 
         // Step 3a: window width from the points still needed and the acceptance so far
-        const double rate =
-            (report.candidates_generated > 0)
-                ? double(acceptor.NumAccepted() + 1) / double(report.candidates_generated + 1)
-                : 1.0;
-        const double wanted =
-            std::min(1.2 * double(params.num_seeds - acceptor.NumAccepted()) / rate + 256.0,
-                     double(params.max_batch_size));
+        const double rate = (report.candidates_generated > 0)
+                                ? double(acceptor.NumAccepted() + 1) /
+                                      double(report.candidates_generated + 1)
+                                : 1.0;
+        const double wanted = std::min(
+            1.2 * double(params.num_seeds - acceptor.NumAccepted()) / rate + 256.0,
+            double(params.max_batch_size));
         const double window_end = window_start + wanted / active_volume;
 
         // Step 3b: this rank's arrivals in [window_start, window_end) (inactive elements have
@@ -946,8 +968,8 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
             const auto ue = static_cast<std::size_t>(e);
             while (next_t[ue] < window_end) {
                 const std::uint32_t j = next_j[ue];
-                const CounterRng rng(params.rng_seed, RngPurpose::ELEMENT_WEIGHTED_POSITION,
-                                     key[ue]);
+                const CounterRng rng(
+                    params.rng_seed, RngPurpose::ELEMENT_WEIGHTED_POSITION, key[ue]);
                 const double centroid[3] = {cx[e], cy[e], cz[e]};
                 Arrival a;
                 a.t = next_t[ue];
@@ -980,8 +1002,14 @@ RunStatus RunElementWeighted(const SeedingContext& ctx, const mfem::Mesh& mesh,
                                      "window; reduce max_batch_size");
         }
         all.resize(static_cast<std::size_t>(total));
-        MPI_Allgatherv(local.data(), my_count, arrival_type, all.data(), counts.data(),
-                       displs.data(), arrival_type, ctx.comm);
+        MPI_Allgatherv(local.data(),
+                       my_count,
+                       arrival_type,
+                       all.data(),
+                       counts.data(),
+                       displs.data(),
+                       arrival_type,
+                       ctx.comm);
         std::sort(all.begin(), all.end(), ArrivalBefore);
 
         // Step 4: stream indices, classification and in-order acceptance
@@ -1150,9 +1178,9 @@ std::string SeedingReport::Summary() const {
     os << "Seeds: " << achieved << " of " << requested << " requested ("
        << PlacementName(placement_used) << (used_fallback ? ", element-weighted fallback" : "")
        << (stalled ? ", STALLED" : "") << ")\n";
-    os << "  candidates examined " << candidates_generated << ", in domain "
-       << candidates_in_domain << ", rejected by clearance " << rejected_by_clearance
-       << ", rejected by min distance " << rejected_by_distance << "\n";
+    os << "  candidates examined " << candidates_generated << ", in domain " << candidates_in_domain
+       << ", rejected by clearance " << rejected_by_clearance << ", rejected by min distance "
+       << rejected_by_distance << "\n";
     os << "  material volume " << material_volume << ", min distance " << min_distance;
     if (lattice_parameter > 0.0) {
         os << ", lattice parameter " << lattice_parameter;
@@ -1194,8 +1222,11 @@ std::string SeedingReport::Summary() const {
  *  9. Add source_id_offset to every id (the exclusion box, if any, acted inside step 7 through
  *     ClassifyBatch and SeedAcceptor::Offer).
  */
-SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParameters& params,
-                      SeedingReport* report_out, const MaterialContext* context) {
+SeedSet GenerateSeeds(mfem::Mesh& local_mesh,
+                      MPI_Comm comm,
+                      const SeedingParameters& params,
+                      SeedingReport* report_out,
+                      const MaterialContext* context) {
     // Step 1
     ValidateSeedingParameters(params);
     SeedingReport report;
@@ -1213,8 +1244,8 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     std::string setup_error;
     try {
         if (!shared_locator) {
-            locator_ptr = std::make_unique<MaterialPointLocator>(local_mesh, straight_sided,
-                                                                 ContextMask(context));
+            locator_ptr = std::make_unique<MaterialPointLocator>(
+                local_mesh, straight_sided, ContextMask(context));
         }
         ComputeElementSamples(local_mesh, -1, samples);
     } catch (const std::exception& error) {
@@ -1273,8 +1304,8 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     // Step 5: RSA distance and feasibility guard
     ctx.min_distance = params.min_distance;
     if (ctx.min_distance == 0.0 && params.min_distance_factor > 0.0) {
-        ctx.min_distance =
-            params.min_distance_factor * std::cbrt(ctx.volume_ref / double(params.num_seeds));
+        ctx.min_distance = params.min_distance_factor *
+                           std::cbrt(ctx.volume_ref / double(params.num_seeds));
     }
     report.min_distance = ctx.min_distance;
     if (ctx.min_distance > 0.0) {
@@ -1282,18 +1313,17 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         const double n = double(params.num_seeds);
         const double fraction = n * (PI / 6.0) * d * d * d / ctx.volume_ref;
         if (fraction > FEASIBLE_PACKING_FRACTION) {
-            const double d_max =
-                std::cbrt(FEASIBLE_PACKING_FRACTION * ctx.volume_ref * 6.0 / (PI * n));
-            const double n_max =
-                FEASIBLE_PACKING_FRACTION * ctx.volume_ref * 6.0 / (PI * d * d * d);
+            const double d_max = std::cbrt(FEASIBLE_PACKING_FRACTION * ctx.volume_ref * 6.0 /
+                                           (PI * n));
+            const double n_max = FEASIBLE_PACKING_FRACTION * ctx.volume_ref * 6.0 /
+                                 (PI * d * d * d);
             std::ostringstream os;
             os << "GenerateSeeds: minimum distance " << d << " is infeasible for "
                << params.num_seeds << " seeds in volume " << ctx.volume_ref
-               << ": N (pi/6) d^3 / V = " << fraction
-               << " exceeds " << FEASIBLE_PACKING_FRACTION
+               << ": N (pi/6) d^3 / V = " << fraction << " exceeds " << FEASIBLE_PACKING_FRACTION
                << ". Use min_distance <= " << d_max << " (min_distance_factor <= "
-               << d_max / std::cbrt(ctx.volume_ref / double(params.num_seeds))
-               << ") or at most " << static_cast<std::int64_t>(n_max) << " seeds.";
+               << d_max / std::cbrt(ctx.volume_ref / double(params.num_seeds)) << ") or at most "
+               << static_cast<std::int64_t>(n_max) << " seeds.";
             throw std::runtime_error(os.str());
         }
     }
@@ -1316,9 +1346,8 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
         }
         report.min_distance = 2.0 * largest;
         std::ostringstream os;
-        os << "polydisperse RSA with " << params.rsa_radius.size()
-           << " exclusion radii (largest " << largest << "), spheres fill " << fraction
-           << " of the volume";
+        os << "polydisperse RSA with " << params.rsa_radius.size() << " exclusion radii (largest "
+           << largest << "), spheres fill " << fraction << " of the volume";
         report.notes.push_back(os.str());
     }
 
@@ -1330,11 +1359,11 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     if (params.boundary_clearance > 0.0) {
         std::string clearance_error;
         try {
-            clearance = std::make_unique<BoundaryClearance>(local_mesh, params.boundary_clearance,
-                                                            straight_sided, ContextMask(context));
+            clearance = std::make_unique<BoundaryClearance>(
+                local_mesh, params.boundary_clearance, straight_sided, ContextMask(context));
         } catch (const std::exception& error) {
-            clearance_error =
-                std::string("GenerateSeeds: surface clearance setup failed: ") + error.what();
+            clearance_error = std::string("GenerateSeeds: surface clearance setup failed: ") +
+                              error.what();
         }
         ThrowIfAnyRankFailed(comm, clearance_error);
         ctx.clearance = clearance.get();
@@ -1382,13 +1411,13 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
     };
 
     // Step 7: run
-    auto acceptor = std::make_unique<SeedAcceptor>(params.num_seeds, ctx.min_distance, grid_lo,
-                                                   grid_hi, params.periodic, params.rsa_radius);
+    auto acceptor = std::make_unique<SeedAcceptor>(
+        params.num_seeds, ctx.min_distance, grid_lo, grid_hi, params.periodic, params.rsa_radius);
     RunStatus status = RunStatus::DONE;
     if (placement == SeedPlacement::LATTICE) {
         ctx.candidate_cap = MAX_CANDIDATES;
-        acceptor = std::make_unique<SeedAcceptor>(-1, ctx.min_distance, grid_lo, grid_hi,
-                                                  params.periodic);
+        acceptor = std::make_unique<SeedAcceptor>(
+            -1, ctx.min_distance, grid_lo, grid_hi, params.periodic);
         RunLattice(ctx, *acceptor, report);
     } else {
         if (placement == SeedPlacement::REJECTION) {
@@ -1407,8 +1436,11 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
                 report.rejected_by_clearance = 0;
                 report.rejected_by_distance = 0;
                 report.rejected_by_exclude_box = 0;
-                acceptor = std::make_unique<SeedAcceptor>(params.num_seeds, ctx.min_distance,
-                                                          grid_lo, grid_hi, params.periodic,
+                acceptor = std::make_unique<SeedAcceptor>(params.num_seeds,
+                                                          ctx.min_distance,
+                                                          grid_lo,
+                                                          grid_hi,
+                                                          params.periodic,
                                                           params.rsa_radius);
                 placement = SeedPlacement::ELEMENT_WEIGHTED;
             }
@@ -1469,10 +1501,11 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh, MPI_Comm comm, const SeedingParame
 }
 
 /* ParMesh overload: the mesh's own communicator. */
-SeedSet GenerateSeeds(mfem::ParMesh& pmesh, const SeedingParameters& params,
-                      SeedingReport* report, const MaterialContext* context) {
-    return GenerateSeeds(static_cast<mfem::Mesh&>(pmesh), pmesh.GetComm(), params, report,
-                         context);
+SeedSet GenerateSeeds(mfem::ParMesh& pmesh,
+                      const SeedingParameters& params,
+                      SeedingReport* report,
+                      const MaterialContext* context) {
+    return GenerateSeeds(static_cast<mfem::Mesh&>(pmesh), pmesh.GetComm(), params, report, context);
 }
 
 } // namespace exaconstit::microstructure

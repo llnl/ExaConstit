@@ -1,13 +1,13 @@
 #pragma once
 
-#include "microstructure/labeling/geodesic_limits.hpp"
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_options.hpp"
-
 #include "mfem.hpp"
 
 #include <array>
 #include <mpi.h>
+
+#include "microstructure/labeling/geodesic_limits.hpp"
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_options.hpp"
 
 /**
  * @file geodesic_metric.hpp
@@ -79,9 +79,13 @@ struct GeodesicMetric {
  * @param clamped   optional out: true when the value was limited to GEODESIC_MAX_ELONGATION.
  * @throws std::invalid_argument for a zero direction or num_seeds < 1 (replicated inputs).
  */
-double AutoGeodesicElongation(bool columnar, const std::array<double, 3>& direction,
-                              mfem::ParMesh& pmesh, MPI_Comm comm, int num_seeds,
-                              const ElementMask* mask, bool* clamped = nullptr);
+double AutoGeodesicElongation(bool columnar,
+                              const std::array<double, 3>& direction,
+                              mfem::ParMesh& pmesh,
+                              MPI_Comm comm,
+                              int num_seeds,
+                              const ElementMask* mask,
+                              bool* clamped = nullptr);
 
 /**
  * @brief The metric of the geodesic solvers for these options (see the file comment).
@@ -92,7 +96,9 @@ double AutoGeodesicElongation(bool columnar, const std::array<double, 3>& direct
  *         direction, or an elongation outside [1, GEODESIC_MAX_ELONGATION].
  */
 GeodesicMetric ResolveGeodesicMetric(const TessellationOptions& tessellation,
-                                     mfem::ParMesh& pmesh, MPI_Comm comm, int num_seeds,
+                                     mfem::ParMesh& pmesh,
+                                     MPI_Comm comm,
+                                     int num_seeds,
                                      const ElementMask* mask);
 
 } // namespace exaconstit::microstructure

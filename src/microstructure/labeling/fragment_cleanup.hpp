@@ -1,13 +1,13 @@
 #pragma once
 
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
 
 /**
  * @file fragment_cleanup.hpp

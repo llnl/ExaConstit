@@ -18,20 +18,9 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/orientation/orientation_assigner.hpp"
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
-
-#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -43,6 +32,17 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/orientation/orientation_assigner.hpp"
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;
@@ -103,8 +103,8 @@ Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm) {
  * the documented tie-break.
  */
 template <typename Metric>
-std::vector<int> BruteForceLabels(mfem::Mesh& mesh, const ms::SeedSet& seeds,
-                                  const ms::MetricSetup& setup) {
+std::vector<int>
+BruteForceLabels(mfem::Mesh& mesh, const ms::SeedSet& seeds, const ms::MetricSetup& setup) {
     ms::SeedIndex<axom::SEQ_EXEC, Metric> index;
     index.Build(seeds, setup, 1, axom::execution_space<axom::SEQ_EXEC>::allocatorID());
     const Metric& metric = index.GetMetric();
@@ -251,8 +251,8 @@ TEST(TessellationLabeler, CompactIdsHaveNoGaps) {
     seeds.y[6] = seeds.y[5];
     seeds.z[6] = seeds.z[5];
 
-    const ms::TessellationLabels labels =
-        ms::LabelTessellation(*dist.pmesh, MPI_COMM_WORLD, seeds, ms::TessellationOptions{});
+    const ms::TessellationLabels labels = ms::LabelTessellation(
+        *dist.pmesh, MPI_COMM_WORLD, seeds, ms::TessellationOptions{});
     const int ne = dist.pmesh->GetNE();
     EXPECT_EQ(labels.num_coincident_seeds, 1);
 
@@ -262,8 +262,8 @@ TEST(TessellationLabeler, CompactIdsHaveNoGaps) {
     for (int e = 0; e < ne; ++e) {
         used[static_cast<std::size_t>(seed_of[e])] = 1;
     }
-    MPI_Allreduce(MPI_IN_PLACE, used.data(), static_cast<int>(used.size()), MPI_INT, MPI_MAX,
-                  MPI_COMM_WORLD);
+    MPI_Allreduce(
+        MPI_IN_PLACE, used.data(), static_cast<int>(used.size()), MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     int expected_grains = 0;
     for (const int u : used) {
         expected_grains += u;
@@ -299,8 +299,12 @@ TEST(TessellationLabeler, CompactIdsHaveNoGaps) {
             grain_count[static_cast<std::size_t>(grain_of[e])] += 1;
         }
     }
-    MPI_Allreduce(MPI_IN_PLACE, grain_count.data(), static_cast<int>(grain_count.size()),
-                  MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE,
+                  grain_count.data(),
+                  static_cast<int>(grain_count.size()),
+                  MPI_INT,
+                  MPI_SUM,
+                  MPI_COMM_WORLD);
     for (int g = 1; g <= labels.num_grains; ++g) {
         EXPECT_GT(grain_count[static_cast<std::size_t>(g)], 0) << "grain " << g;
     }
@@ -372,16 +376,16 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
         // Distributed run, gathered to rank 0 in serial element order
         Distributed dist = Distribute(serial, MPI_COMM_WORLD);
         ms::GenerationReport report;
-        ms::MicrostructureResult result =
-            ms::GenerateMicrostructure(options, *dist.pmesh, MPI_COMM_WORLD, &report);
+        ms::MicrostructureResult result = ms::GenerateMicrostructure(
+            options, *dist.pmesh, MPI_COMM_WORLD, &report);
         result.element_grain.HostRead();
-        const std::vector<int> gathered =
-            ms::GatherToSerial(MPI_COMM_WORLD, dist.order, result.element_grain, 0);
+        const std::vector<int> gathered = ms::GatherToSerial(
+            MPI_COMM_WORLD, dist.order, result.element_grain, 0);
 
         // Single-rank reference on the whole mesh (every rank computes it on its own)
         Distributed alone = Distribute(serial, MPI_COMM_SELF);
-        ms::MicrostructureResult reference =
-            ms::GenerateMicrostructure(options, *alone.pmesh, MPI_COMM_SELF);
+        ms::MicrostructureResult reference = ms::GenerateMicrostructure(
+            options, *alone.pmesh, MPI_COMM_SELF);
 
         // The tables are replicated, so every rank compares them
         EXPECT_EQ(result.num_grains, reference.num_grains);
@@ -411,7 +415,8 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
             EXPECT_GE(q[0], 0.0);
             double expected[4];
             const ms::CounterRng rng(
-                c.rng_seed, ms::RngPurpose::ORIENTATION,
+                c.rng_seed,
+                ms::RngPurpose::ORIENTATION,
                 static_cast<std::uint64_t>(result.grain_source_id[static_cast<std::size_t>(g)]));
             ms::RandomQuaternion(rng, 0u, expected);
             // The driver normalizes every row on the host: expected / |expected|
@@ -459,16 +464,16 @@ TEST(GenerateMicrostructure, EmptyRankGivesSameGrains) {
     if (nranks > 1 && rank == nranks - 1) {
         EXPECT_EQ(dist.pmesh->GetNE(), 0);
     }
-    ms::MicrostructureResult result =
-        ms::GenerateMicrostructure(options, *dist.pmesh, MPI_COMM_WORLD);
+    ms::MicrostructureResult result = ms::GenerateMicrostructure(
+        options, *dist.pmesh, MPI_COMM_WORLD);
     EXPECT_EQ(result.element_grain.Size(), dist.pmesh->GetNE());
     result.element_grain.HostRead();
-    const std::vector<int> gathered =
-        ms::GatherToSerial(MPI_COMM_WORLD, dist.order, result.element_grain, 0);
+    const std::vector<int> gathered = ms::GatherToSerial(
+        MPI_COMM_WORLD, dist.order, result.element_grain, 0);
 
     Distributed alone = Distribute(serial, MPI_COMM_SELF);
-    ms::MicrostructureResult reference =
-        ms::GenerateMicrostructure(options, *alone.pmesh, MPI_COMM_SELF);
+    ms::MicrostructureResult reference = ms::GenerateMicrostructure(
+        options, *alone.pmesh, MPI_COMM_SELF);
     EXPECT_EQ(result.num_grains, reference.num_grains);
     EXPECT_EQ(result.grain_quat, reference.grain_quat);
     if (rank == 0) {
@@ -507,10 +512,11 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
     ASSERT_EQ(result.grain_quat.size(), 12u); // no collective call follows in this test
     for (int g = 0; g < 3; ++g) {
         double expected[4];
-        ms::RandomQuaternion(
-            ms::CounterRng(rng_seed, ms::RngPurpose::ORIENTATION,
-                           static_cast<std::uint64_t>(result.grain_source_id[g])),
-            0u, expected);
+        ms::RandomQuaternion(ms::CounterRng(rng_seed,
+                                            ms::RngPurpose::ORIENTATION,
+                                            static_cast<std::uint64_t>(result.grain_source_id[g])),
+                             0u,
+                             expected);
         double norm2 = 0.0;
         for (int k = 0; k < 4; ++k) {
             norm2 += expected[k] * expected[k];
@@ -531,8 +537,7 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
     }
 
     // Pass-through, normalized to unit length
-    seeds.quat = {1.0, 0.0, 0.0, 0.0,  0.5, 0.5, 0.5, 0.5,
-                  0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0};
+    seeds.quat = {1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0};
     ms::OrientationOptions from_source;
     from_source.source = "from_source";
     ms::MicrostructureResult passed;
@@ -579,7 +584,9 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
         return false;
     };
     using O = ms::MicrostructureOptions;
-    EXPECT_TRUE(throws_with([](O& o) { o.regions.mode = "from_phase"; }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.regions.mode = "from_phase";
+    }));
     EXPECT_TRUE(throws_with([](O& o) {
         o.seeds.source = "file";
         o.seeds.placement = ms::SeedPlacement::FILE;
@@ -593,8 +600,12 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
         o.tessellation.metric = ms::MetricType::LAGUERRE;
         o.tessellation.geodesic_solver = "graph"; // seed lists need the FIM solver
     }));
-    EXPECT_TRUE(throws_with([](O& o) { o.orientations.source = "list"; }));
-    EXPECT_TRUE(throws_with([](O& o) { o.tessellation.vote_levels = 4; }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.orientations.source = "list";
+    }));
+    EXPECT_TRUE(throws_with([](O& o) {
+        o.tessellation.vote_levels = 4;
+    }));
 }
 
 int main(int argc, char** argv) {

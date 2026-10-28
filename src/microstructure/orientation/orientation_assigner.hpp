@@ -1,10 +1,10 @@
 #pragma once
 
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_types.hpp"
-
 #include <cstdint>
 #include <vector>
+
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file orientation_assigner.hpp

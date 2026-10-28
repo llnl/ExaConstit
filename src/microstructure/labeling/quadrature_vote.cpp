@@ -17,11 +17,6 @@
  */
 #include "microstructure/labeling/quadrature_vote.hpp"
 
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -34,6 +29,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
 
 namespace exaconstit::microstructure {
 
@@ -58,8 +58,12 @@ RefPoint Midpoint(const RefPoint& a, const RefPoint& b) {
  * the regular tet they are congruent by symmetry, and an affine map keeps volume ratios). The
  * center of a tet is the average of its vertices. Host only, recursive (depth = levels <= 3).
  */
-void AppendTetCenters(const RefPoint& v0, const RefPoint& v1, const RefPoint& v2,
-                      const RefPoint& v3, int levels, std::vector<RefPoint>& centers) {
+void AppendTetCenters(const RefPoint& v0,
+                      const RefPoint& v1,
+                      const RefPoint& v2,
+                      const RefPoint& v3,
+                      int levels,
+                      std::vector<RefPoint>& centers) {
     if (levels == 0) {
         centers.push_back({0.25 * (v0[0] + v1[0] + v2[0] + v3[0]),
                            0.25 * (v0[1] + v1[1] + v2[1] + v3[1]),
@@ -102,13 +106,14 @@ std::unique_ptr<mfem::IntegrationRule> BuildVoteRule(mfem::Geometry::Type geomet
     }
     // Tetrahedron
     std::vector<RefPoint> centers;
-    AppendTetCenters({0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}, levels,
-                     centers);
+    AppendTetCenters(
+        {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}, levels, centers);
     const int num_points = static_cast<int>(centers.size());
     auto rule = std::make_unique<mfem::IntegrationRule>(num_points);
     for (int i = 0; i < num_points; ++i) {
         mfem::IntegrationPoint& ip = rule->IntPoint(i);
-        ip.Set3(centers[static_cast<std::size_t>(i)][0], centers[static_cast<std::size_t>(i)][1],
+        ip.Set3(centers[static_cast<std::size_t>(i)][0],
+                centers[static_cast<std::size_t>(i)][1],
                 centers[static_cast<std::size_t>(i)][2]);
         ip.weight = (1.0 / 6.0) / num_points;
     }
@@ -195,7 +200,7 @@ void VoteChunk(int chunk_begin,
         const int base = local * nq; // first voting point of this element in the chunk
         int winner = -1;             // label with the largest total weight so far
         double winner_weight = 0.0;
-        int first_label = -1;        // label of the first voting point, to detect a split
+        int first_label = -1; // label of the first voting point, to detect a split
         int split = 0;
 
         for (int q = 0; q < nq; ++q) {
@@ -234,8 +239,7 @@ void VoteChunk(int chunk_begin,
             }
 
             // Larger total wins; exact tie -> lower label
-            if (winner < 0 || total > winner_weight ||
-                (total == winner_weight && label < winner)) {
+            if (winner < 0 || total > winner_weight || (total == winner_weight && label < winner)) {
                 winner = label;
                 winner_weight = total;
             }
@@ -273,11 +277,8 @@ const mfem::IntegrationRule& VoteRule(mfem::Geometry::Type geometry, int levels)
  * VoteRule, mesh/mesh_sampler.hpp) for the requested range. A rank without elements returns
  * empty vectors.
  */
-void ComputeVotePoints(mfem::Mesh& mesh,
-                       int levels,
-                       int elem_begin,
-                       int elem_end,
-                       QuadraturePointSamples& out) {
+void ComputeVotePoints(
+    mfem::Mesh& mesh, int levels, int elem_begin, int elem_end, QuadraturePointSamples& out) {
     RequireValidLevels(levels);
     const int ne = mesh.GetNE();
     if (elem_begin < 0 || elem_end < elem_begin || elem_end > ne) {
@@ -290,8 +291,8 @@ void ComputeVotePoints(mfem::Mesh& mesh,
         return;
     }
     RequireVotableMesh(mesh);
-    ComputeQuadraturePointSamples(mesh, VoteRule(mesh.GetElementGeometry(0), levels), elem_begin,
-                                  elem_end, out);
+    ComputeQuadraturePointSamples(
+        mesh, VoteRule(mesh.GetElementGeometry(0), levels), elem_begin, elem_end, out);
 }
 
 /*
@@ -407,8 +408,14 @@ void LabelElementsByQuadratureVote(mfem::Mesh& local_mesh,
                 index.FindBest(points.x, points.y, points.z, best, false);
 
                 // Step 3c: volume-weighted vote per element
-                VoteChunk(begin, end - begin, points.num_qp, best, points.weight, owner_table,
-                          element_seed, element_split);
+                VoteChunk(begin,
+                          end - begin,
+                          points.num_qp,
+                          best,
+                          points.weight,
+                          owner_table,
+                          element_seed,
+                          element_split);
                 ++num_chunks;
             }
         });
@@ -461,7 +468,8 @@ TessellationLabels LabelTessellationByQuadratureVote(mfem::Mesh& local_mesh,
     LabelElementsByQuadratureVote(local_mesh, seeds, params, element_seed, seed_owner, &report);
 
     // Step 2: all ranks agree that every element has a seed
-    ThrowIfAnyElementUnlabeled(comm, element_seed,
+    ThrowIfAnyElementUnlabeled(comm,
+                               element_seed,
                                "Quadrature vote: no voting point of the element has a finite "
                                "position; the element has non-finite node coordinates");
 

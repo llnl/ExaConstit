@@ -1,11 +1,11 @@
 #pragma once
 
-#include "microstructure/util/counter_rng.hpp"
-
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <math.h>
+
+#include "microstructure/util/counter_rng.hpp"
 
 /**
  * @file random_distributions.hpp
@@ -35,8 +35,8 @@ constexpr double TWO_PI = 6.283185307179586476925286766559;
  * (sample, 0), words 0-1. The unit value is in [0, 1), but a + (b - a) * u can round up to exactly
  * b, so b itself is possible (rarely): treat the range as [a, b) only up to round-off.
  */
-MFEM_HOST_DEVICE inline double UniformIn(const CounterRng& rng, double a, double b,
-                                         std::uint32_t sample) {
+MFEM_HOST_DEVICE inline double
+UniformIn(const CounterRng& rng, double a, double b, std::uint32_t sample) {
     return a + (b - a) * rng.UniformDouble(sample);
 }
 
@@ -46,8 +46,8 @@ MFEM_HOST_DEVICE inline double UniformIn(const CounterRng& rng, double a, double
  * (words 0-1).
  * @param out the three values, written to out[0..2].
  */
-MFEM_HOST_DEVICE inline void UniformUnitCube(const CounterRng& rng, std::uint32_t sample,
-                                             double out[3]) {
+MFEM_HOST_DEVICE inline void
+UniformUnitCube(const CounterRng& rng, std::uint32_t sample, double out[3]) {
     const PhiloxBlock b0 = rng.Block(sample, 0);
     const PhiloxBlock b1 = rng.Block(sample, 1);
     out[0] = BitsToUnitDouble(b0.v[0], b0.v[1]);
@@ -75,8 +75,8 @@ MFEM_HOST_DEVICE inline double StandardNormal(const CounterRng& rng, std::uint32
  * @brief Normal with mean `mu` and standard deviation `sigma` (same bits as
  * StandardNormal(rng, sample)).
  */
-MFEM_HOST_DEVICE inline double Normal(const CounterRng& rng, double mu, double sigma,
-                                      std::uint32_t sample) {
+MFEM_HOST_DEVICE inline double
+Normal(const CounterRng& rng, double mu, double sigma, std::uint32_t sample) {
     return mu + sigma * StandardNormal(rng, sample);
 }
 
@@ -85,8 +85,8 @@ MFEM_HOST_DEVICE inline double Normal(const CounterRng& rng, double mu, double s
  * the mean and standard deviation of the underlying normal (of the log), not of the result.
  * Same bits as StandardNormal(rng, sample).
  */
-MFEM_HOST_DEVICE inline double LogNormal(const CounterRng& rng, double mu, double sigma,
-                                         std::uint32_t sample) {
+MFEM_HOST_DEVICE inline double
+LogNormal(const CounterRng& rng, double mu, double sigma, std::uint32_t sample) {
     return exp(Normal(rng, mu, sigma, sample));
 }
 
