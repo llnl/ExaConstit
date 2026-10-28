@@ -348,6 +348,21 @@ by how much they reduce the unfit nodes and protruding elements (previewed with 
 at most one per neighborhood (two element rings) per pass, and kept only if that count really
 drops; a grain never loses its last element (or goes below Cleanup.min_grain_elements).
 
+**Adjacency check.** After repair the grain adjacency of the mesh is compared with the analytic
+one (`conformal/adjacency_check.hpp`) and printed in the log. Two grains touch in the mesh when a
+node carries both labels; two seeds are analytically adjacent when some node can be moved onto
+their boundary within the move limit with no other seed closer there (the target rules above,
+without the smoothed fallback). At every node the best seed and the next ones whose boundary with
+it passes within two move limits ((f_k - f_1) / |grad f_k - grad f_1|, exact for Voronoi and
+Laguerre) are tested, so a boundary is found from any node near it. Pairs found only in the mesh
+are stair-step contacts (grains touching at a node or an edge of the staircase, or a contact the
+repair could not remove); pairs found only analytically are faces smaller than the mesh resolves.
+Pairs with a grain without seed (voxel, geodesic and passthrough grains) are not compared. Every
+pair is merged on an owner rank (a hash of the pair), so the counts do not depend on the
+partition. For 50 Voronoi grains in the unit cube (mean of 3 seeds) the mesh-only pairs drop from
+about 70 at 8 elements per unit to about 9 at 32, out of about 230 analytic pairs; the
+analytic-only pairs are 0 to 5 at every resolution.
+
 **Fit: spring-balanced pseudo-elastic morph.** The mesh is treated as a linear elastic solid with
 Young's modulus 1 (times a per-element stiffening factor) and Poisson ratio 0.3, assembled on the
 input geometry. Every fitted node v is pulled toward its target t_v by a spring of stiffness

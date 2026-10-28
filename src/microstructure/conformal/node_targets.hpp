@@ -233,6 +233,29 @@ public:
      */
     std::vector<NodeTargetResult> Evaluate(const std::vector<NodeLabelQuery>& queries) const;
 
+    /**
+     * @brief Evaluate with the analytic rules only: no smoothed fallback, so FIT means a valid
+     * analytic target (the adjacency check, adjacency_check.hpp). Not collective; host.
+     */
+    std::vector<NodeTargetResult> EvaluateAnalytic(
+        const std::vector<NodeLabelQuery>& queries) const;
+
+    /**
+     * @brief For each listed node: the best seed at its original position, then the next best
+     * seeds (up to `max_seeds` in all) whose analytic boundary with the best seed is estimated to
+     * pass within `reach` element sizes of the node ((f_k - f_1) / |grad f_k - grad f_1| at the
+     * node; exact for Voronoi and Laguerre). CSR: the seeds of node i are
+     * seeds[offsets[i] .. offsets[i + 1]). Empty lists with NodeTargetOptions::analytic = false.
+     * Not collective; host.
+     */
+    void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
+                     std::vector<int>& offsets, std::vector<int>& seeds) const;
+
+    /** @brief The options the targets were built with. */
+    const NodeTargetOptions& Options() const {
+        return m_options;
+    }
+
     /** @brief Target positions, 3 per node (node v at 3 v); x itself unless FIT. */
     const mfem::Vector& Targets() const {
         return m_targets;

@@ -25,8 +25,8 @@
  *     miniapps/meshing/mesh-fitting.hpp, for N grains: there the element switches when all but
  *     one of its faces see another material.)
  *   - a *bad node*: a FAKE_JUNCTION (the grains of its label set have no common analytic boundary
- *     near it, or a grain pinches there) or OVER_CONSTRAINED node (5 or more grains, a quad point on the outer boundary,
- *     ...).
+ *     near it, or a grain pinches there) or OVER_CONSTRAINED node (5 or more grains, a quad
+ *     point on the outer boundary, ...).
  *     An element at such a node can often take the label of a face neighbor that the node already
  *     has, which removes the extra label from the node.
  *
@@ -52,7 +52,8 @@
  *   5. applies the flips and undoes every flip into or out of a grain whose number of
  *      face-connected pieces grew (a flip may not split a grain; the pieces are counted with
  *      LabelComponents, partition independent, labeling/fragment_cleanup.hpp), recomputes, and
- *      undoes every flip whose local potential did not strictly decrease (the preview does not see a neighbor becoming a peninsula; this check does).
+ *      undoes every flip whose local potential did not strictly decrease (the preview does not
+ *      see a neighbor becoming a peninsula; this check does).
  *      Potential = 8 x (bad nodes among the element's nodes) + (peninsulas among the element and
  *      its face neighbors), so removing a bad node outweighs any change of peninsulas (at most 7
  *      elements). Undone flips are remembered and never proposed again.
@@ -76,8 +77,9 @@
  * targets hold the pinches that remain (NodeTargetOptions::hold_pinches) and the grain boundary
  * nodes of under-resolved grains (NodeTargetOptions::hold_under_resolved).
  *
- * **Not covered yet** (planned): a comparison of the discrete with the analytic grain adjacency. Elements that would collapse when their nodes
- * move are kept above the quality floor by the fitter (conformal_fitter.hpp).
+ * The grain adjacency after repair is compared with the analytic one in adjacency_check.hpp.
+ * Elements that would collapse when their nodes move are kept above the quality floor by the
+ * fitter (conformal_fitter.hpp).
  *
  * Host and MPI (Stage 2 is CPU-only).
  */

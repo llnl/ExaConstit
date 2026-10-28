@@ -134,7 +134,7 @@ GrainAdjacencyTable BuildAdjacencyTable(const GrainStatistics& stats) {
  *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
  */
 /*
- * ConformalText: see the header. Three lines: repair, fit distance, quality.
+ * ConformalText: see the header. Repair, held nodes, grain adjacency, fit distance, quality.
  */
 std::string ConformalText(const GenerationReport& report) {
     if (!report.ran_conformal) {
@@ -154,6 +154,13 @@ std::string ConformalText(const GenerationReport& report) {
         os << "  " << report.conformal_under_resolved_grains
            << " grain(s) too thin to fit (no mesh node inside the grain, e.g. one element thick): "
               "their boundaries keep the stair steps; refine the mesh to fit them\n";
+    }
+    const AdjacencyComparison& adj = report.conformal_adjacency;
+    if (adj.discrete > 0 || adj.analytic > 0) {
+        os << "  grain adjacency: " << adj.discrete << " seed pair(s) touch in the mesh, "
+           << adj.analytic << " have an analytic boundary near the mesh; " << adj.fake
+           << " touch only in the mesh (stair-step contacts), " << adj.missing
+           << " only analytically (faces smaller than the mesh resolves)\n";
     }
     os << "  fit: " << fit.fit_nodes << " grain boundary nodes (" << report.conformal_smoothed_nodes
        << " of them on the smoothed staircase, the others on the analytic boundaries), distance "

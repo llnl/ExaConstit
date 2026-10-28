@@ -1660,7 +1660,8 @@ namespace {
  *     relabeling); the smoothed staircase only for voxel maps and geodesic labels. The
  *     passthrough grains are fixed labels: their interfaces stay in place like the outer
  *     boundary, and their elements never change grain.
- *  4. The fit (conformal/conformal_fitter.hpp).
+ *  4. The grain adjacency of the repaired labels compared with the analytic one
+ *     (conformal/adjacency_check.hpp), then the fit (conformal/conformal_fitter.hpp).
  *  5. A mesh that had no Nodes gets the fitted positions as its vertices and loses the Nodes
  *     again, so the caller's mesh keeps its kind (order-1 H1 Nodes: dof v is vertex v).
  */
@@ -1708,6 +1709,7 @@ void FitConformalBoundaries(const MicrostructureOptions& options, mfem::ParMesh&
     report.conformal_under_resolved_grains = repair.targets->Summary().under_resolved_grains;
     report.conformal_pinched_nodes =
         repair.targets->Summary().reason[static_cast<int>(TargetReason::PINCH)];
+    report.conformal_adjacency = CompareAdjacency(*repair.targets, grain_seed);
     report.conformal_fit = FitConformal(pmesh, *repair.targets);
     report.conformal_repair = repair.report;
     report.ran_conformal = true;

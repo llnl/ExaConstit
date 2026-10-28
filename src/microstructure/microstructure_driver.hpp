@@ -1,5 +1,6 @@
 #pragma once
 
+#include "microstructure/conformal/adjacency_check.hpp"
 #include "microstructure/conformal/conformal_fitter.hpp"
 #include "microstructure/conformal/label_repair.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
@@ -274,6 +275,11 @@ struct GenerationReport {
     /** @brief Grain boundary nodes held because a grain pinches there (touches itself only at
      * the node or along an edge) after label repair. Global count. */
     std::int64_t conformal_pinched_nodes = 0;
+    /** @brief The grain adjacency of the repaired labels compared with the analytic one
+     * (conformal/adjacency_check.hpp): seed pairs that touch in the mesh, that have an analytic
+     * boundary near the mesh, and the pairs found only one way. Global counts; zero without
+     * analytic boundaries (voxel maps, geodesic labels). */
+    AdjacencyComparison conformal_adjacency;
 
     /** @brief Warnings about the data (e.g. ignored table columns), also printed by rank 0. */
     std::vector<std::string> warnings;

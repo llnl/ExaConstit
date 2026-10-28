@@ -48,6 +48,14 @@ public:
     virtual ~Evaluator() = default;
     virtual void Evaluate(const std::vector<NodeLabelQuery>& queries,
                           std::vector<NodeTargetResult>& out) const = 0;
+    /** @brief NodeTargets::NearbySeeds; empty lists without analytic boundaries. */
+    virtual void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
+                             std::vector<int>& offsets, std::vector<int>& seeds) const {
+        (void)max_seeds;
+        (void)reach;
+        offsets.assign(nodes.size() + 1, 0);
+        seeds.clear();
+    }
 };
 
 namespace {
@@ -124,6 +132,8 @@ public:
 
     void Evaluate(const std::vector<NodeLabelQuery>& queries,
                   std::vector<NodeTargetResult>& out) const override;
+    void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
+                     std::vector<int>& offsets, std::vector<int>& seeds) const override;
 
 private:
     /** @brief Steps before the foreign check for one query; true = candidate (FIT so far). */
@@ -132,7 +142,7 @@ private:
     const NodeLabels& m_labels;
     const SurfacePatches& m_patches;
     const mfem::Vector& m_h;
-    const std::vector<int>& m_grain_seed;
+    const std::vector<int> m_grain_seed; ///< a copy (the caller's vector may be a temporary)
     NodeTargetOptions m_options;
     SeedIndex<axom::SEQ_EXEC, Metric> m_index;
 };
@@ -347,6 +357,85 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
     }
 }
 
+/*
+ * NearbySeeds: max_seeds rounds of FindBestExcluding (each round excludes the seeds found so far),
+ * then the estimate of the distance from x to the boundary of the best seed s_1 and seed s_k,
+ * (f_k - f_1) / |grad f_k - grad f_1| at x (exact for the Voronoi and Laguerre metrics, whose f_k -
+ * f_1 is linear; a first-order estimate otherwise), kept when it is at most `reach` element sizes.
+ */
+template <typename Metric>
+void EvaluatorImpl<Metric>::NearbySeeds(const std::vector<int>& nodes, int max_seeds,
+                                        double reach, std::vector<int>& offsets,
+                                        std::vector<int>& seeds) const {
+    const int nq = static_cast<int>(nodes.size());
+    offsets.assign(nodes.size() + 1, 0);
+    seeds.clear();
+    if (nq == 0 || max_seeds < 1) {
+        return;
+    }
+    const double* xyz = m_labels.Field().Coordinates().HostRead();
+    mfem::Vector qx(nq), qy(nq), qz(nq);
+    for (int i = 0; i < nq; ++i) {
+        const double* x = xyz + 3 * nodes[static_cast<std::size_t>(i)];
+        qx(i) = x[0];
+        qy(i) = x[1];
+        qz(i) = x[2];
+    }
+    // found[i * max_seeds + r]: seed of round r at query i (-1 = none)
+    std::vector<int> found(static_cast<std::size_t>(nq) * static_cast<std::size_t>(max_seeds), -1);
+    for (int r = 0; r < max_seeds; ++r) {
+        mfem::Array<int> ex_off(nq + 1);
+        std::vector<int> ex;
+        ex_off[0] = 0;
+        for (int i = 0; i < nq; ++i) {
+            for (int k = 0; k < r; ++k) {
+                const int s = found[static_cast<std::size_t>(i * max_seeds + k)];
+                if (s >= 0) {
+                    ex.push_back(s);
+                }
+            }
+            ex_off[i + 1] = static_cast<int>(ex.size());
+        }
+        mfem::Array<int> ex_ids(std::max<int>(1, static_cast<int>(ex.size())));
+        std::copy(ex.begin(), ex.end(), ex_ids.begin());
+        mfem::Array<BestPair> best;
+        m_index.FindBestExcluding(qx, qy, qz, ex_off, ex_ids, best);
+        const BestPair* b = best.HostRead();
+        for (int i = 0; i < nq; ++i) {
+            found[static_cast<std::size_t>(i * max_seeds + r)] = b[i].id1;
+        }
+    }
+    const Metric& f = m_index.GetMetric();
+    const int p = m_labels.Field().LatticeOrder();
+    for (int i = 0; i < nq; ++i) {
+        const int v = nodes[static_cast<std::size_t>(i)];
+        const double* x = xyz + 3 * v;
+        const int s1 = found[static_cast<std::size_t>(i * max_seeds)];
+        if (s1 >= 0) {
+            seeds.push_back(s1);
+            const double f1 = f.Eval(s1, x[0], x[1], x[2]);
+            double g1[3];
+            f.Grad(s1, x[0], x[1], x[2], g1);
+            for (int r = 1; r < max_seeds; ++r) {
+                const int sk = found[static_cast<std::size_t>(i * max_seeds + r)];
+                if (sk < 0) {
+                    break;
+                }
+                double gk[3];
+                f.Grad(sk, x[0], x[1], x[2], gk);
+                const double dg = std::sqrt((gk[0] - g1[0]) * (gk[0] - g1[0]) +
+                                            (gk[1] - g1[1]) * (gk[1] - g1[1]) +
+                                            (gk[2] - g1[2]) * (gk[2] - g1[2]));
+                const double gap = f.Eval(sk, x[0], x[1], x[2]) - f1;
+                if (gap <= reach * m_h(v) * p * dg) {
+                    seeds.push_back(sk);
+                }
+            }
+        }
+        offsets[static_cast<std::size_t>(i) + 1] = static_cast<int>(seeds.size());
+    }
+}
+
 } // namespace
 
 /*
@@ -511,6 +600,18 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
 }
 
 NodeTargets::~NodeTargets() = default;
+
+std::vector<NodeTargetResult> NodeTargets::EvaluateAnalytic(
+    const std::vector<NodeLabelQuery>& queries) const {
+    std::vector<NodeTargetResult> out;
+    m_evaluator->Evaluate(queries, out);
+    return out;
+}
+
+void NodeTargets::NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
+                              std::vector<int>& offsets, std::vector<int>& seeds) const {
+    m_evaluator->NearbySeeds(nodes, max_seeds, reach, offsets, seeds);
+}
 
 std::vector<NodeTargetResult> NodeTargets::Evaluate(
     const std::vector<NodeLabelQuery>& queries) const {
