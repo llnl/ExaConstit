@@ -24,6 +24,12 @@
  *  - Order-2 Nodes (hex 6^3, 8 grains): every nodal point is fitted (more than twice the fitted
  *    nodes of order 1), the limits hold, no element folds on a denser Gauss-Lobatto grid, box faces
  *    are kept, and WORLD agrees with SELF to the solver tolerance.
+ *  - 120° tricrystal (V1; hex 12^3, tet 8^3): the triple line nodes end below 0.6 of their
+ *    starting distance from the analytic line, all of them FIT, limits kept.
+ *  - Curved boundary convergence (V2; Additive bicrystal, hyperboloid boundary, hex 8^3 and
+ *    16^3): grain volume and boundary area against an exact reference; the fitted area error is
+ *    well below the staircase's and below 30 %, the fitted volume error halves from 8^3 to 16^3
+ *    and ends below 2 %. (The fitted area does not converge, see the test.)
  *  - Curved and tilted outer boundary (box with a domed top, faces x = 0, 1 tilted; hex and tet,
  *    12 grains): nodes on those surfaces slide along them and end on them (the planes, or the
  *    input boundary faces around the node, to rounding; nodes on the rims where the dome meets a
@@ -122,6 +128,71 @@ mfem::Array<int> VoronoiLabels(mfem::Mesh& mesh, const ms::SeedSet& s) {
     return labels;
 }
 
+/** Element labels of the Additive (Johnson-Mehl) metric |c - s_i| - w_i at the element centers. */
+mfem::Array<int> AdditiveLabels(mfem::Mesh& mesh, const ms::SeedSet& s) {
+    mfem::Array<int> labels(mesh.GetNE());
+    mfem::Vector c(3);
+    for (int e = 0; e < mesh.GetNE(); ++e) {
+        mesh.GetElementCenter(e, c);
+        double best = HUGE_VAL;
+        for (int i = 0; i < static_cast<int>(s.Size()); ++i) {
+            const double d = std::sqrt(std::pow(c(0) - s.x[i], 2) + std::pow(c(1) - s.y[i], 2) +
+                                       std::pow(c(2) - s.z[i], 2)) -
+                             s.weight[static_cast<std::size_t>(i)];
+            if (d < best) {
+                best = d;
+                labels[e] = i + 1;
+            }
+        }
+    }
+    return labels;
+}
+
+/**
+ * Area of the faces between elements of grains `a` and `b` (global): local interior faces once,
+ * faces shared between ranks at half weight on each side (the neighbor's label from an L2
+ * order-0 field exchanged with ExchangeFaceNbrData).
+ */
+double InterfaceArea(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int a, int b) {
+    mfem::L2_FECollection l2(0, 3);
+    mfem::ParFiniteElementSpace l2fes(&pmesh, &l2);
+    mfem::ParGridFunction g(&l2fes);
+    for (int e = 0; e < pmesh.GetNE(); ++e) {
+        g(e) = labels[e];
+    }
+    g.ExchangeFaceNbrData();
+    const auto pair = [&](int la, int lb) { return (la == a && lb == b) || (la == b && lb == a); };
+    const auto face_area = [&](mfem::ElementTransformation& t, mfem::Geometry::Type geom) {
+        const mfem::IntegrationRule& ir = mfem::IntRules.Get(geom, 4);
+        double area = 0.0;
+        for (int q = 0; q < ir.GetNPoints(); ++q) {
+            t.SetIntPoint(&ir.IntPoint(q));
+            area += ir.IntPoint(q).weight * t.Weight();
+        }
+        return area;
+    };
+    double area = 0.0;
+    for (int f = 0; f < pmesh.GetNumFaces(); ++f) {
+        int e1 = -1;
+        int e2 = -1;
+        pmesh.GetFaceElements(f, &e1, &e2);
+        if (e2 >= 0 && pair(labels[e1], labels[e2])) {
+            area += face_area(*pmesh.GetFaceTransformation(f), pmesh.GetFaceGeometry(f));
+        }
+    }
+    const mfem::Vector& nbr = g.FaceNbrData();
+    for (int i = 0; i < pmesh.GetNSharedFaces(); ++i) {
+        mfem::FaceElementTransformations* ft = pmesh.GetSharedFaceTransformations(i);
+        const int e1 = ft->Elem1No;
+        const int k = ft->Elem2No - pmesh.GetNE();
+        if (pair(labels[e1], static_cast<int>(nbr(k)))) {
+            area += 0.5 * face_area(*ft->Face, pmesh.GetFaceGeometry(pmesh.GetSharedFace(i)));
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &area, 1, MPI_DOUBLE, MPI_SUM, pmesh.GetComm());
+    return area;
+}
+
 /** A fitted mesh with what produced it. */
 struct Fitted {
     std::unique_ptr<mfem::ParMesh> pmesh;
@@ -141,7 +212,8 @@ void WriteSections(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, const m
  * set, the repaired labels on the unfitted mesh are written there first (DumpSlices).
  */
 Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
-           const std::string& dump_before = "", bool smoothed_only = false, int order = 1) {
+           const std::string& dump_before = "", bool smoothed_only = false, int order = 1,
+           ms::MetricType metric = ms::MetricType::VORONOI) {
     int size = 1;
     MPI_Comm_size(comm, &size);
     std::vector<int> part(static_cast<std::size_t>(serial.GetNE()));
@@ -152,7 +224,8 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
     f.pmesh = std::make_unique<mfem::ParMesh>(comm, serial, part.data());
     f.pmesh->SetCurvature(order, false, 3, mfem::Ordering::byNODES);
     f.x0 = *f.pmesh->GetNodes();
-    f.labels = VoronoiLabels(*f.pmesh, seeds);
+    f.labels = (metric == ms::MetricType::ADDITIVE) ? AdditiveLabels(*f.pmesh, seeds)
+                                                    : VoronoiLabels(*f.pmesh, seeds);
     std::vector<int> grain_seed(seeds.Size());
     for (std::size_t i = 0; i < seeds.Size(); ++i) {
         grain_seed[i] = static_cast<int>(i);
@@ -162,8 +235,7 @@ Fitted Fit(mfem::Mesh& serial, MPI_Comm comm, const ms::SeedSet& seeds,
         repair_options.targets.analytic = false;
         repair_options.targets.smoothed = true;
     }
-    f.repair = ms::RepairLabels(*f.pmesh, f.labels, ms::MetricType::VORONOI, seeds, {},
-                                grain_seed, repair_options);
+    f.repair = ms::RepairLabels(*f.pmesh, f.labels, metric, seeds, {}, grain_seed, repair_options);
     if (!dump_before.empty()) {
         WriteElements(*f.pmesh, f.labels, f.x0, dump_before);
     }
@@ -287,6 +359,63 @@ void CheckBisector(mfem::Mesh& serial, bool tet, double fit_ratio) {
                     "solves %d\n",
                     r.initial_deviation, r.mean_deviation, r.max_deviation,
                     r.quality_after.min_scaled_jacobian, r.rounds, r.solves);
+    }
+}
+
+/**
+ * V1: tricrystal with 120 degree junctions. Three Voronoi seeds 0.3 from (0.47, 0.53) at 90, 210
+ * and 330 degrees, all at z = 0.5: the three bisectors meet at 120 degrees along the vertical line
+ * x = 0.47, y = 0.53 (off the lattice). The nodes with three labels (the discrete triple line)
+ * must end much closer to it (below 0.6 of their starting distance; with the tenth-strength
+ * triple line springs of the first fitter they did not move at all), every node with three
+ * labels must be FIT, and the limits hold.
+ */
+void CheckTricrystal(mfem::Element::Type type, int n) {
+    const double cx = 0.47, cy = 0.53, r = 0.3;
+    ms::SeedSet seeds;
+    for (const double deg : {90.0, 210.0, 330.0}) {
+        seeds.x.push_back(cx + r * std::cos(deg * M_PI / 180.0));
+        seeds.y.push_back(cy + r * std::sin(deg * M_PI / 180.0));
+        seeds.z.push_back(0.5);
+    }
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, type);
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds);
+    const bool tet = type == mfem::Element::TETRAHEDRON;
+    ExpectLimits(f.report, tet);
+    EXPECT_EQ(FaceViolations(f), 0);
+    const ms::NodeLabels& nl = f.repair.targets->Labels();
+    const int* owned = nl.Field().OwnedVertexMarker().HostRead();
+    const mfem::GridFunction& x = *f.pmesh->GetNodes();
+    const mfem::FiniteElementSpace& fes = *x.FESpace();
+    double sums[3] = {0.0, 0.0, 0.0}; // before, after, count
+    double worst = 0.0;
+    int bad = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        if (nl.NumLabels(v) != 3 || owned[v] == 0) {
+            continue;
+        }
+        const double h = f.repair.targets->MeshSize(v);
+        const double d0 =
+            std::hypot(f.x0(fes.DofToVDof(v, 0)) - cx, f.x0(fes.DofToVDof(v, 1)) - cy);
+        const double d1 = std::hypot(x(fes.DofToVDof(v, 0)) - cx, x(fes.DofToVDof(v, 1)) - cy);
+        sums[0] += d0 / h;
+        sums[1] += d1 / h;
+        sums[2] += 1.0;
+        worst = std::max(worst, d1 / h);
+        bad += (f.repair.targets->Status(v) != ms::TargetStatus::FIT) ? 1 : 0;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, sums, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &worst, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    EXPECT_EQ(GlobalSum(bad), 0);
+    EXPECT_GE(sums[2], n + 1.0); // the line crosses the box: at least one node per layer
+    EXPECT_LT(sums[1], 0.6 * sums[0]);
+    EXPECT_LT(f.report.mean_deviation, 0.75 * f.report.initial_deviation);
+    if (mfem::Mpi::Root()) {
+        std::printf("tricrystal %s %d^3: %d triple line nodes, distance to the line %.3f -> %.3f h "
+                    "(max %.3f); deviation %.3f -> %.3f h\n",
+                    tet ? "tet" : "hex", n, static_cast<int>(sums[2]), sums[0] / sums[2],
+                    sums[1] / sums[2], worst, f.report.initial_deviation,
+                    f.report.mean_deviation);
     }
 }
 
@@ -440,6 +569,74 @@ TEST(ConformalFit, HexInclinedBicrystal) {
 TEST(ConformalFit, TetInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
     CheckBisector(serial, true, 0.55);
+}
+
+TEST(ConformalFit, HexTricrystal) {
+    CheckTricrystal(mfem::Element::HEXAHEDRON, 12);
+}
+
+TEST(ConformalFit, TetTricrystal) {
+    CheckTricrystal(mfem::Element::TETRAHEDRON, 8);
+}
+
+TEST(ConformalFit, CurvedBoundaryConvergence) {
+    // V2: an Additive (Johnson-Mehl) bicrystal, seeds (0.3, 0.5, 0.5) and (0.7, 0.5, 0.5) with
+    // weights 0 and 0.3: the boundary |x - s1| = |x - s2| - 0.3 is one sheet of a hyperboloid of
+    // revolution about the seed axis (foci the seeds, a = 0.15, c = 0.2, b^2 = c^2 - a^2),
+    // x(rho) = 0.5 - a sqrt(1 + rho^2 / b^2), which meets the face x = 0 in a circle of radius
+    // rho0 = b sqrt((0.5 / a)^2 - 1) = 0.42. Grain 1 volume = 2 pi int_0^rho0 x(rho) rho drho and
+    // boundary area = 2 pi int_0^rho0 sqrt(1 + x'(rho)^2) rho drho (Gauss-Legendre, smooth
+    // integrands: exact to rounding).
+    // Measured (hex, order 1, 6 to 32 elements per unit): the fitted volume error falls from
+    // 3-5 % (6-8 per unit) to 0.1-1.2 % (12-32), the staircase's from 16 % to 0.6-2 %; the
+    // fitted area stays 10-25 % too large at every resolution (the staircase's 40-60 %), because
+    // the fit leaves a waviness of a fraction of h at the stair corners whose slope does not
+    // shrink with h (the quality limits keep the corner elements from flattening). Order 2 and
+    // tets behave the same way. So area is checked against the staircase, not for convergence.
+    ms::SeedSet seeds;
+    seeds.x = {0.3, 0.7};
+    seeds.y = {0.5, 0.5};
+    seeds.z = {0.5, 0.5};
+    seeds.weight = {0.0, 0.3};
+    const double a = 0.15;
+    const double b2 = 0.2 * 0.2 - a * a;
+    const double rho0 = std::sqrt(b2 * ((0.5 / a) * (0.5 / a) - 1.0));
+    const mfem::IntegrationRule& gl = mfem::IntRules.Get(mfem::Geometry::SEGMENT, 63);
+    double volume = 0.0;
+    double area = 0.0;
+    for (int q = 0; q < gl.GetNPoints(); ++q) {
+        const double rho = rho0 * gl.IntPoint(q).x;
+        const double w = rho0 * gl.IntPoint(q).weight * 2.0 * M_PI * rho;
+        const double root = std::sqrt(1.0 + rho * rho / b2);
+        const double slope = a * rho / (b2 * root);
+        volume += w * (0.5 - a * root);
+        area += w * std::sqrt(1.0 + slope * slope);
+    }
+    double volume_errors[2] = {0.0, 0.0};
+    int level = 0;
+    for (const int n : {8, 16}) {
+        mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::HEXAHEDRON);
+        Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, "", false, 1, ms::MetricType::ADDITIVE);
+        ExpectLimits(f.report, false);
+        // The staircase: the same labels on the input positions
+        mfem::ParMesh input(*f.pmesh);
+        *input.GetNodes() = f.x0;
+        input.NodesUpdated();
+        const double stair_area = std::fabs(InterfaceArea(input, f.labels, 1, 2) - area) / area;
+        const double stair_volume = std::fabs(GrainVolume(input, f.labels, 1) - volume) / volume;
+        const double fit_area = std::fabs(InterfaceArea(*f.pmesh, f.labels, 1, 2) - area) / area;
+        const double fit_volume = std::fabs(GrainVolume(*f.pmesh, f.labels, 1) - volume) / volume;
+        EXPECT_LT(fit_area, 0.6 * stair_area);
+        EXPECT_LT(fit_area, 0.3);
+        volume_errors[level++] = fit_volume;
+        if (mfem::Mpi::Root()) {
+            std::printf("curved boundary n = %d: area error staircase %.4f, fitted %.4f; volume "
+                        "error staircase %.4f, fitted %.4f\n",
+                        n, stair_area, fit_area, stair_volume, fit_volume);
+        }
+    }
+    EXPECT_LT(volume_errors[1], 0.5 * volume_errors[0]);
+    EXPECT_LT(volume_errors[1], 0.02);
 }
 
 TEST(ConformalFit, HexPolycrystal) {

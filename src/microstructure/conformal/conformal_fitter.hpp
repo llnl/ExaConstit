@@ -24,7 +24,7 @@
  * **Method: spring-balanced pseudo-elastic morph.** The mesh is treated as a linear elastic
  * solid (Poisson ratio `poisson_ratio`), and every fitted node (status FIT) is pulled toward its
  * target by a spring of stiffness k_v = c h_v m_v (h_v the node's mesh size, m_v a per-node
- * multiplier; nodes on triple lines and quad points get a tenth). The displacement u from the
+ * multiplier; the same on faces, triple lines and quad points). The displacement u from the
  * input mesh minimizes
  *
  *     1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
@@ -69,7 +69,7 @@
  *  - on exactly one curved surface, it slides along the input boundary faces around it (its
  *    one-ring patch, boundary_projector.hpp; it moves well under an element per fit);
  *  - on a curved surface and another one, or on three or more surfaces, it is fixed.
- * A sliding node gets a stiff normal spring (1e4 h, along the tilted planes' normals or the
+ * A sliding node gets a stiff normal spring (1e3 h, along the tilted planes' normals or the
  * area-weighted normal of its patch) in the elastic solve, and after every solve it is put back
  * on its surfaces exactly (projection onto the planes or the closest point on its patch; box face
  * coordinates restored bit for bit). Where several nodes share one 4-label set (a quad point),

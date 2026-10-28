@@ -4,7 +4,9 @@
 # box volume kept, few label changes, nothing moves without the step), a tet box (tet floor), an
 # order-2 mesh (fitted, keeps its Nodes) and the refusal of order 3, and the Phase 1 grain sources
 # without analytic boundaries (voxel map, geodesic and connected labels on the U-shaped part:
-# smoothed staircase targets) and a passthrough plate (interface kept in place), at np = 1, 2, 3, 4.
+# smoothed staircase targets) and a passthrough plate (interface kept in place), and that the
+# nodes ExaConstit's mono_def boundary conditions select are the same before and after the fit
+# (hex, tet, order 2), at np = 1, 2, 3, 4.
 ms_add_gtest(NAME          test_driver_conformal
              SOURCES       test_driver_conformal.cpp
              DEPENDS_ON    exaconstit_microstructure ms_conformal ms_morphology ms_labeling

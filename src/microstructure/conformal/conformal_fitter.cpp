@@ -18,8 +18,6 @@ namespace exaconstit::microstructure {
 
 namespace {
 
-/** @brief Spring factor of nodes on triple lines and quad points (relative to face nodes). */
-constexpr double JUNCTION_SPRING = 0.1;
 /** @brief Elements within this margin above the floor also back off their springs. */
 constexpr double BACKOFF_MARGIN = 0.05;
 /** @brief Scaled Jacobian below which an element is stiffened. */
@@ -38,8 +36,14 @@ constexpr double BULK_SHARE = 0.01;
 constexpr double BULK_MARGIN = 0.2;
 /** @brief Retries of a first round that fails the bulk guard, each with a quarter of the spring. */
 constexpr int WEAK_TRIES = 3;
-/** @brief Normal penalty of a node sliding on a tilted or curved surface, per unit of h. */
-constexpr double NORMAL_PENALTY = 1e4;
+/**
+ * @brief Normal penalty of a node sliding on a tilted or curved surface, per unit of h. The exact
+ * projection after the solve puts the node back on its surface; the penalty only keeps the solve
+ * from moving it far off (a weaker one, 1e1-1e2, lets the projection shear thin boundary
+ * elements). 1e4 made CG take about 3x the iterations on curved surfaces and stall on strut
+ * lattices (no convergence in 500 iterations) for the same fit.
+ */
+constexpr double NORMAL_PENALTY = 1e3;
 
 /** @brief How a node on a tilted or curved boundary surface moves. */
 enum class Slide : char {
@@ -467,6 +471,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
         const int* en_off = field.ElementVertexOffsets().HostRead();
         const int* en = field.ElementVertices().HostRead();
         std::vector<double> sj(static_cast<std::size_t>(ne), 1.0);
+        std::vector<char> fails(static_cast<std::size_t>(ne), 0);
 
         // Essential (fixed) true dofs; they keep their input value (zero displacement)
         mfem::Array<int> ess_marker(sfes.GetVSize());
@@ -540,8 +545,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 if (!marker[v]) {
                     continue;
                 }
-                const double k = c * multiplier(v) * targets.MeshSize(v) *
-                                 (labels.NumLabels(v) >= 3 ? JUNCTION_SPRING : 1.0);
+                const double k = c * multiplier(v) * targets.MeshSize(v);
                 for (int d = 0; d < 3; ++d) {
                     const int vd = sfes.DofToVDof(v, d);
                     k_local(vd) = k;
@@ -638,6 +642,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
         std::vector<double> ar_e(static_cast<std::size_t>(ne), 1.0);
         std::vector<double> sj_limit(static_cast<std::size_t>(ne), floor);
         std::vector<double> ar_limit(static_cast<std::size_t>(ne), MESH_ASPECT_RATIO_MAX);
+        std::vector<char> poor(static_cast<std::size_t>(ne), 0); // limit relaxed to the input
         double input_below = 0.0;
         for (int e = 0; e < ne; ++e) {
             double q = 0.0;
@@ -651,6 +656,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 eta_limit[es] = std::min(MESH_MEAN_RATIO_FLOOR_TET,
                                          (1.0 - POOR_INPUT_SLACK) * ElementMeanRatio(pmesh, e));
             }
+            poor[es] = (tets ? eta_limit[es] < MESH_MEAN_RATIO_FLOOR_TET
+                             : sj_limit[es] < floor || ar_limit[es] > MESH_ASPECT_RATIO_MAX)
+                           ? 1
+                           : 0;
             input_below += Mediocre(e, q) ? 1.0 : 0.0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &input_below, 1, MPI_DOUBLE, MPI_SUM, comm);
@@ -670,11 +679,11 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                     ElementQuality(pmesh, e, sj[es], ar_e[es], det);
                     if (tets) {
                         eta_e[es] = ElementMeanRatio(pmesh, e);
-                        failed = failed || det <= 0.0 || eta_e[es] < eta_limit[es];
+                        fails[es] = det <= 0.0 || eta_e[es] < eta_limit[es];
                     } else {
-                        failed = failed || det <= 0.0 || sj[es] < sj_limit[es] ||
-                                 ar_e[es] > ar_limit[es];
+                        fails[es] = det <= 0.0 || sj[es] < sj_limit[es] || ar_e[es] > ar_limit[es];
                     }
+                    failed = failed || fails[es] != 0;
                 }
                 ok = !AnyRank(failed, comm);
                 // Stiffen the distorted elements (never softened again) and, if the solve failed,
@@ -682,6 +691,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 mfem::Vector next(multiplier);
                 mfem::Vector hit(nv);
                 hit = 0.0;
+                mfem::Vector spread(nv); // -1: a node of a near element without fitted nodes
+                spread = 0.0;
                 for (int e = 0; e < ne; ++e) {
                     const double q = sj[static_cast<std::size_t>(e)];
                     const double a = ar_e[static_cast<std::size_t>(e)];
@@ -691,15 +702,40 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                             std::min(MAX_STIFFNESS, std::pow(ratio, options.stiffening_exponent));
                         quality_factor(e) = std::max(quality_factor(e), f);
                     }
+                    // A poor input element (its limit relaxed to its input value) that broke its
+                    // limit resists more in the next attempt: thin elements, e.g. a pillow layer,
+                    // otherwise keep shearing past their limit as their neighbors move
+                    if (!ok && fails[static_cast<std::size_t>(e)] != 0 &&
+                        poor[static_cast<std::size_t>(e)] != 0) {
+                        quality_factor(e) = std::min(MAX_STIFFNESS, 2.0 * quality_factor(e));
+                    }
                     const auto es = static_cast<std::size_t>(e);
                     const bool near = tets
                                           ? eta_e[es] < eta_limit[es] + BACKOFF_MARGIN
                                           : (q < sj_limit[es] + BACKOFF_MARGIN ||
                                              a > ar_limit[es] - ASPECT_RATIO_BACKOFF_MARGIN);
                     if (!ok && near) {
+                        bool fitted = false;
                         for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
                             hit(en[k]) = 1.0;
+                            fitted = fitted || marker[en[k]];
                         }
+                        for (int k = en_off[e]; k < en_off[e + 1] && !fitted; ++k) {
+                            spread(en[k]) = -1.0;
+                        }
+                    }
+                }
+                // An element without fitted nodes is distorted through its neighbors: back off
+                // the nodes of every element that touches one of its nodes (flags or-ed over the
+                // node copies first, so every rank sees the same flags)
+                field.ReduceSharedMinimum(spread);
+                for (int e = 0; e < ne; ++e) {
+                    bool touches = false;
+                    for (int k = en_off[e]; k < en_off[e + 1]; ++k) {
+                        touches = touches || spread(en[k]) < 0.0;
+                    }
+                    for (int k = en_off[e]; k < en_off[e + 1] && touches; ++k) {
+                        hit(en[k]) = 1.0;
                     }
                 }
                 // Halve the springs of the fitted nodes of the elements near a limit

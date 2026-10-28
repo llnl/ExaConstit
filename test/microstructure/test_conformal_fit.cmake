@@ -4,7 +4,9 @@
 # test_conformal_fit checks the quality measures on simple elements (scaled Jacobian, aspect ratio
 # relative to the ideal element); fits an inclined Voronoi bicrystal on hex and tet meshes (quality
 # limits, box face coordinates kept bit for bit, smaller deviation, analytic grain volume, WORLD vs
-# SELF positions within the solver tolerance), a 20-grain hex polycrystal, a box with a domed top
+# SELF positions within the solver tolerance), a 120° tricrystal (triple line nodes reach the
+# analytic line, hex and tet), an Additive bicrystal against its exact grain volume and boundary
+# area (fitted vs staircase, two resolutions), a 20-grain hex polycrystal, a box with a domed top
 # and tilted sides (boundary nodes slide on their surfaces and stay on them, also along the rims
 # where the dome meets the sides), a box with a bulged side wall (grain boundary nodes on the rims
 # of the curved wall slide along them to the bisector), thin grains (a grain two elements thick

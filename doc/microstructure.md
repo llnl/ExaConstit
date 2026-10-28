@@ -373,7 +373,9 @@ analytic-only pairs are 0 to 5 at every resolution.
 **Fit: spring-balanced pseudo-elastic morph.** The mesh is treated as a linear elastic solid with
 Young's modulus 1 (times a per-element stiffening factor) and Poisson ratio 0.3, assembled on the
 input geometry. Every fitted node v is pulled toward its target t_v by a spring of stiffness
-k_v = c h_v m_v (a tenth of that on triple lines and quad points). The displacement u minimizes
+k_v = c h_v m_v, the same on faces, triple lines and quad points (a tenth on triple lines, the
+first choice, left them about where they started: a 120° tricrystal's triple line nodes stayed
+0.5 h from the line, against 0.24 h now). The displacement u minimizes
 
     1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
 
@@ -402,7 +404,7 @@ the guard still get a partial fit.
 
 **Outer surfaces.** On a box face (normal along a coordinate axis) the normal coordinate is fixed,
 so nodes slide along the face and keep that coordinate bit for bit. On a tilted flat surface, or
-on a single curved surface, a node slides along it: a stiff normal spring (10^4 h) in the solve,
+on a single curved surface, a node slides along it: a stiff normal spring (10^3 h) in the solve,
 then an exact projection back onto the plane(s) or onto the closest point of its patch of input
 boundary triangles. A node on a rim, where a curved surface meets one other surface, slides along
 the rim: both surfaces get a normal spring, and the projection alternates between their tangent
@@ -423,8 +425,30 @@ and higher are refused (their nodal points are not on a uniform lattice).
 
 **Measured behavior** (test meshes, 20-50 grains): the mean distance of the grain boundary nodes
 from their targets drops from about 0.4 h to about 0.21-0.24 h on hex meshes with a smallest scaled
-Jacobian of about 0.4, for analytic targets (Voronoi) and smoothed ones (a noisy voxel map, geodesic
-grains) alike. Tets: an 18^3 x 6 Kuhn mesh reaches 0.23 h with the worst dihedral angle at 16.5
-degrees, an unstructured gmsh cube 0.26 h (from 0.34) with its worst tet unchanged (10 degrees,
-from the input).
+Jacobian of about 0.4-0.5 (32^3, 50 Voronoi grains: 0.40 -> 0.21 h, smallest scaled Jacobian
+0.52), for analytic targets (Voronoi) and smoothed ones (a noisy voxel map, geodesic grains)
+alike. Tets: an 18^3 x 6 Kuhn mesh reaches 0.19 h (from 0.37); an unstructured gmsh cube reached
+0.26 h (from 0.34) with its worst tet unchanged (10 degrees, from the input).
+
+**Validation** (`test_conformal_fit`, `test_driver_conformal`, e2e step 10):
+- 120° tricrystal: the triple line nodes end about half as far from the analytic line (hex 12^3:
+  0.51 -> 0.24 h; tet: 0.34 -> 0.18 h).
+- Curved boundary (an Additive bicrystal, whose boundary is a hyperboloid sheet; no supported
+  metric gives a sphere): the fitted grain volume converges (error 3-5 % at 6-8 elements per
+  unit, 0.1-1.2 % at 12-32; the staircase's 16 % and 0.6-2 %). The fitted boundary *area* does
+  not converge: it stays 10-25 % too large at every resolution (the staircase's 40-60 %). The fit
+  leaves a waviness of a fraction of h at the stair corners whose slope does not shrink with h,
+  because the quality limits keep the corner elements from flattening; order 2 and tets behave
+  the same. Quantities that depend on the boundary area (e.g. a grain boundary energy) are
+  therefore off by that much; volumes and the boundary position are not.
+- `mono_def` boundary conditions select the same nodes before and after the fit (box faces keep
+  their coordinates bit for bit).
+- Strut lattices through `mechanics`: a BCC lattice meshed with tets by gmsh and a simple-cubic
+  lattice meshed with hexes from voxels plus a pillow layer (the way voxel meshers build hex
+  meshes of such parts; `test/data/microstructure/lattice/`), grains from the hook, fit, then
+  mechanics. Lattices fit less than boxes: almost every grain boundary node is on a curved strut
+  surface, and the thin pillow hexes (aspect ratio up to about 100 in the input) may lose only
+  10 % of their quality. Measured: tets 0.29-0.32 -> 0.18-0.26 h; hexes 0.39-0.41 -> 0.30-0.37 h
+  (the coarser the voxels, the less the fit). At 100 grains on 2 x 2 x 2 cells (68 000 tets, 72 000
+  hexes) both fit with no inverted element.
 

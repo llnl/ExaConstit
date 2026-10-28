@@ -40,15 +40,25 @@ int AxisOf(const double n[3]) {
     return (zeros == 2) ? axis : -1;
 }
 
-/** @brief y - N^T (N N^T)^-1 (N y - c) for one or two unit normals (rows of n). */
+/** @brief Two planes whose 1 - cos^2 of the normals is at most this count as one plane. */
+constexpr double PARALLEL_PLANES = 1e-6;
+
+/**
+ * @brief y - N^T (N N^T)^-1 (N y - c) for one or two unit normals (rows of n); two (nearly)
+ * parallel planes are treated as the first one only.
+ */
 void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double y[3]) {
     double r[2] = {Dot(n[0], y) - c[0], (num == 2) ? Dot(n[1], y) - c[1] : 0.0};
     double a[2] = {r[0], 0.0};
     if (num == 2) {
         const double g = Dot(n[0], n[1]);
         const double det = 1.0 - g * g;
-        a[0] = (r[0] - g * r[1]) / det;
-        a[1] = (r[1] - g * r[0]) / det;
+        if (!(det > PARALLEL_PLANES)) {
+            num = 1; // (nearly) the same plane: the first one only
+        } else {
+            a[0] = (r[0] - g * r[1]) / det;
+            a[1] = (r[1] - g * r[0]) / det;
+        }
     }
     for (int d = 0; d < 3; ++d) {
         y[d] -= a[0] * n[0][d] + ((num == 2) ? a[1] * n[1][d] : 0.0);
@@ -387,7 +397,7 @@ double SurfacePatches::ClosestPoint(int v, const double y[3], double p[3], doubl
             normal[2] = u[0] * w[1] - u[1] * w[0];
             const double len = std::sqrt(Dot(normal, normal));
             for (int d = 0; d < 3; ++d) {
-                normal[d] /= len;
+                normal[d] = (len > 0.0) ? normal[d] / len : 0.0;
             }
         }
     }

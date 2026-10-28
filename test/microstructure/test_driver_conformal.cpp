@@ -19,6 +19,9 @@
  *    inversion, the part's volume and a smaller distance to the targets.
  *  - A passthrough plate (bottom quarter of a box): its elements keep their grain, the nodes on
  *    its top face keep z bit for bit, and its volume is unchanged.
+ *  - mono_def essential dofs (V3): on the hex, tet and order-2 boxes the nodes that ExaConstit's
+ *    mono_def boundary conditions select (1e-12 tests against the global min / max coordinates,
+ *    system_driver.cpp) are the same before and after the fit.
  *  - Without the step nothing moves (the vertices of the input mesh are kept bit for bit).
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
@@ -33,6 +36,9 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -159,6 +165,70 @@ int MovedVertices(mfem::ParMesh& pmesh, mfem::ParMesh& input) {
     return n;
 }
 
+/**
+ * Per node of the mesh (Nodes dofs, or vertices without Nodes), the essential-dof mask of
+ * ExaConstit's mono_def boundary conditions (system_driver.cpp, mono_def_flag): with the global
+ * min / max coordinates o, bit 0 = x dof (|x - ox| < 1e-12 and |z - oz| < 1e-12), bit 1 = y dof
+ * (at the min corner), bit 2 = z dof (|z - oz| < 1e-12 or |z - oz_max| < 1e-12).
+ */
+std::vector<int> MonoDefMasks(mfem::ParMesh& pmesh) {
+    std::vector<std::array<double, 3>> x;
+    if (const mfem::GridFunction* nodes = pmesh.GetNodes()) {
+        const mfem::FiniteElementSpace& fes = *nodes->FESpace();
+        x.resize(static_cast<std::size_t>(fes.GetNDofs()));
+        for (int i = 0; i < fes.GetNDofs(); ++i) {
+            for (int d = 0; d < 3; ++d) {
+                x[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)] =
+                    (*nodes)(fes.DofToVDof(i, d));
+            }
+        }
+    } else {
+        x.resize(static_cast<std::size_t>(pmesh.GetNV()));
+        for (int v = 0; v < pmesh.GetNV(); ++v) {
+            for (int d = 0; d < 3; ++d) {
+                x[static_cast<std::size_t>(v)][static_cast<std::size_t>(d)] = pmesh.GetVertex(v)[d];
+            }
+        }
+    }
+    double lo[3] = {HUGE_VAL, HUGE_VAL, HUGE_VAL};
+    double hi[3] = {-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
+    for (const auto& p : x) {
+        for (int d = 0; d < 3; ++d) {
+            lo[d] = std::min(lo[d], p[static_cast<std::size_t>(d)]);
+            hi[d] = std::max(hi[d], p[static_cast<std::size_t>(d)]);
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, lo, 3, MPI_DOUBLE, MPI_MIN, pmesh.GetComm());
+    MPI_Allreduce(MPI_IN_PLACE, hi, 3, MPI_DOUBLE, MPI_MAX, pmesh.GetComm());
+    std::vector<int> mask(x.size(), 0);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const bool x0 = std::abs(x[i][0] - lo[0]) < 1e-12;
+        const bool y0 = std::abs(x[i][1] - lo[1]) < 1e-12;
+        const bool z0 = std::abs(x[i][2] - lo[2]) < 1e-12;
+        const bool z1 = std::abs(x[i][2] - hi[2]) < 1e-12;
+        mask[i] = ((x0 && z0) ? 1 : 0) | ((x0 && y0 && z0) ? 2 : 0) | ((z0 || z1) ? 4 : 0);
+    }
+    return mask;
+}
+
+/**
+ * Nodes whose mono_def mask differs between the fitted mesh and the input (global count), and in
+ * `marked` the number of nodes with a nonzero mask on the input (global).
+ */
+int MonoDefChanges(mfem::ParMesh& fitted, mfem::ParMesh& input, int& marked) {
+    const std::vector<int> a = MonoDefMasks(fitted);
+    const std::vector<int> b = MonoDefMasks(input);
+    int n = (a.size() == b.size()) ? 0 : 1;
+    marked = 0;
+    for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+        n += (a[i] != b[i]) ? 1 : 0;
+        marked += (b[i] != 0) ? 1 : 0;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &marked, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    return n;
+}
+
 } // namespace
 
 TEST(DriverConformal, HexBox) {
@@ -187,6 +257,10 @@ TEST(DriverConformal, HexBox) {
     EXPECT_EQ(changed, r.conformal_repair.flips);
     EXPECT_LT(changed, serial.GetNE() / 20);
     EXPECT_NE(r.adjacency, nullptr);
+    // mono_def boundary conditions find the same nodes (V3)
+    int marked = 0;
+    EXPECT_EQ(MonoDefChanges(*fitted.pmesh, *input, marked), 0);
+    EXPECT_GT(marked, 0);
     if (mfem::Mpi::Root()) {
         std::printf("hex box: %d grains, %d flips, deviation %.3f -> %.3f h, sj %.3f\n",
                     fitted.result.num_grains, changed, r.conformal_fit.initial_deviation,
@@ -199,7 +273,12 @@ TEST(DriverConformal, HexBox) {
 
 TEST(DriverConformal, TetBox) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
+    const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
+    std::unique_ptr<mfem::ParMesh> input = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
     DriverRun fitted = Generate(serial, true);
+    int marked = 0;
+    EXPECT_EQ(MonoDefChanges(*fitted.pmesh, *input, marked), 0);
+    EXPECT_GT(marked, 0);
     const ms::GenerationReport& r = fitted.report;
     ASSERT_TRUE(r.ran_conformal);
     EXPECT_EQ(r.conformal_fit.quality_after.inverted, 0);
@@ -225,9 +304,14 @@ TEST(DriverConformal, OrderTwoHook) {
     DriverRun run;
     run.pmesh = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
     run.pmesh->SetCurvature(2);
+    std::unique_ptr<mfem::ParMesh> input = ms::MakeParMesh(MPI_COMM_WORLD, serial, order);
+    input->SetCurvature(2);
     run.result =
         ms::GenerateMicrostructure(Options(true), *run.pmesh, MPI_COMM_WORLD, &run.report);
     CheckFit("order 2", run, ms::MESH_QUALITY_FLOOR_HEX, 1.0);
+    int marked = 0;
+    EXPECT_EQ(MonoDefChanges(*run.pmesh, *input, marked), 0); // every nodal point (V3)
+    EXPECT_GT(marked, 0);
     ASSERT_NE(run.pmesh->GetNodes(), nullptr);
     EXPECT_EQ(run.pmesh->GetNodes()->FESpace()->GetMaxElementOrder(), 2);
 }
