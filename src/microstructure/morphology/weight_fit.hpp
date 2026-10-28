@@ -178,7 +178,8 @@ double InitialInverseStiffness(MetricType metric,
                                const std::vector<double>& shape);
 
 /**
- * @brief Checks the parameters.
+ * @brief Checks the parameters (a weighted metric, the ranges stated for each field). Host only,
+ * not collective.
  * @throws std::invalid_argument naming the first invalid field.
  */
 void ValidateWeightFitParameters(const WeightFitParameters& params);

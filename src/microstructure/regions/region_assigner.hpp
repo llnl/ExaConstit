@@ -32,7 +32,7 @@ namespace exaconstit::microstructure {
  */
 struct PhaseRegionParameters {
     /**
-     * @brief Phase ids (>= 0) whose grains are not crystals (amorphous material, pores filled
+     * @brief Phase ids (>= 1) whose grains are not crystals (amorphous material, pores filled
      * with a binder, a build plate described as a phase, ...). Their regions are flagged
      * non-crystalline, and the driver writes the identity orientation for their grains.
      * Phases listed here that no grain has are ignored. Order and duplicates do not matter.
@@ -44,7 +44,7 @@ struct PhaseRegionParameters {
      * Empty (default): the regions are numbered 1..M in ascending order of the phases present
      * (the "compact ascending" numbering), e.g. phases {1, 3, 7} -> regions {1, 2, 3}.
      *
-     * Non-empty: every entry must have a key >= 0 and a region id >= 1 (checked for every
+     * Non-empty: every entry must have a key >= 1 and a region id >= 1 (checked for every
      * entry, including phases no grain has). Every phase present must be a key. Several phases
      * may share one region (many-to-one, e.g. two crystallographic variants modeled by the same
      * material), but the set of region ids used by the phases present must be exactly 1..M
@@ -99,9 +99,8 @@ struct RegionAssignment {
  * @param params      non-crystalline phases and the optional explicit phase -> region map.
  * @return per-grain region ids, the phases of every region and its crystalline flag.
  * @throws std::invalid_argument when:
- *         - grain_phase is empty, a phase id is negative, or a listed non-crystalline phase is
- *           negative;
- *         - (explicit map) an entry has a negative key or a region id < 1; a phase present has
+ *         - grain_phase is empty, a phase id is < 1, or a listed non-crystalline phase is < 1;
+ *         - (explicit map) an entry has a key < 1 or a region id < 1; a phase present has
  *           no entry; or the region ids used by the phases present are not exactly 1..M (the
  *           message lists the unused ids);
  *         - a region mixes crystalline and non-crystalline phases (the message names the region
@@ -115,7 +114,7 @@ RegionAssignment AssignRegionsFromPhases(const std::vector<int>& grain_phase,
  * AssignPhaseFractions).
  */
 struct PhaseFractionParameters {
-    /** @brief Phase ids, size K >= 1, each >= 0, all distinct. */
+    /** @brief Phase ids, size K >= 1, each >= 1, all distinct. */
     std::vector<int> phase_id;
     /**
      * @brief Target volume fraction f_k of phase_id[k], size K; every f_k > 0 and the sum is 1
@@ -184,7 +183,7 @@ struct PhaseFractionResult {
  * @param params          target phases, fractions and the RNG seed.
  * @return the phase of every grain and the achieved fractions.
  * @throws std::invalid_argument for empty or mismatched sizes, a non-positive or non-finite
- *         volume, repeated source ids, an empty phase list, a negative or repeated phase id, a
+ *         volume, repeated source ids, an empty phase list, a phase id < 1 or repeated, a
  *         non-positive or non-finite fraction, or fractions that do not sum to 1 within 1e-6.
  */
 PhaseFractionResult AssignPhaseFractions(const std::vector<double>& grain_volume,

@@ -2,9 +2,8 @@
  * Implementation of the per-grain orientation assignment (orientation_assigner.hpp).
  *
  * The tables built here have one row per grain (thousands, rarely millions of rows) and are
- * replicated on every rank, so they are filled with plain host loops; RandomQuaternion is the
- * same host/device function the GPU code paths use, so a later device version gives identical
- * bits.
+ * replicated on every rank, so they are filled with plain host loops; RandomQuaternion is a
+ * host/device function, so a device loop over grains would give identical bits.
  */
 #include "microstructure/orientation/orientation_assigner.hpp"
 
@@ -48,8 +47,9 @@ void CopyNormalizedQuaternion(const double* in, double* out, std::size_t grain) 
 
 /*
  * AssignOrientations: the per-grain source id is the source id of the grain's seed; everything
- * else is AssignGrainOrientations. Checks that need the seed set (one source id per seed, seed
- * indices in range) run first, so the error messages are the same as before.
+ * else is AssignGrainOrientations. Checks that need the seed set (one source id per seed) run
+ * first, so the message names the seed set; an out-of-range seed index is reported by
+ * AssignGrainOrientations.
  */
 void AssignOrientations(const OrientationOptions& orientations,
                         std::uint64_t rng_seed,

@@ -95,7 +95,8 @@ struct LloydReport {
 };
 
 /**
- * @brief Checks the parameters.
+ * @brief Checks the parameters (iterations >= 0, num_bins >= 1, metric VORONOI or LAGUERRE, and the
+ * weight-fit controls in centroidal power mode). Host only, not collective.
  * @throws std::invalid_argument naming the first invalid field.
  */
 void ValidateLloydParameters(const LloydParameters& params);

@@ -19,6 +19,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** pi, for the sphere volume V = (4 pi / 3) r^3. */
 constexpr double PI = 3.14159265358979323846;
 
 /**

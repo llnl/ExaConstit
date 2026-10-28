@@ -1,3 +1,8 @@
+/*
+ * Implementation of region_assigner.hpp: phases -> ExaConstit regions (compact ascending or an
+ * explicit map), and the greedy-by-deficit assignment of synthetic phases with prescribed volume
+ * fractions. Host only and not collective: the per-grain tables are replicated on every rank.
+ */
 #include "microstructure/regions/region_assigner.hpp"
 
 #include <algorithm>

@@ -30,7 +30,8 @@
  * with weight w_i = r_i^2 "claims" a ball of radius r_i around itself when its neighbors have no
  * weight. With the equivalent-sphere radius r_i = (3 V_i / (4 pi))^(1/3), w_i = r_i^2 is
  * therefore a good first guess for the weight fit (morphology/weight_fit.hpp). Polydisperse
- * random sequential addition (placing seeds with a minimum spacing that depends on their size)
+ * random sequential adsorption (RSA: placing seeds with a minimum spacing that depends on their
+ * size)
  * works best when the largest grains are placed first, so a largest-first order is provided too.
  *
  * All functions here are host only and not collective; they work on small per-seed vectors that

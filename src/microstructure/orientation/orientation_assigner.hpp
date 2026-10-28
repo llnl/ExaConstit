@@ -55,7 +55,7 @@ namespace exaconstit::microstructure {
  * @param grain_seed    0-based seed index of grain g at index g-1 (from the labeler).
  * @param result        output: num_grains, grain_quat (size 4 num_grains) and grain_source_id
  *                      (size num_grains) are overwritten.
- * @throws std::invalid_argument for source = "list" (not implemented yet) or any other value,
+ * @throws std::invalid_argument for source = "list" (not implemented) or any other value,
  *         for "from_source" without per-seed quaternions or with a zero / non-finite one, a
  *         source_id array of the wrong size, or a seed index out of range.
  */

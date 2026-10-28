@@ -39,9 +39,9 @@ double Dot(const std::vector<double>& a, const std::vector<double>& b) {
 
 /** @brief One curvature pair of L-BFGS: step s, gradient change y, and rho = 1 / (y . s). */
 struct CurvaturePair {
-    std::vector<double> s;
-    std::vector<double> y;
-    double rho = 0.0;
+    std::vector<double> s; ///< weight change of the step, size N
+    std::vector<double> y; ///< gradient (volume excess) change of the step, size N
+    double rho = 0.0;      ///< 1 / (y . s)
 };
 
 /**
@@ -49,7 +49,7 @@ struct CurvaturePair {
  * gradient G = V - V^target and the error indicators.
  */
 struct Evaluation {
-    CellMeasures measures;
+    CellMeasures measures;           ///< volumes, centroids and sample counts of the cells
     double objective = 0.0;          ///< F(w) = -Phi(w)
     std::vector<double> gradient;    ///< G_i = V_i - V_i^target
     double max_relative_error = 0.0; ///< max_i |G_i| / V_i^target
@@ -143,11 +143,11 @@ public:
     }
 
 private:
-    const WeightedSamples& m_samples;
-    const WeightFitParameters& m_params;
-    CellMeasureAccumulator m_accumulator;
-    SeedSet m_work;
-    int m_evaluations = 0;
+    const WeightedSamples& m_samples;     ///< this rank's samples (not owned)
+    const WeightFitParameters& m_params;  ///< solver controls (not owned)
+    CellMeasureAccumulator m_accumulator; ///< fixed-point volume and integral sums
+    SeedSet m_work;                       ///< positions and shapes; weights set per evaluation
+    int m_evaluations = 0;                ///< labelings of all samples so far
 };
 
 /**
