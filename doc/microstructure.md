@@ -449,12 +449,16 @@ alike. Tets: an 18^3 x 6 Kuhn mesh reaches 0.19 h (from 0.37); an unstructured g
   therefore off by that much; volumes and the boundary position are not.
 - `mono_def` boundary conditions select the same nodes before and after the fit (box faces keep
   their coordinates bit for bit).
-- Strut lattices through `mechanics`: a BCC lattice meshed with tets by gmsh and a simple-cubic
-  lattice meshed with hexes from voxels plus a pillow layer (the way voxel meshers build hex
-  meshes of such parts; `test/data/microstructure/lattice/`), grains from the hook, fit, then
-  mechanics. Lattices fit less than boxes: almost every grain boundary node is on a curved strut
-  surface, and the thin pillow hexes (aspect ratio up to about 100 in the input) may lose only
-  10 % of their scaled Jacobian (their aspect ratio may grow by 30 %). Measured: tets 0.29-0.32
-  -> 0.18-0.26 h; hexes 0.39-0.41 -> 0.27-0.32 h (the coarser the voxels, the less the fit). At
-  100 grains on 2 x 2 x 2 cells (68 000 tets, 72 000 hexes) both fit with no inverted element.
+- Strut lattices through `mechanics`: a BCC lattice with filleted junctions, meshed with tets
+  (gmsh) and with hexes (voxels plus a pillow layer, the way voxel meshers build hex meshes of
+  such parts), both node-optimized (`test/data/microstructure/lattice/make_lattice_meshes.py`);
+  grains grown along paths inside the struts (`distance = "geodesic"`), fit, then mechanics.
+  With 30 grains both fit about as well as boxes: tets and hexes 0.38 -> 0.24 h. The
+  input mesh decides how far the fit gets, because every element must stay within its quality
+  limits: pillowed hexes without node optimization (a simple-cubic lattice, thin pillows up to
+  aspect ratio 17) reach 0.28 h, octree hexes from automesh (smallest scaled Jacobian 0.05-0.09,
+  many elements just under the aspect ratio ceiling) only 0.37 h. A mesh whose elements sit well
+  inside the limits (here smallest scaled Jacobian 0.6, aspect ratio below 3.3) leaves the fit
+  room. At 100 grains on 2 x 2 x 2 cells (68 000 tets of a sharp-jointed BCC lattice, 72 000
+  pillowed hexes of a simple-cubic one) both fit with no inverted element.
 

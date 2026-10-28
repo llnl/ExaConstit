@@ -5,7 +5,9 @@
 # into a scratch directory and runs mechanics on it with 2 MPI ranks.
 #
 # What it exercises: the motivating use case of Stage 2, grains on a strut lattice with fitted
-# grain boundaries: a BCC strut lattice meshed with tets by gmsh (lattice/make_bcc_geo.py), 12 Voronoi grains from [Mesh.Microstructure], [Conformal] enabled
+# grain boundaries: a BCC strut lattice with filleted junctions meshed with tets (gmsh, then
+# node optimization; lattice/make_lattice_meshes.py), 12 grains grown along paths that stay
+# inside the struts (distance = "geodesic") from [Mesh.Microstructure], [Conformal] enabled
 # (curved strut surfaces, rims where struts meet the box faces), then two steps of mechanics.
 # The physics (material, tension along z) is that of hook_conformal_np2.toml.
 Version = "0.10.0"
@@ -94,6 +96,8 @@ basename = "hook_lattice_tet_np2"
     [Mesh.Microstructure.Tessellation]
         metric = "voronoi"
         sampling = "centroid"
+        # Grains grow along paths that stay inside the struts (not across the voids)
+        distance = "geodesic"
     [Mesh.Microstructure.Orientations]
         source = "random"
     [Mesh.Microstructure.Conformal]

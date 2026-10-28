@@ -207,9 +207,9 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      moved nodes and mechanics runs on it; the hook fits mechanics' own mesh at 2 ranks;
     #      the two mechanics results must agree. Then the passthrough case of step 6 and the
     #      order-2 auto box with the fit.
-    #  10. Stage 2 validation (V4): grains with fitted boundaries on strut lattices, a BCC tet
-    #      mesh (gmsh) and a simple-cubic hex mesh (voxels + pillow layer), through mechanics at 2
-    #      ranks (test/data/microstructure/lattice/ has the meshes and the scripts that made them).
+    #  10. Stage 2 validation (V4): geodesic grains with fitted boundaries on a BCC strut lattice
+    #      with filleted junctions, a tet and a hex mesh, through mechanics at 2 ranks
+    #      (test/data/microstructure/lattice/ has the meshes and the script that made them).
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
     # command, prints its output, and fails unless the exit status is 0 AND the output matches the
     # expected text (PASS_REGULAR_EXPRESSION alone would ignore the exit status). mechanics writes
@@ -232,7 +232,8 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
              "\"${_hk_ms}/mechanics/ms_hook_pass_read_np2.toml\" "
              "\"${_hk_ms}/mechanics/ms_conformal_file_np1.toml\" "
              "\"${_hk_ms}/bulged_cube_order2.mesh\" "
-             "\"${_hk_ms}/lattice/lattice_bcc_tet.mesh\" \"${_hk_ms}/lattice/lattice_sc_hex.mesh\" "
+             "\"${_hk_ms}/lattice/lattice_bcc_tet.mesh\" "
+             "\"${_hk_ms}/lattice/lattice_bcc_hex.mesh\" "
              "\"${_hk_data}/props_cp_voce.txt\" \"${_hk_data}/state_cp_voce.txt\" "
              "DESTINATION \"${_hk_dir}\")\n")
         add_test(NAME    test_microstructure_hook_e2e_setup
