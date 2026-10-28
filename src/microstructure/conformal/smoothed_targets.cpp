@@ -17,20 +17,6 @@ namespace {
 constexpr double TAUBIN_LAMBDA = 0.5;
 constexpr double TAUBIN_MU = -0.53;
 
-/** @brief Index d when n is exactly +-e_d, else -1. */
-int AxisOf(const double n[3]) {
-    int zeros = 0;
-    int axis = -1;
-    for (int d = 0; d < 3; ++d) {
-        if (n[d] == 0.0) {
-            ++zeros;
-        } else {
-            axis = d;
-        }
-    }
-    return (zeros == 2) ? axis : -1;
-}
-
 /**
  * @brief Pairs of nodal points of the element that are neighbors on its node lattice: their
  * reference positions differ by one lattice step (1 / order) along an edge direction of the
@@ -91,57 +77,6 @@ bool HasSurfacesOf(const NodeLabels& labels, int u, int v) {
     return true;
 }
 
-/**
- * @brief Puts y back on the boundary surfaces of v: the planes through x0 (one or two; the
- * least-norm correction, then box coordinates restored bit for bit), or the closest point of its
- * curved patch.
- */
-void ProjectOnSurfaces(const NodeLabels& labels, const SurfacePatches& patches, int v,
-                       const double* x0, double y[3]) {
-    const int* off = labels.SurfaceOffsets().HostRead();
-    const double* nrm = labels.SurfaceNormals().HostRead();
-    const int* planar = labels.SurfacePlanar().HostRead();
-    const int num = off[v + 1] - off[v];
-    if (num == 0) {
-        return;
-    }
-    if (planar[off[v]] == 0) { // one curved surface (eligibility)
-        double p[3];
-        double pn[3];
-        bool interior = false;
-        patches.ClosestPoint(v, y, p, pn, interior);
-        std::copy(p, p + 3, y);
-        return;
-    }
-    // y - N^T (N N^T)^-1 (N (y - x0)) for unit normals n_0 (, n_1)
-    const double* n0 = nrm + 3 * off[v];
-    double r[2] = {0.0, 0.0};
-    for (int d = 0; d < 3; ++d) {
-        r[0] += n0[d] * (y[d] - x0[d]);
-    }
-    double a[2] = {r[0], 0.0};
-    const double* n1 = (num == 2) ? n0 + 3 : nullptr;
-    if (n1 != nullptr) {
-        double g = 0.0;
-        for (int d = 0; d < 3; ++d) {
-            r[1] += n1[d] * (y[d] - x0[d]);
-            g += n0[d] * n1[d];
-        }
-        const double det = 1.0 - g * g;
-        a[0] = (r[0] - g * r[1]) / det;
-        a[1] = (r[1] - g * r[0]) / det;
-    }
-    for (int d = 0; d < 3; ++d) {
-        y[d] -= a[0] * n0[d] + ((n1 != nullptr) ? a[1] * n1[d] : 0.0);
-    }
-    for (int s = off[v]; s < off[v + 1]; ++s) {
-        const int axis = AxisOf(nrm + 3 * s);
-        if (axis >= 0) {
-            y[axis] = x0[axis];
-        }
-    }
-}
-
 } // namespace
 
 /*
@@ -159,19 +94,12 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
     mfem::ParMesh& pmesh = field.Mesh();
     const int nv = labels.NumNodes();
     const double* x0 = field.Coordinates().HostRead();
-    const int* surf_off = labels.SurfaceOffsets().HostRead();
-    const int* planar = labels.SurfacePlanar().HostRead();
 
     // Step 1
     moved.assign(static_cast<std::size_t>(nv), 0);
     for (int v = 0; v < nv; ++v) {
         const int n = labels.NumLabels(v);
-        const int surfaces = surf_off[v + 1] - surf_off[v];
-        bool curved = false;
-        for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
-            curved = curved || planar[s] == 0;
-        }
-        const bool curved_ok = !curved || (surfaces == 1 && patches.NumTriangles(v) > 0);
+        const bool curved_ok = CurvedPatchesReady(labels, patches, v);
         moved[static_cast<std::size_t>(v)] =
             (n >= 2 && n <= 3 && !labels.OverConstrained(v) && curved_ok) ? 1 : 0;
     }
@@ -269,7 +197,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
             for (int d = 0; d < 3; ++d) {
                 y[d] += w * (mean[d] / static_cast<double>(list.size()) - y[d]);
             }
-            ProjectOnSurfaces(labels, patches, v, x0 + 3 * v, y);
+            ProjectOnNodeSurfaces(labels, patches, v, x0 + 3 * v, 1e-10 * h(v),
+                                  SURFACE_PROJECTION_ITERATIONS, y);
         }
         p.swap(next);
     }
@@ -287,7 +216,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels, const SurfacePatches& patch
             for (int d = 0; d < 3; ++d) {
                 y[d] = x[d] + (y[d] - x[d]) * (limit / dist);
             }
-            ProjectOnSurfaces(labels, patches, v, x, y);
+            ProjectOnNodeSurfaces(labels, patches, v, x, 1e-10 * h(v),
+                                  SURFACE_PROJECTION_ITERATIONS, y);
         }
         for (int d = 0; d < 3; ++d) {
             smoothed(3 * v + d) = y[d];

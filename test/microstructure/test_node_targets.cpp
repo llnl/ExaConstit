@@ -12,12 +12,15 @@
  *  - Additive (Johnson-Mehl) bicrystal (curved hyperboloid boundary): targets on the boundary and
  *    closest points (x - y parallel to the gradient).
  *  - Curved boundary (tets with a domed top): targets of the bisector's nodes on the dome lie on
- *    the bisector and on the dome's own triangles; nodes where the dome meets a side face are
- *    held.
+ *    the bisector and on the dome's own triangles; nodes where the dome meets a side face slide
+ *    along that feature edge (also on the side face, its coordinate kept bit for bit).
  *  - Validation: a grain boundary whose points are all closer to an unused seed (FOREIGN_SEED),
  *    two grains of the same seed (SAME_SEED), a grain without analytic boundary (HELD), a grain
- *    boundary along a creased top face (FIT inside the face, held on its feature edges), and the
+ *    boundary along a creased top face (FIT inside the face and on its feature edges), and the
  *    projector's singular case.
+ *  - Far target on a curved surface (max_move = 2): dome nodes 1.2 to 1.8 element sizes from the
+ *    bisector reach it on the dome through two-ring patches; the one-ring patch does not hold
+ *    the target.
  *  - Smoothed staircase (the same bicrystal on a finer mesh without seeds, as for a voxel map):
  *    every boundary node is FIT on the smoothed staircase, which lies far closer to the true
  *    bisector than the staircase nodes, keeps box face coordinates bit for bit, stays within the
@@ -28,6 +31,7 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "microstructure/conformal/boundary_projector.hpp"
 #include "microstructure/conformal/manifold_projector.hpp"
 #include "microstructure/conformal/node_labels.hpp"
 #include "microstructure/conformal/node_targets.hpp"
@@ -40,6 +44,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -152,6 +157,53 @@ int CompareWithSerial(const Fitted& dist, const Fitted& self) {
                    : 0;
     }
     return bad;
+}
+
+/** Boundary triangles of a tet mesh on its top (z > 0.5 at all corners). */
+std::vector<std::array<double, 9>> TopTriangles(mfem::Mesh& serial) {
+    std::vector<std::array<double, 9>> top;
+    mfem::Array<int> bv;
+    for (int b = 0; b < serial.GetNBE(); ++b) {
+        serial.GetBdrElementVertices(b, bv);
+        std::array<double, 9> t{};
+        bool up = true;
+        for (int c = 0; c < 3; ++c) {
+            for (int d = 0; d < 3; ++d) {
+                t[static_cast<std::size_t>(3 * c + d)] = serial.GetVertex(bv[c])[d];
+            }
+            up = up && t[static_cast<std::size_t>(3 * c + 2)] > 0.5;
+        }
+        if (up) {
+            top.push_back(t);
+        }
+    }
+    return top;
+}
+
+/** y lies on some triangle: in its plane and inside it (barycentric coordinates >= 0). */
+bool OnTriangles(const std::vector<std::array<double, 9>>& tris, const double* y) {
+    for (const auto& t : tris) {
+        const double u[3] = {t[3] - t[0], t[4] - t[1], t[5] - t[2]};
+        const double w[3] = {t[6] - t[0], t[7] - t[1], t[8] - t[2]};
+        const double r[3] = {y[0] - t[0], y[1] - t[1], y[2] - t[2]};
+        const double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
+                             u[0] * w[1] - u[1] * w[0]};
+        const double nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+        const double off = (r[0] * n[0] + r[1] * n[1] + r[2] * n[2]) / std::sqrt(nn);
+        // Barycentric coordinates of the projection onto the plane
+        const double uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+        const double ww = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+        const double uw = u[0] * w[0] + u[1] * w[1] + u[2] * w[2];
+        const double ru = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
+        const double rw = r[0] * w[0] + r[1] * w[1] + r[2] * w[2];
+        const double det = uu * ww - uw * uw;
+        const double a = (ru * ww - rw * uw) / det;
+        const double b = (rw * uu - ru * uw) / det;
+        if (std::fabs(off) < 1e-12 && a >= -1e-12 && b >= -1e-12 && a + b <= 1.0 + 1e-12) {
+            return true;
+        }
+    }
+    return false;
 }
 
 int GlobalSum(int local) {
@@ -391,48 +443,8 @@ TEST(NodeTargets, CurvedTopSurface) {
     Fitted self = Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, seeds, {0, 1});
     EXPECT_EQ(CompareWithSerial(dist, self), 0);
 
-    // Boundary triangles of the serial mesh on the dome (z > 0.5 at all corners)
-    std::vector<std::array<double, 9>> dome;
-    mfem::Array<int> bv;
-    for (int b = 0; b < serial.GetNBE(); ++b) {
-        serial.GetBdrElementVertices(b, bv);
-        std::array<double, 9> t{};
-        bool top = true;
-        for (int c = 0; c < 3; ++c) {
-            for (int d = 0; d < 3; ++d) {
-                t[static_cast<std::size_t>(3 * c + d)] = serial.GetVertex(bv[c])[d];
-            }
-            top = top && t[static_cast<std::size_t>(3 * c + 2)] > 0.5;
-        }
-        if (top) {
-            dome.push_back(t);
-        }
-    }
-    // y lies on some dome triangle: in its plane and inside it (barycentric coordinates >= 0)
-    const auto on_dome = [&](const double* y) {
-        for (const auto& t : dome) {
-            const double u[3] = {t[3] - t[0], t[4] - t[1], t[5] - t[2]};
-            const double w[3] = {t[6] - t[0], t[7] - t[1], t[8] - t[2]};
-            const double r[3] = {y[0] - t[0], y[1] - t[1], y[2] - t[2]};
-            const double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
-                                 u[0] * w[1] - u[1] * w[0]};
-            const double nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
-            const double off = (r[0] * n[0] + r[1] * n[1] + r[2] * n[2]) / std::sqrt(nn);
-            // Barycentric coordinates of the projection onto the plane
-            const double uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-            const double ww = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
-            const double uw = u[0] * w[0] + u[1] * w[1] + u[2] * w[2];
-            const double ru = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
-            const double rw = r[0] * w[0] + r[1] * w[1] + r[2] * w[2];
-            const double det = uu * ww - uw * uw;
-            const double a = (ru * ww - rw * uw) / det;
-            const double b = (rw * uu - ru * uw) / det;
-            if (std::fabs(off) < 1e-12 && a >= -1e-12 && b >= -1e-12 && a + b <= 1.0 + 1e-12) {
-                return true;
-            }
-        }
-        return false;
-    };
+    const std::vector<std::array<double, 9>> dome = TopTriangles(serial);
+    const auto on_dome = [&](const double* y) { return OnTriangles(dome, y); };
     const double n[3] = {0.4, 0.15, -0.05};
     const double c = 0.5 * ((0.49 + 0.3025 + 0.2025) - (0.09 + 0.16 + 0.25));
     const ms::NodeLabels& nl = *dist.labels;
@@ -455,10 +467,130 @@ TEST(NodeTargets, CurvedTopSurface) {
     }
     EXPECT_EQ(GlobalSum(bad), 0);
     EXPECT_GT(GlobalSum(moved_on_dome), 0);
-    // Where the bisector meets the dome's edges with the side faces the nodes are held
-    EXPECT_GT(dist.targets->Summary().reason[static_cast<int>(ms::TargetReason::CURVED_FEATURE)],
+    // Where the bisector meets the dome's edges with the side faces (a feature edge of the curved
+    // surface) the nodes slide along the edge: on the bisector, on the dome's triangles, and on
+    // the side face with its coordinate kept bit for bit
+    int edge_nodes = 0;
+    bad = 0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        if (nl.NumLabels(v) != 2 || nl.BoundarySurfaces(v) != 2) {
+            continue;
+        }
+        int flat = -1;
+        bool curved = false;
+        for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+            curved = curved || planar[s] == 0;
+            flat = (planar[s] != 0) ? s : flat;
+        }
+        if (!curved || flat < 0) {
+            continue;
+        }
+        ++edge_nodes;
+        const double* x = xyz + 3 * v;
+        const double* y = t + 3 * v;
+        const double* fn = nl.SurfaceNormals().HostRead() + 3 * flat;
+        const int axis = (fn[0] != 0.0) ? 0 : 1;
+        bad += (dist.targets->Status(v) != ms::TargetStatus::FIT) ? 1 : 0;
+        bad += (std::fabs(n[0] * y[0] + n[1] * y[1] + n[2] * y[2] - c) > 1e-13) ? 1 : 0;
+        bad += on_dome(y) ? 0 : 1;
+        bad += (y[axis] != x[axis]) ? 1 : 0;
+    }
+    EXPECT_EQ(GlobalSum(bad), 0);
+    EXPECT_GT(GlobalSum(edge_nodes), 0);
+    EXPECT_EQ(dist.targets->Summary().reason[static_cast<int>(ms::TargetReason::CURVED_FEATURE)],
               0);
     EXPECT_EQ(dist.targets->Summary().status[FAKE], 0);
+}
+
+TEST(NodeTargets, FarTargetOnCurvedSurface) {
+    // The domed tet box again, with the bisector x = 0.47 and max_move = 2: dome nodes 1.2 to 1.8
+    // element sizes from the bisector reach it only through a patch of two face rings (the
+    // one-ring ends one element away and its closest point would stick to the patch border)
+    const ms::SeedSet seeds = MakeSeeds({{0.27, 0.5, 0.5}, {0.67, 0.5, 0.5}});
+    const auto labels_of = [&](mfem::Mesh& m) {
+        return SeedLabels(m, ms::MetricType::VORONOI, seeds);
+    };
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
+    serial.Transform([](const mfem::Vector& x, mfem::Vector& y) {
+        y = x;
+        y(2) = x(2) * (1.0 + 0.3 * x(0) * (1.0 - x(0)) + 0.3 * x(1) * (1.0 - x(1)));
+    });
+    ms::NodeTargetOptions options;
+    options.max_move = 2.0;
+    Fitted f = Fit(serial, MPI_COMM_WORLD, labels_of, ms::MetricType::VORONOI, seeds, {0, 1}, {},
+                   options);
+    EXPECT_EQ(f.targets->PatchRings(), 2);
+    const std::vector<std::array<double, 9>> dome = TopTriangles(serial);
+    const ms::NodeLabels& nl = *f.labels;
+    const auto one_ring = ms::MakeCurvedPatches(nl, 1);
+    const auto two_ring = ms::MakeCurvedPatches(nl, 2);
+    const double* xyz = nl.Field().Coordinates().HostRead();
+    const int* surf_off = nl.SurfaceOffsets().HostRead();
+    const int* planar = nl.SurfacePlanar().HostRead();
+    std::vector<ms::NodeLabelQuery> queries;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        const double* x = xyz + 3 * v;
+        const double gap = std::fabs(x[0] - 0.47) / f.targets->MeshSize(v);
+        if (nl.BoundarySurfaces(v) == 1 && planar[surf_off[v]] == 0 && gap > 1.2 && gap < 1.8) {
+            ms::NodeLabelQuery q;
+            q.node = v;
+            q.num_labels = 2;
+            q.labels[0] = 1;
+            q.labels[1] = 2;
+            queries.push_back(q);
+        }
+    }
+    const std::vector<ms::NodeTargetResult> results = f.targets->Evaluate(queries);
+    int bad = 0;
+    int stuck = 0;
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+        const int v = queries[i].node;
+        const double* y = results[i].target;
+        bad += (results[i].status != ms::TargetStatus::FIT) ? 1 : 0;
+        bad += (std::fabs(y[0] - 0.47) > 1e-12) ? 1 : 0;
+        bad += OnTriangles(dome, y) ? 0 : 1;
+        // The target lies on the two-ring patch but off the one-ring patch
+        double p[3];
+        double pn[3];
+        bool interior = false;
+        bad += (two_ring->ClosestPoint(v, y, p, pn, interior) > 1e-12) ? 1 : 0;
+        stuck += (one_ring->ClosestPoint(v, y, p, pn, interior) > 1e-3) ? 1 : 0;
+        bad += (two_ring->NumTriangles(v) <= one_ring->NumTriangles(v)) ? 1 : 0;
+    }
+    EXPECT_EQ(GlobalSum(bad), 0);
+    EXPECT_GT(GlobalSum(static_cast<int>(queries.size())), 0);
+    EXPECT_EQ(GlobalSum(stuck), GlobalSum(static_cast<int>(queries.size())));
+    // With NODE_TARGETS_DUMP_PATCHES = <file>, the patches, node, target and the one-ring
+    // closest point of the first query (for plots; run at np = 1)
+    const char* dump = std::getenv("NODE_TARGETS_DUMP_PATCHES");
+    if (dump != nullptr && !queries.empty()) {
+        const int v = queries[0].node;
+        FILE* out = std::fopen(dump, "w");
+        for (int k = 1; k <= 2; ++k) {
+            const auto& patch = (k == 1) ? *one_ring : *two_ring;
+            for (int tri = 0; tri < patch.NumTriangles(v); ++tri) {
+                const double* q = patch.Triangle(v, tri);
+                std::fprintf(out, "T%d", k);
+                for (int j = 0; j < 9; ++j) {
+                    std::fprintf(out, " %.10g", q[j]);
+                }
+                std::fprintf(out, "\n");
+            }
+        }
+        double p[3];
+        double pn[3];
+        bool interior = false;
+        one_ring->ClosestPoint(v, results[0].target, p, pn, interior);
+        const double* x = xyz + 3 * v;
+        const double* y = results[0].target;
+        std::fprintf(out, "X %.10g %.10g %.10g\nY %.10g %.10g %.10g\nP %.10g %.10g %.10g\n", x[0],
+                     x[1], x[2], y[0], y[1], y[2], p[0], p[1], p[2]);
+        std::fclose(out);
+    }
+    // Distributed patches give the MPI_COMM_SELF targets, node by node
+    Fitted self = Fit(serial, MPI_COMM_SELF, labels_of, ms::MetricType::VORONOI, seeds, {0, 1},
+                      {}, options);
+    EXPECT_EQ(CompareWithSerial(f, self), 0);
 }
 
 TEST(NodeTargets, SmoothedStaircase) {
@@ -595,8 +727,8 @@ TEST(NodeTargets, Validation) {
     {
         // Roof-shaped top face, crease along x = 1/2 on the grain boundary: the 5 crease nodes
         // see one curved top surface (30-degree feature angle). The 3 inside the top face are
-        // already on the grain boundary and the surface (FIT, no move); the 2 on the side faces
-        // are on a feature of a curved surface and are held
+        // already on the grain boundary and the surface (FIT, no move); so are the 2 on the side
+        // faces, on a feature edge of the curved surface (FIT along the edge, no move)
         mfem::Mesh roof = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
         roof.Transform([](const mfem::Vector& x, mfem::Vector& y) {
             y = x;
@@ -605,8 +737,8 @@ TEST(NodeTargets, Validation) {
         const ms::SeedSet two = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
         Fitted f = Fit(roof, MPI_COMM_WORLD, halves, ms::MetricType::VORONOI, two, {0, 1});
         EXPECT_EQ(f.targets->Summary().reason[static_cast<int>(ms::TargetReason::CURVED_FEATURE)],
-                  2);
-        EXPECT_EQ(f.targets->Summary().status[FIT], face_nodes - 2);
+                  0);
+        EXPECT_EQ(f.targets->Summary().status[FIT], face_nodes);
         EXPECT_EQ(f.targets->Summary().max_move_ratio, 0.0);
     }
 }

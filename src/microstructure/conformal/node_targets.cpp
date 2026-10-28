@@ -91,8 +91,7 @@ public:
                 r.status = TargetStatus::NONE;
             } else if (q.num_labels - 1 + m_labels.BoundaryConstraints(v) > 3) {
                 r.status = TargetStatus::OVER_CONSTRAINED;
-            } else if (curved &&
-                       (m_labels.BoundarySurfaces(v) != 1 || m_patches.NumTriangles(v) == 0)) {
+            } else if (curved && !CurvedPatchesReady(m_labels, m_patches, v)) {
                 r.status = TargetStatus::HELD;
                 r.reason = TargetReason::CURVED_FEATURE;
             } else {
@@ -179,7 +178,7 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
     for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
         curved = curved || surf_planar[s] == 0;
     }
-    if (curved && (m_labels.BoundarySurfaces(v) != 1 || m_patches.NumTriangles(v) == 0)) {
+    if (!CurvedPatchesReady(m_labels, m_patches, v)) {
         return set(TargetStatus::HELD, TargetReason::CURVED_FEATURE);
     }
     for (int a = 0; a < n; ++a) {
@@ -215,24 +214,34 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
     if (!curved) {
         result = ProjectOntoManifold(f, rows, num_rows, x, tol, m_options.max_iterations, y);
     } else {
-        // Curved surface (the last row): alternate between the closest point p of the current
-        // iterate on the patch, the plane through p (the triangle's plane, or the plane normal to
-        // y - p when p is on an edge or corner of the patch and y is off the surface), and the
-        // projection of x on the grain boundaries and that plane
+        // Curved surfaces (their rows): alternate between the closest point p of the current
+        // iterate on each curved surface's patch, the plane through p (the triangle's plane, or
+        // the plane normal to y - p when p is on an edge or corner of the patch and y is off the
+        // surface), and the projection of x on the grain boundaries and those planes. On a
+        // feature edge of a curved boundary (two surfaces) this converges to the point where the
+        // grain boundary meets the edge.
         std::copy(x, x + 3, y);
-        ManifoldRow& plane = rows[num_rows - 1];
         for (int it = 0; it < m_options.max_iterations; ++it) {
-            double p[3];
-            double nrm[3];
-            bool interior = false;
-            const double dist = m_patches.ClosestPoint(v, y, p, nrm, interior);
-            if (!interior && dist > tol) {
-                for (int d = 0; d < 3; ++d) {
-                    nrm[d] = (y[d] - p[d]) / dist;
+            double dist_max = 0.0;
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+                if (surf_planar[s] != 0) {
+                    continue;
                 }
+                ManifoldRow& plane = rows[n - 1 + (s - surf_off[v])];
+                double p[3];
+                double nrm[3];
+                bool interior = false;
+                const double dist =
+                    m_patches.ClosestPoint(v, y, p, nrm, interior, s - surf_off[v]);
+                if (!interior && dist > tol) {
+                    for (int d = 0; d < 3; ++d) {
+                        nrm[d] = (y[d] - p[d]) / dist;
+                    }
+                }
+                std::copy(nrm, nrm + 3, plane.normal);
+                plane.offset = nrm[0] * p[0] + nrm[1] * p[1] + nrm[2] * p[2];
+                dist_max = std::max(dist_max, dist);
             }
-            std::copy(nrm, nrm + 3, plane.normal);
-            plane.offset = nrm[0] * p[0] + nrm[1] * p[1] + nrm[2] * p[2];
             double y_new[3];
             result =
                 ProjectOntoManifold(f, rows, num_rows, x, tol, m_options.max_iterations, y_new);
@@ -244,16 +253,18 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q, int* node_seeds,
                                  (y_new[2] - y[2]) * (y_new[2] - y[2]);
             std::copy(y_new, y_new + 3, y);
             result = ProjectionResult::NOT_CONVERGED;
-            if (step2 <= tol * tol && dist <= tol) {
+            if (step2 <= tol * tol && dist_max <= tol) {
                 result = ProjectionResult::CONVERGED;
                 break;
             }
         }
-        if (result == ProjectionResult::CONVERGED) {
+        for (int s = surf_off[v]; s < surf_off[v + 1] && result == ProjectionResult::CONVERGED;
+             ++s) {
             double p[3];
             double nrm[3];
             bool interior = false;
-            if (m_patches.ClosestPoint(v, y, p, nrm, interior) > tol) {
+            if (surf_planar[s] == 0 &&
+                m_patches.ClosestPoint(v, y, p, nrm, interior, s - surf_off[v]) > tol) {
                 result = ProjectionResult::NOT_CONVERGED;
             }
         }
@@ -442,7 +453,8 @@ void EvaluatorImpl<Metric>::NearbySeeds(const std::vector<int>& nodes, int max_s
  * Constructor
  *  1. Collective input checks.
  *  2. Mesh size h per node (ComputeMeshSize).
- *  3. Patches of the nodes on exactly one curved surface (SurfacePatches, collective).
+ *  3. Patches of the nodes on curved boundary surfaces, with enough face rings for the largest
+ *     move (MakeCurvedPatches, PatchRingsFor; collective).
  *  4. The evaluator of the metric (seed index; classification only without analytic targets),
  *     the smoothed staircase when asked for, then Evaluate on every node's own label set.
  *  5. Summary.
@@ -482,14 +494,10 @@ NodeTargets::NodeTargets(const NodeLabels& labels, MetricType metric, const Seed
     ComputeMeshSize();
 
     // Step 3 (the selection depends only on the surfaces, identical on every copy)
-    const int* surf_off = labels.SurfaceOffsets().HostRead();
-    const int* surf_planar = labels.SurfacePlanar().HostRead();
-    std::vector<char> on_curved(static_cast<std::size_t>(nv), 0);
-    for (int v = 0; v < nv; ++v) {
-        on_curved[static_cast<std::size_t>(v)] =
-            (labels.BoundarySurfaces(v) == 1 && surf_planar[surf_off[v]] == 0) ? 1 : 0;
-    }
-    m_patches = std::make_unique<SurfacePatches>(field, on_curved, &labels.SurfaceFaces());
+    const double reach =
+        std::max(options.max_move, options.smoothed ? options.smoothing.max_move : 0.0);
+    m_patch_rings = PatchRingsFor(reach, field.LatticeOrder());
+    m_patches = MakeCurvedPatches(labels, m_patch_rings);
 
     // Step 4
     if (options.analytic) {

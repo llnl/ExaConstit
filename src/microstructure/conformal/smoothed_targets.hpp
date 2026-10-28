@@ -19,13 +19,13 @@
  * of target the same way.
  *
  * **The smoothing.** Only grain boundary nodes move: nodes with 2 labels (on a boundary face) or 3
- * labels (on a triple line) that are not over-constrained and not on a curved feature edge or
- * corner of the outer boundary. Node u is a *neighbor* of such a node v when they are next to each
- * other on the node lattice of an element they share (an element edge for order-1 Nodes; the edges
- * of the sub-elements of the uniform lattice for order 2), u has every label of v (so a face node
- * averages over its own boundary and the triple lines around it, and a triple line node only along
- * its line), and u lies on every boundary surface of v (normals within the feature angle). Every
- * step moves each node to
+ * labels (on a triple line) that are not over-constrained (a node on a feature edge of a curved
+ * boundary moves along the edge; boundary_projector.hpp). Node u is a *neighbor* of such a node
+ * v when they are next to each other on the node lattice of an element they share (an element
+ * edge for order-1 Nodes; the edges of the sub-elements of the uniform lattice for order 2), u has
+ * every label of v (so a face node averages over its own boundary and the triple lines around it,
+ * and a triple line node only along its line), and u lies on every boundary surface of v (normals
+ * within the feature angle). Every step moves each node to
  *
  *     p_v <- p_v + w (mean of p_u over its neighbors - p_v),
  *
@@ -36,8 +36,9 @@
  * and the pass band 1/lambda + 1/mu divided by p^2 (mu = -0.507 for p = 2): the smoothing then
  * reaches as far, and keeps the same wavelengths, in element sizes.
  * Nodes that do not move (quad points, over-constrained nodes) anchor the network. After every
- * step a node on boundary surfaces is put back on them: onto its planes (box coordinates kept
- * bit for bit), or onto its patch of a curved surface (boundary_projector.hpp). The result is
+ * step a node on boundary surfaces is put back on them (ProjectOnNodeSurfaces,
+ * boundary_projector.hpp): onto its planes (box coordinates kept bit for bit), onto its patch of a
+ * curved surface, or onto the feature edge where a curved surface meets another one. The result is
  * limited to `max_move` element sizes (h times the order of the Nodes) from the input position
  * (scaled back along the move).
  *

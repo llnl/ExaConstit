@@ -310,7 +310,14 @@ position x, found by a constrained Gauss-Newton projection:
     y <- x - J^T (J J^T)^-1 (J (x - y) + phi(y)),
 
 where phi stacks the constraint values and J their gradients at y. On a curved boundary surface the
-projection alternates with the closest point on the node's ring of boundary triangles. A target is
+projection alternates with the closest point on the node's patch of boundary triangles: the faces
+around the node, grown ring by ring until the patch holds every point within the move limit (one
+ring per element size of the limit, half a ring more on curved meshes, whose mid-edge nodal points
+are only half an element from the edge of their faces; at most three rings; triangles beyond the
+first ring are kept only on the node's own surface, within the feature angle, so a patch does not
+spill over an edge onto another surface). On a feature edge where a curved surface meets one
+other surface (the rim of a strut, where its wall meets a flat end) the node has a patch per
+surface and the projection ends where the grain boundary meets the edge. A target is
 kept only if the constraints are met to a tolerance, it is at most about one element size h from
 the node, and no other seed is closer there (otherwise the node is HELD where it is).
 
@@ -396,8 +403,12 @@ the guard still get a partial fit.
 **Outer surfaces.** On a box face (normal along a coordinate axis) the normal coordinate is fixed,
 so nodes slide along the face and keep that coordinate bit for bit. On a tilted flat surface, or
 on a single curved surface, a node slides along it: a stiff normal spring (10^4 h) in the solve,
-then an exact projection back onto the plane(s) or onto the closest point of its ring of input
-boundary triangles. Nodes where a curved surface meets another surface do not move.
+then an exact projection back onto the plane(s) or onto the closest point of its patch of input
+boundary triangles. A node on a rim, where a curved surface meets one other surface, slides along
+the rim: both surfaces get a normal spring, and the projection alternates between their tangent
+planes until the node is on both. Corners (three surfaces) do not move. On a box whose side wall
+bulges (hex 8^3) the grain boundary nodes on the rims end on average 0.03 h from the bisector,
+against 0.17 h before the fit, with their top and bottom coordinates kept bit for bit.
 
 **Second-order meshes.** With order-2 Nodes every nodal point is a node of the fit (labels,
 targets and smoothing on the lattice of nodal points; quality at every nodal point). Pulling single

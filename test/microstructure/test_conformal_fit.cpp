@@ -26,14 +26,18 @@
  *    are kept, and WORLD agrees with SELF to the solver tolerance.
  *  - Curved and tilted outer boundary (box with a domed top, faces x = 0, 1 tilted; hex and tet,
  *    12 grains): nodes on those surfaces slide along them and end on them (the planes, or the
- *    input boundary faces around the node, to rounding), some of them move, the floor holds and
- *    the deviation drops.
+ *    input boundary faces around the node, to rounding; nodes on the rims where the dome meets a
+ *    side slide along the rim), some of them move, the floor holds and the deviation drops.
+ *  - Curved wall rims (box with the side x = 1 bulged, inclined bicrystal crossing the rims where
+ *    the wall meets the flat top and bottom): the grain boundary nodes on a rim are FIT, end much
+ *    closer to the bisector, keep their z bit for bit and stay on the wall; WORLD agrees with
+ *    SELF.
  *  - Rank count: the fitted positions on MPI_COMM_WORLD (round-robin partition) agree with those on
  *    MPI_COMM_SELF to the linear solver tolerance.
  *  - With CONFORMAL_DUMP_DIR set, ConformalFit.DumpSlices writes the elements of a polycrystal
  *    before and after fitting (label, quality, original center, corners) for plotting
- *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _SMOOTHED, _MESH (a mesh file) select the
- *    case; _SMOOTHED fits to the smoothed staircase instead of the analytic boundaries); skipped
+ *    (CONFORMAL_DUMP_N, _GRAINS, _SKIP, _TET, _CURVED, _WALL, _SMOOTHED, _MESH (a mesh file)
+ *    select the case; _SMOOTHED fits to the smoothed staircase instead of the analytic boundaries); skipped
  *    otherwise.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
@@ -287,10 +291,11 @@ void CheckBisector(mfem::Mesh& serial, bool tet, double fit_ratio) {
 }
 
 /**
- * Largest distance of a sliding node from its surfaces, in units of h: a node on one curved
- * surface from the input boundary around it (its one-ring triangle patch on an unfitted copy of the
- * mesh, same partition); a node on one or two flat surfaces, at least one tilted, from each of
- * their planes. `count` gets the number of such nodes that moved.
+ * Largest distance of a sliding node from its surfaces, in units of h: a node on a curved surface
+ * (one, or two on a feature edge) from the input boundary around it (its two-ring triangle patch
+ * per surface on an unfitted copy of the mesh, same partition) and from the plane of a flat second
+ * surface; a node on one or two flat surfaces, at least one tilted, from each of their planes.
+ * `count` gets the number of such nodes that moved.
  */
 double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
     int size = 1;
@@ -302,9 +307,14 @@ double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
     mfem::ParMesh ref(f.pmesh->GetComm(), serial, part.data());
     ref.SetCurvature(1, false, 3, mfem::Ordering::byNODES);
     const ms::VertexField field(ref, ms::FieldNodes::MESH_NODES);
-    const ms::SurfacePatches patches(
-        field, std::vector<char>(static_cast<std::size_t>(field.NumVertices()), 1));
     const ms::NodeLabels& nl = f.repair.targets->Labels();
+    ms::PatchSurfaces surfaces;
+    surfaces.offsets = &nl.SurfaceOffsets();
+    surfaces.normals = &nl.SurfaceNormals();
+    surfaces.min_cosine = nl.FeatureCosine();
+    const ms::SurfacePatches patches(
+        field, std::vector<char>(static_cast<std::size_t>(field.NumVertices()), 1), nullptr, 2,
+        &surfaces);
     const int* surf_off = nl.SurfaceOffsets().HostRead();
     const double* normal = nl.SurfaceNormals().HostRead();
     const int* planar = nl.SurfacePlanar().HostRead();
@@ -322,7 +332,7 @@ double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
             tilted = tilted || (planar[s] != 0 && zeros != 2);
         }
         const int num = nl.BoundarySurfaces(v);
-        if (!(curved && num == 1) && !(tilted && !curved && num <= 2)) {
+        if (!(curved && num <= 2) && !(tilted && !curved && num <= 2)) {
             continue;
         }
         double y[3];
@@ -334,18 +344,19 @@ double SurfaceDrift(mfem::Mesh& serial, const Fitted& f, int& count) {
             same = same && y[d] == y0[d];
         }
         double dist = 0.0;
-        if (curved) {
-            double p[3], pn[3];
-            bool interior = false;
-            dist = patches.ClosestPoint(v, y, p, pn, interior);
-        } else {
-            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
-                const double* n = normal + 3 * s;
-                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-                dist = std::max(dist, std::fabs(n[0] * (y[0] - y0[0]) + n[1] * (y[1] - y0[1]) +
-                                                n[2] * (y[2] - y0[2])) /
-                                          len);
+        for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+            const double* n = normal + 3 * s;
+            if (planar[s] == 0) {
+                double p[3], pn[3];
+                bool interior = false;
+                dist = std::max(dist,
+                                patches.ClosestPoint(v, y, p, pn, interior, s - surf_off[v]));
+                continue;
             }
+            const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            dist = std::max(dist, std::fabs(n[0] * (y[0] - y0[0]) + n[1] * (y[1] - y0[1]) +
+                                            n[2] * (y[2] - y0[2])) /
+                                      len);
         }
         worst = std::max(worst, dist / f.repair.targets->MeshSize(v));
         moved += (same || field.OwnedVertexMarker().HostRead()[v] == 0) ? 0 : 1;
@@ -572,6 +583,80 @@ TEST(ConformalFit, TetCurvedAndTiltedBoundary) {
     CheckCurved(mfem::Element::TETRAHEDRON, 8, 0.2);
 }
 
+TEST(ConformalFit, HexCurvedWallRim) {
+    // A hex box whose side x = 1 bulges out (x = 1 + 0.3 y (1 - y)), so the curved wall meets
+    // the flat top and bottom at rims. The inclined bisector crosses both rims: its nodes on a
+    // rim slide along it (E7) instead of being held, and every sliding node stays on its surfaces
+    mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
+    serial.Transform([](const mfem::Vector& p, mfem::Vector& y) {
+        y = p;
+        y(0) = p(0) * (1.0 + 0.3 * p(1) * (1.0 - p(1)));
+    });
+    ms::SeedSet seeds;
+    seeds.x = {0.75, 1.05};
+    seeds.y = {0.3, 0.7};
+    seeds.z = {0.4, 0.65};
+    Fitted f = Fit(serial, MPI_COMM_WORLD, seeds);
+    const ms::ConformalFitReport& r = f.report;
+    ExpectLimits(r, false);
+    EXPECT_LT(r.mean_deviation, 0.7 * r.initial_deviation);
+    int moved = 0;
+    EXPECT_LE(SurfaceDrift(serial, f, moved), 1e-9);
+    EXPECT_GT(moved, 0);
+    // Rim nodes of the grain boundary: FIT, closer to the bisector, top/bottom z kept bit for bit
+    // (rim nodes: two surfaces, one curved, one flat)
+    const ms::NodeLabels& nl = f.repair.targets->Labels();
+    const int* surf_off = nl.SurfaceOffsets().HostRead();
+    const int* planar = nl.SurfacePlanar().HostRead();
+    const int* owned = nl.Field().OwnedVertexMarker().HostRead();
+    const double n[3] = {seeds.x[1] - seeds.x[0], seeds.y[1] - seeds.y[0],
+                         seeds.z[1] - seeds.z[0]};
+    const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const double c = 0.5 * ((seeds.x[1] * seeds.x[1] + seeds.y[1] * seeds.y[1] +
+                             seeds.z[1] * seeds.z[1]) -
+                            (seeds.x[0] * seeds.x[0] + seeds.y[0] * seeds.y[0] +
+                             seeds.z[0] * seeds.z[0]));
+    const mfem::GridFunction& x = *f.pmesh->GetNodes();
+    const mfem::FiniteElementSpace& fes = *x.FESpace();
+    int rim = 0;
+    int bad = 0;
+    double before = 0.0;
+    double after = 0.0;
+    for (int v = 0; v < nl.NumNodes(); ++v) {
+        if (nl.NumLabels(v) != 2 || nl.BoundarySurfaces(v) != 2 || owned[v] == 0 ||
+            (planar[surf_off[v]] != 0) == (planar[surf_off[v] + 1] != 0)) {
+            continue;
+        }
+        double y[3];
+        double y0[3];
+        for (int d = 0; d < 3; ++d) {
+            y[d] = x(fes.DofToVDof(v, d));
+            y0[d] = f.x0(fes.DofToVDof(v, d));
+        }
+        const double h = f.repair.targets->MeshSize(v);
+        before += std::fabs(n[0] * y0[0] + n[1] * y0[1] + n[2] * y0[2] - c) / len / h;
+        after += std::fabs(n[0] * y[0] + n[1] * y[1] + n[2] * y[2] - c) / len / h;
+        bad += (f.repair.targets->Status(v) != ms::TargetStatus::FIT) ? 1 : 0;
+        bad += (y[2] != y0[2]) ? 1 : 0;
+        ++rim;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &before, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &after, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    rim = GlobalSum(rim);
+    EXPECT_EQ(GlobalSum(bad), 0);
+    EXPECT_GE(rim, 2);
+    EXPECT_LT(after, 0.5 * before);
+    Fitted self = Fit(serial, MPI_COMM_SELF, seeds);
+    EXPECT_LE(WorstRankDifference(f, self), 1e-6);
+    if (mfem::Mpi::Root()) {
+        std::printf("curved wall rim: %d rim nodes, distance to the bisector %.3f -> %.3f h; "
+                    "deviation %.3f -> %.3f h, sj %.3f -> %.3f\n",
+                    rim, before / std::max(rim, 1), after / std::max(rim, 1), r.initial_deviation,
+                    r.mean_deviation, r.quality_before.min_scaled_jacobian,
+                    r.quality_after.min_scaled_jacobian);
+    }
+}
+
 TEST(ConformalFit, DumpSlices) {
     const char* dir = std::getenv("CONFORMAL_DUMP_DIR");
     if (dir == nullptr) {
@@ -591,6 +676,16 @@ TEST(ConformalFit, DumpSlices) {
                                                           tet ? mfem::Element::TETRAHEDRON
                                                               : mfem::Element::HEXAHEDRON);
     ms::SeedSet seeds = ScatteredSeeds(grains, skip);
+    if (std::getenv("CONFORMAL_DUMP_WALL") != nullptr) { // the case of HexCurvedWallRim
+        serial.Transform([](const mfem::Vector& p, mfem::Vector& y) {
+            y = p;
+            y(0) = p(0) * (1.0 + 0.3 * p(1) * (1.0 - p(1)));
+        });
+        seeds = ms::SeedSet();
+        seeds.x = {0.75, 1.05};
+        seeds.y = {0.3, 0.7};
+        seeds.z = {0.4, 0.65};
+    }
     if (curved) { // the case of CheckCurved
         DomeAndShear(serial, 0.2);
         for (std::size_t i = 0; i < seeds.Size(); ++i) {

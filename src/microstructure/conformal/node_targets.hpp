@@ -38,7 +38,13 @@
  *     from x until the iterate stops moving and lies on the patch (within `tolerance * h`). On a
  *     faceted surface this ends after a few changes of triangle. Where the closest point is on an
  *     edge or corner of the patch and the iterate is off the surface, the plane normal to the
- *     offset is used instead, which pulls the iterate back onto the edge.
+ *     offset is used instead, which pulls the iterate back onto the edge. The patch has enough
+ *     face rings to hold every target within the move limit (PatchRingsFor of the larger of
+ *     max_move and the smoothing's move limit).
+ *   - a node on a feature edge where a curved surface meets one other surface (the rim of a
+ *     strut, where its wall meets a flat end) has a patch per surface and a plane row per
+ *     surface; the rows of the curved surfaces are updated the same way, so the projection ends
+ *     where the grain boundary meets the edge, and the node slides along the edge.
  *
  * **Validation** (a failure marks a *fake junction*: the mesh shows grains meeting at the node,
  * but their analytic boundaries do not meet near it; label repair, Stage 2c, handles these):
@@ -54,8 +60,8 @@
  * mfem::Mesh::GetElementSize(e, 0); p = order of the Nodes, 1 without Nodes), the same on every
  * copy (all sizes gathered and averaged in sorted order).
  *
- * Nodes on exactly one curved surface get their triangle patch whatever their labels, so
- * Evaluate can also answer for label sets the node does not have yet.
+ * Nodes on curved surfaces (one, or two on a feature edge) get their triangle patches whatever
+ * their labels, so Evaluate can also answer for label sets the node does not have yet.
  *
  * **Non-analytic boundaries.** With NodeTargetOptions::analytic = false every grain boundary node
  * is HELD (NON_ANALYTIC) by the rules above. With NodeTargetOptions::smoothed the grain boundary
@@ -82,9 +88,9 @@
  *   - NONE: one label (inside a grain, or on the outer boundary only);
  *   - FIT: a valid target;
  *   - OVER_CONSTRAINED: more than 3 constraints (NodeLabels::OverConstrained);
- *   - HELD: a label without analytic boundary (grain_seed = -1), or a curved boundary surface that
- *     meets another boundary surface at the node (a feature edge or corner of a curved boundary
- *     is held fixed);
+ *   - HELD: a label without analytic boundary (grain_seed = -1), or a curved boundary surface
+ *     without patch triangles at the node (CURVED_FEATURE; corners with three surfaces are
+ *     over-constrained);
  *   - FAKE_JUNCTION: validation failed, or two labels grew from the same seed (TargetReason says
  *     which).
  *
@@ -149,7 +155,7 @@ inline constexpr int NUM_TARGET_STATUSES = 5;
 enum class TargetReason : int {
     NONE = 0,
     NON_ANALYTIC = 1,    ///< HELD: a label with grain_seed = -1
-    CURVED_FEATURE = 2,  ///< HELD: a curved boundary surface meets another surface at the node
+    CURVED_FEATURE = 2,  ///< HELD: a curved boundary surface has no patch triangles at the node
     SAME_SEED = 3,       ///< two labels grew from the same seed
     SINGULAR = 4,        ///< dependent equations (e.g. a grain boundary parallel to a box face)
     NOT_CONVERGED = 5,   ///< the projection did not converge
@@ -251,6 +257,10 @@ public:
     void NearbySeeds(const std::vector<int>& nodes, int max_seeds, double reach,
                      std::vector<int>& offsets, std::vector<int>& seeds) const;
 
+    /** @brief Face rings of the curved-surface patches (PatchRingsFor of the largest move). */
+    int PatchRings() const {
+        return m_patch_rings;
+    }
     /** @brief The options the targets were built with. */
     const NodeTargetOptions& Options() const {
         return m_options;
@@ -294,6 +304,7 @@ private:
 
     const NodeLabels& m_labels;
     std::unique_ptr<SurfacePatches> m_patches;
+    int m_patch_rings = 1;
     std::unique_ptr<Evaluator> m_evaluator;
     NodeTargetOptions m_options;
     std::vector<char> m_smoothed;   ///< per node: FIT with the smoothed target

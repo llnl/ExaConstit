@@ -234,7 +234,6 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
     const double* xyz0 = field.Coordinates().HostRead();
     std::vector<char> fixed(3 * static_cast<std::size_t>(nv), 0);
     std::vector<Slide> slide(static_cast<std::size_t>(nv), Slide::NONE);
-    std::vector<char> on_curved(static_cast<std::size_t>(nv), 0);
     std::int64_t fit_nodes = 0;
     std::int64_t fixed_nodes = 0;
     for (int v = 0; v < nv; ++v) {
@@ -255,11 +254,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
         }
         Slide& kind = slide[static_cast<std::size_t>(v)];
         if (curved) {
-            kind = (num_surfaces == 1) ? Slide::CURVED : Slide::FIXED;
+            kind = (num_surfaces <= 2) ? Slide::CURVED : Slide::FIXED;
         } else if (tilted) {
             kind = (num_surfaces <= 2) ? Slide::PLANES : Slide::FIXED;
         }
-        on_curved[static_cast<std::size_t>(v)] = (kind == Slide::CURVED) ? 1 : 0;
         if (kind == Slide::FIXED || (curvature && v < pmesh.GetNV())) {
             fixed[vs] = fixed[vs + 1] = fixed[vs + 2] = 1;
         }
@@ -270,8 +268,11 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
     report.fixed_nodes = GlobalSum(fixed_nodes, comm);
 
     // Sliding nodes: their surfaces (planes with offsets at the input position, or the curved
-    // surface's input faces) and the normals of the penalty (tilted planes, curved surface)
-    const SurfacePatches patches(field, on_curved, &labels.SurfaceFaces());
+    // surfaces' input faces, MakeCurvedPatches: on a feature edge of a curved boundary the node
+    // slides along the edge) and the normals of the penalty (tilted planes, curved surfaces)
+    const std::unique_ptr<SurfacePatches> patches_ptr =
+        MakeCurvedPatches(labels, targets.PatchRings());
+    const SurfacePatches& patches = *patches_ptr;
     std::vector<std::array<double, 8>> planes(static_cast<std::size_t>(nv)); // n0 c0 n1 c1
     std::vector<std::array<double, 7>> penalty(static_cast<std::size_t>(nv)); // count, n0, n1
     for (int v = 0; v < nv; ++v) {
@@ -299,21 +300,38 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 }
             }
         } else if (kind == Slide::CURVED) {
-            // Area-weighted normal of the input faces around the node
-            double n[3] = {0.0, 0.0, 0.0};
-            for (int tri = 0; tri < patches.NumTriangles(v); ++tri) {
-                const double* q = patches.Triangle(v, tri);
-                const double a[3] = {q[3] - q[0], q[4] - q[1], q[5] - q[2]};
-                const double b[3] = {q[6] - q[0], q[7] - q[1], q[8] - q[2]};
-                n[0] += a[1] * b[2] - a[2] * b[1];
-                n[1] += a[2] * b[0] - a[0] * b[2];
-                n[2] += a[0] * b[1] - a[1] * b[0];
-            }
-            const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-            if (len > 0.0) {
-                pen[0] = 1.0;
-                for (int d = 0; d < 3; ++d) {
-                    pen[1 + d] = n[d] / len;
+            // Per surface: the area-weighted normal of a curved surface's input faces around the
+            // node, or the normal of a tilted plane (axis planes fix a coordinate instead)
+            for (int s = surf_off[v]; s < surf_off[v + 1]; ++s) {
+                double n[3] = {0.0, 0.0, 0.0};
+                if (surf_planar[s] != 0) {
+                    if (IsAxis(surf_normal + 3 * s)) {
+                        continue;
+                    }
+                    std::copy(surf_normal + 3 * s, surf_normal + 3 * s + 3, n);
+                }
+                const int k = s - surf_off[v];
+                for (int tri = 0; surf_planar[s] == 0 && tri < patches.NumTriangles(v, k); ++tri) {
+                    const double* q = patches.Triangle(v, tri, k);
+                    const double a[3] = {q[3] - q[0], q[4] - q[1], q[5] - q[2]};
+                    const double b[3] = {q[6] - q[0], q[7] - q[1], q[8] - q[2]};
+                    // Orient like the surface normal (faces of interfaces can point either way)
+                    const double c[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                         a[0] * b[1] - a[1] * b[0]};
+                    const double* ns = surf_normal + 3 * s;
+                    const double sign = (c[0] * ns[0] + c[1] * ns[1] + c[2] * ns[2] < 0.0) ? -1.0
+                                                                                        : 1.0;
+                    for (int d = 0; d < 3; ++d) {
+                        n[d] += sign * c[d];
+                    }
+                }
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                if (len > 0.0) {
+                    const int m = static_cast<int>(pen[0]);
+                    for (int d = 0; d < 3; ++d) {
+                        pen[1 + 3 * m + d] = n[d] / len;
+                    }
+                    pen[0] += 1.0;
                 }
             }
         }
@@ -335,14 +353,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                 const double n[2][3] = {{pl[0], pl[1], pl[2]}, {pl[4], pl[5], pl[6]}};
                 const double c[2] = {pl[3], pl[7]};
                 ProjectOntoPlanes(n, c, surf_off[v + 1] - surf_off[v], y);
-            } else if (patches.NumTriangles(v) > 0) {
-                double p[3];
-                double pn[3];
-                bool interior = false;
-                patches.ClosestPoint(v, y, p, pn, interior);
-                y[0] = p[0];
-                y[1] = p[1];
-                y[2] = p[2];
+            } else {
+                ProjectOnNodeSurfaces(labels, patches, v, xyz0 + 3 * v,
+                                      1e-10 * targets.MeshSize(v),
+                                      SURFACE_PROJECTION_ITERATIONS, y);
             }
             for (int d = 0; d < 3; ++d) {
                 const int vd = fes.DofToVDof(v, d);
