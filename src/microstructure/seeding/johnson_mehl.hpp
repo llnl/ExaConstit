@@ -185,16 +185,16 @@ struct JohnsonMehlReport {
      * sampled element boxes of MaterialPointLocator, so it is a sampled bound there.
      */
     double completion_time_bound = 0.0;
-    std::array<double, 3> sampling_lo = {0, 0, 0}; ///< box the candidates were drawn from
-    std::array<double, 3> sampling_hi = {0, 0, 0};
+    std::array<double, 3> sampling_lo = {0, 0, 0}; ///< lower corner of the candidate box
+    std::array<double, 3> sampling_hi = {0, 0, 0}; ///< upper corner of the candidate box
     /**
      * @brief Only with record_rejected: the discarded ("covered") candidates, 3 coordinates each
      * in rejected_xyz[3 r + d], their birth times, and the 0-based index (into the returned
      * SeedSet) of the first accepted nucleus found to cover each of them.
      */
     std::vector<double> rejected_xyz;
-    std::vector<double> rejected_time;
-    std::vector<std::int64_t> rejected_by;
+    std::vector<double> rejected_time;     ///< birth time of each discarded candidate
+    std::vector<std::int64_t> rejected_by; ///< index of the nucleus that covered it
 
     /** @brief Multi-line summary for the rank-0 log. Host only. */
     std::string Summary() const;

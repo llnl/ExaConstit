@@ -67,10 +67,14 @@ void ReduceSharedVertexMax(const mfem::ParMesh& pmesh, std::vector<int>& values)
     gcomm.Bcast(values.data());
 }
 
+/** "No key" marker (larger than any real key; also the answer for "no element / vertex"). */
 constexpr std::uint64_t NO_KEY = std::numeric_limits<std::uint64_t>::max();
 
+/** A 3D point of the searches (Axom primal). */
 using Point = MaterialPointLocator::PointType;
+/** An axis-aligned 3D box of the searches. */
 using Box = MaterialPointLocator::BoxType;
+/** The host (sequential) BVH of the nearest-centroid and nearest-vertex searches. */
 using HostBVH = axom::spin::BVH<3, axom::SEQ_EXEC, double>;
 
 /** @brief The splitmix64 mixing step (same constants as element_key.cpp). */

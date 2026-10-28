@@ -44,10 +44,14 @@
  *   is opened only if its distance to the point is <= the best d^2 found so far (`<=` so exact
  *   ties are all visited), and the leaf keeps the lexicographically smallest (d^2, key).
  *
- * **Which helper each mode uses.** The connected mode anchors a seed outside the material to the
- * nearest element *centroid* (of the elements carrying the seed's label, see
- * labeling/connected_labeler.hpp); the geodesic mode snaps it to the elements around the nearest
- * mesh *vertex* (labeling/vertex_field.hpp), because its distance field lives on vertices.
+ * **Which helper each mode uses.** The containment search serves both modes (and the geodesic
+ * source elements, labeling/vertex_field.hpp). The connected mode anchors a seed outside the
+ * material to the nearest element *centroid* (of the elements carrying the seed's label,
+ * NearestElementCentroidKeys, labeling/connected_labeler.hpp). The geodesic mode snaps it to the
+ * elements around the nearest *field node* with its own search over the field nodes
+ * (NearestFieldNodes in labeling/vertex_field.cpp: the same (d^2, key) rule as NearestVertex,
+ * applied to the nodes that carry its distance field). NearestVertex itself is not called by the
+ * generator pipeline; it is kept as a tested utility.
  *
  * All functions are host only (MFEM's point-in-element test runs on the host) and collective.
  */

@@ -1,3 +1,15 @@
+/*
+ * Implementation of material_point_locator.hpp: element bounding boxes (exact corner boxes for
+ * straight-sided elements, sampled boxes with a bulge margin for curved ones), the BVH over them,
+ * and the exact point-in-element tests (closed-form for linear tets, Newton inverse maps
+ * otherwise, with several starting points for curved elements).
+ *
+ * Terms used in this file:
+ * - BVH (bounding volume hierarchy): a tree of nested bounding boxes; a point query descends only
+ *   into boxes that contain the point.
+ * - Reference lattice: the points (i, j, k) / n of the reference element, mapped through the
+ *   element map to sample a curved element.
+ */
 #include "microstructure/seeding/material_point_locator.hpp"
 
 #include <algorithm>
@@ -27,8 +39,7 @@ constexpr double REFERENCE_INSIDE_TOL = 1.0e-8;
 /**
  * Relative enlargement of the box of a curved element of a geometry without a reference lattice
  * (anything but hex and tet; the generator's pipeline only uses hexes and tets, so this is a
- * fallback): 10% of the box diagonal on every side, the heuristic used for all curved elements
- * before the sampled bulge margin. A safety margin, not a proven bound.
+ * fallback): 10% of the box diagonal on every side. A safety margin, not a proven bound.
  */
 constexpr double CURVED_BOX_PADDING = 0.10;
 
@@ -114,8 +125,7 @@ double Det3(const double a[3], const double b[3], const double c[3]) {
  * For curved elements the box is built by CurvedElementBox (see there for the bulge margin):
  * nodal points, the mapped 2p + 1 per direction reference lattice and the lattice edge midpoints,
  * enlarged by the sampled bulge margin. Only the mapped lattice points enter LocalPointBounds
- * (the same points as the refined grid used before the bulge margin, so the global mesh box of a
- * curved mesh did not change; only the element boxes did).
+ * (the padding of the element boxes does not widen the global mesh box).
  */
 MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh,
                                            bool straight_sided,
@@ -216,7 +226,7 @@ MaterialPointLocator::MaterialPointLocator(const mfem::Mesh& mesh,
 
     // Step 3: the BVH over the active boxes, in increasing element order (only when there is at
     // least one; BVH::initialize needs > 0). When every element is active these are all boxes in
-    // element order (the BVH built before masks existed), taken without a copy.
+    // element order, taken without a copy.
     const BoxType* bvh_boxes = m_element_boxes.data();
     if (m_active_elements.size() != m_element_boxes.size()) {
         m_active_boxes.reserve(m_active_elements.size());
@@ -520,8 +530,7 @@ bool MaterialPointLocator::PointInLinearTet(int e, const std::array<double, 3>& 
 /*
  * PointInGeneralElement: Newton inverse map with mfem::InverseElementTransformation.
  *
- * Straight-sided elements (unchanged since before curved elements were handled, so seeds on
- * straight meshes are bit for bit the same):
+ * Straight-sided elements:
  *
  * First attempt: plain (unprojected) Newton from the element center, solver type Newton
  * (eltrans.hpp SolverType). For a candidate inside or near a hex this converges in a few

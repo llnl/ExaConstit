@@ -1,3 +1,8 @@
+/*
+ * Implementation of min_distance_grid.hpp: the cell layout (cells at least d wide, tiling one
+ * period on periodic axes), the hash of integer cell coordinates, minimum-image distances, and
+ * the 3 x 3 x 3 neighbor search behind the RSA tests. Host only, not collective.
+ */
 #include "microstructure/seeding/min_distance_grid.hpp"
 
 #include <algorithm>

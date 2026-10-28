@@ -20,7 +20,7 @@
  * mesh partition.
  *
  * Seeds placed by rejection sampling must lie inside the material, which for a lattice or a
- * tomography mesh is a small, complicated part of its bounding box. The test has two stages:
+ * tomography mesh is a small, complicated part of its bounding box. The test has two steps:
  *
  * 1. **Coarse: element bounding boxes in a BVH.** A BVH (bounding volume hierarchy) is a tree of
  *    nested bounding boxes: the root box holds all elements, each child box holds about half of
@@ -78,8 +78,8 @@ class MaterialPointLocator {
 public:
     /** @brief Axom execution space of the element BVH: host serial (see the file comment). */
     using ExecSpace = axom::SEQ_EXEC;
-    using PointType = axom::primal::Point<double, 3>;
-    using BoxType = axom::primal::BoundingBox<double, 3>;
+    using PointType = axom::primal::Point<double, 3>;     ///< a 3D point (Axom primal)
+    using BoxType = axom::primal::BoundingBox<double, 3>; ///< an axis-aligned 3D box
 
     /**
      * @brief Computes one bounding box per local element and builds the BVH over them.
@@ -88,8 +88,7 @@ public:
      * - straight-sided mesh (no Nodes, or Nodes that describe straight elements, see
      *   mesh/straight_sided.hpp): the box of the element's corner points, which contains the
      *   element exactly (a linear tet or trilinear hex lies in the convex hull of its corners).
-     *   The corners come from the Nodes when present, else from the mesh vertices; without Nodes
-     *   this is the vertex box used before straight-sided Nodes were recognized, bit for bit;
+     *   The corners come from the Nodes when present, else from the mesh vertices;
      * - curved mesh: the box of the element's nodal coordinates and of the element mapped at a
      *   reference lattice of 2p + 1 points per direction (p = Nodes order) and at the midpoints of
      *   the lattice edges, enlarged by a margin that covers the bulge of the element between the
@@ -112,8 +111,7 @@ public:
      * @param mask active elements (mesh/element_mask.hpp); nullptr = every element. Inactive
      *        elements get no box (ElementBox returns an empty box), are left out of the BVH and
      *        of LocalBounds / LocalPointBounds, so no point is ever found inside them. The flags
-     *        are copied; the mask need not outlive the locator. With nullptr (or an empty mask)
-     *        the locator is bit for bit the one built before masks existed.
+     *        are copied; the mask need not outlive the locator.
      * @throws std::runtime_error if the mesh is not 3D; std::invalid_argument if a non-empty
      *         mask does not have one entry per local element.
      */
@@ -242,7 +240,7 @@ private:
 };
 
 /**
- * @brief The active material of one generation run, shared by the stages that place or move
+ * @brief The active material of one generation run, shared by the steps that place or move
  * seeds: which elements take part (`mask`) and a point locator built once over them (`locator`).
  *
  * Both are optional. Functions taking a `const MaterialContext*` treat nullptr, or a null member,

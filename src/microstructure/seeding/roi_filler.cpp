@@ -1,3 +1,14 @@
+/*
+ * Implementation of roi_filler.hpp: the material volume inside and outside the ROI box from
+ * fixed-point quadrature sums, the automatic filler count, and the filler seeds from the
+ * rejection sampler with the ROI box as exclusion box.
+ *
+ * Terms used in this file:
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ * - Fixed-point sum: each term rounded to an integer multiple of a tiny quantum, then the
+ *   integers added, so the total does not depend on the summation order or rank count.
+ */
 #include "microstructure/seeding/roi_filler.hpp"
 
 #include <algorithm>
@@ -56,8 +67,8 @@ void RequirePositiveRule(mfem::Geometry::Type geometry, int order) {
 
 /** Volumes of the material inside and outside the ROI box (identical on every rank). */
 struct RoiVolumes {
-    double inside = 0.0;
-    double outside = 0.0;
+    double inside = 0.0;  ///< V_roi: material strictly inside the box (length^3)
+    double outside = 0.0; ///< V_outside: the rest of the material (length^3)
 };
 
 /*

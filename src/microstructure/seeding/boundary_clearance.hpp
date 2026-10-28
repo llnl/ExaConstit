@@ -72,10 +72,10 @@ constexpr int BOUNDARY_WARP_MAX_SUBDIVISIONS = 32;
  */
 class BoundaryClearance {
 public:
-    using ExecSpace = axom::SEQ_EXEC;
-    using PointType = axom::primal::Point<double, 3>;
-    using BoxType = axom::primal::BoundingBox<double, 3>;
-    using TriangleType = axom::primal::Triangle<double, 3>;
+    using ExecSpace = axom::SEQ_EXEC;                       ///< BVH execution space (host)
+    using PointType = axom::primal::Point<double, 3>;       ///< a 3D point (Axom primal)
+    using BoxType = axom::primal::BoundingBox<double, 3>;   ///< an axis-aligned 3D box
+    using TriangleType = axom::primal::Triangle<double, 3>; ///< a 3D surface triangle
 
     /**
      * @brief Collects and triangulates the local boundary faces and builds the triangle BVH.
@@ -113,7 +113,10 @@ public:
     /**
      * @brief Sets bit i of `near_mask` for every point i whose distance to a local surface
      * triangle is < c. Bit layout as in MaterialPointLocator::MarkInside (word i / 64, bit i % 64);
-     * other bits are unchanged. Host only, not collective.
+     * other bits are left as they are. Host only, not collective.
+     * @param n         number of points.
+     * @param x, y, z   point coordinates, n each (mesh length units, host memory).
+     * @param near_mask ceil(n / 64) words, in/out.
      */
     void MarkNear(std::int64_t n,
                   const double* x,

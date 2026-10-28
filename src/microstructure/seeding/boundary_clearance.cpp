@@ -1,3 +1,14 @@
+/*
+ * Implementation of boundary_clearance.hpp: the outer surface faces of the active material,
+ * triangulated (warped and curved faces subdivided), a BVH over the triangle boxes, and the exact
+ * point-to-triangle distance test for the seeding clearance.
+ *
+ * Terms used in this file:
+ * - BVH (bounding volume hierarchy): a tree of nested bounding boxes that lets a query skip
+ *   every triangle whose box is provably too far away.
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ */
 #include "microstructure/seeding/boundary_clearance.hpp"
 
 #include <algorithm>
@@ -18,8 +29,8 @@ namespace {
  * WarpedQuadSubdivisions
  *
  * Number of subdivisions per edge for a straight-sided (bilinear) quadrilateral face, chosen so
- * that the two-triangle split of every sub-quadrilateral stays within WARP_REL_TOL times the face
- * size of the bilinear surface.
+ * that the two-triangle split of every sub-quadrilateral stays within BOUNDARY_WARP_REL_TOL times
+ * the face size of the bilinear surface.
  *
  * The bilinear face map with corners v0, v1, v2, v3 (counterclockwise) is
  *     x(s, t) = v0 + (v1 - v0) s + (v3 - v0) t + (v0 - v1 + v2 - v3) s t,
@@ -33,9 +44,8 @@ namespace {
  * Splitting the face into k x k sub-quadrilaterals divides the twist of each one by k^2 (the s t
  * term scales with the square of the sub-quadrilateral size), so k = ceil(sqrt(warp / (tol *
  * size))) brings every sub-quadrilateral's warp below tol * size. A planar face gives warp at the
- * round-off level and k = 1, i.e. exactly the two triangles used before warped faces were
- * subdivided, so straight-sided meshes with planar faces keep their surface bit for bit.
- * k is capped at WARP_MAX_SUBDIVISIONS; at the cap the remaining warp is warp / k^2.
+ * round-off level and k = 1, i.e. the face's own two triangles.
+ * k is capped at BOUNDARY_WARP_MAX_SUBDIVISIONS; at the cap the remaining warp is warp / k^2.
  *
  * @param corners the 4 face corners in face order (columns of a 3 x 4 matrix).
  */
@@ -88,7 +98,8 @@ int WarpedQuadSubdivisions(const mfem::DenseMatrix& corners) {
  *     can differ in the last bits at a vertex shared with another rank after a parallel
  *     refinement; with the broadcast, the corners (and therefore the warp test and the
  *     triangles) of a surface face are the same whichever rank's data they come from. For a mesh
- *     distributed from a serial mesh the values are unchanged, bit for bit.
+ *     distributed from a serial mesh the copies are already identical and the broadcast changes
+ *     nothing.
  *  1. Mark the faces shared with other ranks (ParMesh only): ParMesh::GetSharedFace(i) returns the
  *     local face index of shared face i (pmesh.hpp:688).
  *  2. A local face f is a surface face if GetFaceElements gives no second element (e2 < 0), f

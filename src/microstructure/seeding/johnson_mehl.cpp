@@ -38,8 +38,9 @@ namespace {
 
 /** Default stall cap: candidates generated before giving up (2^26, about 67 million). */
 constexpr std::int64_t DEFAULT_MAX_CANDIDATES = std::int64_t(1) << 26;
-/** First batch size, and the largest one (batches double in size up to this). */
+/** First batch size (batches double in size up to MAX_BATCH). */
 constexpr std::int64_t FIRST_BATCH = 256;
+/** Largest batch size (candidates generated and tested together). */
 constexpr std::int64_t MAX_BATCH = std::int64_t(1) << 16;
 /** Upper limit on the number of hash-grid cells (memory: one std::vector per cell). */
 constexpr std::int64_t MAX_GRID_CELLS = std::int64_t(1) << 18;
@@ -83,6 +84,7 @@ const char* StopName(JohnsonMehlStop stop) {
 class NucleusGrid {
 public:
     /**
+     * Builds an empty grid over the box [lo, hi].
      * @param lo, hi box containing every nucleus and every query point (mesh units).
      * @param h      requested cell edge (> 0); enlarged if the cell count would exceed
      *               MAX_GRID_CELLS.
