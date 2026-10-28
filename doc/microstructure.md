@@ -379,8 +379,10 @@ first choice, left them about where they started: a 120° tricrystal's triple li
 
     1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
 
-one linear system (K + P) u = P (t - x) solved by conjugate gradients with an algebraic multigrid
-preconditioner (hypre BoomerAMG, systems mode). The springs let the elastic energy and the pull of
+one linear system (K + P) u = P (t - x) solved by conjugate gradients with an l1 Gauss-Seidel
+preconditioner (hypre; BoomerAMG in systems mode gives the same fit but rebuilds its hierarchy for
+every solve, which costs more than its fewer iterations save on the meshes measured, up to
+72 000 hexes). The springs let the elastic energy and the pull of
 the targets balance: an element at a stair-step corner cannot become exactly smooth (its two faces
 on the boundary would become one plane), and the balance leaves it a bounded kink instead of a
 collapsed element. The rounds double c; after each solve every element's scaled Jacobian (at its

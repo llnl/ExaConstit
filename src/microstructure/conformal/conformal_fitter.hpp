@@ -29,8 +29,8 @@
  *
  *     1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
  *
- * one linear system (K + P) u = P (t - x), solved by CG with a BoomerAMG preconditioner in
- * elasticity mode. Unlike prescribing the targets, the springs let the elastic energy and the
+ * one linear system (K + P) u = P (t - x), solved by CG with an l1 Gauss-Seidel preconditioner
+ * (hypre). Unlike prescribing the targets, the springs let the elastic energy and the
  * pull of the targets balance, so the corner elements of the staircase keep a bounded kink
  * instead of collapsing. K is always assembled on the input geometry.
  *

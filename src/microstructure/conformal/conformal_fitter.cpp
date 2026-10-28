@@ -609,14 +609,17 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
                                    &diag);
             std::unique_ptr<mfem::HypreParMatrix> AP(mfem::ParAdd(&A, &P));
             B += load_true;
-            mfem::HypreBoomerAMG amg(*AP);
-            amg.SetSystemsOptions(3, true);
-            amg.SetPrintLevel(0);
+            // l1 Gauss-Seidel (one of mechanics' preconditioners): the same fit as BoomerAMG in
+            // systems mode at a fraction of the setup, which AMG pays again for every solve; it
+            // needs more CG iterations (about 400 on a 72 000-hex strut lattice), hence the cap.
+            // 1e-8 moves the nodes by far less than the targets' accuracy.
+            mfem::HypreSmoother smoother(*AP, mfem::HypreSmoother::l1GS);
+            smoother.SetPositiveDiagonal(true);
             mfem::CGSolver cg(comm);
-            cg.SetRelTol(1e-10);
-            cg.SetMaxIter(500);
+            cg.SetRelTol(1e-8);
+            cg.SetMaxIter(2000);
             cg.SetPrintLevel(0);
-            cg.SetPreconditioner(amg);
+            cg.SetPreconditioner(smoother);
             cg.SetOperator(*AP);
             cg.Mult(B, X);
             a.RecoverFEMSolution(X, rhs, u);
