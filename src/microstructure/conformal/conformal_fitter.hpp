@@ -38,7 +38,9 @@
  * element is checked against its quality limits (at the corners, quality.hpp): for hexes the floor
  * MESH_QUALITY_FLOOR_HEX on the scaled Jacobian and the ceiling MESH_ASPECT_RATIO_MAX on the aspect
  * ratio; for tets the floor MESH_MEAN_RATIO_FLOOR_TET on the mean ratio. An element of the input
- * beyond a limit, or within 10 % of it, may lose at most 10 % of its input value instead, so
+ * beyond a limit, or close to it, may lose at most 10 % of its input value instead (an aspect
+ * ratio already beyond the ceiling may grow by 30 %: such a thin element's aspect ratio changes
+ * with every move across it), so
  * graded or unstructured input meshes (whose worst elements are often below the floors) can still
  * be fitted. If an element breaks a limit, the multipliers m_v of the fitted nodes of every
  * element within 0.05 of the floor or 0.5 of the ceiling are halved and the round is solved again

@@ -27,6 +27,13 @@ constexpr double ASPECT_RATIO_BACKOFF_MARGIN = 0.5;
 /** @brief An element of the input beyond a limit or this close to it (relative) may lose this
  * fraction of its input value. */
 constexpr double POOR_INPUT_SLACK = 0.1;
+/** @brief The aspect ratio of an input element already beyond the ceiling may grow by this
+ * fraction of its input value. Such elements are thin (a pillow or buffer layer along a curved
+ * surface), and their aspect ratio changes by the relative change of their thickness, so a small
+ * move across them already costs 10 %: with 0.1 the nodes next to such a layer hardly fit (a
+ * strut lattice with pillows: 0.38 -> 0.36 h; with 0.3: 0.28 h, the smallest scaled Jacobian
+ * 0.42 -> 0.35 and the largest aspect ratio 17 -> 20). */
+constexpr double POOR_INPUT_ASPECT_SLACK = 0.3;
 /** @brief Bulk guard for tets: a tet below this mean ratio counts as mediocre. */
 constexpr double TET_GUARD_MEAN_RATIO = 0.5;
 /** @brief Cap of the stiffness factor. */
@@ -651,7 +658,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh, const NodeTargets& targets,
             ElementQuality(pmesh, e, q, ar, det);
             const auto es = static_cast<std::size_t>(e);
             sj_limit[es] = std::min(floor, (1.0 - POOR_INPUT_SLACK) * q);
-            ar_limit[es] = std::max(MESH_ASPECT_RATIO_MAX, (1.0 + POOR_INPUT_SLACK) * ar);
+            const double ar_slack =
+                (ar > MESH_ASPECT_RATIO_MAX) ? POOR_INPUT_ASPECT_SLACK : POOR_INPUT_SLACK;
+            ar_limit[es] = std::max(MESH_ASPECT_RATIO_MAX, (1.0 + ar_slack) * ar);
             if (tets) {
                 eta_limit[es] = std::min(MESH_MEAN_RATIO_FLOOR_TET,
                                          (1.0 - POOR_INPUT_SLACK) * ElementMeanRatio(pmesh, e));

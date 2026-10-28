@@ -388,7 +388,11 @@ corners; times sqrt(2) for tets, so a regular tet scores 1) is checked against t
 hexes, and its aspect ratio (the ratio of the extreme singular values of the corner edge matrix)
 against the ceiling 4; a tet's mean ratio (3 |det S|^(2/3) / |S|_F^2 per corner, S the corner edge
 matrix relative to the regular tet) against the floor 0.4. An element whose input value is beyond
-a limit, or within 10 % of it, may lose at most 10 % of its input value instead. Tets use the mean
+a limit, or within 10 % of it, may lose at most 10 % of its input value instead; an aspect ratio
+already above the ceiling may grow by 30 % (such an element is thin, like a pillow layer along a
+curved surface, and its aspect ratio changes by the relative change of its thickness, so 10 %
+blocked every node next to such a layer: a pillowed strut lattice fitted 0.38 -> 0.36 h, with
+30 % 0.28 h). Tets use the mean
 ratio because their corner scaled Jacobian is a poor shape measure: a perfect Kuhn tet scores
 0.58 (mean ratio 0.76), and the slivers of unstructured meshes jump with tiny node moves; with
 the scaled Jacobian rules an unstructured gmsh cube could hardly be fitted. If an element breaks a
@@ -448,7 +452,7 @@ alike. Tets: an 18^3 x 6 Kuhn mesh reaches 0.19 h (from 0.37); an unstructured g
   meshes of such parts; `test/data/microstructure/lattice/`), grains from the hook, fit, then
   mechanics. Lattices fit less than boxes: almost every grain boundary node is on a curved strut
   surface, and the thin pillow hexes (aspect ratio up to about 100 in the input) may lose only
-  10 % of their quality. Measured: tets 0.29-0.32 -> 0.18-0.26 h; hexes 0.39-0.41 -> 0.30-0.37 h
-  (the coarser the voxels, the less the fit). At 100 grains on 2 x 2 x 2 cells (68 000 tets, 72 000
-  hexes) both fit with no inverted element.
+  10 % of their scaled Jacobian (their aspect ratio may grow by 30 %). Measured: tets 0.29-0.32
+  -> 0.18-0.26 h; hexes 0.39-0.41 -> 0.27-0.32 h (the coarser the voxels, the less the fit). At
+  100 grains on 2 x 2 x 2 cells (68 000 tets, 72 000 hexes) both fit with no inverted element.
 

@@ -1194,8 +1194,10 @@ exec = "cpu"
 # measure of the whole tet's shape: 1 for a regular tet, 0.76 for the six tets a cube is cut into,
 # toward 0 for a flat one. The generator never lets a hex drop below a scaled Jacobian of 0.3 or
 # rise above an aspect ratio of 4, nor a tet drop below a mean ratio of 0.4; elements of your
-# input mesh that are already worse than that, or within 10 % of it, may lose at most 10 % of
-# their quality. It also stops early rather than leave many elements barely above the floor.
+# input mesh that are already worse than that, or close to it, may lose at most 10 % of their
+# quality (an aspect ratio already above 4 may grow by 30 %: such elements are thin, and a thin
+# element's aspect ratio changes with every small move across it). It also stops early rather
+# than leave many elements barely above the floor.
 # These limits are fixed, not options. Where they stop it, a boundary stays partly stepped.
 #
 # How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
