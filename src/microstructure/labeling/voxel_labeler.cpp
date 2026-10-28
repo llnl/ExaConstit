@@ -240,6 +240,11 @@ void VoteChunk(int chunk_begin,
  */
 class SamplePoints {
 public:
+    /**
+     * @brief Sets up the points of this rank's elements: computes and keeps the centroids
+     * (centroid sampling), or builds the voting-point sampler and the chunk size (vote sampling).
+     * @throws std::runtime_error for vote sampling on a mesh with several element geometries.
+     */
     SamplePoints(mfem::ParMesh& pmesh, const VoxelLabelParameters& params)
         : m_num_elements(pmesh.GetNE()) {
         if (m_num_elements == 0) {
@@ -295,16 +300,16 @@ public:
     }
 
 private:
-    int m_num_elements = 0;
-    int m_nq = 0;
-    int m_chunk_elems = 0;
-    ElementSamples m_centroids;
-    std::unique_ptr<QuadraturePointSampler> m_sampler;
+    int m_num_elements = 0;     ///< local elements NE
+    int m_nq = 0;               ///< points per element (1 for centroids)
+    int m_chunk_elems = 0;      ///< elements per chunk
+    ElementSamples m_centroids; ///< centroid sampling: centroids and volumes (kept)
+    std::unique_ptr<QuadraturePointSampler> m_sampler; ///< vote sampling: the point sampler
 };
 
 /** @brief Tile counts of the grid and the tile edge length (host). */
 struct TileGrid {
-    std::int64_t tile = 32;
+    std::int64_t tile = 32; ///< tile edge length in voxels (VoxelLabelParameters::tile_size)
     std::array<std::int64_t, 3> count = {0, 0, 0}; ///< tiles per axis, ceil(dims / tile)
 };
 
@@ -375,12 +380,12 @@ MarkTiles(const SamplePoints& points, const VoxelGridInfo& grid, const TileGrid&
 
 /** @brief The tiles this rank read, ready for the device lookup. */
 struct TileStore {
-    mfem::Array<int> ids;     ///< tile data back to back
-    mfem::Array<int> offsets; ///< dense offset table over the touched tile box
-    std::array<std::int64_t, 3> t0 = {0, 0, 0};
-    std::array<std::int64_t, 3> range = {0, 0, 0};
-    std::int64_t num_tiles = 0;
-    std::int64_t num_voxels = 0;
+    mfem::Array<int> ids;                          ///< tile data back to back
+    mfem::Array<int> offsets;                      ///< dense offset table over the touched tile box
+    std::array<std::int64_t, 3> t0 = {0, 0, 0};    ///< first tile index of the box, per axis
+    std::array<std::int64_t, 3> range = {0, 0, 0}; ///< tiles of the box per axis
+    std::int64_t num_tiles = 0;                    ///< tiles read
+    std::int64_t num_voxels = 0;                   ///< voxel ids stored (size of ids)
 };
 
 /**

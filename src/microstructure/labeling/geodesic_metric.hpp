@@ -30,9 +30,10 @@
  *    mesh would collapse onto a plane or a line. The geodesic mode therefore uses a
  *    *regularized* tensor: columns k times longer than wide (S = I - (1 - 1/k) a a^T,
  *    ColumnarStretch), layers k times wider than thick (S = n n^T + (I - n n^T) / k,
- *    LamellarStretch). k is Tessellation.geodesic_elongation, or chosen from the part when that is
- *    "auto" (AutoGeodesicElongation).
- *  - Voronoi, Additive, Laguerre: the identity (no mapping; bitwise the behavior without metrics).
+ *    LamellarStretch). k is the deck key Tessellation.geodesic.elongation
+ *    (TessellationOptions::geodesic_elongation), or chosen from the part when that is "auto"
+ *    (AutoGeodesicElongation).
+ *  - Voronoi, Additive, Laguerre: the identity (no mapping, plain Euclidean lengths).
  *  - "per_seed" has one tensor per seed and is not a single metric: the identity here, and the
  *    weighted solver (labeling/geodesic_weighted.hpp) maps each seed's lengths with its own
  *    stretch (GeodesicParameters::seed_stretch).
@@ -74,6 +75,8 @@ struct GeodesicMetric {
  * **Collective** over comm. Host.
  * @param columnar  true: columnar along `direction`; false: lamellar with normal `direction`.
  * @param direction axis or normal (any nonzero length).
+ * @param pmesh     the mesh (its corner vertices give the extents, mesh length units).
+ * @param comm      the mesh communicator.
  * @param num_seeds number of seeds N >= 1.
  * @param mask      optional active elements (nullptr = all).
  * @param clamped   optional out: true when the value was limited to GEODESIC_MAX_ELONGATION.
@@ -92,6 +95,13 @@ double AutoGeodesicElongation(bool columnar,
  *
  * **Collective** over comm when the elongation is automatic (columnar / lamellar with
  * geodesic_elongation = 0); every rank must call it in any case. Host.
+ * @param tessellation the [Tessellation] options (metric, anisotropy kind, tensor, axis or normal,
+ *                     geodesic_elongation: 0 = automatic).
+ * @param pmesh        the mesh, for the automatic elongation.
+ * @param comm         the mesh communicator.
+ * @param num_seeds    number of seeds N >= 1 (automatic elongation only).
+ * @param mask         optional active elements (nullptr = all).
+ * @return the stretch S and, for columnar / lamellar, the elongation used.
  * @throws std::invalid_argument for an unknown kind, a non positive definite tensor, a zero
  *         direction, or an elongation outside [1, GEODESIC_MAX_ELONGATION].
  */

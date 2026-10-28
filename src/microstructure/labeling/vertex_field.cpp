@@ -63,8 +63,11 @@ constexpr double INF = std::numeric_limits<double>::infinity();
 /** @brief "No key" marker of the nearest-node search (larger than any real key). */
 constexpr std::uint64_t NO_KEY = std::numeric_limits<std::uint64_t>::max();
 
+/** @brief A 3D point of the node search (Axom primal type). */
 using BvhPoint = axom::primal::Point<double, 3>;
+/** @brief An axis-aligned 3D box of the node search (one zero-size box per field node). */
 using BvhBox = axom::primal::BoundingBox<double, 3>;
+/** @brief The host (sequential) BVH used to find the field node nearest to an outside seed. */
 using HostBVH = axom::spin::BVH<3, axom::SEQ_EXEC, double>;
 
 /**
@@ -318,7 +321,7 @@ mfem::IntegrationPoint ReferencePoint(mfem::ParMesh& mesh, int e, double px, dou
  * this rank holds a copy of it, else -1 (rank-local; several ranks hold copies of a shared node).
  */
 struct NearestNodeResult {
-    std::vector<int> local_node;
+    std::vector<int> local_node; ///< per query: local index of the winner's copy here, or -1
 };
 
 /**
@@ -439,7 +442,7 @@ NearestNodeResult NearestFieldNodes(MPI_Comm comm,
  *  2. Choice of the field (FieldNodes): CORNERS -> corner field; MESH_NODES -> nodal field if the
  *     mesh has Nodes; AUTO -> nodal field if the mesh has Nodes and IsStraightSided
  *     (mesh/straight_sided.hpp, collective, the same answer on every rank) says it is curved.
- *     Every straight-sided mesh therefore takes the corner path, unchanged bit for bit.
+ *     Every straight-sided mesh therefore takes the corner path.
  *  3. BuildCornerField or BuildNodalField (numbering, tables, coordinates, markers). With an
  *     element mask the node -> element table lists active elements only (BuildNodeToElementTable).
  *  3b. NodeUsed: 1 for nodes with an active element on some rank (collective minimum over the
@@ -514,19 +517,20 @@ VertexField::VertexField(mfem::ParMesh& pmesh, FieldNodes field_nodes, const Ele
     }
 
     // Step 4: field arrays, all "not reached"
-    m_T.SetSize(m_num_vertices);
-    m_T.UseDevice(true);
-    m_source_T.SetSize(m_num_vertices);
-    m_source_T.UseDevice(true);
+    m_distance.SetSize(m_num_vertices);
+    m_distance.UseDevice(true);
+    m_source_distance.SetSize(m_num_vertices);
+    m_source_distance.UseDevice(true);
     m_label.SetSize(m_num_vertices);
     m_source_label.SetSize(m_num_vertices);
     Reset();
 }
 
+/* Destructor: the owned GroupCommunicator is freed by its unique_ptr; the mesh is not touched. */
 VertexField::~VertexField() = default;
 
 /*
- * BuildCornerField (the Stage 1e vertex field, same bits, no finite element space)
+ * BuildCornerField (field node = mesh vertex; no finite element space is built)
  *
  * Steps:
  *  1. Field node v = mesh vertex v (NV = Mesh::GetNV()).
@@ -1300,6 +1304,7 @@ void VertexField::MarkSharedNodes() {
     }
 }
 
+/* Comm: the mesh communicator (ParMesh::GetComm), used by every collective member. */
 MPI_Comm VertexField::Comm() const {
     return m_pmesh.GetComm();
 }
@@ -1356,8 +1361,8 @@ void VertexField::Reset() {
     m_elem_src_seeds.SetSize(0);
     m_elem_src_cell.SetSize(0);
     m_elem_src_data.SetSize(0);
-    double* t = m_T.HostWrite();
-    double* t0 = m_source_T.HostWrite();
+    double* t = m_distance.HostWrite();
+    double* t0 = m_source_distance.HostWrite();
     int* lab = m_label.HostWrite();
     int* lab0 = m_source_label.HostWrite();
     for (int v = 0; v < m_num_vertices; ++v) {
@@ -1561,7 +1566,7 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
     {
         // Distances in the metric: mapped nodes and mapped seed positions
         const double* xyz = MetricCoordinates().HostRead();
-        double* t = m_T.HostReadWrite();
+        double* t = m_distance.HostReadWrite();
         int* lab = m_label.HostReadWrite();
         int corners[FieldCellView::MAX_CELL_NODES];
         for (int i = 0; i < n; ++i) {
@@ -1593,7 +1598,7 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
 
     // Step 4e: make all copies agree, then remember the result as the source values
     ReduceShared();
-    m_source_T = m_T;
+    m_source_distance = m_distance;
     m_source_label = m_label;
     return report;
 }
@@ -1611,7 +1616,7 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
  */
 bool VertexField::ReduceSharedImpl(bool reduce_T, bool reduce_labels, mfem::Array<int>* changed) {
     const mfem::GroupCommunicator& gcomm = *m_gcomm;
-    double* t = m_T.HostReadWrite();
+    double* t = m_distance.HostReadWrite();
     int* lab = m_label.HostReadWrite();
     const std::vector<double> t_before(t, t + m_num_vertices);
     const std::vector<int> lab_before(lab, lab + m_num_vertices);
@@ -1774,8 +1779,11 @@ void VertexField::LabelPoints(int elem_begin,
  * the lexicographic
  * minimum of (T(v) + |p - v|, label(v)), then over the element's own seeds whose source cell is
  * this cell (CSR m_elem_src_*) of the direct term (|p - s_j| - a_j, j). For the corner field the
- * corners are the element's vertices in element order and every seed of the element has cell 0,
- * i.e. exactly the Stage 1e rule. The square root is the C library sqrt (unqualified, from
+ * corners are the element's vertices in element order and every seed of the element has cell 0.
+ * With seed lists (SetSeedLists) the kernel instead takes, over the corners' list entries
+ * (T_i(v) + |p - v|) and the direct seeds (|p - s_i|), the seed with the smallest d_i^2 - w_i
+ * (ties: lowest index), measuring lengths with each seed's own stretch when per-seed tensors are
+ * set. The square root is the C library sqrt (unqualified, from
  * math.h), which is correctly rounded and available in device code. +infinity is captured by
  * value (a host constant), and inf + finite = inf, so unreached nodes never win against a reached
  * one.
@@ -1816,7 +1824,7 @@ void VertexField::LabelPointsImpl(int elem_begin,
     for (int k = 0; k < 9; ++k) {
         stretch[k] = m_stretch[static_cast<std::size_t>(k)];
     }
-    const double* t = m_T.Read();
+    const double* t = m_distance.Read();
     const int* lab = m_label.Read();
     // Seed lists (SetSeedLists): Laguerre / weighted Quadric rule over the corners' entries
     const int cap = m_list_capacity;

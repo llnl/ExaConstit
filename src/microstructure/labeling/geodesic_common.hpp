@@ -14,14 +14,17 @@
  * @file geodesic_common.hpp
  * @brief Parameter, statistics and result types shared by the geodesic labelers: the graph
  * geodesic (labeling/geodesic_graph.hpp, Dijkstra on element edges and diagonals), the Fast
- * Iterative Method eikonal solver (labeling/geodesic_fim.hpp) and its weighted multi-seed
- * variant for Laguerre and weighted Quadric metrics (labeling/geodesic_weighted.hpp).
+ * Iterative Method eikonal solver (labeling/geodesic_fim.hpp; the eikonal equation |grad T| = 1
+ * gives T, the shortest distance to the seeds) and its weighted multi-seed variant for Laguerre and
+ * weighted Quadric metrics (labeling/geodesic_weighted.hpp).
  *
- * Both labelers measure the distance from each seed along paths that stay inside the material,
- * store it on the field nodes (VertexField: T(v) and label(v); the mesh vertices, or every nodal
- * point of a curved mesh), and turn it into one seed label
- * per element. They take the same options and return the same result, so the driver can switch
- * between them with a single option (`geodesic = { solver = "fim" | "graph" }`).
+ * A geodesic grain grows along paths that stay inside the material (around holes and notches), so
+ * a grain cannot jump across a gap the way a straight-line Voronoi cell would. Every labeler
+ * measures the distance from each seed along such paths, stores it on the field nodes
+ * (VertexField: the distance T(v) and the seed label(v); the mesh vertices, or every nodal point of
+ * a curved mesh), and turns it into one seed label per element. They take the same options and
+ * return the same result, so the driver can switch between them with a single option
+ * (`geodesic = { solver = "fim" | "graph" }`).
  */
 
 namespace exaconstit::microstructure {
@@ -66,7 +69,7 @@ struct GeodesicParameters {
     std::vector<double> seed_stretch;
     /**
      * @brief Which points carry the distance field (labeling/vertex_field.hpp): AUTO (default)
-     * uses the element corners on straight-sided meshes, exactly as before curved support, and
+     * uses the element corners on straight-sided meshes and
      * every nodal point of the mesh's own Nodes space with p^3 virtual sub-cells per element on
      * curved meshes; CORNERS / MESH_NODES force one of the two.
      */
@@ -83,7 +86,7 @@ struct GeodesicParameters {
      * @brief Metric of the path lengths (VertexField::SetMetricStretch): a vector r has length
      * |S r|, S row-major 3x3, i.e. paths are measured with the Quadric tensor A = S^T S
      * (labeling/geodesic_metric.hpp builds S from the tessellation options). The identity
-     * (default) gives plain lengths, bitwise as before metrics existed.
+     * (default) gives plain Euclidean lengths.
      */
     std::array<double, 9> stretch = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
 };

@@ -44,12 +44,12 @@
  *     straight-sided hex with planar faces is convex, so a path never leaves the element and never
  *     cuts across a void. A trilinear hex with warped (non-planar) faces is not convex: a path may
  *     leave it by up to the face warp.
- *     Earlier versions also scanned the 23 triangles through the hex interior (all 35 triangles of
- *     the other 7 vertices). They interpolate T across the element instead of along its boundary,
- *     never improved the accuracy in the tests (strut, L-shape, curved walls: identical errors),
- *     and slowed the convergence on stretched cells (a convex box with a 4x Quadric tensor needed
- *     49 distance rounds instead of 11), so they were dropped: 34 local solves per hex instead of
- *     63.
+ *     The 23 triangles through the hex interior (the rest of the 35 triangles of the other 7
+ *     vertices) are not scanned. They interpolate T across the element instead of along its
+ *     boundary, do not improve the accuracy (strut, L-shape and curved-wall tests give identical
+ *     errors with them), and slow the convergence on stretched cells (a convex box with a 4x
+ *     Quadric tensor needs 49 distance rounds with them instead of 11). Leaving them out gives 34
+ *     local solves per hex instead of 63.
  *   - Curved (high-order) elements: the update runs on the cells of the VertexField
  *     (FieldCellView). For a curved mesh (GeodesicParameters::field_nodes = AUTO) these are the
  *     p^3 straight virtual sub-cells spanned by each element's nodal lattice, with the nodal
@@ -57,10 +57,11 @@
  *     h/p on the true geometry (a sub-hex uses its 12 far-face triangles, a sub-tet its opposite
  *     face, as above). The candidates of node v in element e are those of every sub-cell of e
  *     having v as a corner, combined exactly like the candidates of one scan (smallest value; on
- *     exact ties the union of the supports), and stored per (v, e) incidence as before; the
- * supports are stored as lattice-offset bits (FieldCellView::NeighborNode). No refined mesh is
- * built. With field_nodes = CORNERS a curved element is replaced by the convex hull of its corners
- * (paths on chords of length h, which may cut through a concave curved wall by the chord sag).
+ *     exact ties the union of the supports), and stored per (v, e) incidence as for a straight
+ *     element; the supports are stored as lattice-offset bits (FieldCellView::NeighborNode). No
+ *     refined mesh is built. With field_nodes = CORNERS a curved element is replaced by the convex
+ *     hull of its corners (paths on chords of length h, which may cut through a concave curved
+ *     wall by the chord sag).
  *   - Paths go from element to element through every shared vertex, edge or face. Two elements
  *     touching only along an edge or at a vertex are therefore connected for the geodesic solvers
  *     (a front passes through the shared edge), whereas the face-based fragment cleanup
@@ -95,8 +96,8 @@
  *     smallest straight-line arrival a(u) = T(u) + |v - u| (minimum over the ranks). v is a
  *     *source* vertex when T0(v) = m(v); it has no upwind vertices.
  *     Why the arrival filter: the support of a face candidate can span two grains (a face that
- *     crosses a grain boundary). Taking the smallest seed index over the whole support let the
- *     lowest-numbered seed leak across boundaries and grow downstream from there; the support
+ *     crosses a grain boundary). Taking the smallest seed index over the whole support would let
+ *     the lowest-numbered seed leak across boundaries and grow downstream from there; the support
  *     vertex whose own front reaches v first in a straight line carries the right seed.
  *  3. label(v) = the source seed of a source vertex, else the smallest seed index among the labels
  *     of its upwind vertices. Computed by Jacobi rounds with VertexField::ReduceSharedLabels:
@@ -163,7 +164,7 @@
  * below T - tol, and the rank minimum of the exchange then equals the value a single-rank sweep
  * would accept (and if no rank accepts, every copy keeps T, as on one rank). A rejected
  * improvement leaves a stored candidate slightly below T(v); the label pass handles m(v) != T(v)
- * as described above. tolerance = 0 restores the iteration to an exact fixed point.
+ * as described above. With tolerance = 0 the iteration runs to an exact fixed point.
  *
  * **Where it runs.** The update and label sweeps are mfem::forall kernels (MFEM's parallel loop:
  * GPU kernels when the mfem::Device has a CUDA or HIP backend, host loops otherwise); the rank

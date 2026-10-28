@@ -26,19 +26,22 @@
  *   - T(v): the shortest path length from the nearest seed (mesh length units; +infinity when no
  *     seed reaches the node, e.g. on a body of the mesh without a seed), and
  *   - label(v): the 0-based index of that seed in the SeedSet (-1 when T(v) = +infinity).
- * Two solvers fill this field: the graph geodesic (labeling/geodesic_graph.hpp, Dijkstra on the
- * cell edges and diagonals) and the Fast Iterative Method eikonal solver
- * (labeling/geodesic_fim.hpp). Both start from InitializeSources, exchange values between ranks
- * with ReduceShared*, and turn the field into element labels with LabelElementCentroids /
- * LabelElementsByVote. This class owns everything they have in common. For historical reasons
- * the accessors say "vertex" (NumVertices, Coordinates, ...); read "field node".
+ * Three solvers fill this field: the graph geodesic (labeling/geodesic_graph.hpp, Dijkstra on
+ * the cell edges and diagonals), the Fast Iterative Method eikonal solver
+ * (labeling/geodesic_fim.hpp) and its multi-seed variant for weighted metrics
+ * (labeling/geodesic_weighted.hpp, which adds per-node seed lists, SetSeedLists). All start from
+ * InitializeSources, exchange values between ranks with ReduceShared* or ExchangeSharedPayload,
+ * and turn the field into element labels with LabelElementCentroids / LabelElementsByVote. This
+ * class owns everything they have in common. The accessors say "vertex" (NumVertices,
+ * Coordinates, ...) because for the corner field the nodes are the mesh vertices; in general,
+ * read "field node".
  *
  * **Cells.** The solvers never look at elements directly but at *cells*: small straight-sided
  * pieces whose corners are field nodes. A path runs in straight lines inside a cell, and a point
  * of an element is reached in a straight line from a corner of the cell that contains it.
  * FieldCellView (below) lists the cells of an element; there are two kinds of field:
  *
- *  1. **Corner field** (FieldNodes::CORNERS; the Stage 1e behavior). The field nodes are the mesh
+ *  1. **Corner field** (FieldNodes::CORNERS). The field nodes are the mesh
  *     vertices and every element is one cell with its corners. Exact for straight-sided elements.
  *     For a curved element it replaces the element by the convex hull of its corners, so a path
  *     follows chords of length h (the element size) and may cut through a concave curved wall
@@ -86,7 +89,7 @@
  *
  * **Which field (FieldNodes::AUTO).** Straight-sided meshes (mesh/straight_sided.hpp:
  * IsStraightSided, which accepts Nodes that describe straight elements, e.g. after
- * Mesh::SetCurvature) use the corner field, bit for bit as before Wave 8. Curved meshes use the
+ * Mesh::SetCurvature) use the corner field. Curved meshes use the
  * nodal field. With an element mask only the active elements decide (a curved passthrough part
  * does not switch the material to the nodal field). CORNERS / MESH_NODES force a choice
  * (MESH_NODES on a mesh without Nodes is the corner field). The nodal field supports a single
@@ -99,7 +102,7 @@
  * topology (ParMesh::gtopo) whose group table lists, for every shared-vertex group g >= 1, the
  * local vertices ParMesh::GroupVertex(g, j) in that order, exactly what an order-1 H1 space would
  * build for its vertex dofs (ParFiniteElementSpace::GetGroupComm, pfespace.cpp:392-415), so the
- * reductions are bit for bit those of the Stage 1e version; the owner of a vertex is the master
+ * reductions are bit for bit those of such a space; the owner of a vertex is the master
  * of its group (GroupTopology::IAmMaster), as GetLocalTDofNumber decides for that space
  * (pfespace.cpp:1720-1739, 2236-2257). Nodal field: no space is built; the field nodes are the
  * scalar dofs of the mesh's Nodes space, and the exchange uses
@@ -118,10 +121,11 @@
  * (vertices, Nodes) is never modified. Outside seeds are snapped with these coordinates too.
  * Coordinates are read from the Nodes vertex dofs (corner field with Nodes) or all Nodes dofs
  * (nodal field), not from Mesh::GetVertex, which MFEM documents as possibly stale when Nodes
- * exist (mesh.hpp:1426). Discontinuous Nodes (periodic meshes) are rejected: Stage 1e does not
- * combine geodesic distance with periodicity. Partition independence assumes that all copies of
- * a node hold the same coordinates before the broadcast (true for a ParMesh distributed from a
- * serial mesh); otherwise the owner's value, which depends on the partition, wins.
+ * exist (mesh.hpp:1426). Discontinuous Nodes (periodic meshes) are rejected: geodesic distance is
+ * not combined with periodic axes (CheckSupportedTessellation). Partition independence assumes that
+ * all copies of a node hold the same coordinates before the broadcast (true for a ParMesh
+ * distributed from a serial mesh); otherwise the owner's value, which depends on the partition,
+ * wins.
  *
  * **Connectivity tables (CSR).** "CSR" (compressed sparse row) stores a list of variable-length
  * lists in two flat arrays: `offsets` (one more entry than lists) and `items`; list i is
@@ -187,7 +191,7 @@ namespace exaconstit::microstructure {
 enum class FieldNodes {
     /** @brief Corners for straight-sided meshes, every Nodes dof for curved meshes (default). */
     AUTO,
-    /** @brief The element corners only: one cell per element (the Stage 1e behavior). */
+    /** @brief The element corners only: one cell per element. */
     CORNERS,
     /** @brief Every dof of the mesh's Nodes space, with p^3 sub-cells per element (curved
      * meshes; also usable on straight high-order meshes for an h/p resolution). A mesh without
@@ -567,7 +571,7 @@ public:
      *        only are never reached (NodeUsed() = 0) and are ignored by the statistics and by the
      *        snapping of outside seeds; inactive elements get label -1 in LabelElementCentroids /
      *        LabelElementsByVote. The element -> node table stays complete. nullptr = every
-     *        element (unchanged).
+     *        element.
      * @throws std::runtime_error on every rank if the mesh is nonconforming (hanging vertices
      *         from local refinement: their values are not plain copies of one node), not 3D, or
      *         has discontinuous Nodes, or, for the nodal field, if the Nodes space is not a
@@ -576,8 +580,11 @@ public:
     explicit VertexField(mfem::ParMesh& pmesh,
                          FieldNodes nodes = FieldNodes::AUTO,
                          const ElementMask* mask = nullptr);
+    /** @brief Frees the owned communicator; the mesh is not touched. Not collective. */
     ~VertexField();
+    /** @brief Not copyable: the field owns an MFEM GroupCommunicator. */
     VertexField(const VertexField&) = delete;
+    /** @brief Not copy-assignable (see the copy constructor). */
     VertexField& operator=(const VertexField&) = delete;
 
     /** @brief The mesh the field lives on. */
@@ -656,7 +663,7 @@ public:
      * measure Euclidean lengths between mapped points, so the A-length of a path equals the
      * Euclidean length of its image. A linear map keeps cells as cells and linear interpolation
      * linear, so the solvers run unchanged on the mapped coordinates. The identity (the default)
-     * keeps the plain coordinates (no copy, bitwise the unmapped behavior). Source location,
+     * keeps the plain coordinates (no copy). Source location,
      * snapping and node keys always use the physical Coordinates().
      *
      * Call it before InitializeSources (the source values are computed in the metric). S must be
@@ -697,11 +704,11 @@ public:
 
     /** @brief T(v): distance from the nearest seed per local node, +infinity = not reached. */
     mfem::Vector& Distance() {
-        return m_T;
+        return m_distance;
     }
     /** @brief Read-only T(v). */
     const mfem::Vector& Distance() const {
-        return m_T;
+        return m_distance;
     }
     /** @brief label(v): 0-based seed index per local node, -1 = none. */
     mfem::Array<int>& Label() {
@@ -718,7 +725,7 @@ public:
      * as boundary values; the graph labeler uses them to tell which nodes start a path.
      */
     const mfem::Vector& SourceDistance() const {
-        return m_source_T;
+        return m_source_distance;
     }
     /** @brief Seed index of SourceDistance() per node, -1 where SourceDistance() is +infinity. */
     const mfem::Array<int>& SourceLabel() const {
@@ -1049,9 +1056,9 @@ private:
         return HasMask() ? &m_mask : nullptr;
     }
     mfem::Array<int> m_node_used;        ///< 1 = node of an active element (global)
-    mfem::Vector m_T;                    ///< T(v)
+    mfem::Vector m_distance;             ///< T(v)
     mfem::Array<int> m_label;            ///< label(v)
-    mfem::Vector m_source_T;             ///< T0(v)
+    mfem::Vector m_source_distance;      ///< T0(v)
     mfem::Array<int> m_source_label;     ///< seed of T0(v)
     mfem::Array<int> m_elem_src_offsets; ///< element -> own seeds CSR offsets (NE+1)
     mfem::Array<int> m_elem_src_seeds;   ///< seed index of each entry

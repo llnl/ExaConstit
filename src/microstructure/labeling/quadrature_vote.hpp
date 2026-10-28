@@ -40,12 +40,9 @@
  * children cut by the boundary.
  * MFEM's standard quadrature rules (mfem::IntRules) are deliberately not used: they are built to
  * integrate smooth polynomials, not to measure volume fractions of a discontinuous grain
- * indicator. (Before MFEM v4.10 several tetrahedron rules even had a negative weight, which
- * would make a point vote *against* the grain that wins it; ExaConstit now requires v4.10, whose
- * simplex rules are all positive.) With positive tet rules (4 to 24 points, very unequal weights)
- * the vote was measured to assign volumes *worse* than the centroid on a coarse tet mesh; the
- * 64-point subcell rule, with equal weights, does better (test_sampling_modes,
- * VolumesCloserToAnalyticThanCentroid).
+ * indicator. Its tet rules have 4 to 24 points with very unequal weights, and a vote with them
+ * assigns volumes *worse* than the centroid on a coarse tet mesh; the 64-point subcell rule, with
+ * equal weights, does better (test_sampling_modes, VolumesCloserToAnalyticThanCentroid).
  *
  * **Ties.** The label with the larger total weight wins; when two totals are exactly equal (a
  * symmetric cut), the lowest seed index wins. The totals are summed in increasing point order
@@ -97,8 +94,8 @@ struct QuadratureVoteParameters {
      * share estimate can be wrong. Memory per element kept for the whole mesh does not grow
      * with the level (see "Memory" in the file comment); the work per element grows as 8^levels,
      * which is why 3 (512 points) is the maximum offered. Level 1 is not recommended: its 8
-     * points give share steps of 1/8, coarser than the centroid's own error window, and it
-     * measured worse than centroid labeling.
+     * points give share steps of 1/8, coarser than the centroid's own error window, and in tests
+     * it assigns volumes worse than centroid labeling.
      */
     int levels = 2;
     /**

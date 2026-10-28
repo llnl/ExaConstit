@@ -43,9 +43,9 @@
  * the same VertexField removes this direction bias and should be preferred where accuracy
  * matters.
  *
- * **Curved meshes (Wave 8).** The graph nodes are the field nodes of the VertexField and the
+ * **Curved meshes.** The graph nodes are the field nodes of the VertexField and the
  * "elements" above are its cells (FieldCellView): for a straight-sided mesh the mesh vertices and
- * the elements, exactly as before; for a curved mesh (GeodesicParameters::field_nodes = AUTO) every
+ * the elements; for a curved mesh (GeodesicParameters::field_nodes = AUTO) every
  * nodal point of the mesh's Nodes space and the p^3 virtual lattice sub-cells of each element, so
  * graph edges are chords of length about h/p between points on the true geometry instead of
  * chords of length h between corners (which cut through concave curved walls). Every statement

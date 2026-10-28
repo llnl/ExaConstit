@@ -159,7 +159,7 @@ VoxelLabels LabelElementsFromVoxels(mfem::ParMesh& pmesh,
 
 /**
  * @brief Renumbers feature ids as compact grain ids 1..N in ascending feature id, over the ids
- * used on any rank (step 4 of the file comment).
+ * used on any rank (step 5 of the file comment).
  *
  * Each rank sorts its distinct feature ids; the lists are gathered on every rank
  * (MPI_Allgather of the counts, then MPI_Allgatherv of the ids) and merged, so every rank builds

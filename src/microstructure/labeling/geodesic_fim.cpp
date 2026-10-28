@@ -18,6 +18,8 @@
  *   elements changed in the previous round.
  * - Upwind vertices of v: the vertices of the candidate(s) that produce v's final distance, with
  *   a smaller distance than v (the direction the front came from).
+ * - CSR table (compressed sparse rows): the lists of all rows stored one after another in one
+ *   items array, with offsets[r] .. offsets[r + 1] - 1 the entries of row r.
  * - Incidence: one (vertex, element) pair, i.e. one entry k of the vertex -> element CSR table.
  */
 #include "microstructure/labeling/geodesic_fim.hpp"
@@ -608,8 +610,7 @@ GeodesicLabels LabelGeodesicFim(mfem::ParMesh& pmesh,
         const double* t = field.Distance().HostRead();
         int* lab = field.Label().HostReadWrite();
         const int* owned = field.OwnedVertexMarker().HostRead();
-        // Without a mask every node counts (as before masks existed); with one, only nodes of
-        // an active element (NodeUsed)
+        // Without a mask every node counts; with one, only nodes of an active element (NodeUsed)
         const int* used = field.NodeUsed().HostRead();
         const bool masked = ContextMask(params.context) != nullptr &&
                             ContextMask(params.context)->active.Size() != 0;

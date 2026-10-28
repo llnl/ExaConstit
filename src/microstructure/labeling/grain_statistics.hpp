@@ -27,7 +27,7 @@
  * computed from the element's own vertices, and each face area is computed from the face's
  * corners taken in a canonical order (see ComputeGrainStatistics), not in the order in which a
  * particular rank happens to store the face. The result is bitwise identical for every number
- * of ranks (for meshes of order > 1, see the note in ComputeGrainStatistics).
+ * of ranks (for curved meshes, see the note in ComputeGrainStatistics).
  */
 
 namespace exaconstit::microstructure {
@@ -102,10 +102,11 @@ struct GrainStatistics {
  * and the gather is indexed with int, which caps the total at INT_MAX / 4 (~5.4e8) records
  * (std::runtime_error on every rank beyond that).
  *
- * Mesh order: meshes without Nodes or with order-1 Nodes (common for meshes read with a nodes
- * section) use the canonical corner formula of step 3 and are bitwise rank-count independent.
- * For Nodes of order > 1 (curved faces) the face area is taken from MeshAdjacency::FaceAreas()
- * (quadrature on the curved face) instead. That value may differ in the last bits between
+ * Curved meshes: straight-sided meshes (no Nodes, order-1 Nodes, or higher-order Nodes that
+ * still describe straight elements; IsStraightSided, mesh/straight_sided.hpp, decided over all
+ * ranks) use the canonical corner formula of step 3 and are bitwise rank-count independent. For a
+ * curved mesh the face area is taken from MeshAdjacency::FaceAreas() (quadrature on the curved
+ * face) instead. That value may differ in the last bits between
  * partitions that store the face with a different orientation, so the shared areas of curved
  * meshes are rank-count independent only to round-off; everything else stays bitwise.
  *

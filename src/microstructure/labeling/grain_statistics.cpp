@@ -37,6 +37,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** A point or vector in 3D: x, y, z (mesh length units). */
 using Point3 = std::array<double, 3>;
 
 /** Lexicographic "a < b": compare x, then y, then z. */
@@ -148,9 +149,9 @@ double CanonicalFaceArea(const mfem::Mesh& mesh, const VertexCoordinates& coords
 
 /** One face between two grains, counted on this rank: smaller grain, larger grain, area. */
 struct PairFace {
-    int a;
-    int b;
-    double area;
+    int a;       ///< the smaller grain id (1-based)
+    int b;       ///< the larger grain id (1-based)
+    double area; ///< face area (mesh length units squared)
 };
 
 } // namespace

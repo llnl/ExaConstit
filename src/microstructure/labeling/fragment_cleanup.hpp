@@ -272,7 +272,7 @@ std::int64_t DeriveFragmentSourceId(std::int64_t source_id, std::int64_t ordinal
  *                        are ignored (their element_grain entry is not read; e.g. the placeholder
  *                        0), never join or receive a grain, and a face to one is a free surface:
  *                        it does not connect fragments and does not count for merge decisions.
- *                        They come out with grain 0. nullptr = every element (unchanged).
+ *                        They come out with grain 0. nullptr = every element.
  * @return relabeled elements, new grain count, per-grain parent and source ids, report.
  * @throws std::invalid_argument on every rank for invalid parameters (sizes, negative
  *         min_grain_elements or min_fragment_elements, min_fragment_fraction outside [0, 1]) or

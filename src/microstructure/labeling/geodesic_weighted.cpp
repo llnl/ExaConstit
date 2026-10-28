@@ -3,7 +3,15 @@
  * synchronous rounds of per-seed FIM updates into bounded, pruned seed lists, with list exchanges
  * between ranks -> labels from the lists -> element labels.
  *
- * Terms used in this file (see also geodesic_fim.cpp):
+ * Terms used in this file:
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ * - mfem::forall: MFEM's parallel loop; a GPU kernel when the mfem::Device has a CUDA or HIP
+ *   backend, a plain host loop otherwise. MFEM_HOST_DEVICE marks code callable inside it.
+ * - Synchronous (Jacobi) round: every node computes its new list from the previous round's lists
+ *   only (written to a second array), so the order of the nodes cannot change the result.
+ * - K: GeodesicParameters::max_seeds_per_node, the slots per node in the packed list arrays
+ *   (node v's entries are slots K v .. K v + K - 1).
  * - Entry: one (seed i, T_i) pair of a node's list. Lists are stored packed (entries first, then
  *   slots with seed -1) and sorted by (f, seed), f = T^2 - w_seed, so the first entry is the label.
  * - Dominated: entry i is dominated by entry j when T_j <= T_i and f_j <= f_i, one strictly
@@ -93,12 +101,12 @@ MFEM_HOST_DEVICE inline bool TensorLeq(const double* tensors, int j, int i) {
  * Host and device (lives in registers / local memory of one kernel iteration).
  */
 struct WorkList {
-    int seed[WORK];
-    double t[WORK];
-    double f[WORK];
-    int n = 0;
-    int cap = 0;
-    bool overflow = false;
+    int seed[WORK];        ///< seed index (0-based) of each entry
+    double t[WORK];        ///< T_i of each entry: path length from the seed (metric units)
+    double f[WORK];        ///< f_i = T_i^2 - w_i of each entry (the value the label minimizes)
+    int n = 0;             ///< entries in use (0 .. cap; cap + 1 briefly inside Insert)
+    int cap = 0;           ///< most entries kept (K)
+    bool overflow = false; ///< true once an Insert has cut an entry (capacity reached)
     const double* tensors = nullptr; ///< per-seed tensors (6 per seed) or nullptr (one metric)
 
     /** @brief Entry a dominates entry b (TensorLeq for per-seed tensors). */

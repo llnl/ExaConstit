@@ -1,3 +1,9 @@
+/*
+ * Fragment search and cleanup (fragment_cleanup.hpp): connected components of the element labels
+ * (union-find on each rank, then min-propagation across ranks), the replicated fragment table, and
+ * the split, merge and small-grain rounds. Every decision uses data that is identical on every
+ * rank (exact integer sums, element keys), so the result does not depend on the partition.
+ */
 #include "microstructure/labeling/fragment_cleanup.hpp"
 
 #include <algorithm>
@@ -31,12 +37,14 @@ std::uint64_t Mix64(std::uint64_t z) {
     return z ^ (z >> 31);
 }
 
-/** Bit-for-bit reinterpretation between unsigned and signed 64-bit integers (for MPI_INT64_T). */
+/** Bit-for-bit reinterpretation of an unsigned 64-bit integer as signed (to send element keys
+ * as MPI_INT64_T). */
 std::int64_t BitsToSigned(std::uint64_t u) {
     std::int64_t s = 0;
     std::memcpy(&s, &u, sizeof(s));
     return s;
 }
+/** The inverse of BitsToSigned: the same 64 bits read as an unsigned integer. */
 std::uint64_t BitsToUnsigned(std::int64_t s) {
     std::uint64_t u = 0;
     std::memcpy(&u, &s, sizeof(u));
@@ -58,12 +66,14 @@ std::uint64_t BitsToUnsigned(std::int64_t s) {
  */
 class UnionFind {
 public:
+    /** Every element 0 .. n-1 starts as a group of its own. */
     explicit UnionFind(int n) : m_parent(static_cast<std::size_t>(n)) {
         for (int i = 0; i < n; i++) {
             m_parent[static_cast<std::size_t>(i)] = i;
         }
     }
 
+    /** The root of i's group (with path halving). */
     int Find(int i) {
         while (m_parent[static_cast<std::size_t>(i)] != i) {
             const int grandparent =
@@ -74,6 +84,7 @@ public:
         return i;
     }
 
+    /** Joins the groups of a and b. */
     void Union(int a, int b) {
         const int root_a = Find(a);
         const int root_b = Find(b);
@@ -88,7 +99,7 @@ public:
     }
 
 private:
-    std::vector<int> m_parent;
+    std::vector<int> m_parent; ///< parent element of each element (itself for a root)
 };
 
 /*
@@ -307,16 +318,16 @@ struct Fragment {
 
 /** Mutable state of one CleanupFragments run (host data). */
 struct CleanupState {
-    const MeshAdjacency* adjacency = nullptr;
-    MPI_Comm comm = MPI_COMM_NULL;
-    int ne = 0;
-    const int* offsets = nullptr;
-    const int* neighbors = nullptr;
-    std::vector<std::uint64_t> key; ///< size NE, element keys
-    mfem::Array<int> label;         ///< size NE, working labels 1..num_labels; 0 = inactive
-    mfem::Array<int> ghost_label;   ///< size NG, refreshed by RefreshGhostLabels
-    int num_labels = 0;             ///< working labels in use are 1..num_labels
-    int num_input_grains = 0;
+    const MeshAdjacency* adjacency = nullptr; ///< face neighbors and the ghost exchange
+    MPI_Comm comm = MPI_COMM_NULL;            ///< communicator of the mesh
+    int ne = 0;                               ///< local elements NE
+    const int* offsets = nullptr;             ///< adjacency offsets (host), size NE + 1
+    const int* neighbors = nullptr;           ///< adjacency neighbors (host): local or NE + ghost
+    std::vector<std::uint64_t> key;           ///< size NE, element keys
+    mfem::Array<int> label;           ///< size NE, working labels 1..num_labels; 0 = inactive
+    mfem::Array<int> ghost_label;     ///< size NG, refreshed by RefreshGhostLabels
+    int num_labels = 0;               ///< working labels in use are 1..num_labels
+    int num_input_grains = 0;         ///< labels 1..this are input grains (the rest split off)
     std::vector<int> parent;          ///< index label-1: input grain (1-based) it came from
     std::vector<std::int64_t> source; ///< index label-1: source id
     std::vector<std::int64_t> splits; ///< index input grain-1: fragments split off so far

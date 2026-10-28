@@ -55,16 +55,18 @@ namespace exaconstit::microstructure {
 
 /**
  * @brief Refuses tessellation options the generator's labelers do not support: vote_levels
- * outside 0..3, an unknown anisotropy kind, distance = CONNECTED or GEODESIC with a periodic
- * axis, and GEODESIC with a metric other than Voronoi / Additive or with an anisotropy kind other
- * than "none" (the Stage 1e scope). Centroid and quadrature-vote sampling and periodic axes are
- * supported (by LabelTessellation).
+ * outside 0..3; an unknown anisotropy kind or a zero direction; distance = CONNECTED or GEODESIC
+ * with a periodic axis (a connected piece or a path would have to wrap around the box); and for
+ * GEODESIC, an anisotropy kind other than "none" with a metric other than Quadric, or the graph
+ * solver with metric Laguerre or anisotropy kind "per_seed" (those need the FIM solver's
+ * multi-seed variant, labeling/geodesic_weighted.hpp). Centroid and quadrature-vote sampling and
+ * periodic axes are supported (by LabelTessellation).
  *
  * All three distance modes pass this check, but the functions of this file compute the
  * straight-line (EUCLIDEAN) labels only and refuse the other modes; the driver builds connected
  * labels on top of them (ConstrainToConnectedCells, labeling/connected_labeler.hpp) and geodesic
- * labels with LabelGeodesicFim or LabelGeodesicGraph (labeling/geodesic_fim.hpp,
- * geodesic_graph.hpp).
+ * labels with LabelGeodesicFim, LabelGeodesicGraph or LabelGeodesicWeighted
+ * (labeling/geodesic_fim.hpp, geodesic_graph.hpp, geodesic_weighted.hpp).
  *
  * Host only, not collective; every rank holds the same options, so every rank throws together.
  * The driver calls it before seeding, so unsupported options are refused before any collective
@@ -158,6 +160,7 @@ struct TessellationLabels {
      * rank.
      */
     int periodic_layers = 0;
+    /** @brief Periodic runs: number of seed images searched (0 otherwise; see periodic_layers). */
     int num_periodic_images = 0;
     /**
      * @brief Quadrature-vote runs: local elements whose voting points did not all vote for the
@@ -270,7 +273,7 @@ void CompactSeedLabels(MPI_Comm comm,
  * @param mask         optional active elements (mesh/element_mask.hpp): inactive elements get the
  *                     placeholder seed -1 and grain 0 and do not count for the grains or the
  *                     split statistics. Cannot be combined with periodic axes. nullptr = every
- *                     element (unchanged results).
+ *                     element.
  * @return the labels of the local elements (seed indices into `seeds`) and the replicated
  *         seed/grain tables, plus the periodic and vote statistics.
  * @throws std::invalid_argument for unsupported options, an empty seed set or invalid seed data;

@@ -9,6 +9,8 @@
  * - Dijkstra's algorithm: computes shortest path lengths from a set of start vertices by always
  *   finishing the not-yet-finished vertex with the smallest tentative distance, taken from a
  *   binary heap (std::priority_queue: the smallest entry comes out first).
+ * - CSR table (compressed sparse rows): the lists of all rows stored one after another in one
+ *   items array, with offsets[r] .. offsets[r + 1] - 1 the entries of row r.
  * - Relaxation: offering a vertex u the candidate T(v) + w(v,u) and keeping it if smaller.
  * - Tight neighbor of u: a vertex v of a common element with T(v) < T(u) and
  *   T(v) + w(v,u) == T(u) exactly, i.e. a vertex on a shortest path into u.
@@ -56,7 +58,7 @@ inline double EdgeLength(const double* xyz, int a, int b) {
 
 /** @brief Host views of the VertexField connectivity used by both phases. */
 struct GraphView {
-    int num_vertices = 0;
+    int num_vertices = 0;                   ///< field nodes on this rank (owned and shared copies)
     const int* elem_vert_offsets = nullptr; ///< element -> vertex CSR offsets
     const int* elem_verts = nullptr;        ///< element -> vertex CSR items
     const int* vert_elem_offsets = nullptr; ///< vertex -> element CSR offsets
@@ -70,7 +72,7 @@ struct GraphView {
  *
  * Goes through the elements of v (node -> element table) and, in each, the cells having v as a
  * corner (FieldCellView::ForEachCellOfIncidence): for the corner field the element itself, so u
- * runs over the element's other vertices in element order exactly as in Stage 1e; for the nodal
+ * runs over the element's other vertices in element order; for the nodal
  * field the lattice sub-cells around v. A neighbor that shares several cells with v is visited
  * once per shared cell; that is harmless for both phases (the same candidate is offered again)
  * and avoids a de-duplication buffer. Host.

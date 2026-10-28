@@ -40,12 +40,12 @@ namespace exaconstit::microstructure {
  * The three distance modes are supported by the generator, but only "euclidean" is computed by
  * this file: "connected" starts from these labels and constrains them
  * (labeling/connected_labeler.hpp), "geodesic" replaces them by path-length labels
- * (labeling/geodesic_fim.hpp or geodesic_graph.hpp); the driver composes the steps. What is
- * checked here is the scope those modes are built for (the Stage 1e limits): no periodic axes
- * for either mode (a
- * path or a connected piece would have to wrap around the box), and for "geodesic" a metric the
- * path-length solvers support: Voronoi (d), Additive (d - a_i), Laguerre (d^2 - w_i) and Quadric
- * (labeling/geodesic_metric.hpp); weights and per-seed tensors need the FIM solver. The vote level
+ * (labeling/geodesic_fim.hpp, geodesic_graph.hpp or geodesic_weighted.hpp); the driver composes
+ * the steps. What is checked here is the scope those modes are built for: no periodic axes for
+ * either mode (a path or a connected piece would have to wrap around the box), and for "geodesic"
+ * a metric the path-length solvers support: Voronoi (d), Additive (d - a_i), Laguerre
+ * (d^2 - w_i) and Quadric (labeling/geodesic_metric.hpp); an anisotropy needs Quadric, and
+ * Laguerre and per-seed tensors need the FIM solver (its multi-seed variant). The vote level
  * range (0..3) and the anisotropy kind are checked too, so a direct caller gets the same messages
  * as the driver. Every rank holds the same options, so every rank throws together. Public so the
  * driver can call it before the collective seeding.
@@ -103,8 +103,9 @@ void RequireEuclidean(const TessellationOptions& tessellation, const char* calle
 } // namespace
 
 /*
- * EffectiveGlobalTensor: "none"/"tensor" return the stored tensor unchanged (so options that
- * never mention anisotropy behave exactly as before the kinds existed); "columnar"/"lamellar"
+ * EffectiveGlobalTensor: "none"/"tensor" return the stored tensor unchanged (the identity by
+ * default, so options that never mention anisotropy give plain Voronoi distances);
+ * "columnar"/"lamellar"
  * build the semidefinite tensors with the helpers of geometry/metric_functors.hpp, which
  * normalize the direction and throw for a zero or non-finite one.
  */

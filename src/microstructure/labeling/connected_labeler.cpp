@@ -67,6 +67,7 @@ constexpr int VOTE_POINTS_PER_RANGE = 1 << 20;
  * 2^20 points (160 MB) fit; chunks hold fewer points when the lists are longer.
  */
 constexpr std::size_t VOTE_CHUNK_BYTES = std::size_t(160) << 20;
+/** @brief Bytes per searched point before its exclusion list (see VOTE_CHUNK_BYTES). */
 constexpr std::size_t VOTE_BYTES_PER_POINT = 100;
 
 /**
@@ -304,12 +305,12 @@ void VoteSelected(int num_sel,
  * Host data unless noted.
  */
 struct RoundContext {
-    const MeshAdjacency* adjacency = nullptr;
-    MPI_Comm comm = MPI_COMM_NULL;
-    int num_elements = 0;
-    int num_seeds = 0;
-    ConnectedLabelParameters params;
-    std::vector<std::uint64_t> keys;       ///< element keys, size NE
+    const MeshAdjacency* adjacency = nullptr; ///< face neighbors, for the component searches
+    MPI_Comm comm = MPI_COMM_NULL;            ///< communicator of the mesh
+    int num_elements = 0;                     ///< local elements NE
+    int num_seeds = 0;                        ///< seeds N
+    ConnectedLabelParameters params;          ///< rounds cap and sampling
+    std::vector<std::uint64_t> keys;          ///< element keys, size NE
     std::vector<int> anchor_local;         ///< size N: local element holding seed s's anchor, or -1
     std::vector<std::uint64_t> anchor_key; ///< size N: anchor key of every seed (replicated)
     std::vector<char> exempt;              ///< size NE: 1 for unanchored bodies, inactive elements
