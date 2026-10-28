@@ -1,5 +1,11 @@
 /*
- * Node label sets, boundary surfaces and constraint counts (node_labels.hpp).
+ * Node label sets, boundary surfaces, pinches and constraint counts (node_labels.hpp).
+ *
+ * Several steps group things that are "connected" (face normals within the feature angle,
+ * elements of one grain sharing a face). They use union-find: every item starts as its own group,
+ * joining two items merges their groups (each group is a tree, recorded by a parent per item, and
+ * the root names the group), and FindRoot follows the parents to the root. The groups found do
+ * not depend on the order in which the items are joined.
  */
 #include "microstructure/conformal/node_labels.hpp"
 
@@ -21,9 +27,11 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief pi, for the degree to radian conversion. */
 constexpr double PI = 3.14159265358979323846;
 
-/** @brief Root of i in a union-find forest with path halving. Host. */
+/** @brief Root (group name) of item i in a union-find forest. Path halving: every visited item
+ * is pointed at its grandparent, which keeps the trees shallow. Host. */
 int FindRoot(std::vector<int>& parent, int i) {
     while (parent[static_cast<std::size_t>(i)] != i) {
         const auto is = static_cast<std::size_t>(i);
@@ -35,8 +43,8 @@ int FindRoot(std::vector<int>& parent, int i) {
 
 /** @brief One boundary surface at a node: its normal and whether it is flat there. */
 struct Surface {
-    double normal[3];
-    bool planar;
+    double normal[3]; ///< unit outward normal
+    bool planar;      ///< all face normals of the surface at the node agree to 1e-12
 };
 
 /**
@@ -123,13 +131,10 @@ void AddDistinctNormal(std::vector<double>& list, const double n[3]) {
 
 } // namespace
 
-/*
- * Constructor: input checks (collective, before the collective VertexField constructor), the
- * node numbering, then label sets, boundary surfaces and the summary.
- */
 namespace {
 
-/** @brief Collective check of the element labels: one per local element, all >= 1. */
+/** @brief Collective check of the element labels: one per local element, all >= 1. Throws
+ * std::invalid_argument on every rank when any rank fails. */
 void CheckElementLabels(const mfem::ParMesh& pmesh, const mfem::Array<int>& element_label) {
     const MPI_Comm comm = pmesh.GetComm();
     ThrowIfAnyRank(comm,
@@ -144,6 +149,11 @@ void CheckElementLabels(const mfem::ParMesh& pmesh, const mfem::Array<int>& elem
 
 } // namespace
 
+/*
+ * Constructor: the input checks first (collective, so a bad input on one rank throws on every
+ * rank before any other collective call), then the node numbering (VertexField), the face
+ * neighbors and element keys, and the label sets, boundary surfaces, pinches and summary.
+ */
 NodeLabels::NodeLabels(mfem::ParMesh& pmesh,
                        const mfem::Array<int>& element_label,
                        const NodeLabelOptions& options) {
@@ -172,6 +182,7 @@ NodeLabels::NodeLabels(mfem::ParMesh& pmesh,
     BuildSummary();
 }
 
+/* IsFixedLabel: binary search in the ascending list of fixed labels. */
 bool NodeLabels::IsFixedLabel(int l) const {
     return std::binary_search(m_fixed_labels.begin(), m_fixed_labels.end(), l);
 }
@@ -188,7 +199,7 @@ void NodeLabels::FindSurfaceFaces() {
     mfem::ParMesh& pmesh = m_field->Mesh();
     const int nf = pmesh.GetNumFaces();
 
-    // Step 1
+    // Step 1: outer boundary faces
     std::vector<char> shared(static_cast<std::size_t>(nf), 0);
     for (int i = 0; i < pmesh.GetNSharedFaces(); ++i) {
         shared[static_cast<std::size_t>(pmesh.GetSharedFace(i))] = 1;
@@ -204,7 +215,7 @@ void NodeLabels::FindSurfaceFaces() {
                                                            : 0;
     }
 
-    // Step 2
+    // Step 2: interfaces of fixed labels (only when there are fixed labels)
     m_interface_faces.clear();
     if (m_fixed_labels.empty()) {
         return;
@@ -233,11 +244,13 @@ void NodeLabels::FindSurfaceFaces() {
     }
 }
 
+/* Destructor: defined here, where MeshAdjacency is a complete type. */
 NodeLabels::~NodeLabels() = default;
 
 /*
- * SetElementLabels: the boundary surfaces do not depend on the labels, so only the label sets and
- * the summary are rebuilt.
+ * SetElementLabels: the boundary surfaces depend on the labels only through the fixed labels,
+ * whose elements may not change (checked here), so only the label sets, the pinches and the
+ * summary are rebuilt.
  */
 void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
     CheckElementLabels(m_field->Mesh(), element_label);
@@ -256,6 +269,7 @@ void NodeLabels::SetElementLabels(const mfem::Array<int>& element_label) {
     BuildSummary();
 }
 
+/* Kind: the number of labels - 1, with five or more labels mapped to MULTI. */
 JunctionKind NodeLabels::Kind(int v) const {
     const int n = NumLabels(v);
     return static_cast<JunctionKind>(std::min(n, NUM_JUNCTION_KINDS) - 1);
@@ -276,7 +290,8 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
     const int* ve = field.VertexElements().HostRead();
     const int* labels = element_label.HostRead();
 
-    // Step 1
+    // Step 1: local (label, count) lists per node, kept sorted by label; also packed as doubles
+    // (label, count, label, count, ...) for the exchange
     std::vector<std::vector<std::pair<int, int>>> counts(static_cast<std::size_t>(nv));
     const auto add = [](std::vector<std::pair<int, int>>& list, int label, int count) {
         auto it = std::lower_bound(list.begin(), list.end(), std::make_pair(label, 0));
@@ -300,12 +315,12 @@ void NodeLabels::BuildLabelSets(const mfem::Array<int>& element_label) {
         send_off[static_cast<std::size_t>(v) + 1] = static_cast<int>(send.size());
     }
 
-    // Step 2
+    // Step 2: exchange with the other copies of shared nodes
     std::vector<double> recv;
     std::vector<int> recv_off;
     field.ExchangeSharedLists(send_off, send, recv_off, recv);
 
-    // Step 3
+    // Step 3: add the received counts and store the sets
     m_label_offsets.SetSize(nv + 1);
     m_label_offsets[0] = 0;
     std::vector<int> items;
@@ -358,13 +373,13 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     mfem::ParMesh& pmesh = field.Mesh();
     const int nv = field.NumVertices();
 
-    // Step 1 (interface faces point out of the element that counts them)
+    // Step 1: out_of[f] = the element an interface face points out of (-1 for outer faces)
     std::vector<int> out_of(static_cast<std::size_t>(pmesh.GetNumFaces()), -1);
     for (const auto& [f, e] : m_interface_faces) {
         out_of[static_cast<std::size_t>(f)] = e;
     }
 
-    // Step 2
+    // Step 2: every node records the distinct unit normals of its surface faces
     std::vector<std::vector<double>> normals(static_cast<std::size_t>(nv));
     const mfem::FiniteElementSpace* node_fes = field.UsesMeshNodes() ? pmesh.GetNodes()->FESpace()
                                                                      : nullptr;
@@ -399,7 +414,7 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
         }
     }
 
-    // Step 3
+    // Step 3: exchange with the other copies of shared nodes
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
     std::vector<double> send;
     for (int v = 0; v < nv; ++v) {
@@ -411,7 +426,7 @@ void NodeLabels::BuildBoundarySurfaces(double feature_angle_degrees) {
     std::vector<int> recv_off;
     field.ExchangeSharedLists(send_off, send, recv_off, recv);
 
-    // Step 4
+    // Step 4: merge, sort, group into surfaces, store
     const double cos_angle = std::cos(feature_angle_degrees * PI / 180.0);
     m_boundary_surfaces.SetSize(nv);
     m_surface_offsets.SetSize(nv + 1);
@@ -456,7 +471,7 @@ void NodeLabels::FindPinches() {
     const MeshAdjacency& adj = *m_adjacency;
     const int nv = field.NumVertices();
 
-    // Step 1
+    // Step 1: labels and keys of local and ghost elements
     mfem::Array<int> ghost;
     adj.ExchangeLabels(m_element_label, ghost);
     const auto label_of = [&](int n) {
@@ -514,7 +529,7 @@ void NodeLabels::FindPinches() {
         }
     }
 
-    // Step 3
+    // Step 3: exchange with the other copies of shared nodes
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
     std::vector<double> send;
     for (int v = 0; v < nv; ++v) {
@@ -526,7 +541,7 @@ void NodeLabels::FindPinches() {
     std::vector<double> recv;
     field.ExchangeSharedLists(send_off, send, recv_off, recv);
 
-    // Step 4
+    // Step 4: per node, group the elements of each label through their shared faces
     m_pinched.SetSize(nv);
     const int* owned = field.OwnedVertexMarker().HostRead();
     std::int64_t count = 0;

@@ -1,5 +1,6 @@
 /*
- * Element quality at the corners (quality.hpp).
+ * Element quality measured at the corners (every nodal point for curved elements): scaled
+ * Jacobian, aspect ratio, mean ratio (quality.hpp).
  */
 #include "microstructure/conformal/quality.hpp"
 
@@ -13,11 +14,13 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief det(a, b, c) of three 3-vectors (the triple product a . (b x c)). */
 double Det3(const double a[3], const double b[3], const double c[3]) {
     return a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) +
            a[2] * (b[0] * c[1] - b[1] * c[0]);
 }
 
+/** @brief Euclidean length of a 3-vector. */
 double Norm3(const double a[3]) {
     return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
 }
@@ -42,10 +45,11 @@ mfem::DenseMatrix RegularTetInverse() {
 }
 
 /**
- * @brief Scaled Jacobian and aspect ratio of the corner with edge vectors e (columns). The aspect
- * ratio is the ratio of the extreme singular values of E W^-1, W the corner edge matrix of the
- * ideal element (the identity for a hex corner, RegularTetInverse for a tet corner), so the
- * ideal element scores 1.
+ * @brief Scaled Jacobian, aspect ratio and determinant of one corner with edge vectors e[0], e[1],
+ * e[2] (the columns of E). The aspect ratio is the ratio of the largest to the smallest singular
+ * value of E W^-1, W the corner edge matrix of the ideal element, so the ideal element scores 1.
+ * @param scale multiplies the scaled Jacobian (sqrt(2) for tets, so a regular tet scores 1).
+ * @param w_inv W^-1: nullptr for a hex corner (W = identity), RegularTetInverse for a tet.
  */
 void CornerQuality(const double e[3][3],
                    double scale,
@@ -76,10 +80,11 @@ void CornerQuality(const double e[3][3],
 } // namespace
 
 /*
- * ElementQuality: corners from the geometry's reference vertices (every nodal point for curved
- * elements). Hex: the Jacobian of the
- * element map at the corner (columns = edges along the reference axes). Tet: the edges from the
- * corner to the three others, ordered so that the determinant has the sign of the element map.
+ * ElementQuality: the corners are the reference vertices of the geometry (every nodal point for
+ * curved elements). Hex: the corner edges are the columns of the Jacobian of the element map at
+ * the corner (edges along the reference axes). Tet: the edges from the corner to the three
+ * others, ordered so that the determinant has the sign of the element map. The element's values
+ * are the minimum / maximum over the corners.
  */
 void ElementQuality(
     mfem::Mesh& mesh, int e, double& scaled_jacobian, double& aspect_ratio, double& min_det) {
@@ -217,6 +222,11 @@ double ElementMeanRatio(mfem::Mesh& mesh, int e) {
     return eta;
 }
 
+/*
+ * ComputeMeshQuality: checks the element types on every rank first (so an unsupported element
+ * throws on every rank), then ElementQuality and ElementMeanRatio of every local element, and
+ * minimum / maximum / sum reductions over the ranks.
+ */
 MeshQuality ComputeMeshQuality(mfem::ParMesh& pmesh) {
     const MPI_Comm comm = pmesh.GetComm();
     bool bad = false;

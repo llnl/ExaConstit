@@ -1,5 +1,6 @@
 /*
- * Smoothed staircase positions of grain boundary nodes (smoothed_targets.hpp).
+ * Smoothed staircase positions of the grain boundary nodes, by Taubin smoothing on the node
+ * lattice (smoothed_targets.hpp).
  */
 #include "microstructure/conformal/smoothed_targets.hpp"
 
@@ -14,7 +15,10 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief Taubin's shrinking step (a plain averaging step) for order-1 Nodes. */
 constexpr double TAUBIN_LAMBDA = 0.5;
+/** @brief Taubin's inflating step for order-1 Nodes; |mu| slightly larger than lambda so curved
+ * boundaries keep their size (Taubin 1995). */
 constexpr double TAUBIN_MU = -0.53;
 
 /**
@@ -52,14 +56,16 @@ std::vector<std::pair<int, int>> LatticeNeighbors(const mfem::FiniteElement& fe)
     return pairs;
 }
 
-/** @brief True when every label of v is a label of u (both ascending). */
+/** @brief True when every label of v is a label of u (both label sets are sorted, so
+ * std::includes applies). */
 bool HasLabelsOf(const NodeLabels& labels, int u, int v) {
     const int* off = labels.LabelOffsets().HostRead();
     const int* items = labels.Labels().HostRead();
     return std::includes(items + off[u], items + off[u + 1], items + off[v], items + off[v + 1]);
 }
 
-/** @brief True when u lies on every boundary surface of v (normals within the feature angle). */
+/** @brief True when u lies on every boundary surface of v: for each surface of v, u has a
+ * surface whose normal is within the feature angle. */
 bool HasSurfacesOf(const NodeLabels& labels, int u, int v) {
     const int* off = labels.SurfaceOffsets().HostRead();
     const double* n = labels.SurfaceNormals().HostRead();
@@ -98,7 +104,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels,
     const int nv = labels.NumNodes();
     const double* x0 = field.Coordinates().HostRead();
 
-    // Step 1
+    // Step 1: which nodes move, and each one's neighbors on the node lattice of its local
+    // elements (the neighbors on other ranks arrive through the exchange in step 2)
     moved.assign(static_cast<std::size_t>(nv), 0);
     for (int v = 0; v < nv; ++v) {
         const int n = labels.NumLabels(v);
@@ -136,7 +143,9 @@ void SmoothGrainBoundaries(const NodeLabels& labels,
         list.erase(std::unique(list.begin(), list.end()), list.end());
     }
 
-    // Step 2
+    // Step 2: the smoothing steps. p = current positions (starting at the input positions).
+    // Each list entry is 6 doubles: a neighbor's input position (its identity) and its current
+    // position.
     std::vector<double> p(x0, x0 + 3 * static_cast<std::size_t>(nv));
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
     std::vector<double> send;
@@ -210,7 +219,8 @@ void SmoothGrainBoundaries(const NodeLabels& labels,
         p.swap(next);
     }
 
-    // Step 3
+    // Step 3: move limit, scaling a long move back toward the input position (and onto the
+    // node's surfaces again)
     smoothed.SetSize(3 * nv);
     for (int v = 0; v < nv; ++v) {
         double* y = &p[3 * static_cast<std::size_t>(v)];

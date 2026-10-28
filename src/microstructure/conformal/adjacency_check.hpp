@@ -8,72 +8,100 @@
 
 /**
  * @file adjacency_check.hpp
- * @brief Stage 2c, second part: the grain adjacency of the mesh compared with the analytic one.
+ * @brief Checks whether the grains that touch in the mesh are the grains that should touch: the
+ * grain adjacency of the labeled mesh compared with the exact (analytic) tessellation.
  *
- * **What it tells.** Two grains are *adjacent in the mesh* when some node carries both labels
- * (they share a face, an edge or a node). Two seeds are *analytically adjacent* when their analytic
- * boundary passes close to the mesh: some node can be moved onto it within the move limit
- * (NodeTargetOptions::max_move element sizes, together with the boundary surfaces at the node)
- * with no other seed closer there (the rules of node_targets.hpp, without the smoothed fallback).
- * The comparison is made between seeds: the grains of a pair map to their seeds
- * (grain_seed), and pairs with a grain without seed (voxel, geodesic and passthrough grains) or
- * with two grains of the same seed (pieces of one cell) are not compared.
- *   - *fake* adjacency: grains that touch in the mesh although their analytic boundary does not
- *     come near any node that carries both (label repair left a staircase artefact, or the grains
- *     touch only at a node or an edge);
- *   - *missing* adjacency: seeds whose analytic boundary passes near the mesh although no node
- *     carries both grains (a face smaller than the mesh resolves, e.g. a short edge of the
- *     Voronoi diagram that the staircase cuts off).
+ * **Why it matters.** A tessellation such as Voronoi defines exactly which grains share a
+ * boundary. On a mesh, every element gets one grain, so the grain boundaries follow element
+ * faces (a staircase). The staircase can create contacts that the exact tessellation does not
+ * have, and it can lose small faces that it does have. Which grains touch decides which grain
+ * boundaries carry load and misorientation in a crystal plasticity model, so the generator
+ * reports both kinds of disagreement in its log after the conformal fit.
  *
- * **How.** Discrete pairs: every pair of labels of every owned node. A discrete pair is confirmed
- * analytic at a node that carries it when the pair's own query at the node is FIT
- * (NodeTargets::EvaluateAnalytic). Analytic pairs elsewhere: at every owned node the best seed and
- * the next ones whose boundary with it is estimated within twice the move limit
- * (NodeTargets::NearbySeeds, up to ADJACENCY_NEARBY_SEEDS seeds), each pair (best, other) queried
- * at the node; a seed pair is queried with the first grain of each seed. So pairs are found from
- * any node near their boundary, not only from the nodes of the two grains.
+ * **Words used below.**
+ *   - Two grains are *adjacent in the mesh* (a *discrete* pair) when some mesh node belongs to
+ *     elements of both grains: they share a face, an edge or only a node.
+ *   - Two seeds are *analytically adjacent* when their exact boundary passes close to the mesh:
+ *     some node could be moved onto that boundary within the move limit of the conformal fit
+ *     (NodeTargetOptions::max_move element sizes, keeping the node on the outer surfaces it lies
+ *     on) and no third seed is closer there. These are the rules NodeTargets uses to place nodes
+ *     on grain boundaries, without its fallback to the smoothed staircase.
+ *   - A *fake* adjacency is a discrete pair that is not analytic: the grains touch in the mesh
+ *     although their exact boundary comes near no node that both of them own. Typical causes are
+ *     a staircase step left after label repair, or grains that touch only at one node or edge.
+ *   - A *missing* adjacency is an analytic pair that is not discrete: the exact boundary passes
+ *     near the mesh but no node belongs to both grains. Typical cause: a face of the Voronoi
+ *     diagram smaller than an element, which the staircase cuts off.
  *
- * **Determinism.** Every pair goes to an owner rank (a hash of the pair, MPI_Alltoallv), which
- * merges the flags of all copies; the counts are summed and the examples are the smallest pairs
- * of the merged lists. Node queries depend only on replicated data, so every number is the same
- * for any partition.
+ * **What is compared.** Grains are compared through the seeds they grew from (grain_seed). A
+ * pair that involves a grain without a seed (grains read from a voxel map, grown along paths with
+ * distance = "geodesic", or passthrough parts) has no exact boundary and is counted as
+ * *unchecked*. Two grains of the same seed (pieces of one cell kept as separate grains) are not a
+ * pair at all.
  *
- * **Collective** over the mesh communicator of `targets`. Host.
+ * **How pairs are found.** Discrete pairs come from every pair of labels on every node this rank
+ * owns. Such a pair is confirmed analytic when NodeTargets::EvaluateAnalytic finds a target for
+ * exactly those two grains at that node. Analytic pairs that are not discrete cannot be found
+ * from the labels, so at every owned node the closest seed and the next seeds whose boundary with
+ * it is estimated to lie within twice the move limit (NodeTargets::NearbySeeds, at most
+ * ADJACENCY_NEARBY_SEEDS seeds) are paired and queried as well. A pair is therefore found from any
+ * node near its boundary, not only from nodes of its own two grains.
+ *
+ * **Same answer on any number of ranks.** A pair can be seen on several ranks, and with
+ * different flags. Every pair is sent to one *owner rank* chosen from a hash of the pair (an
+ * all-to-all exchange, MPI_Alltoallv: every rank sends a list to every other rank), the owner
+ * combines the flags of all copies, and the counts are summed over the owners. The node queries
+ * use only data every rank holds in full (the seeds), so the counts and the example lists are
+ * identical for every partition of the mesh.
+ *
+ * Host only. CompareAdjacency is collective over the mesh communicator of `targets` (every rank
+ * must call it).
  */
 
 namespace exaconstit::microstructure {
 
-/** @brief Seeds per node in the search for analytic pairs (the best and up to 3 others). */
+/** @brief Seeds paired per node when searching for analytic pairs: the closest seed and up to
+ * three more. */
 inline constexpr int ADJACENCY_NEARBY_SEEDS = 4;
-/** @brief Fake and missing pairs listed in AdjacencyComparison (the smallest ones). */
+/** @brief Number of fake and of missing pairs listed as examples in AdjacencyComparison (the
+ * pairs with the smallest seed indices). */
 inline constexpr int ADJACENCY_EXAMPLES = 10;
 
-/** @brief Global result of CompareAdjacency (the same on every rank). */
+/**
+ * @brief Result of CompareAdjacency: counts of grain pairs that touch in the mesh and in the
+ * exact tessellation, and of the disagreements. The same on every rank.
+ */
 struct AdjacencyComparison {
-    /** @brief Seed pairs adjacent in the mesh (grains with two distinct seeds). */
+    /** @brief Seed pairs adjacent in the mesh (pairs of grains grown from two different seeds). */
     std::int64_t discrete = 0;
-    /** @brief Seed pairs whose analytic boundary passes near the mesh. */
+    /** @brief Seed pairs whose exact boundary passes close to the mesh. */
     std::int64_t analytic = 0;
-    /** @brief Discrete pairs that are not analytic. */
+    /** @brief Seed pairs adjacent in the mesh but not in the exact tessellation. */
     std::int64_t fake = 0;
-    /** @brief Analytic pairs that are not discrete. */
+    /** @brief Seed pairs adjacent in the exact tessellation but not in the mesh. */
     std::int64_t missing = 0;
-    /** @brief Grain pairs adjacent in the mesh that are not compared (a grain without seed). */
+    /** @brief Grain pairs adjacent in the mesh that cannot be compared because one of the grains
+     * has no seed. */
     std::int64_t unchecked = 0;
-    /** @brief The smallest fake seed pairs (0-based seeds, first < second). */
+    /** @brief Up to ADJACENCY_EXAMPLES fake pairs as (seed a, seed b), 0-based seed indices with
+     * a < b, smallest pairs first. */
     std::vector<std::array<int, 2>> fake_examples;
-    /** @brief The smallest missing seed pairs (0-based seeds, first < second). */
+    /** @brief Up to ADJACENCY_EXAMPLES missing pairs, in the same form as fake_examples. */
     std::vector<std::array<int, 2>> missing_examples;
 };
 
 /**
- * @brief Compares the grain adjacency of the mesh with the analytic one (see the file comment).
+ * @brief Compares the grain adjacency of the labeled mesh with that of the exact tessellation
+ * (see the file comment for the definitions).
  *
- * **Collective.** With NodeTargetOptions::analytic = false nothing is compared: every discrete
- * grain pair is unchecked.
- * @param targets    targets of the current labels (the labels after repair).
- * @param grain_seed grain g (1-based) grew from seed grain_seed[g - 1], -1 = none; the vector
- *                   given to NodeTargets.
+ * With NodeTargetOptions::analytic = false there is no exact boundary to compare with: every
+ * pair adjacent in the mesh is counted as unchecked and the other counts are 0.
+ *
+ * Host only. Collective over the mesh communicator of `targets`.
+ * @param targets    node targets built from the current element labels (after label repair).
+ * @param grain_seed seed of every grain: grain g (1-based) grew from seed grain_seed[g - 1]
+ *                   (0-based), or -1 when it has no seed. The same vector given to NodeTargets.
+ * @return the global counts and examples, identical on every rank.
  */
 AdjacencyComparison CompareAdjacency(const NodeTargets& targets,
                                      const std::vector<int>& grain_seed);

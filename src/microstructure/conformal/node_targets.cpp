@@ -1,5 +1,11 @@
 /*
- * Targets on the analytic grain boundaries and their validation (node_targets.hpp).
+ * Targets of the grain boundary nodes on the exact grain boundaries, their checks, and the
+ * fallbacks (smoothed staircase, holds) (node_targets.hpp).
+ *
+ * The seed search and the projection are compiled once per metric (Voronoi, Laguerre, ...): the
+ * class NodeTargets::Evaluator is an interface with one implementation per metric type
+ * (EvaluatorImpl<Metric>), chosen at run time from MetricType, so NodeTargets itself does not
+ * depend on the metric type.
  */
 #include "microstructure/conformal/node_targets.hpp"
 
@@ -18,7 +24,8 @@ namespace exaconstit::microstructure {
 
 namespace {
 
-/** @brief Index d when n is exactly +-e_d (two zero components), else -1. Host. */
+/** @brief The axis d when n points exactly along +-e_d (two components exactly zero, as for the
+ * faces of an axis-aligned box), else -1. Host. */
 int AxisOf(const double n[3]) {
     int zeros = 0;
     int axis = -1;
@@ -34,20 +41,24 @@ int AxisOf(const double n[3]) {
 
 /** @brief A query that passed the projection checks and waits for the foreign-seed check. */
 struct Candidate {
-    int query;
-    int first_seed; ///< offset of the node's seeds in the exclusion CSR
-    int num_seeds;
+    int query;      ///< index of the query
+    int first_seed; ///< where the node's own seeds start in the list of seeds to exclude
+    int num_seeds;  ///< number of the node's own seeds
 };
 
 } // namespace
 
-/** @brief Type-erased evaluator: one instantiation per metric functor. */
+/** @brief Evaluates queries for one metric (see the file comment): EvaluatorImpl<Metric> with
+ * exact boundaries, NonAnalyticEvaluator without. */
 class NodeTargets::Evaluator {
 public:
+    /** @brief Virtual, so the implementations are destroyed through this interface. */
     virtual ~Evaluator() = default;
+    /** @brief The rules of node_targets.hpp for every query, without the smoothed fallback
+     * (NodeTargets::Evaluate adds it). out[i] answers queries[i]. Host, local. */
     virtual void Evaluate(const std::vector<NodeLabelQuery>& queries,
                           std::vector<NodeTargetResult>& out) const = 0;
-    /** @brief NodeTargets::NearbySeeds; empty lists without analytic boundaries. */
+    /** @brief NodeTargets::NearbySeeds; this default gives empty lists (no exact boundaries). */
     virtual void NearbySeeds(const std::vector<int>& nodes,
                              int max_seeds,
                              double reach,
@@ -69,9 +80,11 @@ namespace {
  */
 class NonAnalyticEvaluator final : public NodeTargets::Evaluator {
 public:
+    /** @brief Keeps references to the node labels and patches (both outlive the evaluator). */
     NonAnalyticEvaluator(const NodeLabels& labels, const SurfacePatches& patches)
         : m_labels(labels), m_patches(patches) {}
 
+    /** @brief The classification of each query; every target is the node's own position. */
     void Evaluate(const std::vector<NodeLabelQuery>& queries,
                   std::vector<NodeTargetResult>& out) const override {
         const int* surf_off = m_labels.SurfaceOffsets().HostRead();
@@ -104,11 +117,13 @@ public:
     }
 
 private:
-    const NodeLabels& m_labels;
-    const SurfacePatches& m_patches;
+    const NodeLabels& m_labels;      ///< node labels and boundary surfaces
+    const SurfacePatches& m_patches; ///< patches of the nodes on curved surfaces
 };
 
-/** @brief True when a node with this result may take its smoothed target instead. */
+/** @brief True when a node with this result may take its smoothed target instead: no valid
+ * exact target (FAKE_JUNCTION) or no exact boundary at all (HELD for NON_ANALYTIC). The other
+ * holds (thin grains, pinches, curved features) keep the node in place. */
 bool SmoothedFallback(const NodeTargetResult& r) {
     return r.status == TargetStatus::FAKE_JUNCTION ||
            (r.status == TargetStatus::HELD && r.reason == TargetReason::NON_ANALYTIC);
@@ -122,6 +137,9 @@ bool SmoothedFallback(const NodeTargetResult& r) {
 template <typename Metric>
 class EvaluatorImpl final : public NodeTargets::Evaluator {
 public:
+    /** @brief Keeps references to the labels, patches and mesh sizes (they outlive the
+     * evaluator), copies grain_seed and the options, and builds the seed index (SeedIndex, on the
+     * host). */
     EvaluatorImpl(const NodeLabels& labels,
                   const SurfacePatches& patches,
                   const mfem::Vector& h,
@@ -135,8 +153,10 @@ public:
             seeds, setup, options.num_bins, axom::execution_space<axom::SEQ_EXEC>::allocatorID());
     }
 
+    /** @brief See NodeTargets::Evaluator::Evaluate. */
     void Evaluate(const std::vector<NodeLabelQuery>& queries,
                   std::vector<NodeTargetResult>& out) const override;
+    /** @brief See NodeTargets::NearbySeeds. */
     void NearbySeeds(const std::vector<int>& nodes,
                      int max_seeds,
                      double reach,
@@ -144,17 +164,27 @@ public:
                      std::vector<int>& seeds) const override;
 
 private:
-    /** @brief Steps before the foreign check for one query; true = candidate (FIT so far). */
+    /** @brief Every rule for one query except the foreign-seed check, which is batched over all
+     * queries. Returns true when the query is FIT so far (a candidate); node_seeds receives the
+     * seeds of its labels (NODE_QUERY_LABELS entries). */
     bool Project(const NodeLabelQuery& q, int* node_seeds, NodeTargetResult& r) const;
 
-    const NodeLabels& m_labels;
-    const SurfacePatches& m_patches;
-    const mfem::Vector& m_h;
-    const std::vector<int> m_grain_seed; ///< a copy (the caller's vector may be a temporary)
-    NodeTargetOptions m_options;
-    SeedIndex<axom::SEQ_EXEC, Metric> m_index;
+    const NodeLabels& m_labels;                ///< node labels and boundary surfaces
+    const SurfacePatches& m_patches;           ///< patches of the nodes on curved surfaces
+    const mfem::Vector& m_h;                   ///< mesh size h per node
+    const std::vector<int> m_grain_seed;       ///< a copy (the caller's may be a temporary)
+    NodeTargetOptions m_options;               ///< move limit, tolerances
+    SeedIndex<axom::SEQ_EXEC, Metric> m_index; ///< exact closest-seed search
 };
 
+/*
+ * EvaluatorImpl::Project: the rules of node_targets.hpp in order, stopping at the first that
+ * decides the status: one label (NONE), too many constraints (OVER_CONSTRAINED), a label without
+ * a seed (HELD), a curved surface without patch (HELD), two labels of one seed (FAKE_JUNCTION);
+ * then the equations (grain boundaries with the first label's seed, the planes of the boundary
+ * surfaces through the input position), the projection (with the patch alternation on curved
+ * surfaces), the exact box coordinates, and the residual and move checks.
+ */
 template <typename Metric>
 bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q,
                                     int* node_seeds,
@@ -311,6 +341,12 @@ bool EvaluatorImpl<Metric>::Project(const NodeLabelQuery& q,
     return true;
 }
 
+/*
+ * EvaluatorImpl::Evaluate: Project for every query, then one batched search for the closest seed
+ * other than each candidate's own seeds at its target (SeedIndex::FindBestExcluding). A
+ * candidate whose foreign seed is closer than its own seeds there (by more than the tolerance)
+ * becomes a FAKE_JUNCTION (FOREIGN_SEED) and keeps its position.
+ */
 template <typename Metric>
 void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
                                      std::vector<NodeTargetResult>& out) const {
@@ -329,7 +365,8 @@ void EvaluatorImpl<Metric>::Evaluate(const std::vector<NodeLabelQuery>& queries,
         }
     }
 
-    // Best seed outside each candidate's own seeds, at its target
+    // Best seed outside each candidate's own seeds, at its target. The seeds to exclude for
+    // candidate c are ex_ids[ex_off[c]] .. ex_ids[ex_off[c + 1] - 1].
     const int nc = static_cast<int>(candidates.size());
     if (nc == 0) {
         return;
@@ -483,7 +520,7 @@ NodeTargets::NodeTargets(const NodeLabels& labels,
     const int nv = labels.NumNodes();
     const int num_seeds = static_cast<int>(seeds.Size());
 
-    // Step 1
+    // Step 1: input checks (collective)
     ThrowIfAnyRank(comm,
                    !(options.max_move > 0.0) || !(options.tolerance > 0.0) ||
                        options.max_iterations < 1 || options.num_bins < 1,
@@ -506,16 +543,17 @@ NodeTargets::NodeTargets(const NodeLabels& labels,
     }
     ThrowIfAnyRank(comm, bad_label, "NodeTargets: a node label has no entry in grain_seed");
 
-    // Step 2
+    // Step 2: mesh size per node
     ComputeMeshSize();
 
-    // Step 3 (the selection depends only on the surfaces, identical on every copy)
+    // Step 3: patches (the selection depends only on the surfaces, identical on every copy)
     const double reach = std::max(options.max_move,
                                   options.smoothed ? options.smoothing.max_move : 0.0);
     m_patch_rings = PatchRingsFor(reach, field.LatticeOrder());
     m_patches = MakeCurvedPatches(labels, m_patch_rings);
 
-    // Step 4
+    // Step 4: the evaluator, the smoothed staircase, then every node's own label set; pinched
+    // and thin-grain nodes are held afterwards, and Smoothed(v) is settled last
     if (options.analytic) {
         DispatchMetric(metric, [&](auto metric_tag) {
             using Metric = decltype(metric_tag);
@@ -619,12 +657,14 @@ NodeTargets::NodeTargets(const NodeLabels& labels,
         }
     }
 
-    // Step 5
+    // Step 5: summary
     BuildSummary();
 }
 
+/* Destructor: defined here, where Evaluator and SurfacePatches are complete types. */
 NodeTargets::~NodeTargets() = default;
 
+/* EvaluateAnalytic: the evaluator alone, without the smoothed fallback of Evaluate. */
 std::vector<NodeTargetResult>
 NodeTargets::EvaluateAnalytic(const std::vector<NodeLabelQuery>& queries) const {
     std::vector<NodeTargetResult> out;
@@ -632,6 +672,7 @@ NodeTargets::EvaluateAnalytic(const std::vector<NodeLabelQuery>& queries) const 
     return out;
 }
 
+/* NearbySeeds: forwarded to the evaluator of the metric. */
 void NodeTargets::NearbySeeds(const std::vector<int>& nodes,
                               int max_seeds,
                               double reach,
@@ -640,6 +681,12 @@ void NodeTargets::NearbySeeds(const std::vector<int>& nodes,
     m_evaluator->NearbySeeds(nodes, max_seeds, reach, offsets, seeds);
 }
 
+/*
+ * Evaluate: the evaluator's answers, then the smoothed fallback: a query for the node's own label
+ * set that has a smoothed target and no valid exact one (SmoothedFallback) becomes FIT with the
+ * smoothed target. Queries for other label sets (previews of label repair) never get it, since
+ * the smoothed staircase was computed for the current labels only.
+ */
 std::vector<NodeTargetResult>
 NodeTargets::Evaluate(const std::vector<NodeLabelQuery>& queries) const {
     std::vector<NodeTargetResult> out;

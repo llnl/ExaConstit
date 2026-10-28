@@ -6,8 +6,8 @@
 
 /**
  * @file manifold_projector.hpp
- * @brief Closest point of a node position on the intersection of grain boundaries and flat
- * boundary planes (Stage 2b of conformal fitting).
+ * @brief Closest point to a node position on the intersection of grain boundaries and flat
+ * boundary planes: the target of a node in the conformal fit (used by node_targets.hpp).
  *
  * **The problem.** A node x that lies between grains a and b must move to the grain boundary
  * f_a(y) = f_b(y) (metric_functors.hpp: f_i is the value whose minimum decides the grain). A node
@@ -39,35 +39,41 @@
  * gradients: parallel planes, or a grain boundary parallel to a box face at the node) or when the
  * steps do not converge in `max_iterations`; callers then treat the node as unfit.
  *
- * Header-only, MFEM_HOST_DEVICE, no allocation: usable on the host (Stage 2 runs there) and in
- * kernels.
+ * Header-only, MFEM_HOST_DEVICE, no allocation: usable on the host (where the conformal fit
+ * runs) and inside device kernels. Not collective.
  */
 
 namespace exaconstit::microstructure {
 
-/** @brief Most equations a node can satisfy in 3D. */
+/** @brief Most equations a point can satisfy in 3D (three independent equations fix a point). */
 inline constexpr int MANIFOLD_MAX_ROWS = 3;
 
 /** @brief One equation phi(y) = 0 of the projection. */
 struct ManifoldRow {
-    /** @brief PLANE: n . y - c; GRAIN_BOUNDARY: f_a(y) - f_b(y). */
+    /** @brief The two kinds of equation: PLANE, phi = n . y - c (a flat face of the outer
+     * boundary); GRAIN_BOUNDARY, phi = f_a(y) - f_b(y) (the boundary between seeds a and b). */
     enum Kind : int { PLANE = 0, GRAIN_BOUNDARY = 1 };
-    int kind = PLANE;
-    double normal[3] = {0.0, 0.0, 0.0}; ///< plane normal n (any length)
-    double offset = 0.0;                ///< plane offset c
-    int seed_a = -1;                    ///< grain boundary: 0-based seed indices
-    int seed_b = -1;
+    int kind = PLANE;                   ///< a Kind value
+    double normal[3] = {0.0, 0.0, 0.0}; ///< PLANE: the normal n (any length, not zero)
+    double offset = 0.0;                ///< PLANE: the offset c (length units times |n|)
+    int seed_a = -1;                    ///< GRAIN_BOUNDARY: first seed (0-based index)
+    int seed_b = -1;                    ///< GRAIN_BOUNDARY: second seed (0-based index)
 };
 
 /** @brief Outcome of ProjectOntoManifold. */
 enum class ProjectionResult : int {
-    CONVERGED = 0, ///< the last step was at most the tolerance
-    SINGULAR = 1,  ///< the gradients of the equations are (nearly) linearly dependent
-    NOT_CONVERGED = 2
+    CONVERGED = 0,    ///< the last step was at most the tolerance
+    SINGULAR = 1,     ///< the gradients of the equations are (nearly) linearly dependent
+    NOT_CONVERGED = 2 ///< max_iterations steps did not bring the step below the tolerance
 };
 
 /**
- * @brief Value and gradient of row r at y. Host and device.
+ * @brief Value phi(y) and gradient of one equation at y. Host and device.
+ * @param metric the metric functor of the tessellation (only used for GRAIN_BOUNDARY rows).
+ * @param r      the equation.
+ * @param y      the point (length units).
+ * @param grad   out: the gradient of phi at y.
+ * @return phi(y).
  */
 template <typename Metric>
 MFEM_HOST_DEVICE inline double
@@ -89,9 +95,11 @@ EvalManifoldRow(const Metric& metric, const ManifoldRow& r, const double y[3], d
 }
 
 /**
- * @brief Closest point y of x on {phi_k = 0, k < num_rows} (see the file comment).
+ * @brief Closest point y to x on the set where every equation holds, {phi_k = 0, k < num_rows}
+ * (see the file comment). Host and device, not collective.
  *
- * @param metric         metric functor with host-valid (or device-valid in a kernel) pointers.
+ * @param metric         metric functor whose pointers are valid where this runs (host data on
+ *                       the host, device data in a kernel).
  * @param rows           the equations, 1 <= num_rows <= MANIFOLD_MAX_ROWS.
  * @param x              the node position.
  * @param tolerance      stop when a step is at most this long (length units, > 0).
@@ -111,6 +119,7 @@ MFEM_HOST_DEVICE inline ProjectionResult ProjectOntoManifold(const Metric& metri
     y[0] = x[0];
     y[1] = x[1];
     y[2] = x[2];
+    // Gauss-Newton steps; J holds the gradients of the equations at y, one row per equation
     for (int it = 1; it <= max_iterations; ++it) {
         double J[MANIFOLD_MAX_ROWS][3];
         double rhs[MANIFOLD_MAX_ROWS];

@@ -8,8 +8,8 @@
 
 /**
  * @file smoothed_targets.hpp
- * @brief Targets for grain boundaries that have no analytic description: the staircase itself,
- * smoothed (Stage 2 of conformal fitting).
+ * @brief Targets for grain boundaries that have no exact (analytic) description: the staircase
+ * itself, smoothed. Used by the conformal fit where node_targets.hpp finds no exact target.
  *
  * **What it is for.** Analytic targets (node_targets.hpp) need grains that are cells of a metric
  * of the seeds. Grains read from a voxel map, grown along paths (geodesic distance), cut by the
@@ -20,8 +20,10 @@
  *
  * **The smoothing.** Only grain boundary nodes move: nodes with 2 labels (on a boundary face) or 3
  * labels (on a triple line) that are not over-constrained (a node on a feature edge of a curved
- * boundary moves along the edge; boundary_projector.hpp). Node u is a *neighbor* of such a node
- * v when they are next to each other on the node lattice of an element they share (an element
+ * boundary moves along the edge; boundary_projector.hpp). The *node lattice* of an element is the
+ * grid its nodal points form (its corners for order 1; for order 2 also the edge, face and
+ * interior points, which split the element into smaller cells). Node u is a *neighbor* of such a
+ * node v when they are next to each other on the node lattice of an element they share (an element
  * edge for order-1 Nodes; the edges of the sub-elements of the uniform lattice for order 2), u has
  * every label of v (so a face node averages over its own boundary and the triple lines around it,
  * and a triple line node only along its line), and u lies on every boundary surface of v (normals
@@ -48,11 +50,13 @@
  * duplicates by input position and sorts by it, then averages in that order. So every copy of a
  * node computes the same bits, for any partition.
  *
- * Host and MPI.
+ * Host only. SmoothGrainBoundaries is collective over the mesh communicator.
  */
 
 namespace exaconstit::microstructure {
 
+/** @brief Patches of boundary triangles (boundary_projector.hpp); declared here so this header
+ * does not need to include it. */
 class SurfacePatches;
 
 /** @brief Settings of SmoothGrainBoundaries. */
@@ -67,10 +71,10 @@ struct SmoothingParameters {
 /**
  * @brief Smoothed positions of the grain boundary nodes (see the file comment).
  *
- * **Collective** over the mesh communicator.
+ * Host only. Collective over the mesh communicator.
  * @param labels   node labels (label sets, surfaces).
- * @param patches  patches of the nodes on exactly one curved surface.
- * @param h        mesh size per node.
+ * @param patches  patches of the nodes on curved surfaces (MakeCurvedPatches).
+ * @param h        mesh size per node (NodeTargets::MeshSize), length units.
  * @param params   steps and move limit.
  * @param smoothed out: 3 per node, the smoothed position (the input position where `moved` is 0).
  * @param moved    out: per node, 1 when the node takes part in the smoothing (a grain boundary node

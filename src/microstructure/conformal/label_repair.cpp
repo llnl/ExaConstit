@@ -1,5 +1,12 @@
 /*
- * Label repair before conformal fitting (label_repair.hpp).
+ * Label repair before the conformal fit: element grain switches that remove peninsulas and bad
+ * nodes (label_repair.hpp describes the passes).
+ *
+ * Several steps need the largest value of something over a neighborhood of elements, the same on
+ * every rank. They go through the nodes: an element passes its value to its nodes, every node
+ * keeps the largest (also over the copies of a shared node on other ranks), and the elements read
+ * the largest of their nodes back (NodeMaximum, ElementMaximum). Doing this twice reaches every
+ * element within two rings.
  */
 #include "microstructure/conformal/label_repair.hpp"
 
@@ -19,25 +26,38 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief Priority of an element without a proposal (lower than any real priority). */
 constexpr double NONE_PRIORITY = -HUGE_VAL;
+/** @brief Weight of a bad node in the local potential; larger than the 7 peninsula flags an
+ * element and its face neighbors can have, so one bad node outweighs any peninsula change. */
 constexpr int BAD_NODE_WEIGHT = 8;
 
-/** @brief Lexicographic pair (hi, lo) of doubles; (-inf, -inf) = no priority. */
+/**
+ * @brief Priority of a proposed switch as a pair of doubles compared lexicographically: hi first,
+ * lo on ties. (-inf, -inf) = no proposal. Two doubles are used because the priority packs the
+ * gain and a 64-bit element key, more than one double holds exactly.
+ */
 struct Priority {
-    double hi = NONE_PRIORITY;
-    double lo = NONE_PRIORITY;
+    double hi = NONE_PRIORITY; ///< compared first
+    double lo = NONE_PRIORITY; ///< compared when hi is equal
+    /** @brief Lexicographic order: hi first, then lo. */
     bool operator<(const Priority& o) const {
         return hi < o.hi || (hi == o.hi && lo < o.lo);
     }
+    /** @brief Both parts equal. */
     bool operator==(const Priority& o) const {
         return hi == o.hi && lo == o.lo;
     }
 };
 
 /**
- * @brief Node maximum of element priorities: per node the largest priority of its local elements,
- * then the largest over the copies, as two exact minimum reductions (hi, then lo among the copies
- * holding the largest hi). Host, collective.
+ * @brief Per node, the largest priority of the elements around it, over all ranks.
+ *
+ * First each node takes the largest priority of its local elements. Then the copies of a shared
+ * node agree on the largest. The exchange available, VertexField::ReduceSharedMinimum, computes a
+ * minimum of one double per node, so the maximum of hi is found as the minimum of -hi, and then
+ * the maximum of lo among the copies that hold that hi (the other copies send +inf, i.e. -lo =
+ * +inf, which never wins). Comparisons are exact, no rounding is involved. Host, collective.
  */
 std::vector<Priority> NodeMaximum(const VertexField& field, const std::vector<Priority>& elem) {
     const int nv = field.NumVertices();
@@ -68,7 +88,7 @@ std::vector<Priority> NodeMaximum(const VertexField& field, const std::vector<Pr
     return node;
 }
 
-/** @brief Element maximum over its nodes of node priorities. Host. */
+/** @brief Per element, the largest priority of its nodes. Host, local. */
 std::vector<Priority> ElementMaximum(const VertexField& field, const std::vector<Priority>& node) {
     const int ne = field.NumElements();
     const int* en_off = field.ElementVertexOffsets().HostRead();
@@ -83,37 +103,43 @@ std::vector<Priority> ElementMaximum(const VertexField& field, const std::vector
     return elem;
 }
 
-/** @brief Per-pass view of the labels: ghost labels, peninsula flags and their ghost copies. */
+/**
+ * @brief What every element needs to know about its face neighbors in a pass, including the
+ * neighbors on other ranks ("ghost" elements: copies of the elements across the partition
+ * boundary, indexed as in MeshAdjacency).
+ */
 struct LabelState {
-    mfem::Array<int> ghost_label;
+    mfem::Array<int> ghost_label;     ///< grain of each ghost element
     mfem::Array<int> peninsula;       ///< per local element: 1 = peninsula
-    mfem::Array<int> ghost_peninsula; ///< per ghost element
+    mfem::Array<int> ghost_peninsula; ///< per ghost element: 1 = peninsula
 };
 
 /**
- * @brief Labels as seen by one element during a preview: the current labels, with element
- * `changed` (local, or -1) carrying `changed_label` instead.
+ * @brief The element grains as they would be after one switch: the current grains, except that
+ * local element `changed` (or none, -1) carries `changed_label`. Used to preview a switch without
+ * changing the labels.
  */
 struct LabelView {
-    const MeshAdjacency& adj;
-    const mfem::Array<int>& label;
-    const mfem::Array<int>& ghost_label;
-    int changed = -1;
-    int changed_label = 0;
+    const MeshAdjacency& adj;            ///< face neighbors of every local element
+    const mfem::Array<int>& label;       ///< grain of each local element
+    const mfem::Array<int>& ghost_label; ///< grain of each ghost element
+    int changed = -1;                    ///< the switched local element, -1 = none
+    int changed_label = 0;               ///< its grain in this view
 
     /** @brief Label of local element e. */
     int Local(int e) const {
         return (e == changed) ? changed_label : label[e];
     }
-    /** @brief Label of neighbor index n of the adjacency (local element or ghost). */
+    /** @brief Grain of neighbor n in the adjacency's numbering: a local element when
+     * n < NumElements(), else ghost n - NumElements(). */
     int Neighbor(int n) const {
         return adj.IsGhost(n) ? ghost_label[n - adj.NumElements()] : Local(n);
     }
 };
 
 /**
- * @brief Face-neighbor labels of element e other than its own, with the number of faces each
- * shares (ascending label). Host.
+ * @brief The other grains among the face neighbors of element e, each with the number of faces
+ * the element shares with it, as (grain, faces) pairs in ascending grain order. Host.
  */
 std::vector<std::pair<int, int>> NeighborLabelCounts(const LabelView& view, int e) {
     const int* off = view.adj.Offsets().HostRead();
@@ -136,8 +162,10 @@ std::vector<std::pair<int, int>> NeighborLabelCounts(const LabelView& view, int 
 }
 
 /**
- * @brief True when element e (a label that may change, not fixed) shares all but at most one of
- * its faces with one other such grain. Host.
+ * @brief True when element e is a peninsula: its grain may change (not fixed), and it shares all
+ * its faces but at most one with a single other grain that may change. (Outer boundary faces have
+ * no neighbor and never count for the other grain: an element with one face on the outer
+ * boundary is a peninsula only when all its other faces face that grain.) Host.
  */
 bool IsPeninsula(const LabelView& view, int e, const NodeLabels& labels) {
     if (labels.IsFixedLabel(view.Local(e))) {
@@ -152,7 +180,8 @@ bool IsPeninsula(const LabelView& view, int e, const NodeLabels& labels) {
     return false;
 }
 
-/** @brief Peninsula flags of the local elements and their ghost copies. Collective. */
+/** @brief Exchanges the ghost grains, then flags the local peninsulas and exchanges the flags
+ * for the ghosts. Collective. */
 void ComputePeninsulas(const MeshAdjacency& adj,
                        const mfem::Array<int>& label,
                        const NodeLabels& labels,
@@ -168,9 +197,11 @@ void ComputePeninsulas(const MeshAdjacency& adj,
 }
 
 /**
- * @brief Number of face-connected pieces of every grain 1..num_grains (index = grain; global,
- * partition independent: LabelComponents names each piece by its smallest element key, and the
- * distinct (grain, piece) pairs of all ranks are counted). Collective.
+ * @brief Number of separate pieces of every grain (pieces connected through element faces), for
+ * grains 1..num_grains; entry g of the result is grain g (entry 0 unused). The same on any
+ * partition: LabelComponents names every piece by the smallest element key in it, every rank
+ * sends its distinct (grain, piece name) pairs to all ranks (MPI_Allgatherv), and the distinct
+ * pairs are counted per grain. Collective.
  */
 std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj,
                                       const mfem::Array<int>& label,
@@ -218,16 +249,19 @@ std::vector<std::int64_t> GrainPieces(const MeshAdjacency& adj,
     return per_grain;
 }
 
+/** @brief A node the fit cannot place: FAKE_JUNCTION or OVER_CONSTRAINED. */
 bool IsBad(TargetStatus s) {
     return s == TargetStatus::FAKE_JUNCTION || s == TargetStatus::OVER_CONSTRAINED;
 }
 
+/** @brief Sum of a per-rank count over all ranks. Collective. */
 std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
     MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT64_T, MPI_SUM, comm);
     return local;
 }
 
-/** @brief Local potential of element e (file comment, pass step 5). Host. */
+/** @brief Local potential of element e: BAD_NODE_WEIGHT x (bad nodes among its nodes) +
+ * (peninsulas among the element and its face neighbors). Host, local. */
 int LocalPotential(const MeshAdjacency& adj,
                    const VertexField& field,
                    const NodeTargets& targets,
@@ -252,8 +286,10 @@ int LocalPotential(const MeshAdjacency& adj,
 } // namespace
 
 /*
- * RepairLabels: the passes of the file comment. The node labels are built once and relabeled
- * (NodeLabels::SetElementLabels); the targets are rebuilt after every change of labels.
+ * RepairLabels: the passes described in label_repair.hpp. The node labels are built once and
+ * updated in place after every change (NodeLabels::SetElementLabels); the targets are rebuilt
+ * after every change. Step 1 of a pass (labels, targets, peninsulas of the current state) is the
+ * state left by the previous pass, or by the setup below for the first pass.
  */
 LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
                                mfem::Array<int>& element_label,
@@ -283,6 +319,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
     };
     rebuild_targets();
 
+    // Face neighbors of every element (with ghosts) and the starting peninsulas; counts of bad
+    // nodes and peninsulas for the report
     const MeshAdjacency adj(pmesh);
     LabelState state;
     ComputePeninsulas(adj, element_label, *result.labels, state);
@@ -301,6 +339,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
     report.bad_nodes_before = count_bad();
     report.peninsulas_before = count_peninsulas();
 
+    // Element keys (the same on any partition), the number of grains, and the switches that were
+    // undone (as (local element, grain); never proposed again)
     const int ne = pmesh.GetNE();
     const std::vector<std::uint64_t> keys = ComputeElementKeys(pmesh);
     int num_grains = 0;
@@ -308,7 +348,7 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
         num_grains = std::max(num_grains, element_label[e]);
     }
     MPI_Allreduce(MPI_IN_PLACE, &num_grains, 1, MPI_INT, MPI_MAX, comm);
-    std::set<std::pair<int, int>> undone_flips; // (local element, label)
+    std::set<std::pair<int, int>> undone_flips;
     // Face-connected pieces per grain: a flip must not split a grain (raise its count); the counts
     // are refreshed after every pass
     std::vector<std::int64_t> pieces = GrainPieces(adj, element_label, keys, num_grains);
@@ -316,12 +356,12 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
     const int* en = field.ElementVertices().HostRead();
 
     for (int pass = 0; pass < options.max_passes; ++pass) {
-        // Step 2: proposals. For every element of an analytic grain at a bad node or that is a
-        // peninsula, and every analytic face-neighbor label b, preview the flip: the label sets
-        // its nodes would have (a label leaves a node when the element was its only element
-        // with it), evaluated with the target rules, and the element's own peninsula flag (its
-        // face neighbors keep theirs in the preview). The best flip with a positive gain in
-        // potential is proposed.
+        // Step 2: proposals. Every element whose grain may change and that is a peninsula or
+        // touches a bad node previews a switch to each other grain b among its face neighbors
+        // (if b may change and the switch was not undone before). For each of its nodes the
+        // preview builds the grains the node would carry (grain a leaves when this element was
+        // the node's only element of a, LabelCounts == 1; b joins) as one query; previews[i]
+        // remembers where its queries start. All queries are then evaluated in one call.
         const int* loff = result.labels->LabelOffsets().HostRead();
         const int* litems = result.labels->Labels().HostRead();
         const int* lcount = result.labels->LabelCounts().HostRead();
@@ -372,6 +412,9 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
                 }
             }
         }
+        // The gain of each preview: current local potential minus the previewed one (bad nodes
+        // from the evaluated queries, the element's own peninsula flag recomputed with the
+        // switch, the neighbors' flags kept). Each element proposes its best positive gain.
         const std::vector<NodeTargetResult> evaluated = result.targets->Evaluate(queries);
         std::vector<int> proposal(static_cast<std::size_t>(ne), -1);
         std::vector<int> best_gain(static_cast<std::size_t>(ne), 0);
@@ -402,6 +445,9 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
                 proposal[es] = pv.label;
             }
         }
+        // Priority of each proposal: hi = gain * 2^32 + the upper 32 bits of the element key,
+        // lo = its lower 32 bits. Both are exact in a double (the gains are small integers), so
+        // equal gains are ordered by the key and no two priorities are equal.
         std::int64_t proposed = 0;
         for (int e = 0; e < ne; ++e) {
             const auto es = static_cast<std::size_t>(e);
@@ -418,7 +464,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
         }
         ++report.passes;
 
-        // Step 3: largest priority within two element rings
+        // Step 3: a proposal is chosen when no proposal within two element rings has a larger
+        // priority
         const std::vector<Priority> ring1 = ElementMaximum(field, NodeMaximum(field, priority));
         const std::vector<Priority> ring2 = ElementMaximum(field, NodeMaximum(field, ring1));
         std::vector<int> chosen;
@@ -429,7 +476,9 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
             }
         }
 
-        // Step 4: grain size guard
+        // Step 4: grain size guard. Count every grain's elements and the chosen switches out of
+        // it over all ranks; drop the switches out of a grain that would fall below
+        // min_grain_elements.
         std::vector<std::int64_t> grain_count(static_cast<std::size_t>(num_grains) + 1, 0);
         std::vector<std::int64_t> leaving(static_cast<std::size_t>(num_grains) + 1, 0);
         for (int e = 0; e < ne; ++e) {
@@ -452,8 +501,9 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
         }
         report.blocked += GlobalSum(blocked, comm);
 
-        // Step 5: apply, undo the flips that split a grain, recompute, undo the flips that did
-        // not lower the local potential
+        // Step 5: apply the switches (remembering each element's potential and grain before),
+        // undo those that split a grain, rebuild labels, targets and peninsulas, and undo those
+        // after which the element's local potential did not drop
         std::vector<int> before(apply.size());
         std::vector<int> old_label(apply.size());
         for (std::size_t i = 0; i < apply.size(); ++i) {
@@ -521,6 +571,8 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
         }
     }
 
+    // The final targets with the options as given (smoothed fallback, holds), unless they equal
+    // the pass targets
     report.peninsulas_after = count_peninsulas();
     if (options.targets.smoothed || options.targets.hold_under_resolved ||
         options.targets.hold_pinches) {
@@ -533,9 +585,15 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
 }
 
 /*
- * FlipToCurrentOwner: exact best seed at the element centers (one batched search), the distance
- * past the boundary, and the label of a face neighbor of the best seed (ghost labels from
- * MeshAdjacency).
+ * FlipToCurrentOwner (see the header):
+ *  1. the element centers at the current node positions, and the grains of the face neighbors on
+ *     other ranks (MeshAdjacency::ExchangeLabels);
+ *  2. the closest seed of every center in one batched search (SeedIndex, the exact search);
+ *  3. for an element whose closest seed is not its own: the estimated distance past the boundary
+ *     between the two seeds, and, beyond the hysteresis, the smallest neighboring grain of the
+ *     closest seed;
+ *  4. the switches are applied after all elements are decided, so the decisions do not depend on
+ *     the element order.
  */
 std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh,
                                 mfem::Array<int>& element_label,
@@ -559,6 +617,8 @@ std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh,
         cy(e) = c(1);
         cz(e) = c(2);
     }
+    // DispatchMetric calls the lambda with the concrete metric type, so the seed search is
+    // compiled for that metric
     std::vector<int> new_label(static_cast<std::size_t>(ne), -1);
     DispatchMetric(metric, [&](auto metric_tag) {
         using Metric = decltype(metric_tag);

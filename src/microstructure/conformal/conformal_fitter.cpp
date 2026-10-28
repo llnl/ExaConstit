@@ -1,5 +1,7 @@
 /*
- * Spring-balanced pseudo-elastic fitting of the mesh nodes (conformal_fitter.hpp).
+ * Fitting of the mesh nodes to the grain boundaries: an elastic body pulled toward the targets by
+ * springs, in rounds of increasing spring strength, with local back-off and stiffening that keep
+ * every element within its quality limits (conformal_fitter.hpp explains the method).
  */
 #include "microstructure/conformal/conformal_fitter.hpp"
 
@@ -17,14 +19,18 @@ namespace exaconstit::microstructure {
 
 namespace {
 
-/** @brief Elements within this margin above the floor also back off their springs. */
+/** @brief After a failed solve, the springs of the fitted nodes of every element within this
+ * margin above its scaled Jacobian or mean ratio limit are halved (not only those of the elements
+ * that broke the limit, which would just move the problem next door). */
 constexpr double BACKOFF_MARGIN = 0.05;
-/** @brief Scaled Jacobian below which an element is stiffened. */
+/** @brief Elements with a scaled Jacobian below this get a stiffness factor (0.6 / sj)^exponent. */
 constexpr double STIFFEN_BELOW = 0.6;
-/** @brief Elements within this margin below the aspect ratio ceiling also back off. */
+/** @brief Same as BACKOFF_MARGIN for the aspect ratio: elements within this margin below their
+ * aspect ratio limit also back off. */
 constexpr double ASPECT_RATIO_BACKOFF_MARGIN = 0.5;
-/** @brief An element of the input beyond a limit or this close to it (relative) may lose this
- * fraction of its input value. */
+/** @brief Slack for elements that are poor in the input: an element already beyond a limit, or
+ * within this fraction of it, gets as its limit its own input value minus this fraction (for the
+ * aspect ratio: plus). */
 constexpr double POOR_INPUT_SLACK = 0.1;
 /** @brief The aspect ratio of an input element already beyond the ceiling may grow by this
  * fraction of its input value. Such elements are thin (a pillow or buffer layer along a curved
@@ -33,35 +39,45 @@ constexpr double POOR_INPUT_SLACK = 0.1;
  * strut lattice with pillows: 0.38 -> 0.36 h; with 0.3: 0.28 h, the smallest scaled Jacobian
  * 0.42 -> 0.35 and the largest aspect ratio 17 -> 20). */
 constexpr double POOR_INPUT_ASPECT_SLACK = 0.3;
-/** @brief Bulk guard for tets: a tet below this mean ratio counts as mediocre. */
+/** @brief Bulk quality guard for tets: a tet with a mean ratio below this counts as mediocre. */
 constexpr double TET_GUARD_MEAN_RATIO = 0.5;
-/** @brief Cap of the stiffness factor. */
+/** @brief Largest stiffness factor of an element (1 = unstiffened). */
 constexpr double MAX_STIFFNESS = 1e3;
-/** @brief Bulk quality guard: at most this share of elements below floor + BULK_MARGIN. */
+/** @brief Bulk quality guard: a round may leave at most this share of all elements newly
+ * mediocre (beyond those mediocre in the input). */
 constexpr double BULK_SHARE = 0.01;
+/** @brief Bulk quality guard for hexes: a hex with a scaled Jacobian below floor + this counts
+ * as mediocre. */
 constexpr double BULK_MARGIN = 0.2;
-/** @brief Retries of a first round that fails the bulk guard, each with a quarter of the spring. */
+/** @brief Retries of a first round that fails the bulk guard, each with a quarter of the spring
+ * of the try before. */
 constexpr int WEAK_TRIES = 3;
 /**
- * @brief Normal penalty of a node sliding on a tilted or curved surface, per unit of h. The exact
- * projection after the solve puts the node back on its surface; the penalty only keeps the solve
- * from moving it far off (a weaker one, 1e1-1e2, lets the projection shear thin boundary
- * elements). 1e4 made CG take about 3x the iterations on curved surfaces and stall on strut
- * lattices (no convergence in 500 iterations) for the same fit.
+ * @brief Stiffness of the spring that holds a sliding node near its tilted or curved surface,
+ * along the surface normal, per unit of element size h. The exact projection after each solve
+ * puts the node back on its surface; this spring only keeps the solve from moving it far off.
+ * Weaker springs (10 to 100) let the projection shear thin boundary elements (on a pillowed strut
+ * lattice the fit got worse: 0.265 -> 0.29 h at 100). Stronger ones make the system harder to
+ * solve: at 1e4 CG needed about 3 times the iterations on curved surfaces, for the same fit.
  */
 constexpr double NORMAL_PENALTY = 1e3;
 
-/** @brief How a node on a tilted or curved boundary surface moves. */
+/** @brief How a node on the outer boundary moves (box-face coordinates are fixed separately). */
 enum class Slide : char {
-    NONE = 0,   ///< no such surface (box faces only, or none)
-    PLANES = 1, ///< on one or two flat surfaces, at least one tilted: along their intersection
-    CURVED = 2, ///< on exactly one curved surface: along its input boundary faces
-    FIXED = 3   ///< several surfaces with a curved one, or three or more: does not move
+    NONE = 0,   ///< on no tilted or curved surface (only on box faces, or inside the mesh)
+    PLANES = 1, ///< on one or two flat surfaces, at least one tilted: in the plane, or along the
+                ///< line where the two meet
+    CURVED = 2, ///< on one or two surfaces, at least one curved: on the input boundary faces
+                ///< around it (patches), along the sharp edge when there are two
+    FIXED = 3   ///< on three or more surfaces (a corner): does not move
 };
 
 /**
- * @brief Projects y onto the intersection of `num` planes n_k . y = c_k (unit normals, not
- * parallel; num = 1 or 2): y - N^T (N N^T)^-1 (N y - c).
+ * @brief Moves y to the nearest point on one plane, or on the line where two planes meet: the
+ * planes are n_k . x = c_k with unit normals n_k (num = 1 or 2, two planes not parallel), and the
+ * nearest point is y - N^T (N N^T)^-1 (N y - c) with N the matrix whose rows are the normals.
+ * (boundary_projector.cpp has the same formula with a guard for nearly parallel planes; the
+ * planes here are surfaces separated by a sharp edge, never parallel.)
  */
 void ProjectOntoPlanes(const double (*n)[3], const double* c, int num, double y[3]) {
     double r[2];
@@ -82,6 +98,8 @@ void ProjectOntoPlanes(const double (*n)[3], const double* c, int num, double y[
     }
 }
 
+/** @brief True when n points exactly along a coordinate axis (two components exactly zero), as
+ * the normals of box faces do. */
 bool IsAxis(const double n[3]) {
     int zeros = 0;
     for (int d = 0; d < 3; ++d) {
@@ -90,12 +108,14 @@ bool IsAxis(const double n[3]) {
     return zeros == 2;
 }
 
+/** @brief Sum of a per-rank count over all ranks (collective). */
 std::int64_t GlobalSum(std::int64_t local, MPI_Comm comm) {
     MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT64_T, MPI_SUM, comm);
     return local;
 }
 
-/** @brief Node positions in node order (3 per node) from the Nodes grid function. */
+/** @brief Copies the current node positions from the Nodes grid function into a plain array,
+ * 3 doubles (x, y, z) per node in node order (the layout NodeLabelQuery::position expects). */
 void GatherPositions(const mfem::GridFunction& nodes,
                      const mfem::FiniteElementSpace& fes,
                      int nv,
@@ -109,10 +129,14 @@ void GatherPositions(const mfem::GridFunction& nodes,
 }
 
 /**
- * @brief Quad points: several nodes can share one 4-label set and so one target point; only the
- * node closest to it stays fitted. The owned candidates' (labels, squared distance, position) are
- * gathered on every rank and the smallest (distance, then position) wins, so every copy decides
- * the same way. Clears marker[v] for the losers.
+ * @brief Keeps one fitted node per quad point (a point where four grains meet).
+ *
+ * Several nodes can carry the same four grains and so share one target point; only the node
+ * closest to it stays fitted, the others are unmarked (marker[v] = false). Every rank sends, for
+ * each fitted 4-grain node it owns, a record of 8 doubles: the four grains, the squared distance
+ * to the target and the position. All records go to every rank (MPI_Allgatherv), and per set of
+ * four grains the record with the smallest (distance, then position) wins. Since every rank sees
+ * all records, every copy of a node reaches the same decision. Collective.
  */
 void KeepClosestQuadPointNodes(const NodeLabels& labels,
                                const NodeTargets& targets,
@@ -154,7 +178,9 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels,
     std::vector<double> all(static_cast<std::size_t>(displs.back() + counts.back()));
     MPI_Allgatherv(
         mine.data(), count, MPI_DOUBLE, all.data(), counts.data(), displs.data(), MPI_DOUBLE, comm);
-    std::map<std::array<int, 4>, std::array<double, 4>> best; // labels -> (d2, x, y, z)
+    // Per set of four grains, the best (squared distance, x, y, z); std::array compares
+    // lexicographically, so ties in distance go to the smaller position
+    std::map<std::array<int, 4>, std::array<double, 4>> best;
     for (std::size_t k = 0; k + 8 <= all.size(); k += 8) {
         const std::array<int, 4> key = {static_cast<int>(all[k]),
                                         static_cast<int>(all[k + 1]),
@@ -166,6 +192,7 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels,
             best[key] = val;
         }
     }
+    // A 4-grain node stays fitted only when it is the winner of its set (same position)
     for (int v = 0; v < nv; ++v) {
         if (!is_quad(v)) {
             continue;
@@ -180,14 +207,6 @@ void KeepClosestQuadPointNodes(const NodeLabels& labels,
 
 } // namespace
 
-/*
- * FitConformal
- *  1. Checks; quality of the input mesh.
- *  2. Fitted nodes (FIT, one per quad point), target positions, fixed components.
- *  3. Rounds of spring-balanced elastic solves with local back-off and quality stiffening, kept
- *     while above the floor and improving (file comment).
- *  4. Deviation and quality of the result.
- */
 namespace {
 
 /**
@@ -201,7 +220,20 @@ namespace {
  */
 enum class PassKind { ALL, LINEAR_VERTICES, CURVATURE };
 
-/** @brief One fitting pass (the file comment) from the current Nodes. */
+/*
+ * FitPass: one fitting pass from the current Nodes (the method is described in
+ * conformal_fitter.hpp).
+ *  1. Checks the inputs and measures the quality of the input mesh.
+ *  2. Decides which nodes are fitted (status FIT, one per quad point) and how every node may move:
+ *     fixed coordinates on box faces, sliding on tilted planes or curved patches, or fixed.
+ *  3. Measures the starting deviation and, for the passes of a higher-order mesh, chooses what
+ *     the springs pull: the vertices toward their targets (LINEAR_VERTICES), or the other nodal
+ *     points toward the closest point on their grain boundary from where they are (CURVATURE).
+ *  4. Runs the rounds of spring-balanced elastic solves with back-off and stiffening, keeping the
+ *     last round that respects the quality limits and the bulk guard.
+ *  5. Measures the final deviation and quality.
+ * Collective over the mesh communicator.
+ */
 ConformalFitReport FitPass(mfem::ParMesh& pmesh,
                            const NodeTargets& targets,
                            const ConformalFitOptions& options,
@@ -212,7 +244,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
     const NodeLabels& labels = targets.Labels();
     const VertexField& field = labels.Field();
 
-    // Step 1
+    // Step 1: the mesh must carry Nodes and be the one the node labels were built on
     auto* nodes = dynamic_cast<mfem::ParGridFunction*>(pmesh.GetNodes());
     ThrowIfAnyRank(comm,
                    nodes == nullptr || &field.Mesh() != &pmesh,
@@ -233,13 +265,14 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
     report.quality_before = ComputeMeshQuality(pmesh);
     const int nv = labels.NumNodes();
     const int ne = pmesh.GetNE();
-    // The scaled Jacobian floor of hexes (tets use the mean ratio floor instead)
+    // The scaled Jacobian floor of hexes; tets use the mean ratio floor instead, and -1 makes
+    // the scaled Jacobian checks below always pass for them
     const double floor = (pmesh.GetTypicalElementGeometry() == mfem::Geometry::CUBE)
                              ? MESH_QUALITY_FLOOR_HEX
                              : -1.0;
     const mfem::ParGridFunction x0(*nodes);
 
-    // Step 2
+    // Step 2: marker[v] = node v is pulled toward a target
     mfem::Array<bool> marker(nv);
     for (int v = 0; v < nv; ++v) {
         marker[v] = targets.Status(v) == TargetStatus::FIT;
@@ -253,6 +286,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
     const int* loff = labels.LabelOffsets().HostRead();
     const int* litems = labels.Labels().HostRead();
     const double* xyz0 = field.Coordinates().HostRead();
+    // How every node may move: fixed[3 v + d] = coordinate d of node v keeps its input value
+    // (a box face, a corner, or a vertex in the CURVATURE pass); slide[v] = how it follows its
+    // tilted or curved surfaces. A box face normal fixes its axis; tilted and curved surfaces
+    // decide the Slide kind.
     std::vector<char> fixed(3 * static_cast<std::size_t>(nv), 0);
     std::vector<Slide> slide(static_cast<std::size_t>(nv), Slide::NONE);
     std::int64_t fit_nodes = 0;
@@ -288,9 +325,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
     report.fit_nodes = GlobalSum(fit_nodes, comm);
     report.fixed_nodes = GlobalSum(fixed_nodes, comm);
 
-    // Sliding nodes: their surfaces (planes with offsets at the input position, or the curved
-    // surfaces' input faces, MakeCurvedPatches: on a feature edge of a curved boundary the node
-    // slides along the edge) and the normals of the penalty (tilted planes, curved surfaces)
+    // What the sliding nodes slide on. PLANES: planes[v] holds up to two planes (n0, c0, n1, c1)
+    // through the node's input position. CURVED: the patches of MakeCurvedPatches (one per
+    // surface; on a sharp edge the node slides along the edge). penalty[v] holds the normals of
+    // the stiff spring that keeps the node near its surfaces during the solve: count, n0, n1.
     const std::unique_ptr<SurfacePatches> patches_ptr = MakeCurvedPatches(labels,
                                                                           targets.PatchRings());
     const SurfacePatches& patches = *patches_ptr;
@@ -358,8 +396,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
             }
         }
     }
-    // Puts the sliding nodes back on their surfaces (the same on every copy of a node: the same
-    // position, planes and patch); box face coordinates are restored bit for bit
+    // Puts the sliding nodes back on their surfaces after a solve. Every copy of a node has the
+    // same position, planes and patches, so every copy lands on the same point; fixed coordinates
+    // (box faces) are restored from the input exactly.
     const auto project_to_surfaces = [&]() {
         for (int v = 0; v < nv; ++v) {
             const Slide kind = slide[static_cast<std::size_t>(v)];
@@ -391,7 +430,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         }
     };
 
-    // Deviation of the fitted nodes from their grain boundaries at the current positions
+    // Deviation of the fitted nodes from their grain boundaries at the current positions: the
+    // distance to the closest point on the boundary from where the node is, in element sizes,
+    // largest and mean over the fitted nodes (each counted on its owner rank)
     std::vector<double> here;
     const auto deviation = [&](double& max_dev, double& mean_dev) {
         GatherPositions(*nodes, fes, nv, here);
@@ -431,12 +472,13 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         MPI_Allreduce(MPI_IN_PLACE, &max_dev, 1, MPI_DOUBLE, MPI_MAX, comm);
         mean_dev = (sums[1] > 0.0) ? sums[0] / sums[1] : 0.0;
     };
+    // Step 3: the starting deviation covers every fitted node. Then, for the passes of a
+    // higher-order mesh, only the vertices (LINEAR_VERTICES) or only the other nodal points
+    // (CURVATURE) keep their springs. pull[3 v + d] is where the spring of node v pulls: its
+    // target, or for CURVATURE the closest point on its grain boundary from where it is now
+    // (its current position when there is none, i.e. no pull).
     double unused_max = 0.0;
     deviation(unused_max, report.initial_deviation);
-    // Higher-order passes: the initial deviation above covers every fitted node; from here only
-    // the vertex nodes (LINEAR_VERTICES) or the other nodal points (CURVATURE) carry springs.
-    // The springs pull toward the targets, for CURVATURE toward the closest point of the grain
-    // boundary from the current position.
     std::vector<double> pull(t, t + 3 * static_cast<std::size_t>(nv));
     if (vertices_only) {
         for (int v = pmesh.GetNV(); v < nv; ++v) {
@@ -470,8 +512,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
             }
         }
     }
-    // The displacement space: the Nodes space, or order 1 for LINEAR_VERTICES (its dof v is
-    // vertex v, as in the Nodes space)
+    // The space of the displacement u: the Nodes space, or an order-1 space for LINEAR_VERTICES.
+    // MFEM numbers the vertex dofs first in both, so dof v is node v in either.
     std::unique_ptr<mfem::H1_FECollection> linear_fec;
     std::unique_ptr<mfem::ParFiniteElementSpace> linear_fes;
     if (vertices_only) {
@@ -482,8 +524,11 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
     mfem::ParFiniteElementSpace& sfes = vertices_only ? *linear_fes : fes;
     const int sn = sfes.GetNDofs();
 
-    // Step 3
+    // Step 4: the rounds (only when there is something to fit)
     if (report.fit_nodes > 0) {
+        // Per-element fields (piecewise constant, L2 order 0): quality_factor = the stiffening
+        // factor of the element, stiffness = that factor spread to the neighbors, used as the
+        // Young's modulus. Per node: multiplier = the spring multiplier m_v.
         mfem::L2_FECollection l2(0, 3);
         mfem::ParFiniteElementSpace l2_fes(&pmesh, &l2);
         mfem::ParGridFunction stiffness(&l2_fes);
@@ -496,7 +541,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         std::vector<double> sj(static_cast<std::size_t>(ne), 1.0);
         std::vector<char> fails(static_cast<std::size_t>(ne), 0);
 
-        // Essential (fixed) true dofs; they keep their input value (zero displacement)
+        // Fixed coordinates become essential (Dirichlet) true dofs with zero displacement. MFEM
+        // solves on "true dofs": the dofs each rank owns, without the copies of shared ones.
         mfem::Array<int> ess_marker(sfes.GetVSize());
         ess_marker = 0;
         for (int v = 0; v < sn; ++v) {
@@ -509,7 +555,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         sfes.GetRestrictionMatrix()->BooleanMult(ess_marker, ess_tdof_marker);
         mfem::FiniteElementSpace::MarkerToList(ess_tdof_marker, ess_tdof);
 
-        // Stiffness for the next solve: quality factor, spread to the neighbors
+        // Stiffness for the next solve: each element's quality factor, spread
+        // `stiffness_smoothing` times (each node takes the largest factor of its elements over
+        // all copies, then each element the mean of its nodes when that is larger)
         const auto update_stiffness = [&]() {
             for (int e = 0; e < ne; ++e) {
                 stiffness(e) = quality_factor(e);
@@ -535,7 +583,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
             }
         };
 
-        // One spring-balanced elastic solve on the input geometry; sets the Nodes to x0 + u
+        // One spring-balanced elastic solve with spring factor c: assembles K on the input
+        // geometry (the Nodes are reset to x0 first), adds the springs and the sliding penalty,
+        // solves, sets the Nodes to x0 + u and puts the sliding nodes back on their surfaces
         mfem::ParGridFunction u(&sfes);
         mfem::ParGridFunction u_nodes(&fes);
         // Higher orders: a Gauss rule of order 2 p (27 points per order-2 hex) instead of MFEM's
@@ -650,13 +700,13 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
             ++report.solves;
         };
 
-        // Quality limits per element. Hexes: the scaled Jacobian floor and the aspect ratio
-        // ceiling; tets: the mean ratio floor (the corner scaled Jacobian of a tet is a poor
-        // measure of its shape: a perfect Kuhn tet scores 0.58, and slivers of unstructured
-        // meshes jump with tiny moves). An element whose input value is beyond a limit, or within
-        // POOR_INPUT_SLACK of it, may lose at most that fraction of its input value instead.
-        // Mediocre elements (the bulk guard): hexes below floor + BULK_MARGIN, tets below a mean
-        // ratio of TET_GUARD_MEAN_RATIO; the guard counts the ones beyond those of the input.
+        // Quality limits per element, from its input quality. Hexes: the scaled Jacobian floor
+        // (sj_limit) and the aspect ratio ceiling (ar_limit); tets: the mean ratio floor
+        // (eta_limit; see MESH_MEAN_RATIO_FLOOR_TET for why tets use it). An element already
+        // beyond a limit, or within POOR_INPUT_SLACK of it, gets a limit relative to its own input
+        // value instead and is marked poor. Mediocre elements, for the bulk guard: hexes below
+        // floor + BULK_MARGIN, tets below a mean ratio of TET_GUARD_MEAN_RATIO; input_below
+        // counts those of the input, which the guard does not hold against the fit.
         const bool tets = pmesh.GetTypicalElementGeometry() == mfem::Geometry::TETRAHEDRON;
         const auto Mediocre = [&](int e, double q) {
             return tets ? ElementMeanRatio(pmesh, e) < TET_GUARD_MEAN_RATIO
@@ -691,6 +741,8 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         }
         MPI_Allreduce(MPI_IN_PLACE, &input_below, 1, MPI_DOUBLE, MPI_SUM, comm);
 
+        // good = the nodes of the last kept round (the input until one is kept); c = the spring
+        // factor of the current round
         mfem::Vector good(x0);
         double c = options.initial_spring;
         double last_mean = report.initial_deviation;
@@ -713,8 +765,10 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
                     failed = failed || fails[es] != 0;
                 }
                 ok = !AnyRank(failed, comm);
-                // Stiffen the distorted elements (never softened again) and, if the solve failed,
-                // halve the springs of the nodes of the elements near the floor
+                // After every solve: stiffen the distorted elements (never softened again). After
+                // a failed solve also: double the factor of the poor input elements that failed,
+                // and mark (hit) the nodes of every element near a limit; an element near a limit
+                // without fitted nodes marks its nodes in `spread` instead (-1)
                 mfem::Vector next(multiplier);
                 mfem::Vector hit(nv);
                 hit = 0.0;
@@ -776,9 +830,9 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
             if (!ok) {
                 break;
             }
-            // Bulk quality guard: a round that leaves more than 1 % of the elements below
-            // floor + 0.2, beyond those of the input, is not kept (quality first: the small
-            // extra fit is not worth it)
+            // Bulk quality guard: a round that leaves more than BULK_SHARE of the elements newly
+            // mediocre is not kept (quality first: the small extra fit is not worth it). A first
+            // round that fails it is retried with a quarter of the spring.
             double below[2] = {0.0, static_cast<double>(ne)};
             for (int e = 0; e < ne; ++e) {
                 below[0] += Mediocre(e, sj[static_cast<std::size_t>(e)]) ? 1.0 : 0.0;
@@ -792,6 +846,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
                 }
                 break;
             }
+            // The round is kept
             good = *nodes;
             ++report.rounds;
             report.final_spring = c;
@@ -808,7 +863,7 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
         *nodes = good;
     }
 
-    // Step 4
+    // Step 5
     deviation(report.max_deviation, report.mean_deviation);
     report.quality_after = ComputeMeshQuality(pmesh);
     return report;
@@ -817,11 +872,15 @@ ConformalFitReport FitPass(mfem::ParMesh& pmesh,
 } // namespace
 
 /*
- * FitConformal: one pass for order-1 Nodes. For higher orders the vertices are fitted first with
- * an order-1 displacement field interpolated to every nodal point (the elements move as
- * straight-sided elements; a pull on a single nodal point of a higher-order element makes a
- * sharp local spike that folds the element), then, with the vertices fixed, the other nodal
- * points are pulled onto the grain boundaries, which adds their curvature.
+ * FitConformal: one pass (ALL) for order-1 Nodes. For higher orders, two passes:
+ *  1. LINEAR_VERTICES: the vertices are fitted with an order-1 displacement field, interpolated
+ *     to every nodal point, so the elements move as straight-sided elements would. Pulling on
+ *     single nodal points of a higher-order element instead makes a sharp local spike in its shape
+ *     that folds the element.
+ *  2. CURVATURE: with the vertices fixed, the other nodal points are pulled onto their grain
+ *     boundaries, which bends the element faces to follow the curved boundary.
+ * The report combines both: the input quality and starting deviation of the first pass, the
+ * rest from the second, with rounds and solves summed.
  */
 ConformalFitReport
 FitConformal(mfem::ParMesh& pmesh, const NodeTargets& targets, const ConformalFitOptions& options) {

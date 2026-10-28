@@ -1,5 +1,6 @@
 /*
- * Boundary triangle patches of selected nodes and closest points on them (boundary_projector.hpp).
+ * Patches of boundary triangles around selected nodes, closest points on them, and the
+ * projection of a moved node back onto its boundary surfaces (boundary_projector.hpp).
  */
 #include "microstructure/conformal/boundary_projector.hpp"
 
@@ -14,6 +15,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief Dot product of two 3-vectors. */
 double Dot(const double a[3], const double b[3]) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
@@ -26,7 +28,8 @@ void Combine(
     }
 }
 
-/** @brief Index d when n is exactly +-e_d (two zero components), else -1. */
+/** @brief The axis d when n points exactly along +-e_d (two components exactly zero, as for
+ * the faces of an axis-aligned box), else -1. */
 int AxisOf(const double n[3]) {
     int zeros = 0;
     int axis = -1;
@@ -40,12 +43,18 @@ int AxisOf(const double n[3]) {
     return (zeros == 2) ? axis : -1;
 }
 
-/** @brief Two planes whose 1 - cos^2 of the normals is at most this count as one plane. */
+/** @brief Two planes count as one when 1 - cos^2 of the angle between their normals is at most
+ * this (normals within about 0.06 degrees): the two-plane formula below divides by 1 - cos^2. */
 constexpr double PARALLEL_PLANES = 1e-6;
 
 /**
- * @brief y - N^T (N N^T)^-1 (N y - c) for one or two unit normals (rows of n); two (nearly)
- * parallel planes are treated as the first one only.
+ * @brief Moves y to the nearest point on one plane, or on the line where two planes meet.
+ *
+ * The planes are n_k . x = c_k with unit normals n_k (k < num, num = 1 or 2). The nearest point
+ * is y - N^T (N N^T)^-1 (N y - c), N the matrix whose rows are the normals: the smallest
+ * correction that satisfies every plane (the "least-norm" correction). For two planes N N^T is
+ * the 2 x 2 matrix [1 g; g 1] with g = n_0 . n_1, inverted in closed form. Two (nearly) parallel
+ * planes are the same plane for this purpose, and only the first is used.
  */
 void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double y[3]) {
     double r[2] = {Dot(n[0], y) - c[0], (num == 2) ? Dot(n[1], y) - c[1] : 0.0};
@@ -68,8 +77,13 @@ void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double 
 } // namespace
 
 /*
- * ClosestPointOnTriangle: Ericson's Voronoi-region test (Real-Time Collision Detection, 2005,
- * section 5.1.5): the vertex regions, then the edge regions, then the interior.
+ * ClosestPointOnTriangle: Ericson's region test (Real-Time Collision Detection, 2005, section
+ * 5.1.5). Space around a triangle splits into seven regions by which feature is closest: each
+ * corner, each edge, or the inside. The test uses dot products of the edge vectors with the
+ * vectors from the corners to y (d1 .. d6) to find the region without computing any distance:
+ * first the corner regions of a, b and c, then the edge regions ab, ac and bc (where the
+ * barycentric-like ratios vc, vb, va are <= 0), and otherwise y projects inside the triangle and
+ * p is its projection, with barycentric weights from va, vb, vc.
  */
 void ClosestPointOnTriangle(const double y[3],
                             const double a[3],
@@ -124,9 +138,17 @@ void ClosestPointOnTriangle(const double y[3],
 
 namespace {
 
+/** @brief A triangle as 9 doubles: x y z of each of its three corners. */
 using Tri = std::array<double, 9>;
 
-/** @brief Exchanges per-node triangle lists over the copies; each node's list sorted, distinct. */
+/**
+ * @brief Gives every copy of a shared node the union of the triangle lists of all its copies.
+ *
+ * Collective. VertexField::ExchangeSharedLists sends each node's list to the other ranks that
+ * hold the node and returns what they sent; the received triangles are appended, and every list
+ * is sorted (lexicographically on the 9 doubles) and stripped of duplicates, so all copies end
+ * with the same list in the same order.
+ */
 void ExchangeTriangles(const VertexField& field, std::vector<std::vector<Tri>>& lists) {
     const int nv = field.NumVertices();
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
@@ -154,7 +176,8 @@ void ExchangeTriangles(const VertexField& field, std::vector<std::vector<Tri>>& 
     }
 }
 
-/** @brief OR of a per-node flag over the copies. */
+/** @brief Sets a per-node flag on every copy of a node when it is set on any copy (a logical
+ * or over the copies). Collective. */
 void ExchangeFlags(const VertexField& field, std::vector<char>& flag) {
     const int nv = field.NumVertices();
     std::vector<int> send_off(static_cast<std::size_t>(nv) + 1, 0);
@@ -175,7 +198,8 @@ void ExchangeFlags(const VertexField& field, std::vector<char>& flag) {
     }
 }
 
-/** @brief Unit normal of a triangle (a zero vector for a degenerate one). */
+/** @brief Unit normal of a triangle, (b - a) x (c - a) normalized (a zero vector for a
+ * triangle of zero area). */
 void TriangleNormal(const Tri& t, double n[3]) {
     const double u[3] = {t[3] - t[0], t[4] - t[1], t[5] - t[2]};
     const double w[3] = {t[6] - t[0], t[7] - t[1], t[8] - t[2]};
@@ -191,21 +215,24 @@ void TriangleNormal(const Tri& t, double n[3]) {
 } // namespace
 
 /*
- * Constructor
- *  1. Surface faces (one element, not shared; or the faces marked in surface_faces):
- *     triangulate (file comment); keep the face's nodes and triangles.
- *  2. Nodes needed per ring: ring `rings` = the selected nodes; ring r - 1 adds the nodes that
- *     share a surface face with a node of ring r (or-ed over the copies, so the same on every
- *     copy).
- *  3. One-ring lists of the ring-1 nodes: the triangles of their faces, exchanged
- *     (VertexField::ExchangeSharedLists), sorted lexicographically (9 doubles) and made distinct.
- *  4. Ring r = 2 .. rings for the ring-r nodes: the union of the (r - 1)-ring lists of the nodes
- *     of their faces, exchanged, sorted and made distinct. Each face is processed by one rank, so
- *     every copy ends with the same triangles.
- *  5. Patches of the selected nodes: one per node without `surfaces`; else one per surface of the
- *     node, a triangle going to the surface whose normal is closest to its own (|cos|, so the
- *     orientation of the face does not matter), and a triangle outside the one-ring only when
- *     that |cos| reaches surfaces->min_cosine.
+ * SurfacePatches constructor. The r-ring of a node is the union of the (r - 1)-rings of the
+ * nodes on its boundary faces, so the rings are built from the inside out, each time over the
+ * nodes that need them:
+ *  1. The surface faces this rank counts (the outer boundary faces with one element that are not
+ *     shared with another rank, or the faces marked in surface_faces) are cut into triangles (file
+ *     comment); each face keeps the list of its nodes and its triangles.
+ *  2. Which nodes need which ring: the selected nodes need ring `rings`; ring r - 1 is needed by
+ *     every node that shares a surface face with a node needing ring r. The flags are or-ed over
+ *     the copies of each node, so they are the same on every copy.
+ *  3. One-rings of the nodes that need them: the triangles of every face around the node, then
+ *     exchanged between copies, sorted and stripped of duplicates (ExchangeTriangles).
+ *  4. Rings 2 .. `rings`: the union of the previous rings of the nodes of every face around the
+ *     node, exchanged, sorted and stripped of duplicates. Each face is handled by exactly one
+ *     rank, so after the exchange every copy has the same triangles.
+ *  5. The patches of the selected nodes: without `surfaces`, one patch with every triangle of the
+ *     ring; with them, one patch per surface of the node, each triangle going to the surface
+ *     whose normal is closest to its own (largest |cosine|). A triangle outside the one-ring is
+ *     kept only when that |cosine| reaches surfaces->min_cosine, so patches stop at sharp edges.
  */
 SurfacePatches::SurfacePatches(const VertexField& field,
                                const std::vector<char>& selected,
@@ -221,7 +248,10 @@ SurfacePatches::SurfacePatches(const VertexField& field,
                    "SurfacePatches: rings must be between 1 and SURFACE_PATCH_MAX_RINGS");
     mfem::ParMesh& pmesh = field.Mesh();
 
-    // Step 1
+    // Step 1: triangulate the surface faces. shared[f] = 1 for faces on the partition boundary
+    // (they have a second element on another rank, so they are not outer boundary faces).
+    // face_node / face_tri hold, per face, its nodes (the field's numbering: the Nodes dofs on a
+    // curved mesh, else the vertices) and its triangles, in offsets arrays face_*_off.
     std::vector<char> shared(static_cast<std::size_t>(pmesh.GetNumFaces()), 0);
     for (int i = 0; i < pmesh.GetNSharedFaces(); ++i) {
         shared[static_cast<std::size_t>(pmesh.GetSharedFace(i))] = 1;
@@ -247,6 +277,8 @@ SurfacePatches::SurfacePatches(const VertexField& field,
         if (!use) {
             continue;
         }
+        // The face's nodes. MFEM may return a dof as -1 - dof (its sign convention for some
+        // spaces); only the dof number matters here, so negative entries are decoded.
         if (node_fes != nullptr) {
             node_fes->GetFaceDofs(f, fnodes);
         } else {
@@ -256,6 +288,8 @@ SurfacePatches::SurfacePatches(const VertexField& field,
             face_node.push_back((fnodes[j] >= 0) ? fnodes[j] : -1 - fnodes[j]);
         }
         face_node_off.push_back(static_cast<int>(face_node.size()));
+        // The face mapped to space at the points of a reference grid with `subdivisions` cells
+        // per edge (file comment): points[3 i .. 3 i + 2] is grid point i
         const mfem::Geometry::Type geom = pmesh.GetFaceGeometry(f);
         int subdivisions = 2 * order;
         if (nodes == nullptr) {
@@ -287,7 +321,8 @@ SurfacePatches::SurfacePatches(const VertexField& field,
     }
     const int num_faces = static_cast<int>(face_node_off.size()) - 1;
 
-    // Step 2: need[r - 1] for ring r
+    // Step 2: need[r - 1][v] != 0 when node v needs its r-ring. Starts with the selected nodes at
+    // every level, then each level adds the nodes on the faces around the nodes of the level above.
     std::vector<std::vector<char>> need(static_cast<std::size_t>(rings), selected);
     for (int r = rings - 1; r >= 1; --r) {
         std::vector<char>& inner = need[static_cast<std::size_t>(r)];
@@ -304,7 +339,7 @@ SurfacePatches::SurfacePatches(const VertexField& field,
         ExchangeFlags(field, outer);
     }
 
-    // Step 3
+    // Step 3: one-rings, the triangles of every face around each node that needs one
     std::vector<std::vector<Tri>> one(static_cast<std::size_t>(nv));
     for (int f = 0; f < num_faces; ++f) {
         for (int j = face_node_off[f]; j < face_node_off[f + 1]; ++j) {
@@ -318,7 +353,7 @@ SurfacePatches::SurfacePatches(const VertexField& field,
     }
     ExchangeTriangles(field, one);
 
-    // Step 4
+    // Step 4: ring r from the (r - 1)-rings of the nodes of the faces around each node
     std::vector<std::vector<Tri>> ring = one;
     for (int r = 2; r <= rings; ++r) {
         const std::vector<char>& here = need[static_cast<std::size_t>(r) - 1];
@@ -339,7 +374,8 @@ SurfacePatches::SurfacePatches(const VertexField& field,
         ring = std::move(next);
     }
 
-    // Step 5
+    // Step 5: sort each selected node's triangles into its patches and append them to the
+    // flat storage (m_patch_offsets per node, m_offsets per patch, m_triangles)
     const int* surf_off = (surfaces != nullptr) ? surfaces->offsets->HostRead() : nullptr;
     const double* surf_normal = (surfaces != nullptr) ? surfaces->normals->HostRead() : nullptr;
     m_patch_offsets.assign(static_cast<std::size_t>(nv) + 1, 0);
@@ -385,6 +421,12 @@ SurfacePatches::SurfacePatches(const VertexField& field,
     }
 }
 
+/*
+ * SurfacePatches::ClosestPoint: the closest point on each triangle of the patch
+ * (ClosestPointOnTriangle), keeping the nearest one; on equal distances the first triangle in
+ * the sorted order wins, so every copy of a node returns the same point. Squared distances are
+ * compared and the square root is taken once at the end.
+ */
 double SurfacePatches::ClosestPoint(
     int v, const double y[3], double p[3], double normal[3], bool& interior, int k) const {
     double best = -1.0;
@@ -417,6 +459,12 @@ double SurfacePatches::ClosestPoint(
 
 namespace exaconstit::microstructure {
 
+/*
+ * MakeCurvedPatches: selects the nodes on a curved surface that the fit may move (on one or two
+ * boundary surfaces, at least one of them curved; nodes on three or more surfaces are corners and
+ * never move) and builds their patches, one per surface, from the node labels' surfaces, feature
+ * cosine and surface faces.
+ */
 std::unique_ptr<SurfacePatches> MakeCurvedPatches(const NodeLabels& labels, int rings) {
     const int nv = labels.NumNodes();
     const int* off = labels.SurfaceOffsets().HostRead();
@@ -437,6 +485,10 @@ std::unique_ptr<SurfacePatches> MakeCurvedPatches(const NodeLabels& labels, int 
         labels.Field(), selected, &labels.SurfaceFaces(), rings, &surfaces);
 }
 
+/*
+ * CurvedPatchesReady: checks the patch of every curved surface of node v. A patch can be empty
+ * when the node was not selected (more than two surfaces), so the node cannot follow that surface.
+ */
 bool CurvedPatchesReady(const NodeLabels& labels, const SurfacePatches& patches, int v) {
     const int* off = labels.SurfaceOffsets().HostRead();
     const int* planar = labels.SurfacePlanar().HostRead();
@@ -448,6 +500,15 @@ bool CurvedPatchesReady(const NodeLabels& labels, const SurfacePatches& patches,
     return true;
 }
 
+/*
+ * ProjectOnNodeSurfaces (see the header for the cases). Each pass replaces every surface of the
+ * node by a plane: a flat surface by itself (through x0), a curved surface by the tangent plane
+ * at the closest point p on its patch. When p lies on an edge or a corner of the patch (y beyond
+ * the patch side or across a crease) the triangle normal is not the right direction, and the
+ * plane normal to y - p through p is used instead. Then y moves to the nearest point on those
+ * planes (ProjectOntoPlanes). With only flat surfaces one pass is exact; with a curved one the
+ * tangent planes change as y moves, so the passes repeat until they settle.
+ */
 void ProjectOnNodeSurfaces(const NodeLabels& labels,
                            const SurfacePatches& patches,
                            int v,
@@ -469,6 +530,7 @@ void ProjectOnNodeSurfaces(const NodeLabels& labels,
     if (curved && !CurvedPatchesReady(labels, patches, v)) {
         return;
     }
+    // One curved surface: the closest point on its patch is the answer
     if (curved && num == 1) {
         double p[3];
         double pn[3];
@@ -477,6 +539,8 @@ void ProjectOnNodeSurfaces(const NodeLabels& labels,
         std::copy(p, p + 3, y);
         return;
     }
+    // Planes n[k] . x = c[k] of the node's surfaces, rebuilt in every pass; dist_max is the
+    // largest distance from y to a curved patch before the pass
     double n[2][3];
     double c[2];
     for (int it = 0; it < (curved ? max_iterations : 1); ++it) {
@@ -508,6 +572,8 @@ void ProjectOnNodeSurfaces(const NodeLabels& labels,
             break;
         }
     }
+    // Coordinates fixed by axis-aligned planes are restored exactly (the projection leaves them
+    // only up to round-off)
     for (int s = off[v]; s < off[v + 1]; ++s) {
         const int axis = (planar[s] != 0) ? AxisOf(nrm + 3 * s) : -1;
         if (axis >= 0) {

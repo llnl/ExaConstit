@@ -13,14 +13,14 @@
 
 /**
  * @file node_labels.hpp
- * @brief Stage 2a of conformal fitting: which grains meet at every mesh node, and how many
- * surfaces (grain boundaries and the outer boundary of the mesh) the node must stay on.
+ * @brief Which grains meet at every mesh node, and how many surfaces (grain boundaries and the
+ * outer boundary of the mesh) the node must stay on: the first step of the conformal fit.
  *
- * **What it is for.** Stage 2 moves the mesh nodes so that element faces lie on the grain
- * boundaries. Before a node can be moved it has to be known what it must stay on: a node inside a
- * grain is free, a node between two grains must stay on their boundary surface, a node where
- * three grains meet must stay on the line where the three boundaries meet (a *triple line*), and
- * a node where four grains meet is pinned to a point (a *quad point*). A node on the outer
+ * **What it is for.** The conformal fit moves the mesh nodes so that element faces lie on the
+ * grain boundaries. Before a node can be moved it has to be known what it must stay on: a node
+ * inside a grain is free, a node between two grains must stay on their boundary surface, a node
+ * where three grains meet must stay on the line where the three boundaries meet (a *triple line*),
+ * and a node where four grains meet is pinned to a point (a *quad point*). A node on the outer
  * boundary of the mesh must in addition stay on that boundary: on a face of a box, on one of its
  * edges, or at a corner. This file computes, for every node:
  *   - its *label set*: the sorted, distinct grain ids of the elements that contain it;
@@ -36,13 +36,15 @@
  * coordinates and the exchange between ranks are those of a VertexField with
  * FieldNodes::MESH_NODES (labeling/vertex_field.hpp), so node v here is node v there.
  *
- * **Label sets.** The label set of node v is the union of the labels of all elements that contain
- * v, over all ranks: each rank collects the labels of its own elements, the copies of every
- * shared node are exchanged (VertexField::ExchangeSharedLists) and each copy keeps the sorted
- * union of all copies, with the number of elements of each label (summed over the copies). A
- * union of sets and a sum of counts do not depend on the order in which they arrive, so all
- * copies end up identical and the result does not depend on the rank count or the partition.
- * There is no fixed limit on the size of a set.
+ * **Label sets.** (A *label* is the grain id of an element.) The label set of node v is the union
+ * of the labels of all elements that contain v, over all ranks: each rank collects the labels of
+ * its own elements, the copies of every shared node are exchanged
+ * (VertexField::ExchangeSharedLists) and each copy keeps the sorted union of all copies, with the
+ * number of elements of each label (summed over the copies). A union of sets and a sum of counts do
+ * not depend on the order in which they arrive, so all copies end up identical and the result does
+ * not depend on the rank count or the partition. There is no fixed limit on the size of a set. The
+ * sets are stored as an *offsets array*: all lists one after another in Labels(), and the list of
+ * node v starting at LabelOffsets()[v] (often called CSR, compressed sparse row, storage).
  *
  * **Boundary surfaces.** The outer boundary is the set of faces that belong to one element only
  * (faces shared between ranks are not boundary faces). For every boundary face its unit outward
@@ -89,15 +91,17 @@
  *   - constraints = grain constraints + boundary constraints.
  * A node with more than 3 constraints is *over-constrained*: in 3D no position satisfies all of
  * them in general (e.g. a quad point on the outer boundary, or a grain boundary that meets a box
- * corner). Such nodes are counted and flagged here; label repair (Stage 2c) decides what to do
- * with them.
+ * corner). Such nodes are counted and flagged here; label repair (label_repair.hpp) decides what
+ * to do with them.
  *
- * **Where it runs.** Host and MPI only (Stage 2 is CPU-only: TMOP fitting needs legacy
- * assembly).
+ * **Where it runs.** Host only (the conformal fit runs on the CPU), MPI parallel. The constructor
+ * and SetElementLabels are collective over the mesh communicator; the accessors are local.
  */
 
 namespace exaconstit::microstructure {
 
+/** @brief Face neighbors of the elements (mesh/mesh_adjacency.hpp); declared here so this
+ * header does not need to include it. */
 class MeshAdjacency;
 
 /** @brief Settings of NodeLabels. */
@@ -118,7 +122,7 @@ struct NodeLabelOptions {
     std::vector<int> fixed_labels;
 };
 
-/** @brief How many grains meet at a node (index = number of labels - 1, capped). */
+/** @brief How many grains meet at a node; the value is the number of labels - 1, capped at 4. */
 enum class JunctionKind : int {
     INTERIOR = 0,    ///< one grain
     FACE = 1,        ///< two grains: on a grain boundary face
@@ -129,10 +133,11 @@ enum class JunctionKind : int {
 
 /** @brief Number of JunctionKind values. */
 inline constexpr int NUM_JUNCTION_KINDS = 5;
-/** @brief Boundary constraint counts 0..3 (more surfaces are capped at 3). */
+/** @brief Number of possible boundary constraint counts, 0..3 (more surfaces count as 3). */
 inline constexpr int NUM_BOUNDARY_CONSTRAINTS = 4;
 
-/** @brief Global node counts (each node counted once, on the rank that owns it). */
+/** @brief Node counts over the whole mesh, for the log (each node counted once, on the rank that
+ * owns it; the same on every rank). */
 struct NodeLabelSummary {
     /** @brief count[kind][b]: nodes of JunctionKind `kind` with b boundary constraints. */
     std::array<std::array<std::int64_t, NUM_BOUNDARY_CONSTRAINTS>, NUM_JUNCTION_KINDS> count{};
@@ -167,8 +172,11 @@ public:
     NodeLabels(mfem::ParMesh& pmesh,
                const mfem::Array<int>& element_label,
                const NodeLabelOptions& options = {});
+    /** @brief Defined in the source file, where MeshAdjacency is a complete type. */
     ~NodeLabels();
+    /** @brief Not copyable: owns the node field and the adjacency. */
     NodeLabels(const NodeLabels&) = delete;
+    /** @brief Not copyable. */
     NodeLabels& operator=(const NodeLabels&) = delete;
 
     /**
@@ -178,27 +186,29 @@ public:
      */
     void SetElementLabels(const mfem::Array<int>& element_label);
 
-    /** @brief Node numbering, coordinates, owned / shared markers and the rank exchange. */
+    /** @brief Node numbering, coordinates, which nodes this rank owns, and the exchange between
+     * the copies of shared nodes. */
     const VertexField& Field() const {
         return *m_field;
     }
-    /** @brief Number of local nodes. */
+    /** @brief Number of nodes on this rank (owned and shared copies). */
     int NumNodes() const {
         return m_field->NumVertices();
     }
 
-    /** @brief Label set CSR offsets, size NumNodes() + 1. */
+    /** @brief Offsets of the label sets in Labels(), NumNodes() + 1 entries. */
     const mfem::Array<int>& LabelOffsets() const {
         return m_label_offsets;
     }
-    /** @brief Label set CSR items: the labels of node v, ascending, at
-     * [LabelOffsets()[v], LabelOffsets()[v + 1]). */
+    /** @brief All label sets one after another: the labels of node v, ascending, are entries
+     * LabelOffsets()[v] .. LabelOffsets()[v + 1] - 1. */
     const mfem::Array<int>& Labels() const {
         return m_labels;
     }
     /**
      * @brief Per entry of Labels(): how many elements (over all ranks) that contain the node have
-     * that label. Label repair uses it to see whether a flip removes a label from a node.
+     * that label. Label repair uses it to see whether switching an element removes a label from
+     * a node.
      */
     const mfem::Array<int>& LabelCounts() const {
         return m_label_counts;
@@ -207,7 +217,8 @@ public:
     const mfem::Array<int>& ElementLabels() const {
         return m_element_label;
     }
-    /** @brief Cosine of the feature angle: two normals belong to one surface above it. */
+    /** @brief Cosine of the feature angle: two face normals belong to one surface when their dot
+     * product is at least this. */
     double FeatureCosine() const {
         return m_feature_cosine;
     }
@@ -215,7 +226,7 @@ public:
     const std::vector<int>& FixedLabels() const {
         return m_fixed_labels;
     }
-    /** @brief True when label l is a fixed label. */
+    /** @brief True when label l is one of the fixed labels. */
     bool IsFixedLabel(int l) const;
     /**
      * @brief Per local face (Mesh::GetNumFaces): 1 when this rank contributes the face as a
@@ -239,8 +250,9 @@ public:
         return m_boundary_surfaces[v];
     }
     /**
-     * @brief Boundary surface CSR offsets, size NumNodes() + 1: the surfaces of node v are
-     * [SurfaceOffsets()[v], SurfaceOffsets()[v + 1]).
+     * @brief Offsets of the boundary surfaces, NumNodes() + 1 entries: the surfaces of node v are
+     * numbers SurfaceOffsets()[v] .. SurfaceOffsets()[v + 1] - 1 in SurfaceNormals() and
+     * SurfacePlanar().
      */
     const mfem::Array<int>& SurfaceOffsets() const {
         return m_surface_offsets;
@@ -253,65 +265,72 @@ public:
     const mfem::Vector& SurfaceNormals() const {
         return m_surface_normals;
     }
-    /** @brief 1 when all face normals of surface k agree to 1e-12 (flat at the node), else 0. */
+    /** @brief Per surface: 1 when all its face normals at the node agree to 1e-12 (the surface
+     * is flat there), else 0. */
     const mfem::Array<int>& SurfacePlanar() const {
         return m_surface_planar;
     }
-    /** @brief min(BoundarySurfaces(v), 3). */
+    /** @brief Directions node v loses to the outer boundary: min(BoundarySurfaces(v), 3). */
     int BoundaryConstraints(int v) const {
         return m_boundary_surfaces[v] < 3 ? m_boundary_surfaces[v] : 3;
     }
-    /** @brief NumLabels(v) - 1. */
+    /** @brief Directions node v loses to grain boundaries: NumLabels(v) - 1. */
     int GrainConstraints(int v) const {
         return NumLabels(v) - 1;
     }
-    /** @brief GrainConstraints(v) + BoundaryConstraints(v). */
+    /** @brief All constraints of node v: GrainConstraints(v) + BoundaryConstraints(v). */
     int Constraints(int v) const {
         return GrainConstraints(v) + BoundaryConstraints(v);
     }
-    /** @brief Global number of pinched nodes (each node once). */
+    /** @brief Number of pinched nodes over all ranks (each node once). */
     std::int64_t NumPinched() const {
         return m_num_pinched;
     }
-    /** @brief More than 3 constraints. */
+    /** @brief True when node v has more than 3 constraints (no point satisfies them all). */
     bool OverConstrained(int v) const {
         return Constraints(v) > 3;
     }
     /** @brief How many grains meet at node v. */
     JunctionKind Kind(int v) const;
 
-    /** @brief Global counts (same on every rank). */
+    /** @brief The node counts over all ranks (the same on every rank). */
     const NodeLabelSummary& Summary() const {
         return m_summary;
     }
 
 private:
+    /** @brief Label sets and label counts of every node from the element labels. Collective. */
     void BuildLabelSets(const mfem::Array<int>& element_label);
+    /** @brief Marks the faces this rank counts as boundary surface faces (outer boundary and
+     * interfaces of fixed labels). Collective when there are fixed labels. */
     void FindSurfaceFaces();
+    /** @brief Flags the nodes where a grain pinches. Collective. */
     void FindPinches();
+    /** @brief Boundary surfaces (normals, planarity) of every node. Collective. */
     void BuildBoundarySurfaces(double feature_angle_degrees);
+    /** @brief The global node counts. Collective. */
     void BuildSummary();
 
-    std::unique_ptr<VertexField> m_field;
-    mfem::Array<int> m_element_label;
-    std::vector<int> m_fixed_labels;
-    double m_feature_cosine = 0.0;
-    std::vector<char> m_surface_faces;
-    mfem::Array<int> m_pinched;
-    std::unique_ptr<MeshAdjacency> m_adjacency; ///< built once (the topology does not change)
+    std::unique_ptr<VertexField> m_field;       ///< node numbering, coordinates and exchange
+    mfem::Array<int> m_element_label;           ///< grain of each local element (current labels)
+    std::vector<int> m_fixed_labels;            ///< fixed labels, ascending
+    double m_feature_cosine = 0.0;              ///< cosine of the feature angle
+    std::vector<char> m_surface_faces;          ///< per local face: 1 = counted surface face
+    mfem::Array<int> m_pinched;                 ///< per node: 1 = pinched
+    std::unique_ptr<MeshAdjacency> m_adjacency; ///< face neighbors; built once (fixed topology)
     std::vector<std::uint64_t> m_keys;          ///< element keys (mesh/element_key.hpp)
-    std::vector<std::uint64_t> m_ghost_keys;
+    std::vector<std::uint64_t> m_ghost_keys;    ///< keys of the ghost elements
     /** @brief Interface faces counted here: (local face, local element they point out of). */
     std::vector<std::pair<int, int>> m_interface_faces;
-    mfem::Array<int> m_label_offsets;
-    mfem::Array<int> m_labels;
-    mfem::Array<int> m_label_counts;
-    mfem::Array<int> m_boundary_surfaces;
-    mfem::Array<int> m_surface_offsets;
-    mfem::Vector m_surface_normals;
-    mfem::Array<int> m_surface_planar;
-    NodeLabelSummary m_summary;
-    std::int64_t m_num_pinched = 0;
+    mfem::Array<int> m_label_offsets;     ///< see LabelOffsets()
+    mfem::Array<int> m_labels;            ///< see Labels()
+    mfem::Array<int> m_label_counts;      ///< see LabelCounts()
+    mfem::Array<int> m_boundary_surfaces; ///< per node: number of boundary surfaces
+    mfem::Array<int> m_surface_offsets;   ///< see SurfaceOffsets()
+    mfem::Vector m_surface_normals;       ///< see SurfaceNormals()
+    mfem::Array<int> m_surface_planar;    ///< see SurfacePlanar()
+    NodeLabelSummary m_summary;           ///< see Summary()
+    std::int64_t m_num_pinched = 0;       ///< see NumPinched()
 };
 
 } // namespace exaconstit::microstructure

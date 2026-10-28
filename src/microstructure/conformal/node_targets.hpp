@@ -14,9 +14,13 @@
 
 /**
  * @file node_targets.hpp
- * @brief Stage 2b of conformal fitting: for every node on a grain boundary, the position on the
- * analytic grain boundary it should move to (its *target*), and a check that the target makes
- * sense.
+ * @brief For every node on a grain boundary, the position on the exact (analytic) grain boundary
+ * it should move to in the conformal fit (its *target*), and a check that the target makes sense.
+ *
+ * **Words used.** A *label* is the grain id of an element. f_s(y) is the metric value of seed s
+ * at point y (metric_functors.hpp: the distance for Voronoi, the weighted or stretched distance
+ * for the other metrics); a point belongs to the grain of the seed with the smallest f, so the
+ * exact boundary between seeds a and b is the surface f_a = f_b.
  *
  * **Input.** The node label sets (node_labels.hpp) and a description of the analytic grain
  * boundaries: the metric, the seeds the labeling used (after Lloyd moves, with the final
@@ -46,8 +50,9 @@
  *     surface; the rows of the curved surfaces are updated the same way, so the projection ends
  *     where the grain boundary meets the edge, and the node slides along the edge.
  *
- * **Validation** (a failure marks a *fake junction*: the mesh shows grains meeting at the node,
- * but their analytic boundaries do not meet near it; label repair, Stage 2c, handles these):
+ * **Checks of a target** (a failure marks a *fake junction*: the mesh shows grains meeting at the
+ * node, but their exact boundaries do not meet near it; label repair, label_repair.hpp, handles
+ * these):
  *   1. the projection converged and every equation holds to `tolerance * h` in distance;
  *   2. the node moves at most `max_move` element sizes (max_move * h * p, p the order of the
  *      Nodes: for curved meshes h is the spacing of the nodal points, a fraction of the element);
@@ -88,9 +93,10 @@
  *   - NONE: one label (inside a grain, or on the outer boundary only);
  *   - FIT: a valid target;
  *   - OVER_CONSTRAINED: more than 3 constraints (NodeLabels::OverConstrained);
- *   - HELD: a label without analytic boundary (grain_seed = -1), or a curved boundary surface
- *     without patch triangles at the node (CURVED_FEATURE; corners with three surfaces are
- *     over-constrained);
+ *   - HELD: the node keeps its place: a label without analytic boundary (grain_seed = -1,
+ *     NON_ANALYTIC), a curved boundary surface without patch triangles at the node
+ *     (CURVED_FEATURE; corners with three surfaces are over-constrained instead), a grain too
+ *     thin for the mesh (UNDER_RESOLVED) or a pinch (PINCH);
  *   - FAKE_JUNCTION: validation failed, or two labels grew from the same seed (TargetReason says
  *     which).
  *
@@ -99,7 +105,9 @@
  * the same bits and the result does not depend on the partition. Only h and the summary need
  * communication.
  *
- * **Where it runs.** Host (Stage 2 is CPU-only); the seed search uses axom::SEQ_EXEC.
+ * **Where it runs.** Host only (the conformal fit runs on the CPU); the seed search uses Axom's
+ * sequential execution space (axom::SEQ_EXEC). The constructor is collective over the mesh
+ * communicator; Evaluate, EvaluateAnalytic, NearbySeeds and the accessors are local.
  */
 
 namespace exaconstit::microstructure {
@@ -110,9 +118,10 @@ struct NodeTargetOptions {
     double max_move = 1.0;
     /** @brief Projection step and residual tolerance, in units of h. */
     double tolerance = 1e-10;
-    /** @brief Gauss-Newton steps allowed per node. */
+    /** @brief Most Gauss-Newton steps per node (manifold_projector.hpp). */
     int max_iterations = 25;
-    /** @brief Parameter bins of the seed search (performance only). */
+    /** @brief Number of bins of the seed search over seed parameters such as weights (affects
+     * speed only, not results; SeedIndex::Build). */
     int num_bins = 8;
     /**
      * @brief Use the analytic grain boundaries of the seeds. false: no node gets an analytic
@@ -141,19 +150,20 @@ struct NodeTargetOptions {
     bool hold_pinches = true;
 };
 
-/** @brief What happens to a node (see the file comment). */
+/** @brief What happens to a node in the fit (see the file comment). */
 enum class TargetStatus : int {
-    NONE = 0,
-    FIT = 1,
-    OVER_CONSTRAINED = 2,
-    HELD = 3,
-    FAKE_JUNCTION = 4
+    NONE = 0,             ///< one label: inside a grain, or on the outer boundary only
+    FIT = 1,              ///< has a valid target and is pulled toward it
+    OVER_CONSTRAINED = 2, ///< more than 3 constraints: no point satisfies them all
+    HELD = 3,             ///< keeps its place (TargetReason says why)
+    FAKE_JUNCTION = 4     ///< its grains do not meet near it exactly (TargetReason says why)
 };
+/** @brief Number of TargetStatus values (size of NodeTargetSummary::status). */
 inline constexpr int NUM_TARGET_STATUSES = 5;
 
 /** @brief Why a node is HELD or a FAKE_JUNCTION (NONE otherwise). */
 enum class TargetReason : int {
-    NONE = 0,
+    NONE = 0,           ///< not HELD nor FAKE_JUNCTION
     NON_ANALYTIC = 1,   ///< HELD: a label with grain_seed = -1
     CURVED_FEATURE = 2, ///< HELD: a curved boundary surface has no patch triangles at the node
     SAME_SEED = 3,      ///< two labels grew from the same seed
@@ -165,11 +175,15 @@ enum class TargetReason : int {
     UNDER_RESOLVED = 9, ///< HELD: a label of a grain without an interior node
     PINCH = 10          ///< a grain pinches at the node (NodeLabels::Pinched)
 };
+/** @brief Number of TargetReason values (size of NodeTargetSummary::reason). */
 inline constexpr int NUM_TARGET_REASONS = 11;
 
-/** @brief Global counts (each node once, on its owner). */
+/** @brief Node counts over all ranks, for the log (each node counted once, on its owner rank;
+ * the same on every rank). */
 struct NodeTargetSummary {
+    /** @brief Nodes per TargetStatus (index = static_cast<int>(status)). */
     std::array<std::int64_t, NUM_TARGET_STATUSES> status{};
+    /** @brief Nodes per TargetReason (index = static_cast<int>(reason)). */
     std::array<std::int64_t, NUM_TARGET_REASONS> reason{};
     /** @brief Largest |target - x| / h over the FIT nodes. */
     double max_move_ratio = 0.0;
@@ -179,16 +193,20 @@ struct NodeTargetSummary {
     std::int64_t under_resolved_grains = 0;
 };
 
+/** @brief Most labels stored in a NodeLabelQuery: a larger set is over-constrained anyway. */
+inline constexpr int NODE_QUERY_LABELS = 4;
+
 /**
  * @brief A label set to evaluate at a node: the node's own set (the constructor) or a
- * hypothetical one (label repair previews a flip, label_repair.hpp). Labels ascending and
- * distinct; only the first NODE_QUERY_LABELS are stored (a larger set is over-constrained
- * anyway, and num_labels keeps its size).
+ * hypothetical one (label repair previews switching an element, label_repair.hpp; the adjacency
+ * check asks about pairs, adjacency_check.hpp).
  */
-inline constexpr int NODE_QUERY_LABELS = 4;
 struct NodeLabelQuery {
+    /** @brief The node (local node index of the NodeLabels). */
     int node = -1;
+    /** @brief Size of the label set, also when it exceeds NODE_QUERY_LABELS. */
     int num_labels = 0;
+    /** @brief The labels, ascending and distinct; only the first NODE_QUERY_LABELS are stored. */
     int labels[NODE_QUERY_LABELS] = {};
     /**
      * @brief Where the node is (3 doubles), or nullptr = its original position
@@ -201,11 +219,13 @@ struct NodeLabelQuery {
 
 /** @brief The evaluation of a NodeLabelQuery. */
 struct NodeTargetResult {
-    TargetStatus status = TargetStatus::NONE;
-    TargetReason reason = TargetReason::NONE;
-    double target[3] = {0.0, 0.0, 0.0}; ///< the target when FIT, else the node's position
+    TargetStatus status = TargetStatus::NONE; ///< what would happen to the node
+    TargetReason reason = TargetReason::NONE; ///< why, for HELD and FAKE_JUNCTION
+    double target[3] = {0.0, 0.0, 0.0};       ///< the target when FIT, else the node's position
 };
 
+/** @brief Patches of boundary triangles (boundary_projector.hpp); declared here so this header
+ * does not need to include it. */
 class SurfacePatches;
 
 /** @brief Targets, statuses and mesh sizes of every node (see the file comment). */
@@ -218,10 +238,11 @@ public:
      * @param labels     node label sets of the mesh (kept by reference: must outlive this).
      * @param metric     the metric of the labeling.
      * @param seeds      the seeds the labeling used (positions, weights, per-seed tensors).
-     * @param setup      the global Quadric tensor / per-seed flag (as for SeedIndex::Build).
+     * @param setup      metric parameters of the seeds: the global Quadric tensor, or the flag
+     *                   for per-seed tensors (as for SeedIndex::Build).
      * @param grain_seed grain g (1-based) grew from seed grain_seed[g - 1] (0-based), -1 = not
      *                   analytic. Must cover every label of `labels`.
-     * @param options    tolerances.
+     * @param options    move limit, tolerances, smoothed fallback and holds.
      * @throws std::invalid_argument on every rank for a label outside grain_seed, a seed index out
      *         of range, an empty seed set or invalid options; SeedIndex::Build errors.
      */
@@ -231,8 +252,11 @@ public:
                 const MetricSetup& setup,
                 const std::vector<int>& grain_seed,
                 const NodeTargetOptions& options = {});
+    /** @brief Defined in the source file, where Evaluator and SurfacePatches are complete. */
     ~NodeTargets();
+    /** @brief Not copyable: owns the evaluator and the patches, and refers to the labels. */
     NodeTargets(const NodeTargets&) = delete;
+    /** @brief Not copyable. */
     NodeTargets& operator=(const NodeTargets&) = delete;
 
     /**
@@ -252,10 +276,11 @@ public:
     /**
      * @brief For each listed node: the best seed at its original position, then the next best
      * seeds (up to `max_seeds` in all) whose analytic boundary with the best seed is estimated to
-     * pass within `reach` element sizes of the node ((f_k - f_1) / |grad f_k - grad f_1| at the
-     * node; exact for Voronoi and Laguerre). CSR: the seeds of node i are
-     * seeds[offsets[i] .. offsets[i + 1]). Empty lists with NodeTargetOptions::analytic = false.
-     * Not collective; host.
+     * pass within `reach` element sizes of the node, estimated as (f_k - f_1) /
+     * |grad f_k - grad f_1| at the node (exact for Voronoi and Laguerre, whose boundaries are
+     * planes). The seeds of node i (closest first) are seeds[offsets[i]] .. seeds[offsets[i + 1]
+     * - 1], 0-based seed indices; offsets has nodes.size() + 1 entries. Empty lists with
+     * NodeTargetOptions::analytic = false. Not collective; host.
      */
     void NearbySeeds(const std::vector<int>& nodes,
                      int max_seeds,
@@ -263,7 +288,8 @@ public:
                      std::vector<int>& offsets,
                      std::vector<int>& seeds) const;
 
-    /** @brief Face rings of the curved-surface patches (PatchRingsFor of the largest move). */
+    /** @brief Face rings of the curved-surface patches: PatchRingsFor of the largest move a
+     * target may need (max_move, or the smoothing's move limit when larger). */
     int PatchRings() const {
         return m_patch_rings;
     }
@@ -272,7 +298,8 @@ public:
         return m_options;
     }
 
-    /** @brief Target positions, 3 per node (node v at 3 v); x itself unless FIT. */
+    /** @brief Target positions, 3 doubles per node (node v at 3 v, 3 v + 1, 3 v + 2); the node's
+     * own position unless FIT. */
     const mfem::Vector& Targets() const {
         return m_targets;
     }
@@ -305,21 +332,23 @@ public:
     class Evaluator;
 
 private:
+    /** @brief The mesh size h of every node (see the file comment). Collective. */
     void ComputeMeshSize();
+    /** @brief The global counts. Collective. */
     void BuildSummary();
 
-    const NodeLabels& m_labels;
-    std::unique_ptr<SurfacePatches> m_patches;
-    int m_patch_rings = 1;
-    std::unique_ptr<Evaluator> m_evaluator;
-    NodeTargetOptions m_options;
-    std::vector<char> m_smoothed;   ///< per node: FIT with the smoothed target
-    mfem::Vector m_smoothed_target; ///< 3 per node
-    mfem::Vector m_targets;
-    mfem::Array<int> m_status;
-    mfem::Array<int> m_reason;
-    mfem::Vector m_h;
-    NodeTargetSummary m_summary;
+    const NodeLabels& m_labels;                ///< the node labels (not owned)
+    std::unique_ptr<SurfacePatches> m_patches; ///< patches of the nodes on curved surfaces
+    int m_patch_rings = 1;                     ///< see PatchRings()
+    std::unique_ptr<Evaluator> m_evaluator;    ///< seed search and projection for the metric
+    NodeTargetOptions m_options;               ///< see Options()
+    std::vector<char> m_smoothed;              ///< per node: FIT with the smoothed target
+    mfem::Vector m_smoothed_target;            ///< smoothed staircase position, 3 per node
+    mfem::Vector m_targets;                    ///< see Targets()
+    mfem::Array<int> m_status;                 ///< per node: TargetStatus as int
+    mfem::Array<int> m_reason;                 ///< per node: TargetReason as int
+    mfem::Vector m_h;                          ///< per node: mesh size h
+    NodeTargetSummary m_summary;               ///< see Summary()
 };
 
 } // namespace exaconstit::microstructure
