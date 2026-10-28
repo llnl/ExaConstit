@@ -7,6 +7,7 @@
 #include "conduit_relay_config.h"
 #if defined(CONDUIT_RELAY_IO_HDF5_ENABLED)
 #include "conduit_relay_io_hdf5.hpp"
+// Defined when Conduit can read and write HDF5; without it every file function throws
 #define MS_HAVE_CONDUIT_HDF5 1
 #endif
 #endif
@@ -47,6 +48,7 @@ std::string Prefix(const std::filesystem::path& path) {
 /** @brief Owns a relay HDF5 file handle and closes it when destroyed. Host only. */
 class RelayFile {
 public:
+    /** @brief Opens the file read-only; throws std::runtime_error naming the file on failure. */
     explicit RelayFile(const std::filesystem::path& path) : m_path(path) {
         try {
             m_id = conduit::relay::io::hdf5_open_file_for_read(path.string());
@@ -56,13 +58,16 @@ public:
                                      "an HDF5 file)");
         }
     }
+    /** @brief Closes the file; a failure to close is ignored (a destructor must not throw). */
     ~RelayFile() {
         try {
             conduit::relay::io::hdf5_close_file(m_id);
         } catch (...) {
         }
     }
+    /** @brief Not copyable: owns the file handle. */
     RelayFile(const RelayFile&) = delete;
+    /** @brief Not copyable. */
     RelayFile& operator=(const RelayFile&) = delete;
 
     /** @brief True when `path` (relative to the root) exists. */
@@ -105,8 +110,8 @@ private:
         return std::vector<std::int64_t>(data, data + n);
     }
 
-    std::filesystem::path m_path;
-    hid_t m_id = -1;
+    std::filesystem::path m_path; ///< the file, for messages
+    hid_t m_id = -1;              ///< HDF5 file handle
 };
 
 /** @brief A string leaf (fixed or variable length). Throws if `node` is not a string. */
@@ -259,6 +264,11 @@ void CheckFinite(const std::filesystem::path& file,
 
 } // namespace
 
+/*
+ * IsHdf5File: HDF5 files begin with an 8-byte signature, at byte 0 or, when the file has a user
+ * block (a reserved area before the HDF5 data), at byte 512, 1024, 2048, ... The signature is
+ * looked for at those offsets with plain file reads.
+ */
 bool IsHdf5File(const std::filesystem::path& path) {
     // The 8-byte HDF5 signature, at offset 0 or at 512 * 2^k (files with a user block)
     static const unsigned char signature[8] = {0x89, 'H', 'D', 'F', '\r', '\n', 0x1a, '\n'};
@@ -281,6 +291,7 @@ bool IsHdf5File(const std::filesystem::path& path) {
     return false;
 }
 
+/* CheckMicrostructureFileHeader: opens the file and checks `format` and `format_version`. */
 std::int64_t CheckMicrostructureFileHeader(const std::filesystem::path& path) {
 #ifdef MS_HAVE_CONDUIT_HDF5
     const RelayFile file(path);
@@ -290,6 +301,7 @@ std::int64_t CheckMicrostructureFileHeader(const std::filesystem::path& path) {
 #endif
 }
 
+/* MicrostructureFileHasLabeledPoints: the header check, then whether the `mesh` group exists. */
 bool MicrostructureFileHasLabeledPoints(const std::filesystem::path& path) {
 #ifdef MS_HAVE_CONDUIT_HDF5
     const RelayFile file(path);

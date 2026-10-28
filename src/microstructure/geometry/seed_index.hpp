@@ -122,7 +122,9 @@ public:
     SeedIndex();
     /** @brief Releases the seed copies and the BVHs (host and device memory). Host only. */
     ~SeedIndex();
+    /** @brief Not copyable: owns the BVHs and the seed copies. */
     SeedIndex(const SeedIndex&) = delete;
+    /** @brief Not copyable. */
     SeedIndex& operator=(const SeedIndex&) = delete;
 
     /**
@@ -305,13 +307,15 @@ private:
     /** @brief Per-bin parameter summaries and root boxes (host copies; passed into kernels by
      * value). */
     BinBound m_bin_bound[SEED_INDEX_MAX_BINS];
+    /** @brief Bounding box of the seeds of each bin (the root box of its BVH). */
     axom::primal::BoundingBox<double, 3> m_bin_root[SEED_INDEX_MAX_BINS];
+    /** @brief Where each bin's representatives start in m_indexed_ids (num_bins + 1 used). */
     int m_bin_begin[SEED_INDEX_MAX_BINS + 1] = {};
     /** @brief Device functor over the seed copies. */
     Metric m_metric{};
-    SeedIndexReport m_report{};
-    int m_allocator_id = 0;
-    bool m_built = false;
+    SeedIndexReport m_report{}; ///< see GetReport()
+    int m_allocator_id = 0;     ///< allocator of the BVH arrays (from Build)
+    bool m_built = false;       ///< see IsBuilt()
 };
 
 } // namespace exaconstit::microstructure

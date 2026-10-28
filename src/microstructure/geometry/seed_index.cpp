@@ -42,7 +42,9 @@ namespace exaconstit::microstructure {
 
 namespace detail {
 
+/** @brief A seed position or query point, as Axom's 3D point type. */
 using SeedPoint = axom::primal::Point<double, 3>;
+/** @brief An axis-aligned box, as Axom's 3D bounding box type (a seed is a box of zero size). */
 using SeedBox = axom::primal::BoundingBox<double, 3>;
 
 /**
@@ -105,10 +107,10 @@ MakeSearchView(const Metric& metric,
  * by seed index (the tie-break). Plain data, lives in registers inside the query kernel.
  */
 struct RunningBest {
-    double f1 = DBL_MAX;
-    double f2 = DBL_MAX;
-    int id1 = INT32_MAX; ///< INT32_MAX = "none yet", so any real seed index sorts before it
-    int id2 = INT32_MAX;
+    double f1 = DBL_MAX; ///< smallest f so far
+    double f2 = DBL_MAX; ///< second smallest f so far
+    int id1 = INT32_MAX; ///< seed of f1; INT32_MAX = "none yet", so any real index sorts before it
+    int id2 = INT32_MAX; ///< seed of f2, same convention
 
     /** @brief True if (fa, ia) comes before (fb, ib): smaller f, or equal f and lower index. */
     MFEM_HOST_DEVICE static bool Before(double fa, int ia, double fb, int ib) {

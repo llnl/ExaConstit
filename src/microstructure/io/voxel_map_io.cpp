@@ -79,16 +79,23 @@ constexpr double k_quat_norm_tolerance = 1.0e-3;
  */
 class H5Handle {
 public:
+    /** @brief An empty handle (nothing to close). */
     H5Handle() = default;
+    /** @brief Takes ownership of `id`, closed later with `close` (e.g. H5Dclose). */
     H5Handle(hid_t id, herr_t (*close)(hid_t)) : m_id(id), m_close(close) {}
+    /** @brief Closes the handle if it is valid. */
     ~H5Handle() {
         Reset();
     }
+    /** @brief Not copyable: two owners would close the handle twice. */
     H5Handle(const H5Handle&) = delete;
+    /** @brief Not copyable. */
     H5Handle& operator=(const H5Handle&) = delete;
+    /** @brief Takes over the handle of `other`, which is left empty. */
     H5Handle(H5Handle&& other) noexcept : m_id(other.m_id), m_close(other.m_close) {
         other.m_id = -1;
     }
+    /** @brief Closes the current handle, then takes over the handle of `other`. */
     H5Handle& operator=(H5Handle&& other) noexcept {
         if (this != &other) {
             Reset();
@@ -108,14 +115,15 @@ public:
     }
 
 private:
+    /** @brief Closes the handle if it is valid and marks it empty. */
     void Reset() {
         if (m_id >= 0 && m_close != nullptr) {
             m_close(m_id);
         }
         m_id = -1;
     }
-    hid_t m_id = -1;
-    herr_t (*m_close)(hid_t) = nullptr;
+    hid_t m_id = -1;                    ///< the HDF5 handle, -1 = empty
+    herr_t (*m_close)(hid_t) = nullptr; ///< the matching close function
 };
 
 /**
@@ -125,19 +133,23 @@ private:
  */
 class QuietHdf5Errors {
 public:
+    /** @brief Saves the current error printer and switches printing off. */
     QuietHdf5Errors() {
         H5Eget_auto2(H5E_DEFAULT, &m_func, &m_data);
         H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     }
+    /** @brief Restores the saved error printer. */
     ~QuietHdf5Errors() {
         H5Eset_auto2(H5E_DEFAULT, m_func, m_data);
     }
+    /** @brief Not copyable: the saved setting must be restored once. */
     QuietHdf5Errors(const QuietHdf5Errors&) = delete;
+    /** @brief Not copyable. */
     QuietHdf5Errors& operator=(const QuietHdf5Errors&) = delete;
 
 private:
-    H5E_auto2_t m_func = nullptr;
-    void* m_data = nullptr;
+    H5E_auto2_t m_func = nullptr; ///< the saved error printer
+    void* m_data = nullptr;       ///< its client data
 };
 
 /**
@@ -564,9 +576,9 @@ struct FileGeometry {
     std::string group;     ///< the group carrying the geometry (the data container)
     std::string where;     ///< description for messages
     bool has_dims = false; ///< the file declares voxel counts
-    std::array<std::int64_t, 3> dims = {0, 0, 0};
-    std::array<double, 3> origin = {0.0, 0.0, 0.0};
-    std::array<double, 3> spacing = {0.0, 0.0, 0.0};
+    std::array<std::int64_t, 3> dims = {0, 0, 0};    ///< declared voxel counts (has_dims)
+    std::array<double, 3> origin = {0.0, 0.0, 0.0};  ///< lower corner of voxel (0,0,0), file units
+    std::array<double, 3> spacing = {0.0, 0.0, 0.0}; ///< voxel edge lengths, file units
 };
 
 /** @brief Parent group of an absolute path ("/a/b/c" -> "/a/b", "/a" -> "/"). */

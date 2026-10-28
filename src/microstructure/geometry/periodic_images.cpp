@@ -147,8 +147,9 @@ void RequireConsistentSeedArrays(const SeedSet& seeds) {
  * Same coordinates as the periodic face pairing: MeshAdjacency (mesh/mesh_adjacency.cpp) decides
  * which faces lie on the box planes from the Nodes values of each face (every nodal point) when
  * the mesh has continuous Nodes, so a box measured here from the Nodes and those faces agree;
- * the vertex array is never mixed in for a mesh with Nodes (it can be stale after node motion,
- * which put no face on the planes and silently skipped the pairing before). Each rank reads its
+ * the vertex array is never mixed in for a mesh with Nodes (it can be stale after node motion; a
+ * box measured from stale vertices would put no face on the planes, and the pairing would be
+ * skipped without notice). Each rank reads its
  * own copies of shared dofs; copies that differ in the last bits (after a parallel refinement)
  * only make MIN / MAX pick one of the copies, the same one on every rank of this run. Which copy
  * that is can depend on the partition, so after a parallel refinement the box (and with it the
@@ -160,7 +161,7 @@ void RequireConsistentSeedArrays(const SeedSet& seeds) {
 PeriodicBox PeriodicBoxFromMesh(const mfem::Mesh& local_mesh,
                                 MPI_Comm comm,
                                 const std::array<bool, 3>& periodic) {
-    // Step 1: local extent over the vertices
+    // Step 1: local extent over the Nodes dofs, or the vertices without Nodes
     const double inf = std::numeric_limits<double>::infinity();
     double local_lo[3] = {inf, inf, inf};
     double local_hi[3] = {-inf, -inf, -inf};

@@ -16,8 +16,9 @@
  * - columnar grains along a unit axis a: A = I - a a^T (MakeColumnarTensor);
  * - lamellae (layers) with unit normal n: A = n n^T (MakeLamellarTensor).
  * The returned 6 entries [Axx, Ayy, Azz, Ayz, Axz, Axy] go into MetricSetup::global_tensor.
- * The seed search stays fast for these tensors thanks to the projected-interval lower bound of
- * QuadricMetric.
+ * The seed search stays fast for these tensors: QuadricMetric bounds the metric value over a box of
+ * seeds from below using only the directions A measures (it projects the box onto them), so boxes
+ * of seeds that cannot win are still skipped although A ignores some directions.
  *
  * Host only (plain C++, std:: math); not collective.
  */

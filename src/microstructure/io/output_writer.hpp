@@ -314,9 +314,9 @@ void WriteGrainFile(const std::filesystem::path& path, const mfem::Array<int>& s
 /**
  * @brief Writes the grain table as CSV with a header row: grain_id, qw, qx, qy, qz, then every
  * non-empty optional column of @p table, in this order: region, source_id, num_elements, volume,
- * cx, cy, cz, num_neighbors, target_volume, phase, filler, feature_id (the last three were added
- * in Stage 1d after the existing columns, so scripts that read columns by position keep
- * working). Numbers use 17 significant digits. Not collective; host only.
+ * cx, cy, cz, num_neighbors, target_volume, phase, filler, feature_id (optional columns are only
+ * ever added at the end, so scripts that read columns by position keep working). Numbers use 17
+ * significant digits. Not collective; host only.
  *
  * @throws std::invalid_argument if a column has the wrong length; std::runtime_error on file
  *         errors.
@@ -349,7 +349,7 @@ void WriteGrainAdjacency(const std::filesystem::path& path, const GrainAdjacency
  * evaluated at the (p+1) per direction reference points (Mesh::PrintVTU, mesh.cpp:12908-13000),
  * so ParaView (5.5 or later) shows the true curved geometry. A mesh with order-p Nodes whose
  * elements happen to be straight is written the same way; it only makes the files larger.
- * Without Nodes, or with order-1 Nodes, the output is the plain linear one, as before.
+ * Without Nodes, or with order-1 Nodes, the output is plain linear cells.
  *
  * @param pmesh Distributed mesh (non-const because the data collection takes a Mesh*).
  * @param element_grain Grain id (1-based) of each local element, size pmesh.GetNE().

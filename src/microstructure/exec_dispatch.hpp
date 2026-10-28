@@ -62,6 +62,7 @@ namespace exaconstit::microstructure {
 /** @brief True when MFEM was built with RAJA and OpenMP (exec = "openmp", device "raja-omp"). */
 inline constexpr bool EXEC_OPENMP_AVAILABLE = true;
 #else
+/** @brief False: MFEM was built without RAJA or without OpenMP, so exec = "openmp" is refused. */
 inline constexpr bool EXEC_OPENMP_AVAILABLE = false;
 #endif
 
@@ -73,6 +74,7 @@ inline constexpr bool EXEC_OPENMP_AVAILABLE = false;
  */
 inline constexpr bool EXEC_GPU_AVAILABLE = true;
 #else
+/** @brief False: MFEM and Axom do not share a GPU platform, so exec = "gpu" is refused. */
 inline constexpr bool EXEC_GPU_AVAILABLE = false;
 #endif
 

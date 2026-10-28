@@ -122,9 +122,11 @@ struct BinBound {
  * data; pointers must be valid in the memory space where the functor runs.
  */
 struct SeedDeviceView {
-    /** @brief Seed coordinates, size N each, mesh length units. */
+    /** @brief Seed x coordinates, size N, mesh length units. */
     const double* x = nullptr;
+    /** @brief Seed y coordinates, size N, mesh length units. */
     const double* y = nullptr;
+    /** @brief Seed z coordinates, size N, mesh length units. */
     const double* z = nullptr;
     /** @brief Weight w_i (Laguerre/Quadric) or a_i (Additive), size N. Unused by Voronoi. */
     const double* weight = nullptr;

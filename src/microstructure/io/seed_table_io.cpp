@@ -35,6 +35,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** pi, for the sphere volume of the radius and diameter columns. */
 constexpr double PI = 3.141592653589793238462643383279502884;
 
 /** Largest allowed deviation of |q| from 1 (more usually means swapped columns or Euler angles). */
@@ -161,13 +162,13 @@ std::string Format17(double value) {
  * in the storage order m11 m22 m33 m23 m13 m12.
  */
 struct ColumnMap {
-    int x = -1, y = -1, z = -1, id = -1;
-    int quat[4] = {-1, -1, -1, -1}; ///< qw qx qy qz
-    int phase = -1, weight = -1;
-    int volume = -1, radius = -1, diameter = -1;
-    int shape[6] = {-1, -1, -1, -1, -1, -1}; ///< m11 m22 m33 m23 m13 m12
-    std::size_t num_fields = 0;
-    std::vector<std::string> ignored;
+    int x = -1, y = -1, z = -1, id = -1;         ///< position columns and the id column
+    int quat[4] = {-1, -1, -1, -1};              ///< qw qx qy qz
+    int phase = -1, weight = -1;                 ///< phase and metric weight columns
+    int volume = -1, radius = -1, diameter = -1; ///< the size columns (at most one present)
+    int shape[6] = {-1, -1, -1, -1, -1, -1};     ///< m11 m22 m33 m23 m13 m12
+    std::size_t num_fields = 0;                  ///< columns in the header
+    std::vector<std::string> ignored;            ///< unknown column names, lower case
 };
 
 /*
@@ -692,7 +693,7 @@ bool InvertShapeTensorPublic(const double m[6], double a[6]) {
  *     same table, bit for bit.
  */
 SeedTable ReadSeedTable(const SeedTableParameters& params, MPI_Comm comm) {
-    // Step 1
+    // Step 1: parameter checks (every rank)
     if (!(params.units_scale > 0.0) || !std::isfinite(params.units_scale)) {
         throw std::invalid_argument("ReadSeedTable: units_scale must be positive and finite");
     }
@@ -774,7 +775,7 @@ SeedTable ReadSeedTable(const SeedTableParameters& params, MPI_Comm comm) {
  * line per seed. Doubles use "%.17g" (17 significant digits), which is enough for strtod to
  * recover the same double, so ReadSeedTable(units_scale = 1, translate = 0) gives back the same
  * table: positions s x + t = 1 x + 0 = x, volumes 1^3 V = V, shape tensors 1^2 M = M (whose
- * inverse is then computed exactly as before), quaternions and weights verbatim.
+ * inverse is then computed exactly as on the first read), quaternions and weights verbatim.
  */
 void WriteSeedTable(const std::filesystem::path& path, const SeedTable& table) {
     const SeedSet& seeds = table.seeds;

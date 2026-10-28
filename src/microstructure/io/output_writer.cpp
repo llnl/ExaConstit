@@ -29,6 +29,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** @brief Short name for std::filesystem. */
 namespace fs = std::filesystem;
 
 /**
@@ -107,6 +108,7 @@ void CheckCompressionLevel(int compression) {
  */
 class ErrorRecordingSink : public std::streambuf {
 public:
+    /** Forwards to @p target (normally the file's stream buffer), which must outlive this. */
     explicit ErrorRecordingSink(std::streambuf& target) : m_target(target) {}
 
     /** True once any forward to the real sink wrote fewer bytes than asked, or threw. */
@@ -163,8 +165,8 @@ protected:
     }
 
 private:
-    std::streambuf& m_target;
-    bool m_failed = false;
+    std::streambuf& m_target; ///< the real sink
+    bool m_failed = false;    ///< see Failed()
 };
 #endif
 
@@ -627,10 +629,12 @@ void WriteGrainFile(const std::filesystem::path& path, const int* serial_grain_i
     });
 }
 
+/** Grain file from a std::vector: forwards to the pointer version. */
 void WriteGrainFile(const std::filesystem::path& path, const std::vector<int>& serial_grain_ids) {
     WriteGrainFile(path, serial_grain_ids.data(), serial_grain_ids.size());
 }
 
+/** Grain file from an mfem::Array: forwards its host copy to the pointer version. */
 void WriteGrainFile(const std::filesystem::path& path, const mfem::Array<int>& serial_grain_ids) {
     // HostRead makes the host copy valid (copying from the device if needed) and returns it
     WriteGrainFile(
@@ -687,8 +691,8 @@ void WriteGrainTable(const std::filesystem::path& path, const GrainTable& table)
         if (!table.target_volume.empty()) {
             os << ",target_volume";
         }
-        // Stage 1d columns, after the older ones, so the positions of the existing columns stay
-        // the same and scripts that read columns by position keep working
+        // Newer optional columns come last, so the positions of the other columns stay the same
+        // and scripts that read columns by position keep working
         if (!table.phase.empty()) {
             os << ",phase";
         }
