@@ -43,7 +43,8 @@ enum class MetricType {
  */
 enum class SamplingMode {
     CENTROID,       ///< One sample at the true volume centroid of the element
-    QUADRATURE_VOTE ///< Majority vote over the element quadrature points
+    QUADRATURE_VOTE ///< Volume-weighted vote of subcell points inside the element
+                    ///< (labeling/quadrature_vote.hpp)
 };
 
 /**
@@ -118,9 +119,15 @@ struct SeedSet {
     std::vector<std::int64_t> source_id;
     /** @brief Optional phase id per seed (size N or empty). */
     std::vector<int> phase;
-    /** @brief Reserved for hierarchical (parent/child) grain labels, size N or empty. */
+    /**
+     * @brief Parent id per seed for hierarchical (parent/child) grain labels, size N or empty.
+     * No generator step fills it; periodic images copy it.
+     */
     std::vector<std::int64_t> parent_id;
-    /** @brief Reserved for Johnson-Mehl nucleation times, size N or empty. */
+    /**
+     * @brief Nucleation time t_i per seed (Johnson-Mehl nuclei, time units of the nucleation
+     * rate), size N or empty (seeding/johnson_mehl.hpp).
+     */
     std::vector<double> nucleation_time;
 
     /** @brief Number of seeds N (the length of x). Host only. */
@@ -149,7 +156,7 @@ struct BestPair {
  * Per-grain arrays are replicated on every rank and indexed by grain id - 1. Per-region arrays
  * are replicated too and indexed by region id - 1.
  *
- * Kinds of grains (Stage 1d):
+ * Kinds of grains:
  * - grains grown from a seed (random, lattice, Johnson-Mehl or seed-table seeds), including
  *   "filler" grains grown from random seeds placed outside a measured region of interest;
  * - grains read from a voxel map (one per feature id used by the mesh);

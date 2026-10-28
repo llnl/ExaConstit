@@ -36,9 +36,6 @@
  */
 #include "microstructure/microstructure_options.hpp"
 
-#include "microstructure/exec_dispatch.hpp"
-// The compile-time constant CONNECTED_MAX_ROUNDS_LIMIT only (header-only; ms_options does not
-// link ms_labeling)
 #include "options/option_util.hpp"
 
 #include "mfem.hpp"
@@ -57,6 +54,9 @@
 #include <string>
 #include <vector>
 
+#include "microstructure/exec_dispatch.hpp"
+
+// The compile-time limits only (header-only; ms_options does not link ms_labeling)
 #include "microstructure/labeling/connected_limits.hpp"
 #include "microstructure/labeling/geodesic_limits.hpp"
 
@@ -71,9 +71,9 @@ namespace {
 /**
  * @brief Warns (on rank 0) about every key of `table` that is not in `known`.
  *
- * An unknown key is not an error. It is usually either a typo (`num_sedes`) or a table/key that
- * belongs to a later stage of the generator (e.g. [Conformal], [VoxelMap])
- * and is not read by this version. Neither should stop a run, but the user must be told that the
+ * An unknown key is not an error. It is usually either a typo (`num_sedes`) or a key that this
+ * version of the generator does not read (written for another version). Neither should stop a
+ * run, but the user must be told that the
  * value had no effect, otherwise a typo silently falls back to the default.
  *
  * Steps: collect the keys of `table` that are not listed in `known`, sort them, and print one
@@ -812,8 +812,8 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
             toml::find<std::string>(toml_input, "distance"), distance_map, "Tessellation.distance");
     }
 
-    // Distance-mode settings: the rounds cap of "connected" and the solver of "geodesic" (an
-    // inline table, so later solver settings can join it). Ranges and spelling are checked in
+    // Distance-mode settings: the rounds cap of "connected" and the inline table `geodesic`
+    // (solver, elongation, max_seeds_per_node). Ranges and spelling are checked in
     // validate(), so a typo is reported together with every other problem.
     if (toml_input.contains("connected_max_rounds")) {
         tess.connected_max_rounds = get_int(
@@ -2020,10 +2020,10 @@ bool MicrostructureOptions::validate(std::vector<std::string>* problems,
         report_error(valid,
                      "fit_volumes and lloyd_iterations are not supported with periodic axes");
     }
-    // Stage 1e distance modes. Both run on top of a plain (non-periodic) labeling of the active
-    // material: periodic images would need paths and components that wrap around the box, and
-    // Lloyd relaxation and the volume fit move seeds / weights using straight-line cells, which
-    // the constrained labels would no longer match. The geodesic distance is a path length: d
+    // Connected and geodesic distance modes. Both run on top of a plain (non-periodic) labeling of
+    // the active material: periodic images would need paths and components that wrap around the
+    // box, and Lloyd relaxation and the volume fit move seeds / weights using straight-line cells,
+    // which the constrained labels would no longer match. The geodesic distance is a path length: d
     // for Voronoi, d - a_i for Additive (e.g. Johnson-Mehl), the A-length for Quadric.
     const bool connected = (tessellation.distance == DistanceMode::CONNECTED);
     const bool geodesic = (tessellation.distance == DistanceMode::GEODESIC);

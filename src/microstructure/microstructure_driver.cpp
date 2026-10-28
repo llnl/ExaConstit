@@ -1,8 +1,9 @@
 /*
- * Implementation of GenerateMicrostructure (microstructure_driver.hpp): the Stage 1a-1e pipeline
- * support checks -> active part (attribute domain) -> preflight -> grain labels (seeds + size
+ * Implementation of GenerateMicrostructure (microstructure_driver.hpp), the generator pipeline:
+ * support checks -> preflight -> active part (attribute domain) -> grain labels (seeds + size
  * targets -> Lloyd / volume fit -> tessellation labels in the chosen distance mode -> compact ids,
- * or a voxel map) -> fragment cleanup -> orientations -> phases -> regions -> passthrough grains.
+ * or a voxel map) -> fragment cleanup -> orientations -> phases -> regions -> passthrough grains
+ * -> optional conformal fit of the grain boundaries.
  *
  * Every step is either computed from data that is identical on all ranks (the options, the
  * replicated seed set, the seed table and per-grain tables) or combined with MPI reductions inside
@@ -25,7 +26,7 @@
  * - ROI: the region of interest of a seed table, an axis-aligned box; filler seeds are random
  *   seeds placed outside it.
  * - Active elements: the elements that receive grains. With passthrough attributes they are
- *   marked by an element mask (mesh/element_mask.hpp) built by an AttributeDomain; every stage
+ *   marked by an element mask (mesh/element_mask.hpp) built by an AttributeDomain; every step
  *   skips the other elements. No sub-mesh or copy of the mesh is made. The helpers below take
  *   the whole mesh plus `const MaterialContext& material` (seeding/material_point_locator.hpp:
  *   the mask, null without passthrough parts or on a rank without elements, and the shared point
@@ -36,8 +37,8 @@
  *   material to its seed's anchor element) or "geodesic" (nearest seed along paths inside the
  *   material).
  * - Anchor element: the element that contains a seed (for a seed outside the material, the
- *   element nearest to it), named by its element key (mesh/element_key.hpp: a hash of the exact
- *   vertex coordinates, the same for every partition).
+ *   element nearest to it), named by its element key (mesh/element_key.hpp: a hash of the
+ *   element's corner positions rounded to a fine grid, the same for every partition).
  */
 #include "microstructure/microstructure_driver.hpp"
 
@@ -85,6 +86,7 @@ namespace exaconstit::microstructure {
 
 namespace {
 
+/** pi, for the sphere volume relations of the size targets. */
 constexpr double PI = 3.14159265358979323846;
 
 /** True when the grains come from a voxel map instead of a tessellation. */
@@ -120,9 +122,9 @@ void Warn(MPI_Comm comm, GenerationReport& report, const std::string& message) {
 /*
  * CheckSupportedOptions
  *
- * The options structure describes the whole planned generator, but this pipeline implements the
- * Stage 1a-1e subset. Options that ask for something not implemented yet are refused here,
- * before any work, with a message naming the option, rather than being silently ignored. The
+ * Options that ask for something the pipeline does not implement (Orientations.source = "list")
+ * or unknown choice values are refused here, before any work, with a message naming the option,
+ * rather than being silently ignored. The
  * tessellation checks (distance, vote levels, anisotropy kind) are owned by the labeler
  * (CheckSupportedTessellation) and called from here, so they also run before seeding. The
  * combination checks of validate() that would otherwise fail deep inside a collective step (or,
@@ -268,9 +270,9 @@ void CheckSupportedOptions(const MicrostructureOptions& options) {
         refuse("placement = \"johnson_mehl\" needs Tessellation.metric = \"additive\"");
     }
 
-    // Stage 1e distance modes. The labeler check below covers periodic axes and, for geodesic,
-    // the metric and anisotropy; the steps that move seeds or weights with straight-line cells
-    // (Lloyd, the volume fit) are refused here, as is a solver this build does not have.
+    // Connected and geodesic distance modes. The labeler check below covers periodic axes and, for
+    // geodesic, the metric and anisotropy; the steps that move seeds or weights with straight-line
+    // cells (Lloyd, the volume fit) are refused here, as is a solver this build does not have.
     if (tess.distance != DistanceMode::EUCLIDEAN) {
         if (tess.fit_volumes.enabled || tess.lloyd_iterations > 0 || tess.centroidal_power) {
             refuse("Tessellation.distance = \"connected\" / \"geodesic\" cannot be combined "
@@ -889,10 +891,12 @@ bool GeodesicNeedsSeedLists(const TessellationOptions& tess, const SeedSet& seed
 }
 
 /*
- * LabelGeodesic (collective): the geodesic solver selected by Tessellation.geodesic_solver:
+ * LabelGeodesic (collective): the geodesic solver selected by Tessellation.geodesic.solver:
  * "fim" -> LabelGeodesicFim (labeling/geodesic_fim.hpp, Fast Iterative Method eikonal solver, the
  * default), "graph" -> LabelGeodesicGraph (labeling/geodesic_graph.hpp, shortest paths along the
- * element edges and diagonals). Both take the same arguments and return the same GeodesicLabels
+ * element edges and diagonals); metrics that need several seeds per node (GeodesicNeedsSeedLists:
+ * Laguerre, weighted Quadric, per-seed tensors) use LabelGeodesicWeighted
+ * (labeling/geodesic_weighted.hpp, FIM only). All return the same GeodesicLabels
  * (labeling/geodesic_common.hpp). Additive offsets a_i (the seed weights, e.g. -v t_i for
  * Johnson-Mehl nuclei) are used when the metric is "additive"; with "voronoi" every a_i = 0.
  * Sampling (centroid or vote) follows Tessellation.sampling / vote_levels, as for the
@@ -977,7 +981,7 @@ struct DistanceModeLabels {
 /*
  * LabelByDistanceMode (collective): steps 6-8 by Tessellation.distance.
  *
- *  - "euclidean": LabelTessellation as before (periodic images, centroid or vote, compaction).
+ *  - "euclidean": LabelTessellation (periodic images, centroid or vote, compaction).
  *  - "connected":
  *     1. the straight-line labels (StraightLineLabels; validated: no periodic axes, so no images);
  *     2. ConstrainToConnectedCells with connected_max_rounds and the same sampling: orphans
@@ -1015,7 +1019,7 @@ DistanceModeLabels LabelByDistanceMode(const MicrostructureOptions& options,
     report.distance = tess.distance;
     DistanceModeLabels out;
 
-    // Plain straight-line labels: unchanged Stage 1a-1d path
+    // Plain straight-line labels
     if (tess.distance == DistanceMode::EUCLIDEAN) {
         out.labels = LabelTessellation(pmesh, comm, seeds, tess, material.mask);
         out.local_split_elements = out.labels.num_split_elements;
@@ -1169,8 +1173,8 @@ FragmentCleanupParameters CleanupParameters(const MicrostructureOptions& options
  * writes the passthrough grains there).
  */
 struct ActiveGrains {
-    mfem::Array<int> element_grain; ///< every local element: grain, 0 when inactive
-    int num_grains = 0;
+    mfem::Array<int> element_grain;           ///< every local element: grain, 0 when inactive
+    int num_grains = 0;                       ///< grains of the active elements
     std::vector<std::int64_t> source_id;      ///< stable id (seed, feature or derived)
     std::vector<double> source_quat;          ///< 4 per grain: measured orientation (or 0)
     std::vector<char> has_source_quat;        ///< 1 when source_quat holds a measured one
@@ -1280,7 +1284,7 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options,
     // Step 5: Lloyd relaxation and/or the volume fit (validated: not with periodic axes)
     RelaxAndFit(options, pmesh, comm, target_volume, seeds, report, material);
 
-    // Face adjacency of the mesh (the stages skip inactive neighbors), used by the connected mode
+    // Face adjacency of the mesh (the steps skip inactive neighbors), used by the connected mode
     // (step 7) and the fragment cleanup (step 9); with periodic axes it pairs matching faces on
     // opposite planes of the mesh box, so wrapped grains stay one grain (periodic axes are
     // refused with the connected and geodesic modes)
@@ -1322,15 +1326,14 @@ ActiveGrains LabelFromSeeds(const MicrostructureOptions& options,
     // body without a seed that took a straight-line label). With "largest", a larger leftover
     // body would take over the seed's identity and its real piece would be merged away or
     // renamed. The Euclidean mode keeps Cleanup.keep_component; for "seed" it uses
-    // SeedAnchorKeys (the element of the grain that contains the seed), unchanged from Stage 1b
-    // so earlier results stay bitwise the same. (The two anchors differ only for a seed exactly
-    // on a face between grains and for seeds outside the material.) SeedAnchorKeys is kept for the
-    // Euclidean mode rather than replaced by ConnectedAnchorKeys: for a seed whose containing
-    // element went to a neighbor, SeedAnchorKeys has no anchor (largest piece kept) while
-    // ConnectedAnchorKeys would pick the nearest same-label element, which can change which piece
-    // keeps a grain's identity in existing Stage 1b-1d runs. A grain whose anchor element carries
-    // another label at the end (a seed without a cell) falls back to the largest piece inside
-    // CleanupFragments.
+    // SeedAnchorKeys (the element of the grain that contains the seed). (The two anchors differ
+    // only for a seed exactly on a face between grains and for seeds outside the material.)
+    // SeedAnchorKeys is used for the Euclidean mode rather than ConnectedAnchorKeys: for a seed
+    // whose containing element went to a neighbor, SeedAnchorKeys has no anchor (largest piece
+    // kept) while ConnectedAnchorKeys would pick the nearest same-label element, which would
+    // change which piece keeps a grain's identity in Euclidean results. A grain whose anchor
+    // element carries another label at the end (a seed without a cell) falls back to the largest
+    // piece inside CleanupFragments.
     FragmentCleanupParameters cleanup_params = CleanupParameters(options);
     if (!mode.seed_anchor_key.empty()) {
         cleanup_params.keep = KeepRule::SEED_ELEMENT;
@@ -1806,7 +1809,7 @@ void FitConformalBoundaries(const MicrostructureOptions& options,
  *  2b. Active part: an AttributeDomain when [Mesh] lists active or passthrough attributes
  *     (collective): an element mask over the mesh itself, no sub-mesh.
  *  2c. One MaterialPointLocator over the active elements (seed sources only), shared with every
- *     stage through a MaterialContext, so it is built once per generation.
+ *     step through a MaterialContext, so it is built once per generation.
  *  3-9. Grains of the active elements: LabelFromSeeds (seeds, size targets, Lloyd / fit, labels in
  *     the chosen distance mode, cleanup) or LabelFromVoxels (voxel labels, compaction, cleanup).
  * 10. Orientations: measured ones normalized to unit length (from_source), random ones keyed by
@@ -1861,7 +1864,7 @@ MicrostructureResult GenerateMicrostructure(const MicrostructureOptions& options
     material.mask = domain ? domain->Mask() : nullptr;
 
     // Step 2c: one point locator over the active elements, shared by every seeding and labeling
-    // stage (its element boxes are the expensive part for curved meshes). Voxel maps place no
+    // step (its element boxes are the expensive part for curved meshes). Voxel maps place no
     // seeds and do not need it. The decision is the same on every rank (replicated options), and
     // the straight-sided test inside is collective.
     std::unique_ptr<MaterialPointLocator> locator;

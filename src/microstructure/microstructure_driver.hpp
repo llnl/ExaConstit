@@ -26,7 +26,15 @@
 
 /**
  * @file microstructure_driver.hpp
- * @brief Entry point shared by the standalone tool and the mechanics hook.
+ * @brief Entry point of the microstructure generator, shared by the standalone tool
+ * (tools/microstructure_generator.cpp) and the mechanics hook ([Mesh.Microstructure] in an
+ * ExaConstit deck).
+ *
+ * GenerateMicrostructure takes the validated options and this rank's part of the mesh and
+ * returns, for every local element, the grain it belongs to, plus one orientation, phase and
+ * region per grain (MicrostructureResult, microstructure_types.hpp). The pipeline steps
+ * (seeding, labeling, cleanup, orientations, regions, and optionally the conformal fit of the
+ * grain boundaries) are listed in its comment; GenerationReport records what each step did.
  */
 
 namespace exaconstit::microstructure {
@@ -36,8 +44,8 @@ namespace exaconstit::microstructure {
  * (all counts are global), except `adjacency`, which describes this rank's mesh partition, and
  * the per-rank voxel read counts `voxel_tiles_read` / `voxel_voxels_read`. Host data.
  *
- * Optional stages fill their sub-report and set the matching `used_*` / `ran_*` flag; the
- * sub-reports of stages that did not run keep their default values.
+ * Optional steps fill their sub-report and set the matching `used_*` / `ran_*` flag; the
+ * sub-reports of steps that did not run keep their default values.
  */
 struct GenerationReport {
     /** @brief The seed generator's report (requested/achieved seeds, candidates, fallbacks).
@@ -57,7 +65,7 @@ struct GenerationReport {
      * the seed of GenerationReport::grain_seed index i. Empty for voxel maps.
      */
     SeedSet seeds;
-    /** @brief Material volume (fixed-point sum of the element volumes, length^3); 0 when no stage
+    /** @brief Material volume (fixed-point sum of the element volumes, length^3); 0 when no step
      * needed it (size targets, polydisperse placement, a seed count from the mean grain size,
      * Johnson-Mehl). */
     double material_volume = 0.0;
@@ -71,14 +79,14 @@ struct GenerationReport {
     bool used_polydisperse_placement = false;
     /** @brief True when Lloyd relaxation ran (lloyd holds its history). */
     bool ran_lloyd = false;
-    LloydReport lloyd;
+    LloydReport lloyd; ///< Lloyd history (iterations, seed moves, fits in centroidal mode)
     /** @brief True when a separate volume fit ran (weight_fit holds its history). In centroidal
      * power mode the refits are in lloyd.fits instead. */
     bool ran_weight_fit = false;
-    WeightFitReport weight_fit;
+    WeightFitReport weight_fit; ///< volume-fit history (iterations, volume errors)
     /** @brief Image layers and seed images of a periodic run (0 when nothing is periodic). */
     int periodic_layers = 0;
-    int num_periodic_images = 0;
+    int num_periodic_images = 0; ///< seed images searched (0 when nothing is periodic)
     /** @brief Periodic face pairing used by the fragment cleanup (zero when not periodic). */
     PeriodicFaceReport periodic_faces;
     /**
@@ -124,7 +132,7 @@ struct GenerationReport {
     /** @brief Global number of elements of the labeled mesh. */
     std::int64_t num_elements = 0;
 
-    // ---- Stage 1d: seed tables, ROI filler, voxel maps, phases and regions, passthrough ------
+    // ---- Seed tables, ROI filler, voxel maps, phases and regions, passthrough ----------------
 
     /** @brief True when the seeds came from a seed table (Seeds.source = "file"). */
     bool used_seed_table = false;
@@ -136,25 +144,25 @@ struct GenerationReport {
     std::int64_t num_table_seeds = 0;
     /** @brief Which optional columns the table had (io/seed_table_io.hpp SeedTable::has_*). */
     bool table_has_quat = false;
-    bool table_has_phase = false;
-    bool table_has_weight = false;
-    bool table_has_volume = false;
-    bool table_has_shape = false;
+    bool table_has_phase = false;  ///< the table had a phase column
+    bool table_has_weight = false; ///< the table had a weight column
+    bool table_has_volume = false; ///< the table had a volume column
+    bool table_has_shape = false;  ///< the table had shape-tensor columns
     /** @brief Unknown table columns that were ignored (lower case). */
     std::vector<std::string> table_ignored_columns;
     /** @brief True when Seeds.roi was given; the box (mesh units) follows. */
     bool used_roi = false;
-    std::array<double, 3> roi_lo = {0.0, 0.0, 0.0};
-    std::array<double, 3> roi_hi = {0.0, 0.0, 0.0};
+    std::array<double, 3> roi_lo = {0.0, 0.0, 0.0}; ///< lower ROI corner (mesh units)
+    std::array<double, 3> roi_hi = {0.0, 0.0, 0.0}; ///< upper ROI corner (mesh units)
     /** @brief With filler seeds: material volume strictly inside / outside the ROI box (fixed-point
      * quadrature sums, length^3; seeding/roi_filler.hpp). 0 without filler. */
     double roi_material_volume = 0.0;
-    double outside_material_volume = 0.0;
+    double outside_material_volume = 0.0; ///< material volume outside the ROI box (length^3)
     /** @brief True when random filler seeds were requested (fill_outside_roi = "random"). */
     bool used_filler = false;
     /** @brief Filler seeds requested (given, or the automatic count) and placed. */
     std::int64_t num_filler_requested = 0;
-    std::int64_t num_filler_seeds = 0;
+    std::int64_t num_filler_seeds = 0; ///< filler seeds placed
     /** @brief source_id of the first filler candidate: max table id + 1 (whole table). */
     std::int64_t filler_source_id_offset = 0;
     /** @brief The seed generator's report for the filler seeds. */
@@ -174,10 +182,10 @@ struct GenerationReport {
     std::int64_t voxel_num_outside_points = 0;
     /** @brief Voxel tiles and voxels read by this rank (local counts: per-rank data). */
     std::int64_t voxel_tiles_read = 0;
-    std::int64_t voxel_voxels_read = 0;
+    std::int64_t voxel_voxels_read = 0; ///< voxels read by this rank (per-rank data)
     /** @brief Voxel tiles and voxels read by all ranks together (global sums). */
     std::int64_t voxel_total_tiles_read = 0;
-    std::int64_t voxel_total_voxels_read = 0;
+    std::int64_t voxel_total_voxels_read = 0; ///< voxels read by all ranks together
     /** @brief Size num_grains: voxel feature id each final grain descends from, -1 for grains not
      * read from a voxel map. */
     std::vector<std::int64_t> grain_feature;
@@ -185,22 +193,22 @@ struct GenerationReport {
     /** @brief Regions.mode = "phase_fractions": the phase ids and the volume fractions achieved
      * (element volumes, regions/region_assigner.hpp). Empty otherwise. */
     std::vector<int> phase_fraction_ids;
-    std::vector<double> phase_fraction_achieved;
+    std::vector<double> phase_fraction_achieved; ///< volume fraction achieved per phase id
 
     /** @brief True when [Mesh] listed active or passthrough attributes (an AttributeDomain). */
     bool used_attribute_domain = false;
     /** @brief Active and passthrough attributes (ascending), the region of each passthrough
      * attribute and its global element count; same order. */
     std::vector<int> active_attributes;
-    std::vector<int> passthrough_attributes;
-    std::vector<int> passthrough_regions;
-    std::vector<std::int64_t> passthrough_element_counts;
+    std::vector<int> passthrough_attributes;              ///< ascending
+    std::vector<int> passthrough_regions;                 ///< region of each passthrough attribute
+    std::vector<std::int64_t> passthrough_element_counts; ///< global elements per attribute
     /** @brief Global number of active (tessellated or voxel-labeled) elements. */
     std::int64_t num_active_elements = 0;
     /** @brief Passthrough grains appended after the active grains (one per attribute). */
     int num_passthrough_grains = 0;
 
-    // ---- Stage 1e: distance modes for parts with holes and lattices -------------------------
+    // ---- Distance modes for parts with holes and lattices -------------------------------------
 
     /** @brief The distance mode of the labeling (Tessellation.distance; EUCLIDEAN for voxel
      * maps). */
@@ -216,7 +224,8 @@ struct GenerationReport {
     ConnectedLabelReport connected;
     /** @brief True when the geodesic mode ran (distance = "geodesic"). */
     bool used_geodesic = false;
-    /** @brief The geodesic solver used: "graph" or "fim" (empty when the mode did not run). */
+    /** @brief The geodesic solver used: "graph" or "fim" (empty when the mode did not run); "fim"
+     * also covers its multi-seed variant (geodesic_seed_lists). */
     std::string geodesic_solver;
     /**
      * @brief The geodesic solver's report (labeling/geodesic_common.hpp, GeodesicReport): rounds
@@ -254,7 +263,7 @@ struct GenerationReport {
      */
     std::int64_t num_unlabeled_elements = 0;
 
-    // ---- Stage 2: conformal grain boundaries ([Conformal]) ------------------------------------
+    // ---- Conformal grain boundaries ([Conformal]) --------------------------------------------
 
     /** @brief True when the grain boundaries were fitted (Conformal.enabled). */
     bool ran_conformal = false;
@@ -288,7 +297,7 @@ struct GenerationReport {
 /**
  * @brief Labels the elements of `pmesh` with grains and assigns orientations and regions.
  *
- * Pipeline (Stages 1a-1e):
+ * Pipeline:
  *  1. Support checks: options this pipeline does not implement are refused before any work.
  *  2. Preflight of the whole mesh (passthrough parts included): the mesh must be 3D, have one
  *     element geometry, be conforming, have no inverted elements and no periodic
@@ -303,7 +312,7 @@ struct GenerationReport {
  *  2b. Active part ([Mesh] active_attributes / passthrough_attributes): an AttributeDomain
  *     (mesh/attribute_domain.hpp) builds an element mask; seeding, labeling and cleanup skip the
  *     passthrough elements. No sub-mesh or mesh copy is made. One point locator over the active
- *     elements is built once and shared by the seeding stages.
+ *     elements is built once and shared by the seeding steps.
  *  Voxel maps ([Source] type = "voxel_map") replace steps 3-8: ReadVoxelGridInfo,
  *     LabelElementsFromVoxels (centroid or vote sampling, fill of unassigned elements) and
  *     CompactFeatureLabels (labeling/voxel_labeler.hpp), then the cleanup of step 9.
@@ -337,17 +346,19 @@ struct GenerationReport {
  *       keeps only the elements connected through material to its seed's anchor element, then
  *       CompactSeedLabels. Orphans left after the last round and bodies without any anchor keep
  *       their labels and are handled by the cleanup of step 9.
- *     - "geodesic": path-length labels from the solver Tessellation.geodesic_solver ("fim", the
+ *     - "geodesic": path-length labels from the solver Tessellation.geodesic.solver ("fim", the
  *       default: LabelGeodesicFim, labeling/geodesic_fim.hpp; "graph": LabelGeodesicGraph,
- *       labeling/geodesic_graph.hpp), with the Additive
- *       offsets a_i = seed weights for metric = "additive" (Johnson-Mehl included), then
- *       CompactSeedLabels. Elements no seed reaches (a body of the part without a seed) take
- *       their straight-line nearest-seed label and are split off by the cleanup
- *       (GenerationReport::num_unreached_elements). Paths connect elements through shared
+ *       labeling/geodesic_graph.hpp), with the Additive offsets a_i = seed weights for
+ *       metric = "additive" (Johnson-Mehl included) and the Quadric tensor as a path metric
+ *       (labeling/geodesic_metric.hpp); Laguerre, Quadric with seed weights and per-seed tensors
+ *       use the FIM solver's multi-seed variant (LabelGeodesicWeighted,
+ *       labeling/geodesic_weighted.hpp). Then CompactSeedLabels. Elements no seed reaches (a body
+ * of the part without a seed) take their straight-line nearest-seed label and are split off by the
+ * cleanup (GenerationReport::num_unreached_elements). Paths connect elements through shared
  *       vertices, edges and faces, while the cleanup is face based: a piece attached to its grain
  *       only through an edge or vertex is a separate fragment there and is split or merged by the
- *       [Cleanup] fragments policy (orchestrator decision: node-sharing elements are connected in
- *       the conforming FE mesh, so the geodesic labels are kept as they are). With Johnson-Mehl
+ *       [Cleanup] fragments policy (node-sharing elements are connected in the conforming FE
+ *       mesh, so the geodesic labels themselves are kept as they are). With Johnson-Mehl
  *       placement the nucleation step still discards a candidate covered by an earlier grain's
  *       straight-line growth sphere, even across a void; only the labels use path lengths, and a
  *       warning is recorded in GenerationReport::warnings.
@@ -382,7 +393,7 @@ struct GenerationReport {
  * 13. Passthrough: labels mapped back to the whole mesh (AttributeDomain::ToParent) and one grain
  *     appended per passthrough attribute (identity quaternion, its region, phase -1, source id
  *     -attribute). The phase regions and passthrough regions together must be exactly 1..R.
- * 14. Conformal grain boundaries (Conformal.enabled, Stage 2): label repair against the analytic
+ * 14. Conformal grain boundaries (Conformal.enabled): label repair against the analytic
  *     boundaries of the seeds (a few elements next to a grain boundary may change grain;
  *     conformal/label_repair.hpp), then the fit (conformal/conformal_fitter.hpp), which moves
  *     the mesh nodes so the grain boundaries become smooth surfaces near the analytic ones while
@@ -419,12 +430,11 @@ struct GenerationReport {
  *         MicrostructureResult).
  * @throws std::runtime_error if the mesh fails preflight, seeding fails (infeasible minimum
  *         distance, stall, empty mesh, no nucleus), or a seed table / voxel map cannot be read;
- *         std::invalid_argument for options this pipeline does not implement yet ("list"
+ *         std::invalid_argument for options this pipeline does not implement ("list"
  *         orientations), an unknown geodesic solver or a connected rounds cap outside 0..1000,
- *         combinations outside the Stage 1e scope (see TessellationOptions::distance), invalid
- *         combinations reaching the
- *         driver, data that the options need but the source lacks (e.g. from_source
- *         orientations without quaternions), and region ids that are not exactly 1..R. Every
+ *         combinations the distance modes do not support (CheckSupportedTessellation), invalid
+ *         combinations reaching the driver, data that the options need but the source lacks (e.g.
+ * from_source orientations without quaternions), and region ids that are not exactly 1..R. Every
  *         check is either made on identical data on all ranks or globally reduced, so all ranks
  *         throw together.
  */

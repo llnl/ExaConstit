@@ -24,7 +24,9 @@
 
 /**
  * @file microstructure_options.hpp
- * @brief Options of the microstructure generator (tool input and, later, the mechanics hook).
+ * @brief Options of the microstructure generator: the input of the standalone tool and of the
+ * mechanics hook ([Mesh.Microstructure] in an ExaConstit deck). The user reference for every key
+ * is src/microstructure_options.toml.
  *
  * One struct per TOML table ([Mesh], [Source], [Seeds], [Tessellation], [VoxelMap], [Cleanup],
  * [Orientations], [Regions], [Output]), collected in MicrostructureOptions. The defaults written
@@ -451,7 +453,7 @@ struct TessellationOptions {
     /**
      * @brief Quadrature-vote sampling only: subdivision levels 0..3 of the voting points, 8^levels
      * points per element (labeling/quadrature_vote.hpp; default 2 = 64 points). Level 1 is not
-     * recommended (its 8 points measured worse than centroid labeling).
+     * recommended (with its 8 points the vote assigns volumes worse than centroid labeling).
      */
     int vote_levels = 2;
     /**
@@ -599,7 +601,7 @@ struct OrientationOptions {
      * @brief "random" (uniformly distributed rotations from the counter RNG), "from_source"
      * (taken from the seed table's qw, qx, qy, qz columns, or from the voxel map's per-grain
      * quaternions; grains without one, such as random filler grains, get random orientations)
-     * or "list" (from a separate list; not implemented yet, refused by the driver).
+     * or "list" (from a separate list; not implemented, refused by the driver).
      */
     std::string source = "random";
 };
@@ -662,7 +664,8 @@ struct RegionOptions {
  * Works for every grain source: cells of the seeds' metric are fitted to their analytic
  * boundaries, other boundaries (voxel maps, geodesic labels, pieces moved by the cleanup or the
  * connected relabeling) to a smoothed copy of the element staircase; passthrough parts keep their
- * shape. Needs no periodic axis and a hex or tet mesh of order 1 (straight-sided elements).
+ * shape. Needs no periodic axis and a hex or tet mesh of order 1 or 2 (order 2: every nodal point
+ * is fitted, so the grain boundaries become curved); the driver checks the mesh.
  */
 struct ConformalOptions {
     /** @brief Fit the grain boundaries (TOML `enabled`, boolean, default false). */
@@ -773,10 +776,10 @@ struct MicrostructureOptions {
      */
     std::string exec = "cpu";
     /**
-     * @brief Require results that are independent of rank count and execution space. Not
-     * implemented yet (the flag is parsed and stored only). Rank-count independence is the
-     * design goal regardless; bitwise CPU/GPU agreement would additionally need
-     * MICROSTRUCTURE_STRICT_FP and matching host/device math libraries.
+     * @brief Require results that are independent of rank count and execution space. Parsed and
+     * stored only: nothing reads it. Rank-count independence holds regardless; bitwise CPU/GPU
+     * agreement would additionally need MICROSTRUCTURE_STRICT_FP and matching host/device math
+     * libraries.
      */
     bool deterministic = true;
 
@@ -799,12 +802,12 @@ struct MicrostructureOptions {
      * (e.g. Johnson-Mehl needs the additive metric; fitting needs a weighted metric; neither
      * Lloyd nor fitting works with periodic axes).
      *
-     * Stage 1d checks: attribute and region ids (> 0 / >= 1, no attribute both active and
-     * passthrough; with Regions.mode = "single" the passthrough regions must make the region
-     * ids 1..R); passthrough attributes refuse periodic axes; the ROI
-     * (seed tables only, hi > lo) and filler keys (fill_outside_roi = "random" needs the ROI);
-     * seed tables refuse Lloyd / centroidal power and Johnson-Mehl; anisotropy "per_seed" needs
-     * the quadric metric and a seed table; [VoxelMap] parameters (format, existing file, the
+     * Seed tables, ROI filler, voxel maps, regions and passthrough parts: attribute and region ids
+     * (> 0 / >= 1, no attribute both active and passthrough; with Regions.mode = "single" the
+     * passthrough regions must make the region ids 1..R); passthrough attributes refuse periodic
+     * axes; the ROI (seed tables only, hi > lo) and filler keys (fill_outside_roi = "random" needs
+     * the ROI); seed tables refuse Lloyd / centroidal power and Johnson-Mehl; anisotropy "per_seed"
+     * needs the quadric metric and a seed table; [VoxelMap] parameters (format, existing file, the
      * DREAM.3D quaternion declarations when orientations are read, positive scale and spacing,
      * vote_levels 0-3, tile_size >= 1); voxel maps refuse every option that would shape a
      * tessellation (seed table, Johnson-Mehl, sizes, ROI, metric, anisotropy, periodic,
@@ -815,15 +818,16 @@ struct MicrostructureOptions {
      * Whether a table or voxel map actually holds the needed columns or datasets is only known
      * when it is read, so the driver checks that (on every rank together).
      *
-     * Stage 2 checks: Conformal.enabled refuses periodic axes (the element type and order are
-     * checked by the driver, which sees the mesh).
+     * Conformal grain boundaries: Conformal.enabled refuses periodic axes (the element type and
+     * order are checked by the driver, which sees the mesh).
      *
-     * Stage 1e checks: distance = "connected" or "geodesic" refuses periodic axes, fit_volumes,
-     * Lloyd relaxation / centroidal power and voxel maps; "geodesic" also needs metric "voronoi"
-     * or "additive" without anisotropy (anisotropy kind "none"). In any mode the solver name
-     * must be "fim" or "graph" and connected_max_rounds must be in 0..1000
-     * (CONNECTED_MAX_ROUNDS_LIMIT, labeling/connected_limits.hpp); valid values of a mode that is
-     * not selected only warn that they are ignored.
+     * Distance modes: distance = "connected" or "geodesic" refuses periodic axes, fit_volumes,
+     * Lloyd relaxation / centroidal power and voxel maps; "geodesic" with an anisotropy needs
+     * metric "quadric", and with metric "laguerre" or anisotropy kind "per_seed" needs solver
+     * "fim". In any mode the solver name must be "fim" or "graph", connected_max_rounds must be in
+     * 0..1000 (CONNECTED_MAX_ROUNDS_LIMIT, labeling/connected_limits.hpp),
+     * geodesic.max_seeds_per_node in 1..64 and geodesic.elongation "auto" or in [1, 1e4]; valid
+     * values of a mode that is not selected only warn that they are ignored.
      *
      * Every problem is printed (rank 0) before returning, so the user sees all of them at once.
      * Not collective. Every rank holds the same options, but the file-existence checks assume

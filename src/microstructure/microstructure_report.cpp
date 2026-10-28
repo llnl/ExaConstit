@@ -1,3 +1,8 @@
+/*
+ * Implementation of microstructure_report.hpp: the record tables (grain table, microstructure
+ * file grain table, grain adjacency) and the log phrases of a generated microstructure, shared by
+ * the standalone tool and the mechanics hook so both write the same files and text.
+ */
 #include "microstructure/microstructure_report.hpp"
 
 #include <cstddef>
@@ -6,12 +11,6 @@
 #include <utility>
 
 #include "microstructure/io/seed_table_io.hpp"
-
-/*
- * The record tables and log phrases of a generated microstructure (see the header). These used to
- * live in tools/microstructure_generator.cpp; the code is unchanged, so the tool's files and log
- * text stay byte for byte the same.
- */
 
 namespace exaconstit::microstructure {
 
@@ -126,15 +125,6 @@ GrainAdjacencyTable BuildAdjacencyTable(const GrainStatistics& stats) {
 }
 
 /*
- * RequestedGrains:
- * - voxel map: the grains are the features of the map that the mesh touches; nothing is
- *   requested;
- * - seed table: the table seeds kept inside the ROI, plus the filler seeds asked for (given, or
- *   the automatic count);
- * - Johnson-Mehl: the count is not requested but follows from the nucleation (num_nuclei is only
- *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
- */
-/*
  * ConformalText: see the header. Repair, held nodes, grain adjacency, fit distance, quality.
  */
 std::string ConformalText(const GenerationReport& report) {
@@ -177,6 +167,15 @@ std::string ConformalText(const GenerationReport& report) {
     return os.str();
 }
 
+/*
+ * RequestedGrains:
+ * - voxel map: the grains are the features of the map that the mesh touches; nothing is
+ *   requested;
+ * - seed table: the table seeds kept inside the ROI, plus the filler seeds asked for (given, or
+ *   the automatic count);
+ * - Johnson-Mehl: the count is not requested but follows from the nucleation (num_nuclei is only
+ *   an optional cap; 0 means no cap), so say that instead of printing "0 requested".
+ */
 std::string RequestedGrains(const GenerationReport& report) {
     if (report.used_voxel_map) {
         return "read from the voxel map";
@@ -198,6 +197,7 @@ std::string RequestedGrains(const GenerationReport& report) {
     return "set by Johnson-Mehl nucleation (no nucleus limit)";
 }
 
+/* PassthroughGrainId: the passthrough grains are the last P ids, in ascending attribute order. */
 int PassthroughGrainId(const GenerationReport& report,
                        const MicrostructureResult& result,
                        std::size_t k) {
