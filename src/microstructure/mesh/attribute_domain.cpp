@@ -1,3 +1,12 @@
+/*
+ * Implementation of attribute_domain.hpp: global element counts per attribute, validation of the
+ * active / passthrough lists, the element mask, and the passthrough grain ids of ToParent.
+ *
+ * Terms used in this file:
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ * - Element attribute: the integer tag MFEM stores per element (mesh file region / block id).
+ */
 #include "microstructure/mesh/attribute_domain.hpp"
 
 #include <algorithm>
@@ -215,6 +224,7 @@ AttributeDomain::AttributeDomain(mfem::ParMesh& parent,
     }
 }
 
+/* Mask: the stored mask, or nullptr when it is empty (every element active). */
 const ElementMask* AttributeDomain::Mask() const {
     return m_mask.active.Size() > 0 ? &m_mask : nullptr;
 }

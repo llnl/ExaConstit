@@ -203,8 +203,11 @@ public:
                   const PeriodicFaceParameters& periodic,
                   int area_quad_order = -1);
 
+    /** @brief Frees the exchange spaces; the mesh is not touched. Not collective. */
     ~MeshAdjacency();
+    /** @brief Not copyable: owns MFEM finite element spaces on the mesh. */
     MeshAdjacency(const MeshAdjacency&) = delete;
+    /** @brief Not copy-assignable (see the copy constructor). */
     MeshAdjacency& operator=(const MeshAdjacency&) = delete;
 
     /** @brief Number of local elements NE (this rank). */
@@ -362,32 +365,32 @@ private:
                            int quad_order,
                            std::vector<Entry>& entries);
 
-    mfem::ParMesh* m_pmesh = nullptr;
-    int m_num_elements = 0;
-    int m_num_ghosts = 0;
-    mfem::Array<int> m_offsets;
-    mfem::Array<int> m_neighbors;
-    mfem::Vector m_face_areas;
-    mfem::Array<int> m_face_indices;
+    mfem::ParMesh* m_pmesh = nullptr; ///< the mesh (not owned)
+    int m_num_elements = 0;           ///< NE, local elements
+    int m_num_ghosts = 0;             ///< face-neighbor ghosts (MFEM's)
+    mfem::Array<int> m_offsets;       ///< CSR offsets, size NE + 1
+    mfem::Array<int> m_neighbors;     ///< neighbor of each entry (local, or NE + ghost)
+    mfem::Vector m_face_areas;        ///< shared face area of each entry
+    mfem::Array<int> m_face_indices;  ///< local face index of each entry
 
     /**
      * @brief Piecewise-constant (L2 order 0) spaces with 1 and 2 components per element, used
      * for exchange (index = number of components - 1).
      */
-    std::unique_ptr<mfem::L2_FECollection> m_fec;
-    std::array<std::unique_ptr<mfem::ParFiniteElementSpace>, 2> m_fes;
+    std::unique_ptr<mfem::L2_FECollection> m_fec;                      ///< L2 order 0
+    std::array<std::unique_ptr<mfem::ParFiniteElementSpace>, 2> m_fes; ///< 1 and 2 components
     /**
      * @brief Per number of components c+1: element_vdof[c][k * NE + e] = vector degree of freedom
      * of component k of local element e; ghost_vdof[c][k * NG + g] = index of component k of
      * face-neighbor ghost g in ParGridFunction::FaceNbrData().
      */
-    std::array<std::vector<int>, 2> m_element_vdof;
-    std::array<std::vector<int>, 2> m_ghost_vdof;
+    std::array<std::vector<int>, 2> m_element_vdof; ///< local element vdofs (see above)
+    std::array<std::vector<int>, 2> m_ghost_vdof;   ///< ghost positions in FaceNbrData (above)
 
     // Periodic pairing (all empty / false without it)
-    bool m_periodic_pairing = false;
-    int m_num_periodic_ghosts = 0;
-    PeriodicFaceReport m_periodic_report;
+    bool m_periodic_pairing = false;      ///< pairing requested on some axis
+    int m_num_periodic_ghosts = 0;        ///< ghosts that are periodic neighbors on other ranks
+    PeriodicFaceReport m_periodic_report; ///< counts of the pairing
     /** @brief Partner ranks of the periodic exchange (ascending; never this rank). */
     std::vector<int> m_periodic_partners;
     /**
@@ -397,7 +400,8 @@ private:
      * contiguous and in the order the partner sends.
      */
     std::vector<std::vector<int>> m_periodic_send_elements;
-    std::vector<int> m_periodic_recv_begin, m_periodic_recv_count;
+    std::vector<int> m_periodic_recv_begin; ///< per partner: first periodic ghost received
+    std::vector<int> m_periodic_recv_count; ///< per partner: periodic ghosts received
 };
 
 } // namespace exaconstit::microstructure

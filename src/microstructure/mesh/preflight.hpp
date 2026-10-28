@@ -23,10 +23,9 @@
  *   i.e. no inverted or folded elements (the samplers divide by element volume, and the point
  *   locator's Newton inverse map needs an invertible element map). The nodal points catch
  *   curved or distorted elements that are folded between the quadrature points; they are a
- *   sample as well, so a fold narrower than the node spacing can still be missed. Since
- *   2026-10-22 an element with detJ <= 0 at a corner fails even if every quadrature point is
- *   positive: collapsed or degenerate hexes (e.g. a face collapsed to an edge) that passed
- *   before are now rejected;
+ *   sample as well, so a fold narrower than the node spacing can still be missed. An element
+ *   with detJ <= 0 at a corner fails even if every quadrature point is positive, so collapsed or
+ *   degenerate hexes (e.g. a face collapsed to an edge) are rejected;
  * - no periodic identification. MFEM represents a periodic mesh with discontinuous (L2) Nodes,
  *   and grain-boundary fitting does not support it.
  *

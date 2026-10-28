@@ -1,3 +1,17 @@
+/*
+ * Implementation of mesh_adjacency.hpp: interior and shared faces from MFEM's face-neighbor
+ * data, optional pairing of boundary faces on opposite periodic planes, the CSR adjacency, and
+ * the exchange of per-element values with ghost elements.
+ *
+ * Terms used in this file:
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ * - Ghost element: an element owned by another rank that shares a face (or a periodic face pair)
+ *   with a local element.
+ * - CSR (compressed sparse rows): all neighbor lists stored back to back, with offsets[e] ..
+ *   offsets[e + 1] - 1 the entries of element e.
+ * - vdof: one component of one degree of freedom of a vector finite element space.
+ */
 #include "microstructure/mesh/mesh_adjacency.hpp"
 
 #include <algorithm>
@@ -77,6 +91,7 @@ struct PlaneFace {
     double vertex[3 * MAX_FACE_VERTICES]; ///< vertex coordinates, vertex[3 v + d]
     double min_edge;                      ///< smallest edge length of the face
 };
+/** Doubles per PlaneFace record (the size of one record in the MPI_DOUBLE gather). */
 constexpr int PLANE_FACE_DOUBLES = 22;
 static_assert(sizeof(PlaneFace) == PLANE_FACE_DOUBLES * sizeof(double),
               "PlaneFace must be a plain block of doubles");
@@ -382,8 +397,7 @@ void MeshAdjacency::Build(int area_quad_order, const PeriodicFaceParameters* per
  *     unmatched. Unmatched faces (identical count on every rank) throw on every rank. A periodic
  *     axis without a single plane face (both planes empty) also throws on every rank: pairing
  *     was requested for it, and silently doing nothing would leave every grain cut by its planes
- *     in two pieces (this happened before when curved or moved Nodes left the vertex array off
- *     the planes).
+ *     in two pieces.
  *  5. Entries for pairs that involve this rank: a partner on this rank is a local neighbor (one
  *     entry from each side, like an interior face); a partner on rank r != this rank is a
  *     periodic ghost. Ghosts are numbered in increasing (r, partner's local element) order, after
@@ -715,6 +729,7 @@ void MeshAdjacency::PairPeriodicFaces(const PeriodicFaceParameters& periodic,
     }
 }
 
+/* Destructor: the exchange spaces and collection are freed by their unique_ptrs. */
 MeshAdjacency::~MeshAdjacency() = default;
 
 /*

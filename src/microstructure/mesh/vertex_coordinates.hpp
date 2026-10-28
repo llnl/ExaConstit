@@ -21,8 +21,8 @@
  *
  * Even the Nodes vertex values can differ between the copies of a shared vertex: after
  * ParMesh::UniformRefinement every element interpolates its own new nodal values, and two ranks
- * holding the same vertex can disagree in the last bits (up to about 5e-15 in the audit
- * reproducer, also for straight meshes refined in parallel as in the ExaConstit hook).
+ * holding the same vertex can disagree in the last bits (differences of about 5e-15 were seen in
+ * a test, also for straight meshes refined in parallel as in the ExaConstit hook).
  *
  * **What this class stores.** For every local vertex v (0 <= v < Mesh::GetNV()) three coordinates
  * (2D meshes get z = 0):
@@ -53,7 +53,7 @@
  *  - meshes whose Nodes were moved on each rank separately.
  * For a mesh distributed from a serial mesh and not changed since, all copies are already
  * identical (ParMesh copies the serial values bit for bit, pmesh.cpp:296-304), and the broadcast
- * changes nothing; in particular results for such meshes without Nodes are unchanged.
+ * changes nothing.
  *
  * **What it does not do.** It cannot make two different runs agree: the owner's value itself is
  * computed by one of the owner's elements and depends on the partition after a parallel
@@ -120,10 +120,10 @@ public:
     }
 
 private:
-    int m_num_vertices = 0;
-    bool m_from_nodes = false;
-    bool m_broadcast = false;
-    mfem::Vector m_xyz;
+    int m_num_vertices = 0;    ///< NV, local vertices
+    bool m_from_nodes = false; ///< values read from continuous Nodes
+    bool m_broadcast = false;  ///< owner values broadcast (ParMesh)
+    mfem::Vector m_xyz;        ///< xyz[d + 3 v], host data
 };
 
 } // namespace exaconstit::microstructure

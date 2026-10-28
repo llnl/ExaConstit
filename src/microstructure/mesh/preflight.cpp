@@ -1,3 +1,14 @@
+/*
+ * Implementation of the mesh preflight checks (preflight.hpp): per-element Jacobian determinants
+ * at the quadrature points and at the nodal points plus corners, mesh-level flags, and one set of
+ * global reductions so every rank gets the same report.
+ *
+ * Terms used in this file:
+ * - detJ: the determinant of the Jacobian dx/dxi of the element map from reference coordinates
+ *   xi to physical coordinates x; its sign tells whether the element is inverted there.
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ */
 #include "microstructure/mesh/preflight.hpp"
 
 #include <algorithm>
@@ -19,10 +30,11 @@ namespace {
  * d(shape k)/d(xi_j) at point q, the layout FiniteElement::CalcDShape writes (ndof x dim).
  */
 struct ElementPoints {
-    mfem::DenseTensor quad_dshape;
-    mfem::DenseTensor node_dshape;
+    mfem::DenseTensor quad_dshape; ///< shape derivatives at the quadrature points
+    mfem::DenseTensor node_dshape; ///< shape derivatives at the nodal points, then the corners
 };
 
+/* GetElementPoints: the cached ElementPoints of `fe` with rule `quad`, computed on first use. */
 const ElementPoints& GetElementPoints(std::map<const mfem::FiniteElement*, ElementPoints>& cache,
                                       const mfem::FiniteElement& fe,
                                       const mfem::IntegrationRule& quad) {

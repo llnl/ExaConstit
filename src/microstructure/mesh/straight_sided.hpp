@@ -16,9 +16,9 @@
  * so the generator can use exact corner boxes, the closed-form tet test and flat boundary faces.
  * A mesh with Nodes (a high-order coordinate field) is not automatically curved: ExaConstit
  * gives every mesh order-p Nodes (`Mesh::SetCurvature`), and Nodes projected from a straight
- * mesh describe the same straight elements. Treating those as curved changed the seed sampling
- * box (padding for bulges) and thus the random seeds, so the same mesh gave a different
- * microstructure with and without Nodes.
+ * mesh describe the same straight elements. Treating those as curved would change the seed
+ * sampling box (padding for bulges) and thus the random seeds, so the same mesh would give a
+ * different microstructure with and without Nodes.
  *
  * The rules (StraightSidedLocal, per rank; IsStraightSided combines the ranks):
  *  - no Nodes: straight-sided;
@@ -32,7 +32,7 @@
  *    points, which for a multilinear map also equal the map at the uniformly spaced reference
  *    nodes (linear precision), so the same test applies;
  *  - discontinuous (L2) Nodes, used by MFEM for periodic meshes: never straight-sided (they
- *    keep the general, curved treatment, as before; preflight rejects them anyway).
+ *    keep the general, curved treatment; preflight rejects them anyway).
  * With an element mask (mesh/element_mask.hpp) only the active elements are tested: a curved
  * passthrough part (say a warped build plate) does not make the generated material curved, so
  * the material draws the same seeds as a mesh of the material alone.
@@ -41,11 +41,10 @@
  * vertex dofs, which every H1 element numbers first, in the element's vertex order), not from
  * the mesh vertex array, which MFEM does not keep in sync with moved Nodes and which a ParMesh
  * fills with a partition-dependent average (mesh/vertex_coordinates.hpp). Without Nodes they
- * are the mesh vertices, exactly as before, so results for meshes without Nodes are unchanged
- * bit for bit. ElementCornerPoints and VertexPoint read this rank's own copy of the Nodes; that
- * is exact for an element's own geometry (computed only by its owner), but two ranks can hold
- * copies of a shared vertex that differ in the last bits after a parallel refinement. Code that
- * must get bitwise the same face geometry on both ranks of a shared face uses the
+ * are the mesh vertices. ElementCornerPoints and VertexPoint read this rank's own copy of the
+ * Nodes; that is exact for an element's own geometry (computed only by its owner), but two ranks
+ * can hold copies of a shared vertex that differ in the last bits after a parallel refinement. Code
+ * that must get bitwise the same face geometry on both ranks of a shared face uses the
  * VertexCoordinates overload of StraightFaceTransformation (owner-broadcast corners).
  *
  * What the decision changes (in place, the mesh is never copied): the seeding element boxes and
@@ -84,8 +83,11 @@ bool StraightSidedLocal(const mfem::Mesh& mesh,
  * one rank makes the whole mesh curved). Use this, not StraightSidedLocal, for decisions that
  * must not depend on the partition (element boxes, the seed sampling box).
  * Collective over `comm`: every rank must call it. Host only.
+ * @param mesh    this rank's mesh partition.
+ * @param comm    the mesh communicator.
  * @param mask active elements of this rank (nullptr or empty = every element); a mask of the
  *        wrong size on any rank makes every rank throw std::invalid_argument.
+ * @param rel_tol relative tolerance of the higher-order test (default STRAIGHT_SIDED_REL_TOL).
  */
 bool IsStraightSided(const mfem::Mesh& mesh,
                      MPI_Comm comm,
@@ -97,6 +99,7 @@ bool IsStraightSided(const mfem::Mesh& mesh,
  * (column k = corner k in the element's vertex order, mfem::Element::GetVertices): from the Nodes
  * vertex dofs when the mesh has continuous Nodes, else from the mesh vertices (this is then
  * exactly mfem::Mesh::GetPointMatrix). Host only, not collective.
+ * @param mesh this rank's mesh partition (straight-sided, see IsStraightSided).
  * @param e 0-based local element index.
  * @param corners resized to SpaceDimension() x n_corners.
  */
@@ -108,6 +111,9 @@ void ElementCornerPoints(const mfem::Mesh& mesh, int e, mfem::DenseMatrix& corne
  * Nodes (Mesh::GetElementTransformation, mesh.cpp:361-373: the corner point matrix with
  * Mesh::GetTransformationFEforElementType). For a straight-sided mesh this is the element's true
  * geometry, and it is bitwise the transformation of the same mesh without Nodes. Host only.
+ * @param mesh  this rank's mesh partition.
+ * @param e     0-based local element index.
+ * @param trans out: the transformation (point matrix, order-1 element, attribute, element number).
  */
 void StraightElementTransformation(const mfem::Mesh& mesh,
                                    int e,
@@ -116,6 +122,8 @@ void StraightElementTransformation(const mfem::Mesh& mesh,
 /**
  * @brief Coordinates of mesh vertex v (0-based local vertex index): from the Nodes value at the
  * vertex's dof when the mesh has continuous Nodes, else the mesh vertex array. Host only.
+ * @param mesh this rank's mesh partition.
+ * @param v    0-based local vertex index.
  * @param x receives SpaceDimension() values.
  */
 void VertexPoint(const mfem::Mesh& mesh, int v, double* x);
@@ -124,6 +132,9 @@ void VertexPoint(const mfem::Mesh& mesh, int v, double* x);
  * @brief The multilinear (triangle: linear) transformation of local face f built from its corner
  * vertices (VertexPoint): what Mesh::GetFaceTransformation does for a mesh without Nodes
  * (mesh.cpp:539-561), bitwise the same for such a mesh. Host only.
+ * @param mesh  this rank's mesh partition.
+ * @param f     0-based local face index.
+ * @param trans out: the face transformation (FACE type, attribute 1: geometry only).
  */
 void StraightFaceTransformation(const mfem::Mesh& mesh,
                                 int f,

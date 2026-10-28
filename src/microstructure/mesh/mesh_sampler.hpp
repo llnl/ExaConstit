@@ -204,16 +204,20 @@ void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
 class QuadraturePointSampler {
 public:
     /**
-     * @brief Checks the mesh and evaluates the rule's points on every local element (nothing is
-     * evaluated on a rank without elements).
+     * @brief Checks the mesh and gathers, once, the element-wise node coordinates of every local
+     * element and the rule's shape-function tables (nothing on a rank without elements); the
+     * points themselves are evaluated by Sample().
      * @param mesh as for ComputeElementSamples (not modified; see the cache caveat in the file
      *             comment).
      * @param rule integration rule on the reference element of the mesh's element geometry.
      * @throws std::runtime_error for a mixed-geometry or non-3D mesh.
      */
     QuadraturePointSampler(mfem::Mesh& mesh, const mfem::IntegrationRule& rule);
+    /** @brief Frees the node data and the temporary node space (the mesh is not touched). */
     ~QuadraturePointSampler();
+    /** @brief Not copyable: holds references to the mesh and the rule. */
     QuadraturePointSampler(const QuadraturePointSampler&) = delete;
+    /** @brief Not copy-assignable (see the copy constructor). */
     QuadraturePointSampler& operator=(const QuadraturePointSampler&) = delete;
 
     /** @brief Points per element (rule.GetNPoints()), or 0 on a rank without elements. */
@@ -227,10 +231,10 @@ public:
     void Sample(int elem_begin, int elem_end, QuadraturePointSamples& out) const;
 
 private:
-    struct Factors; ///< element node coordinates, shape tables and temporary nodes
-    mfem::Mesh& m_mesh;
-    const mfem::IntegrationRule& m_rule;
-    std::unique_ptr<Factors> m_factors; ///< null on a rank without elements
+    struct Factors;     ///< element node coordinates, shape tables and temporary nodes
+    mfem::Mesh& m_mesh; ///< the sampled mesh (not owned)
+    const mfem::IntegrationRule& m_rule; ///< the point rule (not owned)
+    std::unique_ptr<Factors> m_factors;  ///< null on a rank without elements
 };
 
 } // namespace exaconstit::microstructure

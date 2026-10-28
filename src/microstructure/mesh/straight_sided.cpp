@@ -1,3 +1,13 @@
+/*
+ * Implementation of straight_sided.hpp: the straightness test (every nodal point on the
+ * multilinear map of the element corners), and corner points and element / face transformations
+ * read from the Nodes vertex dofs when the mesh has them.
+ *
+ * Terms used in this file:
+ * - Nodes: the mesh's own high-order coordinate field (an H1 GridFunction); a dof is one nodal
+ *   point of it, a vdof one coordinate component of a dof.
+ * - Collective: a function every rank of the communicator must call (IsStraightSided only).
+ */
 #include "microstructure/mesh/straight_sided.hpp"
 
 #include <algorithm>

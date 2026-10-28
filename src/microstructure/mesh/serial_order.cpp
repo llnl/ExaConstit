@@ -1,3 +1,12 @@
+/*
+ * Implementation of serial_order.hpp: one partitioning computed on rank 0 and broadcast, the
+ * ParMesh built from it, and gathers of per-element values back into serial element order.
+ *
+ * Terms used in this file:
+ * - Collective: a function every rank of the communicator must call, because the ranks exchange
+ *   data inside it.
+ * - Partitioning: one owning rank per serial element.
+ */
 #include "microstructure/mesh/serial_order.hpp"
 
 #include <stdexcept>

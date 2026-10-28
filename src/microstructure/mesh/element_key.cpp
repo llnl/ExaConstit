@@ -1,3 +1,12 @@
+/*
+ * Implementation of element_key.hpp: corner positions from the true geometry, a power-of-two
+ * quantum from the element's size and coordinate magnitude, rounding to that grid, and a
+ * splitmix64 hash of the sorted rounded corners.
+ *
+ * Terms used in this file:
+ * - Quantum q: the grid spacing coordinates are rounded to before hashing.
+ * - ulp (unit in the last place): the spacing of doubles near a value, i.e. its last-bit size.
+ */
 #include "microstructure/mesh/element_key.hpp"
 
 #include <algorithm>

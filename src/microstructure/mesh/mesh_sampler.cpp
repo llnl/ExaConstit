@@ -1,3 +1,15 @@
+/*
+ * Implementation of mesh_sampler.hpp: element volumes and volume centroids from MFEM's geometric
+ * factors, and quadrature-point coordinates and weights evaluated per element range from the
+ * element-wise node coordinates and the rule's shape-function tables.
+ *
+ * Terms used in this file:
+ * - detJ: determinant of the Jacobian of the reference-to-physical element map.
+ * - E-vector: MFEM's element-wise copy of a finite element field (every element's dof values
+ *   one after another, shared dofs repeated).
+ * - mfem::forall: MFEM's parallel loop; a GPU kernel when the mfem::Device has a CUDA or HIP
+ *   backend, a plain host loop otherwise. MFEM_HOST_DEVICE marks code callable inside it.
+ */
 #include "microstructure/mesh/mesh_sampler.hpp"
 
 #include "mfem.hpp"
@@ -31,11 +43,11 @@ namespace {
  *    never outlive them.
  */
 struct SampleFactors {
-    std::unique_ptr<mfem::FiniteElementCollection> fec;
-    std::unique_ptr<mfem::FiniteElementSpace> fes;
-    std::unique_ptr<mfem::GridFunction> nodes;
-    const mfem::IntegrationRule* ir = nullptr;
-    std::unique_ptr<mfem::GeometricFactors> factors;
+    std::unique_ptr<mfem::FiniteElementCollection> fec; ///< temporary order-1 H1 collection
+    std::unique_ptr<mfem::FiniteElementSpace> fes;      ///< temporary vector node space
+    std::unique_ptr<mfem::GridFunction> nodes;          ///< temporary vertex coordinates
+    const mfem::IntegrationRule* ir = nullptr;          ///< the rule (not owned)
+    std::unique_ptr<mfem::GeometricFactors> factors;    ///< X and detJ at the rule's points
 };
 
 /**
@@ -118,14 +130,14 @@ SampleFactors BuildSampleFactors(mfem::Mesh& mesh, const mfem::IntegrationRule& 
  * collection), keyed by the rule's address: the rule must outlive this object.
  */
 struct PointEvaluator {
-    std::unique_ptr<mfem::FiniteElementCollection> fec;
-    std::unique_ptr<mfem::FiniteElementSpace> fes;
-    std::unique_ptr<mfem::GridFunction> nodes;
-    const mfem::IntegrationRule* ir = nullptr;
-    const mfem::DofToQuad* maps = nullptr;
-    mfem::Vector element_nodes; ///< E-vector, nd x 3 x ne
-    int nd = 0;                 ///< nodes (dofs) per element
-    int ne = 0;                 ///< local elements
+    std::unique_ptr<mfem::FiniteElementCollection> fec; ///< temporary order-1 H1 collection
+    std::unique_ptr<mfem::FiniteElementSpace> fes;      ///< temporary vector node space
+    std::unique_ptr<mfem::GridFunction> nodes;          ///< temporary vertex coordinates
+    const mfem::IntegrationRule* ir = nullptr;          ///< the rule (not owned)
+    const mfem::DofToQuad* maps = nullptr;              ///< FULL shape tables (MFEM cache)
+    mfem::Vector element_nodes;                         ///< E-vector, nd x 3 x ne
+    int nd = 0;                                         ///< nodes (dofs) per element
+    int ne = 0;                                         ///< local elements
 };
 
 /**
@@ -438,11 +450,11 @@ void ComputeQuadraturePointSamples(mfem::Mesh& mesh,
  * header does not expose MFEM's interpolation setup. The constructor checks the mesh and, on a
  * rank with elements, gathers the element node coordinates and the shape tables once
  * (BuildPointEvaluator); Sample() evaluates one range (EvaluatePoints). On a rank without
- * elements Sample() returns empty Vectors with num_qp = 0, exactly like the quadrature-order
- * overload always did.
+ * elements Sample() returns empty Vectors with num_qp = 0, as the quadrature-order overload
+ * does.
  */
 struct QuadraturePointSampler::Factors {
-    PointEvaluator pe;
+    PointEvaluator pe; ///< node coordinates and shape tables of the whole local mesh
 };
 
 QuadraturePointSampler::QuadraturePointSampler(mfem::Mesh& mesh, const mfem::IntegrationRule& rule)

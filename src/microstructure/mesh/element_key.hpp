@@ -54,7 +54,7 @@
  * each other). All corners are used, not only the smallest one: the 6 tets of a Kuhn-split hex
  * share their smallest vertex.
  *
- * **Residual risk (stated honestly).** Exact geometric keys are impossible after MFEM's parallel
+ * **Residual risk.** Exact geometric keys are impossible after MFEM's parallel
  * UniformRefinement: the copies of a shared node are computed by different elements, in an order
  * that depends on the partition, and differ by a few units in the last place (ulp) of |x|. This
  * holds for meshes with Nodes (the refined Nodes are interpolated per element) and for hex meshes
@@ -85,12 +85,12 @@
  * give a seed the containing element with the smallest key (labeling/vertex_field.cpp).
  * Rejection sampling, the default placement, does not use keys at all.
  *
- * **Change from the earlier key (2026-10-22).** The earlier key hashed the exact vertex-array
- * bits; a first rounded key used a quantum of 2^-40 h, which proved too fine for coordinates far
- * from the origin and was coarsened to the one above. Keys are therefore different numbers now:
- * element-weighted seed streams (and so element-weighted seeds) and the smallest-key tie-breaks
- * of fragment cleanup changed once for every mesh. They are again the same for every rank count,
- * and now also for meshes with Nodes whose vertex array is stale or partition dependent.
+ * **Why not exact bits, and why this quantum.** Hashing the exact vertex-array bits would give
+ * different keys on different partitions for meshes with Nodes (stale or averaged vertex array)
+ * and after a parallel refinement. A much finer quantum (for example 2^-40 h) leaves no room for
+ * the round-off of coordinates far from the origin; 2^-20 of the length scale above keeps the
+ * mismatch probabilities in the table small while elements up to an aspect ratio of about 1600
+ * keep distinct rounded corners.
  *
  * Failure modes: a collision (two elements with the same key) is not detected. It can only happen
  * by a hash collision (probability above) or for duplicated or degenerate elements (corners

@@ -21,8 +21,8 @@
  * **How.** AttributeDomain validates the classification and builds an element mask
  * (mesh/element_mask.hpp: 1 for active, 0 for passthrough elements) over the mesh itself. Every
  * generation stage takes the mask and skips the inactive elements; no sub-mesh or other copy of
- * the mesh is built (production meshes are large, and the earlier mfem::ParSubMesh copy also
- * distorted non-Gauss-Lobatto curved Nodes of order >= 3). After labeling, ToParent writes the
+ * the mesh is built (production meshes are large, and an mfem::ParSubMesh copy would also
+ * distort non-Gauss-Lobatto curved Nodes of order >= 3). After labeling, ToParent writes the
  * passthrough ids: active elements keep their grain id 1..N, and the elements of the k-th
  * passthrough attribute (sorted ascending) get id N + 1 + k. Those ids are then written as the
  * element attributes of the output mesh.
@@ -75,7 +75,9 @@ public:
                     const std::vector<int>& active_attributes,
                     const std::vector<int>& passthrough_attributes);
 
+    /** @brief Not copyable: the object refers to its parent mesh. */
     AttributeDomain(const AttributeDomain&) = delete;
+    /** @brief Not copy-assignable (see the copy constructor). */
     AttributeDomain& operator=(const AttributeDomain&) = delete;
 
     /**
