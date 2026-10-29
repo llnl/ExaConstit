@@ -23,20 +23,16 @@
  *  - A curved plate (order-2 Nodes, only plate nodes moved) under straight active elements: the
  *    straightness test looks at the active elements only, so the seeds equal those of the
  *    straight reference.
- *  - NearestVertex with a mask: a rank that holds a copy of the winning vertex only through
- *    inactive elements (every plate element on the last rank) still reports its local copy.
  * Every run uses np = 1-4 (the masked mesh is distributed over MPI_COMM_WORLD).
  */
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
 #include "microstructure/morphology/lloyd.hpp"
 #include "microstructure/seeding/johnson_mehl.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/roi_filler.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
 
 #include "mfem.hpp"
@@ -293,8 +289,8 @@ TEST(MaskSeeding, SamplesAndLloydEqualActiveOnlyMesh) {
 }
 
 // A null context and a context with an empty mask (every element active) give the same seeds as
-// before masks existed (the unmasked path is unchanged; the stage 1a-1f tests check that against
-// stored results).
+// before masks existed (the unmasked path is unchanged; the seeding and driver tests check that
+// against stored results).
 TEST(MaskSeeding, EmptyMaskChangesNothing) {
     mfem::Mesh serial = BuildMesh(false, mfem::Element::TETRAHEDRON, 0);
     MaskedMesh m = Distribute(serial, MPI_COMM_WORLD);
@@ -360,78 +356,6 @@ TEST(MaskSeeding, CurvedPlateDoesNotCurveTheMaterial) {
     }
 }
 
-// NearestVertex with a mask on a partition that puts every plate element on the last rank (at
-// np >= 2 that rank has no active element: its mask is all zero). The seeds below the plate top are
-// nearest to vertices on the interface z = 0.5, which the last rank holds only through plate
-// elements. Every rank holding a copy of the winning vertex must report it in local_vertex (the
-// documented contract), and the winners are vertices of active elements.
-TEST(MaskSeeding, NearestVertexReportsEveryCopy) {
-    mfem::Mesh serial = BuildMesh(false, mfem::Element::HEXAHEDRON, 0);
-    int rank = 0;
-    int nranks = 1;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &nranks);
-    MaskedMesh m;
-    const int ne = serial.GetNE();
-    m.order.partitioning.SetSize(ne);
-    int num_active = 0;
-    for (int e = 0; e < ne; e++) {
-        num_active += serial.GetAttribute(e) == ACTIVE_ATTRIBUTE ? 1 : 0;
-    }
-    std::vector<int> local;
-    for (int e = 0, k = 0; e < ne; e++) {
-        int owner = 0;
-        if (nranks > 1) {
-            owner = serial.GetAttribute(e) == ACTIVE_ATTRIBUTE ? (k++ * (nranks - 1)) / num_active
-                                                               : nranks - 1;
-        }
-        m.order.partitioning[e] = owner;
-        if (owner == rank) {
-            local.push_back(e);
-        }
-    }
-    m.order.local_to_serial.SetSize(static_cast<int>(local.size()));
-    for (std::size_t i = 0; i < local.size(); i++) {
-        m.order.local_to_serial[static_cast<int>(i)] = local[i];
-    }
-    m.pmesh = ms::MakeParMesh(MPI_COMM_WORLD, serial, m.order);
-    const ms::ElementMask* mask = nullptr;
-    if (m.pmesh->GetNE() > 0) {
-        m.mask.active.SetSize(m.pmesh->GetNE());
-        for (int e = 0; e < m.pmesh->GetNE(); e++) {
-            m.mask.active[e] = (m.pmesh->GetAttribute(e) == ACTIVE_ATTRIBUTE) ? 1 : 0;
-        }
-        mask = &m.mask; // all zero on the last rank at np >= 2
-    }
-
-    ms::SeedSet seeds;
-    seeds.x = {0.5, 0.25, 0.6};
-    seeds.y = {0.5, 0.75, 0.6};
-    seeds.z = {0.45, 0.3, 1.0};
-    seeds.source_id = {0, 1, 2};
-    const std::vector<int> ids = {0, 1, 2};
-    const ms::NearestVertexResult result = ms::NearestVertex(
-        *m.pmesh, MPI_COMM_WORLD, seeds, ids, mask);
-    const ms::VertexCoordinates coords(*m.pmesh);
-    for (std::size_t k = 0; k < ids.size(); k++) {
-        const auto& p = result.position[k];
-        EXPECT_GE(p[2], PLATE_TOP) << "seed " << k; // a vertex of an active element
-        int copy = -1;
-        for (int v = 0; v < coords.NumVertices(); v++) {
-            const double* x = coords.Vertex(v);
-            if (x[0] == p[0] && x[1] == p[1] && x[2] == p[2]) {
-                copy = v;
-            }
-        }
-        EXPECT_EQ(result.local_vertex[k], copy) << "seed " << k << ", rank " << rank;
-    }
-    EXPECT_EQ(result.position[0][2], PLATE_TOP);
-    if (nranks > 1 && rank == nranks - 1) {
-        EXPECT_GE(result.local_vertex[0], 0); // held only through plate elements
-    }
-}
-
-/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 /** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);

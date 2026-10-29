@@ -54,7 +54,6 @@ namespace {
 namespace fs = std::filesystem;
 
 /** Directory of the example options files and meshes (set by CMake). */
-/** Directory of the example options files and meshes (set by CMake). */
 const fs::path data_dir = fs::path(MS_DRIVER_DATA_DIR);
 
 /** Options of the tests: 8 random Voronoi seeds, the conformal step on or off. */
@@ -422,7 +421,6 @@ TEST(DriverConformal, PassthroughPlate) {
     EXPECT_NEAR(GrainVolume(run, plate), 0.25, 1e-14);
 }
 
-/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 /** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);

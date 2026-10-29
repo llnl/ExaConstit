@@ -1270,7 +1270,6 @@ TEST(PeriodicImages, MapToOriginal) {
     EXPECT_THROW(ms::MapImageLabelsToOriginal(images, bad), std::invalid_argument);
 }
 
-/** Initializes MPI (mfem::Mpi finalizes it at exit) and runs every test on every rank. */
 /** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);

@@ -31,7 +31,6 @@ int Rank(MPI_Comm comm = MPI_COMM_WORLD) {
     return rank;
 }
 
-/** @brief Number of ranks in MPI_COMM_WORLD. */
 /** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int nranks = 1;

@@ -77,7 +77,6 @@ namespace ms = exaconstit::microstructure;
 namespace {
 
 /** Directory of the example options files and meshes (set by CMake). */
-/** Directory of the example options files and meshes (set by CMake). */
 const fs::path data_dir = fs::path(MS_DRIVER_DATA_DIR);
 
 constexpr double PI = 3.14159265358979323846; ///< pi.
@@ -1474,7 +1473,6 @@ TEST(DriverDataSources, ExampleOptionsFilesRun) {
     }
 }
 
-/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 /** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);

@@ -38,14 +38,12 @@ namespace fs = std::filesystem;
 namespace {
 
 /** This process's rank in MPI_COMM_WORLD. */
-/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     return rank;
 }
 
-/** Number of ranks in MPI_COMM_WORLD. */
 /** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int n = 1;
