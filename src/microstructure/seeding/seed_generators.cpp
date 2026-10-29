@@ -1,3 +1,19 @@
+/*
+ * Implementation of the seed generators (seed_generators.hpp for the user-level description).
+ *
+ * All three generators (rejection, lattice, element-weighted) produce a *candidate stream*: an
+ * ordered list of points with a global candidate index, identical on every rank. The stream is
+ * cut into batches; for each batch
+ *   1. every rank sets bits in a two-part bitmask: "inside the material" (its own elements) and
+ *      "too close to the surface" (its own surface triangles);
+ *   2. one MPI_Allreduce(MPI_BOR) makes the mask global (a bit is set if any rank set it);
+ *   3. every rank walks the batch in index order and accepts candidates that are inside, not too
+ *      close to the surface and, with RSA, at least d away from the seeds accepted so far
+ *      (SeedAcceptor).
+ * Steps 2 and 3 use only replicated data, so every rank accepts exactly the same seeds, and every
+ * decision that ends the run (done, stalled, switch to the fallback, errors) is taken identically
+ * on all ranks, which keeps the collective calls matched.
+ */
 #include "microstructure/seeding/seed_generators.hpp"
 
 #include <algorithm>
@@ -18,27 +34,11 @@
 #include "microstructure/util/fixed_point.hpp"
 #include "microstructure/util/random_distributions.hpp"
 
-/*
- * Implementation notes (see seed_generators.hpp for the user-level description).
- *
- * All three generators (rejection, lattice, element-weighted) produce a *candidate stream*: an
- * ordered list of points with a global candidate index, identical on every rank. The stream is
- * cut into batches; for each batch
- *   1. every rank sets bits in a two-part bitmask: "inside the material" (its own elements) and
- *      "too close to the surface" (its own surface triangles);
- *   2. one MPI_Allreduce(MPI_BOR) makes the mask global (a bit is set if any rank set it);
- *   3. every rank walks the batch in index order and accepts candidates that are inside, not too
- *      close to the surface and, with RSA, at least d away from the seeds accepted so far
- *      (SeedAcceptor).
- * Steps 2 and 3 use only replicated data, so every rank accepts exactly the same seeds, and every
- * decision that ends the run (done, stalled, switch to the fallback, errors) is taken identically
- * on all ranks, which keeps the collective calls matched.
- */
-
 namespace exaconstit::microstructure {
 
 namespace {
 
+/** pi, for sphere volumes in the RSA distance and packing guard. */
 constexpr double PI = 3.141592653589793238462643383279502884;
 
 /** Largest volume fraction N (pi/6) d^3 / V accepted by the RSA feasibility guard. */
@@ -89,18 +89,21 @@ const char* PlacementName(SeedPlacement placement) {
  * Host, replicated on every rank.
  */
 struct CandidateBatch {
-    std::vector<double> x, y, z;
-    std::vector<std::int64_t> index;
+    std::vector<double> x, y, z;     ///< candidate positions (mesh length units)
+    std::vector<std::int64_t> index; ///< global candidate index of each candidate
 
+    /** Number of candidates in the batch. */
     std::int64_t Size() const {
         return static_cast<std::int64_t>(x.size());
     }
+    /** Empties the batch (keeps the capacity). */
     void Clear() {
         x.clear();
         y.clear();
         z.clear();
         index.clear();
     }
+    /** Appends candidate k at (px, py, pz). */
     void Push(double px, double py, double pz, std::int64_t k) {
         x.push_back(px);
         y.push_back(py);
@@ -116,8 +119,8 @@ struct CandidateBatch {
  * Both parts live in one array so a single MPI_Allreduce combines them.
  */
 struct BatchMask {
-    std::int64_t words = 0;
-    std::vector<std::uint64_t> bits;
+    std::int64_t words = 0;          ///< words per part, ceil(n / 64)
+    std::vector<std::uint64_t> bits; ///< part 0 (in domain), then part 1 (near surface)
     /**
      * excluded[i] = 1 when candidate i is strictly inside the exclusion box. Computed from the
      * replicated candidate positions, so identical on every rank and not part of the reduction.
@@ -125,23 +128,29 @@ struct BatchMask {
      */
     std::vector<char> excluded;
 
+    /** Sizes both parts for n candidates, all bits clear, no exclusion flags. */
     void Reset(std::int64_t n) {
         words = (n + 63) / 64;
         bits.assign(static_cast<std::size_t>(2 * words), 0);
         excluded.clear();
     }
+    /** Words of part 0 (for MarkInside). */
     std::uint64_t* InDomain() {
         return bits.data();
     }
+    /** Words of part 1 (for MarkNear). */
     std::uint64_t* NearSurface() {
         return bits.data() + words;
     }
+    /** True when candidate i is in the domain. */
     bool InDomain(std::int64_t i) const {
         return (bits[static_cast<std::size_t>(i / 64)] >> (i % 64)) & 1u;
     }
+    /** True when candidate i is closer than the clearance to the surface. */
     bool NearSurface(std::int64_t i) const {
         return (bits[static_cast<std::size_t>(words + i / 64)] >> (i % 64)) & 1u;
     }
+    /** Marks candidate i as in the domain. */
     void SetInDomain(std::int64_t i) {
         bits[static_cast<std::size_t>(i / 64)] |= std::uint64_t(1) << (i % 64);
     }
@@ -150,13 +159,13 @@ struct BatchMask {
 /** Global facts about the distributed mesh, identical on every rank. */
 struct MeshSummary {
     std::array<double, 3> lo; ///< global bounding box of the vertices / sampled element points
-    std::array<double, 3> hi;
+    std::array<double, 3> hi; ///< upper corner of that box
     /**
      * Union of the (padded, for curved elements) element boxes: every point of the material lies
      * in it. Equal to [lo, hi] for straight-sided meshes.
      */
     std::array<double, 3> reach_lo;
-    std::array<double, 3> reach_hi;
+    std::array<double, 3> reach_hi;   ///< upper corner of the padded box
     double volume = 0.0;              ///< material volume V (fixed-point sum)
     std::int64_t num_elements = 0;    ///< global element count
     std::int64_t num_nonpositive = 0; ///< global count of elements with volume <= 0 (or NaN)
@@ -284,6 +293,7 @@ public:
         return m_target >= 0 && static_cast<std::int64_t>(m_seeds.Size()) >= m_target;
     }
 
+    /** Number of seeds accepted so far. */
     std::int64_t NumAccepted() const {
         return static_cast<std::int64_t>(m_seeds.Size());
     }
@@ -340,29 +350,30 @@ public:
         }
     }
 
+    /** The accepted seeds (positions and source ids). */
     SeedSet& Seeds() {
         return m_seeds;
     }
 
 private:
-    std::int64_t m_target;
+    std::int64_t m_target;        ///< seeds wanted; < 0 = no limit
     std::vector<double> m_radius; ///< polydisperse exclusion radius per slot (empty: none)
-    std::unique_ptr<MinDistanceGrid> m_grid;
-    SeedSet m_seeds;
+    std::unique_ptr<MinDistanceGrid> m_grid; ///< RSA hash grid (null without RSA)
+    SeedSet m_seeds;                         ///< accepted seeds
 };
 
 /** Shared state of one GenerateSeeds call. */
 struct SeedingContext {
-    MPI_Comm comm;
-    const SeedingParameters* params;
-    const MaterialPointLocator* locator;
-    const BoundaryClearance* clearance; ///< null when boundary_clearance = 0
-    bool material_mode;                 ///< sampling_domain == "material"
-    std::array<double, 3> box_lo;       ///< sampling box
-    std::array<double, 3> box_hi;
-    double volume_ref;          ///< V used for d, lattice spacing and the guard
-    double min_distance;        ///< d
-    std::int64_t candidate_cap; ///< stall cap
+    MPI_Comm comm;                       ///< mesh communicator
+    const SeedingParameters* params;     ///< the generator parameters (not owned)
+    const MaterialPointLocator* locator; ///< point-in-material test (not owned)
+    const BoundaryClearance* clearance;  ///< null when boundary_clearance = 0
+    bool material_mode;                  ///< sampling_domain == "material"
+    std::array<double, 3> box_lo;        ///< sampling box lower corner
+    std::array<double, 3> box_hi;        ///< sampling box upper corner
+    double volume_ref;                   ///< V used for d, lattice spacing and the guard
+    double min_distance;                 ///< d
+    std::int64_t candidate_cap;          ///< stall cap
 };
 
 /*
@@ -382,8 +393,7 @@ struct SeedingContext {
  * Exclusion box (only when params.use_exclude_box): mask.excluded[i] marks the candidates strictly
  * inside the box. Those candidates are left out of the point-in-material test (the remaining
  * candidates are packed into a shorter list, tested, and their bits copied back to their original
- * positions), and their in-domain bit stays 0. Without an exclusion box nothing of this runs, so
- * the default path is unchanged.
+ * positions), and their in-domain bit stays 0. Without an exclusion box none of this runs.
  */
 void ClassifyBatch(const SeedingContext& ctx,
                    const CandidateBatch& batch,
@@ -1382,7 +1392,7 @@ SeedSet GenerateSeeds(mfem::Mesh& local_mesh,
 
     // Step 6: choose the generator and the stall cap. With an exclusion box only the material
     // outside it can accept candidates, so the expected acceptance is scaled by the caller's
-    // outside fraction (1 unless given; never applied without a box, so the default is unchanged)
+    // outside fraction (1 unless given; applied only with an exclusion box)
     double outside_fraction = 1.0;
     if (params.use_exclude_box) {
         outside_fraction = params.exclude_box_outside_fraction;

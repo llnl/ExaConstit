@@ -248,10 +248,10 @@ struct SeedingReport {
     double material_volume = 0.0;             ///< V of the whole mesh (fixed-point sum, length^3)
     double min_distance = 0.0;                ///< d actually used (0: no RSA)
     double lattice_parameter = 0.0;           ///< a (lattices only)
-    std::array<double, 3> bbox_lo = {0, 0, 0}; ///< exact global mesh bounding box
-    std::array<double, 3> bbox_hi = {0, 0, 0};
+    std::array<double, 3> bbox_lo = {0, 0, 0};     ///< exact global mesh bounding box
+    std::array<double, 3> bbox_hi = {0, 0, 0};     ///< upper corner of that box
     std::array<double, 3> sampling_lo = {0, 0, 0}; ///< box the candidates were drawn from
-    std::array<double, 3> sampling_hi = {0, 0, 0};
+    std::array<double, 3> sampling_hi = {0, 0, 0}; ///< upper corner of that box
     std::vector<std::string> notes; ///< human-readable remarks (fallback, partial result)
 
     /** @brief Multi-line summary for the rank-0 log. Host only. */
