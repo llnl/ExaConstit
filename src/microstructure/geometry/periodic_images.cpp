@@ -13,6 +13,8 @@
  */
 #include "microstructure/geometry/periodic_images.hpp"
 
+#include "microstructure/geometry/metric_functors.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -21,8 +23,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/geometry/metric_functors.hpp"
 
 namespace exaconstit::microstructure {
 

@@ -19,6 +19,9 @@
  * Runs as a normal MPI program (registered at np 1 in test_options.cmake, also run by hand at
  * np 2). Nothing here communicates; MPI is needed only because warnings are printed on rank 0.
  */
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/microstructure_options.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -31,8 +34,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/microstructure_options.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

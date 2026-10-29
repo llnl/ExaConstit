@@ -31,6 +31,11 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/conformal/manifold_projector.hpp"
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -45,10 +50,6 @@
 #include <mpi.h>
 #include <vector>
 
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/conformal/manifold_projector.hpp"
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

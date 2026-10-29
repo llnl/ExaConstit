@@ -5,6 +5,8 @@
  * internal state. Seed positions and orientations therefore do not depend on call order, thread
  * schedule or MPI rank count. These tests are serial (they run identically on every rank).
  */
+#include "microstructure/util/counter_rng.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -13,7 +15,6 @@
 #include <random>
 #include <vector>
 
-#include "microstructure/util/counter_rng.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

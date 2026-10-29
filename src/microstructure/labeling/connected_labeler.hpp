@@ -1,16 +1,16 @@
 #pragma once
 
-#include "mfem.hpp"
-
-#include <cstdint>
-#include <mpi.h>
-#include <vector>
-
 #include "microstructure/labeling/connected_limits.hpp" // CONNECTED_MAX_ROUNDS_LIMIT
 #include "microstructure/mesh/mesh_adjacency.hpp"
 #include "microstructure/microstructure_options.hpp"
 #include "microstructure/microstructure_types.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
+
+#include "mfem.hpp"
+
+#include <cstdint>
+#include <mpi.h>
+#include <vector>
 
 /**
  * @file connected_labeler.hpp

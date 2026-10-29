@@ -10,13 +10,13 @@
  */
 #include "microstructure/mesh/straight_sided.hpp"
 
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <stdexcept>
-
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

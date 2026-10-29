@@ -1,11 +1,11 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <vector>
-
-#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file attribute_domain.hpp

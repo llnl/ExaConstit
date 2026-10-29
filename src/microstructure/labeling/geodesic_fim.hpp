@@ -1,12 +1,12 @@
 #pragma once
 
-#include "mfem.hpp"
-
-#include <mpi.h>
-
 #include "microstructure/labeling/geodesic_common.hpp"
 #include "microstructure/labeling/vertex_field.hpp"
 #include "microstructure/microstructure_types.hpp"
+
+#include "mfem.hpp"
+
+#include <mpi.h>
 
 /**
  * @file geodesic_fim.hpp

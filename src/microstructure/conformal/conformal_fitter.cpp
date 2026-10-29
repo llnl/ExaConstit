@@ -5,15 +5,15 @@
  */
 #include "microstructure/conformal/conformal_fitter.hpp"
 
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <map>
 #include <memory>
 #include <vector>
-
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

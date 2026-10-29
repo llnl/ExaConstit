@@ -1,3 +1,12 @@
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/johnson_mehl.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -13,14 +22,6 @@
 #include <vector>
 
 #include "axom/core/execution/execution_space.hpp"
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/johnson_mehl.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 #include <gtest/gtest.h>
 
 /*

@@ -1,14 +1,5 @@
 #pragma once
 
-#include "mfem.hpp"
-
-#include <array>
-#include <cstdint>
-#include <memory>
-#include <mpi.h>
-#include <string>
-#include <vector>
-
 #include "microstructure/conformal/adjacency_check.hpp"
 #include "microstructure/conformal/conformal_fitter.hpp"
 #include "microstructure/conformal/label_repair.hpp"
@@ -23,6 +14,15 @@
 #include "microstructure/morphology/weight_fit.hpp"
 #include "microstructure/seeding/johnson_mehl.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
+
+#include "mfem.hpp"
+
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <mpi.h>
+#include <string>
+#include <vector>
 
 /**
  * @file microstructure_driver.hpp

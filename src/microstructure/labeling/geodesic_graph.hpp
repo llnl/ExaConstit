@@ -1,14 +1,14 @@
 #pragma once
 
+#include "microstructure/labeling/geodesic_common.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
-
-#include "microstructure/labeling/geodesic_common.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file geodesic_graph.hpp

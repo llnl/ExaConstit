@@ -1,13 +1,13 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/util/fixed_point.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <mpi.h>
 #include <vector>
-
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/util/fixed_point.hpp"
 
 /**
  * @file cell_measures.hpp

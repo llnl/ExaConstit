@@ -1,3 +1,7 @@
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/seeding/min_distance_grid.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -8,9 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/min_distance_grid.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
 #include <gtest/gtest.h>
 
 /*

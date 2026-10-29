@@ -13,6 +13,17 @@
  * projected with SetCurvature. Every test compares the MPI_COMM_WORLD run (np = 1-4) with a
  * single-rank reference computed in the same executable on MPI_COMM_SELF.
  */
+#include "microstructure/geometry/periodic_images.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -27,16 +38,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "microstructure/geometry/periodic_images.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

@@ -19,6 +19,7 @@
  * count: rank 0 writes, then broadcasts whether the write succeeded (RootWriteSucceeded), so
  * every rank fails together if it did not.
  */
+#include "microstructure/io/voxel_map_io.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -35,7 +36,6 @@
 
 #include "axom/config.hpp"
 #include "common/voxel_fixture.hpp"
-#include "microstructure/io/voxel_map_io.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

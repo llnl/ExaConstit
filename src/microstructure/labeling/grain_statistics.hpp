@@ -1,11 +1,11 @@
 #pragma once
 
+#include "microstructure/mesh/mesh_adjacency.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <vector>
-
-#include "microstructure/mesh/mesh_adjacency.hpp"
 
 /**
  * @file grain_statistics.hpp

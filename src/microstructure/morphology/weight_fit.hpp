@@ -1,12 +1,12 @@
 #pragma once
 
-#include <mpi.h>
-#include <string>
-#include <vector>
-
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
+
+#include <mpi.h>
+#include <string>
+#include <vector>
 
 /**
  * @file weight_fit.hpp

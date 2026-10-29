@@ -36,6 +36,7 @@
  */
 #include "microstructure/microstructure_options.hpp"
 
+#include "microstructure/exec_dispatch.hpp"
 #include "options/option_util.hpp"
 
 #include "mfem.hpp"
@@ -53,8 +54,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include "microstructure/exec_dispatch.hpp"
 
 // The compile-time limits only (header-only; ms_options does not link ms_labeling)
 #include "microstructure/labeling/connected_limits.hpp"

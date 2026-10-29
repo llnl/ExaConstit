@@ -23,11 +23,10 @@
  * Run with 1 or 2 MPI ranks (registered for np 1 and 2 behind EXACONSTIT_ENABLE_EXTENSIVE_TESTS).
  * Scratch files go to hook_unit_np<ranks>/ in the working directory.
  */
+#include "microstructure/microstructure_driver.hpp"
 #include "sim_state/microstructure_hook.hpp"
 #include "sim_state/simulation_state.hpp"
 #include "utilities/auto_mesh.hpp"
-
-#include "microstructure/microstructure_driver.hpp"
 
 #include "mfem.hpp"
 
@@ -224,15 +223,15 @@ TEST(microstructure_hook, both_forms_parse_to_the_same_options) {
     std::vector<std::string> problems_file;
     const ExaOptions options_file = ParseDeck(MakeDeck(FileHook(file)));
     ASSERT_TRUE(options_file.mesh.microstructure.has_value());
-    const exaconstit::HookOptions from_file =
-        exaconstit::ParseMicrostructureHook(options_file, problems_file);
+    const exaconstit::HookOptions from_file = exaconstit::ParseMicrostructureHook(options_file,
+                                                                                  problems_file);
     EXPECT_TRUE(problems_file.empty());
     EXPECT_EQ(from_file.origin, file.string());
 
     std::vector<std::string> problems_inline;
     const ExaOptions options_inline = ParseDeck(MakeDeck(InlineHook()));
-    const exaconstit::HookOptions from_inline =
-        exaconstit::ParseMicrostructureHook(options_inline, problems_inline);
+    const exaconstit::HookOptions from_inline = exaconstit::ParseMicrostructureHook(
+        options_inline, problems_inline);
     EXPECT_TRUE(problems_inline.empty());
     EXPECT_EQ(from_inline.origin, "inline");
 
@@ -268,15 +267,13 @@ TEST(microstructure_hook, refusals) {
     // The mesh comes from ExaConstit: no generator mesh source, no other [Mesh] keys
     EXPECT_FALSE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    type = \"auto\"\n"))));
     EXPECT_FALSE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    floc = \"a.mesh\"\n"))));
-    EXPECT_FALSE(
-        DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh.Auto]\n    ncuts = [8, 8, 8]\n"))));
+    EXPECT_FALSE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh.Auto]\n    ncuts = [8, 8, 8]\n"))));
     EXPECT_FALSE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    order = 2\n"))));
     // ... while the attribute keys are allowed
-    EXPECT_TRUE(
-        DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    active_attributes = [1]\n"))));
+    EXPECT_TRUE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    active_attributes = [1]\n"))));
     // The same refusals apply inside an options file
-    const fs::path bad_file =
-        WriteOptionsFile("form1_bad.toml", seeds + "[Mesh]\n    type = \"auto\"\n");
+    const fs::path bad_file = WriteOptionsFile("form1_bad.toml",
+                                               seeds + "[Mesh]\n    type = \"auto\"\n");
     EXPECT_FALSE(DeckIsValid(MakeDeck(FileHook(bad_file))));
     // The backend is rtmodel's
     EXPECT_FALSE(DeckIsValid(
@@ -316,8 +313,8 @@ TEST(microstructure_hook, refusals) {
         DeckIsValid(MakeDeck(FileHook(missing) + "        exec = \"cpu\"\n", "", "", true)));
     // A restart skips the generator's validate() (its file checks), but still parses the table
     EXPECT_TRUE(DeckIsValid(MakeDeck(InlineHook("[Seeds]\n    num_seeds = 0\n"), "", "", true)));
-    EXPECT_FALSE(DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    type = \"auto\"\n"), "", "",
-                                      true)));
+    EXPECT_FALSE(
+        DeckIsValid(MakeDeck(InlineHook(seeds + "[Mesh]\n    type = \"auto\"\n"), "", "", true)));
     // The build has the generator
     EXPECT_TRUE(exaconstit::MicrostructureHookAvailable());
 }
@@ -344,8 +341,8 @@ TEST(microstructure_hook, simulation_state_matches_direct_generation) {
     serial.SetCurvature(1);
     mfem::ParMesh pmesh(MPI_COMM_WORLD, serial);
     pmesh.SetAttributes();
-    const ms::MicrostructureResult direct =
-        ms::GenerateMicrostructure(hook.generator, pmesh, MPI_COMM_WORLD);
+    const ms::MicrostructureResult direct = ms::GenerateMicrostructure(
+        hook.generator, pmesh, MPI_COMM_WORLD);
     EXPECT_EQ(direct.num_grains, 8);
     EXPECT_EQ(direct.num_regions, 1);
 

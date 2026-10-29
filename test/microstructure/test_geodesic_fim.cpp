@@ -23,6 +23,17 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+#include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_metric.hpp"
+#include "microstructure/labeling/geodesic_weighted.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_options.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -39,16 +50,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/geometry/anisotropy_tensors.hpp"
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_metric.hpp"
-#include "microstructure/labeling/geodesic_weighted.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_options.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

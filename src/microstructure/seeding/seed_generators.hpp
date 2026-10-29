@@ -1,5 +1,9 @@
 #pragma once
 
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -7,10 +11,6 @@
 #include <mpi.h>
 #include <string>
 #include <vector>
-
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file seed_generators.hpp

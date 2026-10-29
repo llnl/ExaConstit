@@ -11,13 +11,13 @@
  */
 #include "microstructure/mesh/preflight.hpp"
 
+#include "microstructure/mesh/mesh_sampler.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
-
-#include "microstructure/mesh/mesh_sampler.hpp"
 
 namespace exaconstit::microstructure {
 

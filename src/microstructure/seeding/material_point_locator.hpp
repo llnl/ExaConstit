@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -12,7 +14,6 @@
 #include "axom/primal/geometry/BoundingBox.hpp"
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/spin/BVH.hpp"
-#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file material_point_locator.hpp

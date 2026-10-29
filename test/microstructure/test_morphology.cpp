@@ -1,3 +1,12 @@
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/morphology/lloyd.hpp"
+#include "microstructure/morphology/sample_labels.hpp"
+#include "microstructure/morphology/size_targets.hpp"
+#include "microstructure/morphology/weight_fit.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -7,14 +16,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/morphology/lloyd.hpp"
-#include "microstructure/morphology/sample_labels.hpp"
-#include "microstructure/morphology/size_targets.hpp"
-#include "microstructure/morphology/weight_fit.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 #include <gtest/gtest.h>
 
 /*

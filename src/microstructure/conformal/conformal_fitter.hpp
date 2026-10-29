@@ -1,11 +1,11 @@
 #pragma once
 
+#include "microstructure/conformal/node_targets.hpp"
+#include "microstructure/conformal/quality.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
-
-#include "microstructure/conformal/node_targets.hpp"
-#include "microstructure/conformal/quality.hpp"
 
 /**
  * @file conformal_fitter.hpp

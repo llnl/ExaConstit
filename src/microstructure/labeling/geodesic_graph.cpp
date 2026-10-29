@@ -17,6 +17,8 @@
  */
 #include "microstructure/labeling/geodesic_graph.hpp"
 
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -29,8 +31,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

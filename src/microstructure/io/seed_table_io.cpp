@@ -1,5 +1,8 @@
 #include "microstructure/io/seed_table_io.hpp"
 
+#include "microstructure/io/microstructure_file_io.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -13,9 +16,6 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
-
-#include "microstructure/io/microstructure_file_io.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 /*
  * Implementation notes (see seed_table_io.hpp for the file format).

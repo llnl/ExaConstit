@@ -16,6 +16,10 @@
  *    and example on MPI_COMM_WORLD equals the MPI_COMM_SELF run (meshes distributed round robin),
  *    at np = 1, 2, 3, 4.
  */
+#include "microstructure/conformal/adjacency_check.hpp"
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -25,9 +29,6 @@
 #include <random>
 #include <vector>
 
-#include "microstructure/conformal/adjacency_check.hpp"
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

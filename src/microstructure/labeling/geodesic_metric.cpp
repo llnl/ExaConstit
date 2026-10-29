@@ -4,13 +4,13 @@
  */
 #include "microstructure/labeling/geodesic_metric.hpp"
 
+#include "microstructure/geometry/anisotropy_tensors.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/geometry/anisotropy_tensors.hpp"
 
 namespace exaconstit::microstructure {
 

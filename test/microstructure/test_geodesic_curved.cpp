@@ -27,6 +27,12 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/labeling/geodesic_fim.hpp"
+#include "microstructure/labeling/geodesic_graph.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -41,11 +47,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/labeling/geodesic_fim.hpp"
-#include "microstructure/labeling/geodesic_graph.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/serial_order.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

@@ -24,6 +24,11 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "microstructure/conformal/label_repair.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -37,10 +42,6 @@
 #include <set>
 #include <vector>
 
-#include "microstructure/conformal/label_repair.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

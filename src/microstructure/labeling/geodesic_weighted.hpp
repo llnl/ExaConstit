@@ -1,14 +1,14 @@
 #pragma once
 
-#include "mfem.hpp"
-
-#include <mpi.h>
-#include <vector>
-
 #include "microstructure/labeling/geodesic_common.hpp"
 #include "microstructure/labeling/geodesic_limits.hpp"
 #include "microstructure/labeling/vertex_field.hpp"
 #include "microstructure/microstructure_types.hpp"
+
+#include "mfem.hpp"
+
+#include <mpi.h>
+#include <vector>
 
 /**
  * @file geodesic_weighted.hpp

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <memory>
@@ -8,8 +11,6 @@
 #include "axom/primal/geometry/BoundingBox.hpp"
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/spin/BVH.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file seed_index.hpp

@@ -1,10 +1,10 @@
 #pragma once
 
+#include "microstructure/conformal/node_targets.hpp"
+
 #include <array>
 #include <cstdint>
 #include <vector>
-
-#include "microstructure/conformal/node_targets.hpp"
 
 /**
  * @file adjacency_check.hpp

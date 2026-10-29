@@ -23,15 +23,16 @@
  * tests call the throwing function on every rank; if any rank did not throw, the test would hang
  * or fail, so a pass means the error was collective.
  */
-#include "mfem.hpp"
-
-#include "axom/config.hpp"
-#include "common/voxel_fixture.hpp"
 #include "microstructure/io/voxel_map_io.hpp"
 #include "microstructure/labeling/quadrature_vote.hpp"
 #include "microstructure/labeling/voxel_labeler.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/mesh/serial_order.hpp"
+
+#include "mfem.hpp"
+
+#include "axom/config.hpp"
+#include "common/voxel_fixture.hpp"
 
 #ifdef AXOM_USE_HDF5
 #include "conduit.hpp"

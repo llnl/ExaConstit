@@ -4,12 +4,12 @@
  */
 #include "microstructure/conformal/boundary_projector.hpp"
 
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <stdexcept>
-
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

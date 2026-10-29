@@ -14,6 +14,8 @@
  */
 #include "microstructure/mesh/mesh_adjacency.hpp"
 
+#include "microstructure/mesh/vertex_coordinates.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,8 +25,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "microstructure/mesh/vertex_coordinates.hpp"
 
 namespace exaconstit::microstructure {
 

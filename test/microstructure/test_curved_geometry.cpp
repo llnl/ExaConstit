@@ -11,6 +11,13 @@
  * Runs at 1-4 MPI ranks. Distributed results are combined over the ranks exactly as the seeding
  * code does (bitwise OR of the per-rank masks) and compared with the serial references.
  */
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/seeding/boundary_clearance.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -28,12 +35,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/preflight.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/boundary_clearance.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

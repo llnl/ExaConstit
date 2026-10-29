@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <cstddef>
@@ -11,8 +13,6 @@
 #include <streambuf>
 #include <string>
 #include <vector>
-
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file output_writer.hpp

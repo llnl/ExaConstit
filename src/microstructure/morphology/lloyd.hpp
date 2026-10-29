@@ -1,15 +1,15 @@
 #pragma once
 
-#include "mfem.hpp"
-
-#include <mpi.h>
-#include <vector>
-
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
 #include "microstructure/morphology/weight_fit.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
+
+#include "mfem.hpp"
+
+#include <mpi.h>
+#include <vector>
 
 /**
  * @file lloyd.hpp

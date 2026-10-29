@@ -149,7 +149,7 @@ public:
     std::shared_ptr<mfem::ParFiniteElementSpace> GetParFiniteElementSpace(const int region,
                                                                           const int vdim);
 
-EXACONSTIT_CUDA_PRIVATE:
+    EXACONSTIT_CUDA_PRIVATE:
     /**
      * @brief Enumeration for volume average calculation types
      *
@@ -214,26 +214,26 @@ private:
      */
     CalcType GetCalcType(const std::string& calc_type_str);
 
-    /**
-     * @brief Calculate volume average for a specific region and calculation type
-     *
-     * @param calc_type Type of calculation to perform
-     * @param region Region index to process
-     * @return Volume average data containing volume and averaged quantities
-     *
-     * Core calculation method that handles all the complexity of:
-     * - Selecting appropriate quadrature functions
-     * - Processing state variables for derived quantities
-     * - Handling special cases (deformation gradient global assignment)
-     * - Performing volume integration using MFEM kernels
-     *
-     * This method encapsulates all calculation-specific logic and provides
-     * a uniform interface for all volume averaging operations.
-     */
-EXACONSTIT_CUDA_PRIVATE:
+/**
+ * @brief Calculate volume average for a specific region and calculation type
+ *
+ * @param calc_type Type of calculation to perform
+ * @param region Region index to process
+ * @return Volume average data containing volume and averaged quantities
+ *
+ * Core calculation method that handles all the complexity of:
+ * - Selecting appropriate quadrature functions
+ * - Processing state variables for derived quantities
+ * - Handling special cases (deformation gradient global assignment)
+ * - Performing volume integration using MFEM kernels
+ *
+ * This method encapsulates all calculation-specific logic and provides
+ * a uniform interface for all volume averaging operations.
+ */
+    EXACONSTIT_CUDA_PRIVATE:
     VolumeAverageData CalculateVolumeAverage(CalcType calc_type, int region);
-private:
 
+private:
     /**
      * @brief Get cached data or calculate if not available
      *
@@ -688,21 +688,21 @@ private:
      */
     void GlobalVolumeAvgElasticStrain(const double time);
 
-    /**
-     * @brief Calculate element-averaged values from partial quadrature function
-     *
-     * @param elemVal Output partial quadrature function for element averages
-     * @param qf Input partial quadrature function with quadrature point data
-     *
-     * Computes volume-weighted element averages from quadrature point data.
-     * The algorithm integrates quadrature point values over each element using
-     * integration weights and Jacobian determinants, then normalizes by element
-     * volume to produce true element averages.
-     *
-     * Essential for converting quadrature point data to element-constant data
-     * suitable for visualization and further processing operations.
-     */
-EXACONSTIT_CUDA_PRIVATE:
+/**
+ * @brief Calculate element-averaged values from partial quadrature function
+ *
+ * @param elemVal Output partial quadrature function for element averages
+ * @param qf Input partial quadrature function with quadrature point data
+ *
+ * Computes volume-weighted element averages from quadrature point data.
+ * The algorithm integrates quadrature point values over each element using
+ * integration weights and Jacobian determinants, then normalizes by element
+ * volume to produce true element averages.
+ *
+ * Essential for converting quadrature point data to element-constant data
+ * suitable for visualization and further processing operations.
+ */
+    EXACONSTIT_CUDA_PRIVATE:
     void CalcElementAvg(mfem::expt::PartialQuadratureFunction* elemVal,
                         const mfem::expt::PartialQuadratureFunction* qf);
 
@@ -720,8 +720,8 @@ EXACONSTIT_CUDA_PRIVATE:
      * Used for global aggregation operations and cross-region analysis.
      */
     void CalcGlobalElementAvg(mfem::Vector* elemVal, const std::string& field_name);
-private:
 
+private:
     /**
      * @brief Get the size of quadrature functions
      *

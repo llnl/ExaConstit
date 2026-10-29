@@ -1,13 +1,13 @@
 #pragma once
 
+#include "microstructure/labeling/geodesic_limits.hpp"
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_options.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
 #include <mpi.h>
-
-#include "microstructure/labeling/geodesic_limits.hpp"
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_options.hpp"
 
 /**
  * @file geodesic_metric.hpp

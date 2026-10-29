@@ -1,7 +1,7 @@
 #include "options/option_parser_v2.hpp"
 
-#include "options/option_util.hpp"
 #include "options/option_microstructure_hook.hpp"
+#include "options/option_util.hpp"
 
 #include "mfem.hpp"
 

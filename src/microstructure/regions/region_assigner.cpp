@@ -5,14 +5,14 @@
  */
 #include "microstructure/regions/region_assigner.hpp"
 
+#include "microstructure/util/counter_rng.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/util/counter_rng.hpp"
 
 namespace exaconstit::microstructure {
 

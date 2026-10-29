@@ -17,6 +17,11 @@
  */
 #include "microstructure/labeling/quadrature_vote.hpp"
 
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -29,11 +34,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
 
 namespace exaconstit::microstructure {
 

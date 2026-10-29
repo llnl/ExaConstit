@@ -21,6 +21,12 @@
  * than one grain, compact ids, every element labeled, and for the passthrough case the plate
  * elements carry the last grain id.
  */
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -29,11 +35,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

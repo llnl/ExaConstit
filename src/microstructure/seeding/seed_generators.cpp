@@ -16,13 +16,6 @@
  */
 #include "microstructure/seeding/seed_generators.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <memory>
-#include <sstream>
-#include <stdexcept>
-
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
@@ -33,6 +26,13 @@
 #include "microstructure/util/counter_rng.hpp"
 #include "microstructure/util/fixed_point.hpp"
 #include "microstructure/util/random_distributions.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
 
 namespace exaconstit::microstructure {
 

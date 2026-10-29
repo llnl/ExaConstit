@@ -9,6 +9,10 @@
  */
 #include "microstructure/conformal/node_labels.hpp"
 
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -18,10 +22,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

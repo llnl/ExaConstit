@@ -9,12 +9,12 @@
  */
 #include "microstructure/mesh/element_key.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
-
-#include "microstructure/mesh/straight_sided.hpp"
 
 namespace exaconstit::microstructure {
 

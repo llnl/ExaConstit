@@ -26,6 +26,13 @@
  */
 #include "microstructure/labeling/vertex_field.hpp"
 
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -46,12 +53,6 @@
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
 #include "axom/spin/BVH.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

@@ -13,6 +13,8 @@
  * different np variants never overwrite each other when ctest runs them in parallel.
  */
 
+#include "microstructure/io/output_writer.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -28,7 +30,6 @@
 #include <utility>
 #include <vector>
 
-#include "microstructure/io/output_writer.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

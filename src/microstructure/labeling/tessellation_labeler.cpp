@@ -15,14 +15,6 @@
  */
 #include "microstructure/labeling/tessellation_labeler.hpp"
 
-#include "mfem.hpp"
-
-#include <cstdint>
-#include <limits>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
 #include "microstructure/exec_dispatch.hpp"
 #include "microstructure/geometry/anisotropy_tensors.hpp"
 #include "microstructure/geometry/metric_functors.hpp"
@@ -31,6 +23,14 @@
 #include "microstructure/labeling/quadrature_vote.hpp"
 #include "microstructure/mesh/mesh_sampler.hpp"
 #include "microstructure/util/collective_errors.hpp"
+
+#include "mfem.hpp"
+
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace exaconstit::microstructure {
 

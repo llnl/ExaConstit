@@ -1,16 +1,16 @@
 #pragma once
 
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/smoothed_targets.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
-
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/smoothed_targets.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file node_targets.hpp

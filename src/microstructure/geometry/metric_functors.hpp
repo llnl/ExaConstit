@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -9,8 +11,6 @@
 #include <math.h>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file metric_functors.hpp

@@ -11,6 +11,10 @@
  * Serial tests on axom::SEQ_EXEC; the host std::mt19937_64 generator is used only to create
  * test inputs (with fixed seeds, so every run is identical).
  */
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -23,9 +27,6 @@
 
 #include "axom/core/execution/execution_space.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/microstructure_types.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

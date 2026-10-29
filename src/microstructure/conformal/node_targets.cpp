@@ -9,16 +9,17 @@
  */
 #include "microstructure/conformal/node_targets.hpp"
 
+#include "microstructure/conformal/boundary_projector.hpp"
+#include "microstructure/conformal/manifold_projector.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
 #include "axom/core.hpp"
-#include "microstructure/conformal/boundary_projector.hpp"
-#include "microstructure/conformal/manifold_projector.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

@@ -21,6 +21,14 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/util/counter_rng.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -37,13 +45,6 @@
 #include <utility>
 #include <vector>
 
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/util/counter_rng.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

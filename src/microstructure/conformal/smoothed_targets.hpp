@@ -1,10 +1,10 @@
 #pragma once
 
+#include "microstructure/conformal/node_labels.hpp"
+
 #include "mfem.hpp"
 
 #include <vector>
-
-#include "microstructure/conformal/node_labels.hpp"
 
 /**
  * @file smoothed_targets.hpp

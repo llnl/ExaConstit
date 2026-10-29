@@ -22,6 +22,19 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/seeding/johnson_mehl.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include "microstructure/util/collective_errors.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -40,19 +53,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/seeding/johnson_mehl.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-#include "microstructure/util/collective_errors.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

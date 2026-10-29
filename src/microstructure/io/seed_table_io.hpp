@@ -1,13 +1,13 @@
 #pragma once
 
+#include "microstructure/microstructure_types.hpp"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <mpi.h>
 #include <string>
 #include <vector>
-
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file seed_table_io.hpp

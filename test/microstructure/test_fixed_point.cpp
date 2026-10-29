@@ -4,6 +4,10 @@
  * total in any order, so global sums (volumes, centroids) are bitwise reproducible across thread
  * schedules and MPI rank counts. The last test uses MPI and is run at np = 1..4.
  */
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/fixed_point.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -14,9 +18,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/fixed_point.hpp"
-#include "microstructure/util/random_distributions.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

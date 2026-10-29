@@ -553,8 +553,8 @@ int CompareMechanics(const fs::path& directory_a, const fs::path& directory_b) {
             std::cout << "MISMATCH ";
             ++failures;
         }
-        std::cout << name << " (" << rows_a.size()
-                  << " rows, max difference " << max_difference << ")" << std::endl;
+        std::cout << name << " (" << rows_a.size() << " rows, max difference " << max_difference
+                  << ")" << std::endl;
     }
     if (files == 0) {
         std::cout << "No result files found in " << directory_a << std::endl;

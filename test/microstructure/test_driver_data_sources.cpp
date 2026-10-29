@@ -34,6 +34,18 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/io/microstructure_file_io.hpp"
+#include "microstructure/io/seed_table_io.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
+#include "microstructure/orientation/orientation_assigner.hpp"
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -57,18 +69,6 @@
 
 #include "axom/config.hpp"
 #include "common/voxel_fixture.hpp"
-#include "microstructure/io/microstructure_file_io.hpp"
-#include "microstructure/io/seed_table_io.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_report.hpp"
-#include "microstructure/orientation/orientation_assigner.hpp"
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

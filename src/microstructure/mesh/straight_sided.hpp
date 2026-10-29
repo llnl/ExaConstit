@@ -1,10 +1,10 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include <mpi.h>
-
-#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file straight_sided.hpp

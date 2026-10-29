@@ -18,6 +18,15 @@
  * returns from the test on one rank only, and the other ranks would then wait forever in that
  * collective call.
  */
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/orientation/orientation_assigner.hpp"
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -33,15 +42,6 @@
 #include <string>
 #include <vector>
 
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/orientation/orientation_assigner.hpp"
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

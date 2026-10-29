@@ -352,8 +352,8 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
         std::string error = "the generator report carries no mesh adjacency";
         if (ok) {
             try {
-                stats = ms::ComputeGrainStatistics(*report.adjacency, result.element_grain,
-                                                   num_grains, 0);
+                stats = ms::ComputeGrainStatistics(
+                    *report.adjacency, result.element_grain, num_grains, 0);
             } catch (const std::exception& e) {
                 ok = false;
                 error = e.what();
@@ -408,8 +408,8 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
                                             ms::BuildMicrostructureGrainTable(result, report));
             }
         } catch (const std::exception& e) {
-            MFEM_ABORT(HOOK_PREFIX << "cannot write the record files in " << out.directory
-                                   << ": " << e.what());
+            MFEM_ABORT(HOOK_PREFIX << "cannot write the record files in " << out.directory << ": "
+                                   << e.what());
         }
     }
     // The optional collective writers below need the directory rank 0 just created
@@ -458,8 +458,9 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
     }
 
     if (root) {
-        std::cout << "\n" << HOOK_PREFIX << "generated the grains in memory (generator options: "
-                  << hook.origin << ")\n"
+        std::cout << "\n"
+                  << HOOK_PREFIX
+                  << "generated the grains in memory (generator options: " << hook.origin << ")\n"
                   << "  grains: " << ms::RequestedGrains(report) << ", " << num_grains
                   << " final grains on " << report.num_elements << " elements\n"
                   << "  rng_seed: " << generator.seeds.rng_seed << "\n"
@@ -479,8 +480,8 @@ HookGrains RunMicrostructureHook(ExaOptions& options, mfem::ParMesh& pmesh) {
         // probably not intended
         for (int r = 1; r <= num_regions; ++r) {
             const auto ri = static_cast<std::size_t>(r - 1);
-            const bool crystalline =
-                ri < result.region_crystalline.size() && result.region_crystalline[ri] != 0;
+            const bool crystalline = ri < result.region_crystalline.size() &&
+                                     result.region_crystalline[ri] != 0;
             const MaterialOptions& material = options.materials[ri];
             if (crystalline && !material.grain_info) {
                 std::cout << "  warning: region " << r << " holds crystalline grains, but "

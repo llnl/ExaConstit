@@ -1,3 +1,7 @@
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/preflight.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -6,9 +10,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/preflight.hpp"
-#include "microstructure/mesh/serial_order.hpp"
 #include <gtest/gtest.h>
 
 /*

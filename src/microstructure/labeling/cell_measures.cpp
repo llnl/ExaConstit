@@ -24,6 +24,9 @@
  */
 #include "microstructure/labeling/cell_measures.hpp"
 
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <float.h>
@@ -32,9 +35,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

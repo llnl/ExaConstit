@@ -1,15 +1,15 @@
 #pragma once
 
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
 #include <cstdint>
 #include <mpi.h>
 #include <vector>
-
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file seed_element_locator.hpp

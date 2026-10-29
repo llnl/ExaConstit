@@ -7,14 +7,14 @@
  */
 #include "microstructure/orientation/orientation_assigner.hpp"
 
+#include "microstructure/orientation/random_orientation.hpp"
+#include "microstructure/util/counter_rng.hpp"
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/orientation/random_orientation.hpp"
-#include "microstructure/util/counter_rng.hpp"
 
 namespace exaconstit::microstructure {
 

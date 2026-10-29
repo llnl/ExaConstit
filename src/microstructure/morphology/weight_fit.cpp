@@ -14,6 +14,8 @@
  */
 #include "microstructure/morphology/weight_fit.hpp"
 
+#include "microstructure/morphology/sample_labels.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -21,8 +23,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include "microstructure/morphology/sample_labels.hpp"
 
 namespace exaconstit::microstructure {
 

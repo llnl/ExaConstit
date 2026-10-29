@@ -1,8 +1,8 @@
 #pragma once
 
-#include "mfem.hpp"
-
 #include "microstructure/labeling/eikonal_local_solver.hpp"
+
+#include "mfem.hpp"
 
 /**
  * @file fim_scan.hpp

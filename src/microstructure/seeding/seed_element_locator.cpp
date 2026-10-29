@@ -13,6 +13,12 @@
  */
 #include "microstructure/seeding/seed_element_locator.hpp"
 
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
@@ -23,11 +29,6 @@
 #include "axom/core.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
 #include "axom/spin/BVH.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

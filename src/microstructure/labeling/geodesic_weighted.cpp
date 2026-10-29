@@ -21,6 +21,10 @@
  */
 #include "microstructure/labeling/geodesic_weighted.hpp"
 
+#include "microstructure/labeling/eikonal_local_solver.hpp"
+#include "microstructure/labeling/fim_scan.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -31,10 +35,6 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
-
-#include "microstructure/labeling/eikonal_local_solver.hpp"
-#include "microstructure/labeling/fim_scan.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

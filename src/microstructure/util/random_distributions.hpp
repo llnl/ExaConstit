@@ -1,11 +1,11 @@
 #pragma once
 
+#include "microstructure/util/counter_rng.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <math.h>
-
-#include "microstructure/util/counter_rng.hpp"
 
 /**
  * @file random_distributions.hpp

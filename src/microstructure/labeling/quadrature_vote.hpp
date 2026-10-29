@@ -1,15 +1,15 @@
 #pragma once
 
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
 #include <mpi.h>
 #include <vector>
-
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file quadrature_vote.hpp

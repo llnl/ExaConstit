@@ -1,12 +1,12 @@
 #pragma once
 
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <math.h>
-
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 
 /**
  * @file random_orientation.hpp

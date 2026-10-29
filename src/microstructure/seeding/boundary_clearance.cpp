@@ -11,6 +11,9 @@
  */
 #include "microstructure/seeding/boundary_clearance.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -18,8 +21,6 @@
 
 #include "axom/primal/operators/closest_point.hpp"
 #include "axom/primal/operators/squared_distance.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
 
 namespace exaconstit::microstructure {
 

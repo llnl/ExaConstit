@@ -27,9 +27,10 @@
  */
 #include "microstructure/io/voxel_map_io.hpp"
 
-#include "axom/config.hpp"
 #include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/util/collective_errors.hpp"
+
+#include "axom/config.hpp"
 
 #ifdef AXOM_USE_HDF5
 #include "hdf5.h"

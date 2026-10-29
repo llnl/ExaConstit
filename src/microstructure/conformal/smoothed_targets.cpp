@@ -4,12 +4,12 @@
  */
 #include "microstructure/conformal/smoothed_targets.hpp"
 
+#include "microstructure/conformal/boundary_projector.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
-
-#include "microstructure/conformal/boundary_projector.hpp"
 
 namespace exaconstit::microstructure {
 

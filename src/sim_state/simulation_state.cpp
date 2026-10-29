@@ -102,8 +102,8 @@ void verifyParallelMeshParts(const std::string& prefix, const int my_id, const i
     MPI_Allreduce(&local_missing, &first_missing, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
     if (first_missing != num_ranks) {
         std::ostringstream err;
-        err << "Parallel mesh decomposition " << prefix << ": the part for rank "
-            << first_missing << " (" << mfem::MakeParFilename(prefix, first_missing)
+        err << "Parallel mesh decomposition " << prefix << ": the part for rank " << first_missing
+            << " (" << mfem::MakeParFilename(prefix, first_missing)
             << ") does not exist or cannot be read. A decomposition must be run with exactly "
             << "as many MPI ranks as it has parts; this run has " << num_ranks << " rank(s)";
         MFEM_VERIFY_0(false, err.str());
@@ -118,9 +118,9 @@ void verifyParallelMeshParts(const std::string& prefix, const int my_id, const i
     MPI_Bcast(&extra_part, 1, MPI_INT, 0, MPI_COMM_WORLD);
     if (extra_part != 0) {
         std::ostringstream err;
-        err << "Parallel mesh decomposition " << prefix << " has more parts than the "
-            << num_ranks << " MPI rank(s) of this run ("
-            << mfem::MakeParFilename(prefix, num_ranks) << " exists). A decomposition must be "
+        err << "Parallel mesh decomposition " << prefix << " has more parts than the " << num_ranks
+            << " MPI rank(s) of this run (" << mfem::MakeParFilename(prefix, num_ranks)
+            << " exists). A decomposition must be "
             << "run with exactly as many MPI ranks as it has parts";
         MFEM_VERIFY_0(false, err.str());
     }
@@ -968,8 +968,8 @@ SimulationState::SimulationState(ExaOptions& options)
             if (m_hook_grains) {
                 // Generated map: grain g (1-based) -> region grain_region[g - 1]
                 for (int g = 1; g <= m_hook_grains->num_grains; g++) {
-                    grains2region.emplace(
-                        g, m_hook_grains->grain_region[static_cast<size_t>(g - 1)]);
+                    grains2region.emplace(g,
+                                          m_hook_grains->grain_region[static_cast<size_t>(g - 1)]);
                 }
             } else {
                 grains2region = ::create_grains_to_map(options, grains);

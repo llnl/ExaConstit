@@ -1,15 +1,15 @@
 #pragma once
 
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/conformal/node_targets.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/microstructure_types.hpp"
+
 #include "mfem.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <vector>
-
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/conformal/node_targets.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/microstructure_types.hpp"
 
 /**
  * @file label_repair.hpp

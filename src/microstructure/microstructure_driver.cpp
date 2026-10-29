@@ -42,22 +42,6 @@
  */
 #include "microstructure/microstructure_driver.hpp"
 
-#include "mfem.hpp"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <iostream>
-#include <limits>
-#include <memory>
-#include <mpi.h>
-#include <numeric>
-#include <set>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
 #include "microstructure/conformal/conformal_fitter.hpp"
 #include "microstructure/conformal/label_repair.hpp"
 #include "microstructure/geometry/anisotropy_tensors.hpp"
@@ -81,6 +65,22 @@
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/seeding/roi_filler.hpp"
 #include "microstructure/util/collective_errors.hpp"
+
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <mpi.h>
+#include <numeric>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace exaconstit::microstructure {
 

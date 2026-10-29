@@ -9,6 +9,12 @@
  *
  * Runs at 1-4 MPI ranks; distributed results are compared with single-rank references.
  */
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -17,11 +23,6 @@
 #include <mpi.h>
 #include <vector>
 
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

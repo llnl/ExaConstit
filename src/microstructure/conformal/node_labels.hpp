@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/labeling/vertex_field.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -8,8 +10,6 @@
 #include <mpi.h>
 #include <utility>
 #include <vector>
-
-#include "microstructure/labeling/vertex_field.hpp"
 
 /**
  * @file node_labels.hpp

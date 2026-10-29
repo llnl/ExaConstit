@@ -14,6 +14,11 @@
  */
 #include "microstructure/labeling/grain_statistics.hpp"
 
+#include "microstructure/labeling/cell_measures.hpp"
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/mesh/vertex_coordinates.hpp"
+#include "microstructure/util/fixed_point.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -27,11 +32,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "microstructure/labeling/cell_measures.hpp"
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
-#include "microstructure/util/fixed_point.hpp"
 
 namespace exaconstit::microstructure {
 

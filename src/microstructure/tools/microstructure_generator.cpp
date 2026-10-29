@@ -50,6 +50,14 @@
  * the message on every rank that caught it (with the rank number) and calls MPI_Abort, which also
  * stops the other ranks when only some ranks threw (e.g. a file write failing on one rank).
  */
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_report.hpp"
+#include "microstructure/util/collective_errors.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -74,14 +82,6 @@
 #include <vector>
 
 #include "ExaConstit_Version.h"
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_report.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace fs = std::filesystem;
 namespace ms = exaconstit::microstructure;

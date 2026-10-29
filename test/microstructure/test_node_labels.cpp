@@ -27,6 +27,8 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/conformal/node_labels.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -41,7 +43,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "microstructure/conformal/node_labels.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

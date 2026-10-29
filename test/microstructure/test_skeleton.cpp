@@ -1,3 +1,6 @@
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/microstructure_types.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -5,9 +8,6 @@
 #include <stdexcept>
 #include <type_traits>
 
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/microstructure_types.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

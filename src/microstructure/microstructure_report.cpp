@@ -5,12 +5,12 @@
  */
 #include "microstructure/microstructure_report.hpp"
 
+#include "microstructure/io/seed_table_io.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <utility>
-
-#include "microstructure/io/seed_table_io.hpp"
 
 namespace exaconstit::microstructure {
 

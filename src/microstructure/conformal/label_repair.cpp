@@ -10,17 +10,18 @@
  */
 #include "microstructure/conformal/label_repair.hpp"
 
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <set>
 #include <utility>
 
 #include "axom/core.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

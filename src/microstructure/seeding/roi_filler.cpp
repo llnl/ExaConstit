@@ -11,6 +11,10 @@
  */
 #include "microstructure/seeding/roi_filler.hpp"
 
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/util/collective_errors.hpp"
+#include "microstructure/util/fixed_point.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -18,10 +22,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/util/collective_errors.hpp"
-#include "microstructure/util/fixed_point.hpp"
 
 namespace exaconstit::microstructure {
 

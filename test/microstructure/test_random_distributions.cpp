@@ -4,13 +4,14 @@
  * distribution with tolerances of several standard errors, and that the functions run inside
  * mfem::forall kernels. Serial (runs identically on every rank).
  */
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
 #include <cstdint>
 
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

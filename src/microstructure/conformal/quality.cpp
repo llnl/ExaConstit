@@ -4,11 +4,11 @@
  */
 #include "microstructure/conformal/quality.hpp"
 
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

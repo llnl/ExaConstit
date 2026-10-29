@@ -1,10 +1,10 @@
 #pragma once
 
-#include "mfem.hpp"
-
 #include "microstructure/geometry/metric_functors.hpp"
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/microstructure_types.hpp"
+
+#include "mfem.hpp"
 
 /**
  * @file sample_labels.hpp

@@ -1,3 +1,10 @@
+#include "microstructure/io/microstructure_file_io.hpp"
+#include "microstructure/io/seed_table_io.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/seeding/roi_filler.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -14,12 +21,6 @@
 
 #include "conduit.hpp"
 #include "conduit_relay_io_hdf5.hpp"
-#include "microstructure/io/microstructure_file_io.hpp"
-#include "microstructure/io/seed_table_io.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/seeding/roi_filler.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-#include "microstructure/util/collective_errors.hpp"
 #include <gtest/gtest.h>
 
 /*

@@ -94,7 +94,6 @@ struct HookGrains {
     std::vector<int> grain_region;
 };
 
-
 /**
  * @brief Generate the grains on the final mesh and inject them into the run (fresh runs only)
  *

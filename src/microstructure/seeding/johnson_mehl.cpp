@@ -17,6 +17,13 @@
  */
 #include "microstructure/seeding/johnson_mehl.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+#include "microstructure/seeding/seed_generators.hpp"
+#include "microstructure/util/collective_errors.hpp"
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -24,13 +31,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
-#include "microstructure/seeding/seed_generators.hpp"
-#include "microstructure/util/collective_errors.hpp"
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 
 namespace exaconstit::microstructure {
 

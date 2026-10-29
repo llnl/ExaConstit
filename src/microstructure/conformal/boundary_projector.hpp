@@ -1,14 +1,14 @@
 #pragma once
 
+#include "microstructure/conformal/node_labels.hpp"
+#include "microstructure/labeling/vertex_field.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>
-
-#include "microstructure/conformal/node_labels.hpp"
-#include "microstructure/labeling/vertex_field.hpp"
 
 /**
  * @file boundary_projector.hpp

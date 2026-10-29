@@ -9,10 +9,10 @@
  */
 #include "microstructure/morphology/sample_labels.hpp"
 
-#include "mfem.hpp"
-
 #include "microstructure/exec_dispatch.hpp"
 #include "microstructure/geometry/seed_index.hpp"
+
+#include "mfem.hpp"
 
 namespace exaconstit::microstructure {
 

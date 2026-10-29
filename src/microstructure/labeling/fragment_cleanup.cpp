@@ -6,6 +6,9 @@
  */
 #include "microstructure/labeling/fragment_cleanup.hpp"
 
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -19,9 +22,6 @@
 #include <stdexcept>
 #include <tuple>
 #include <utility>
-
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

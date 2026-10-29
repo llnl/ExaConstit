@@ -12,12 +12,12 @@
  */
 #include "microstructure/seeding/material_point_locator.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
-
-#include "microstructure/mesh/straight_sided.hpp"
 
 namespace exaconstit::microstructure {
 

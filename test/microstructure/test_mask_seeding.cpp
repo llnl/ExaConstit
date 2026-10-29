@@ -27,15 +27,6 @@
  *    inactive elements (every plate element on the last rank) still reports its local copy.
  * Every run uses np = 1-4 (the masked mesh is distributed over MPI_COMM_WORLD).
  */
-#include "mfem.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <memory>
-#include <mpi.h>
-#include <string>
-#include <vector>
-
 #include "microstructure/labeling/cell_measures.hpp"
 #include "microstructure/mesh/element_mask.hpp"
 #include "microstructure/mesh/serial_order.hpp"
@@ -47,6 +38,16 @@
 #include "microstructure/seeding/roi_filler.hpp"
 #include "microstructure/seeding/seed_element_locator.hpp"
 #include "microstructure/seeding/seed_generators.hpp"
+
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <mpi.h>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

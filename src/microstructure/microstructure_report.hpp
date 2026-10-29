@@ -1,13 +1,13 @@
 #pragma once
 
-#include <string>
-#include <vector>
-
 #include "microstructure/io/microstructure_file_io.hpp"
 #include "microstructure/io/output_writer.hpp"
 #include "microstructure/labeling/grain_statistics.hpp"
 #include "microstructure/microstructure_driver.hpp"
 #include "microstructure/microstructure_types.hpp"
+
+#include <string>
+#include <vector>
 
 /**
  * @file microstructure_report.hpp

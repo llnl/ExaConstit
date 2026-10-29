@@ -1,5 +1,7 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -10,7 +12,6 @@
 #include "axom/primal/geometry/Point.hpp"
 #include "axom/primal/geometry/Triangle.hpp"
 #include "axom/spin/BVH.hpp"
-#include "microstructure/mesh/element_mask.hpp"
 
 /**
  * @file boundary_clearance.hpp

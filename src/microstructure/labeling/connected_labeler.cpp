@@ -22,6 +22,17 @@
  */
 #include "microstructure/labeling/connected_labeler.hpp"
 
+#include "microstructure/exec_dispatch.hpp"
+#include "microstructure/geometry/metric_functors.hpp"
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/fragment_cleanup.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+#include "microstructure/util/collective_errors.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -34,17 +45,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "microstructure/exec_dispatch.hpp"
-#include "microstructure/geometry/metric_functors.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/fragment_cleanup.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

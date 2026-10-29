@@ -29,6 +29,17 @@
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
  */
+#include "microstructure/geometry/seed_index.hpp"
+#include "microstructure/labeling/connected_labeler.hpp"
+#include "microstructure/labeling/quadrature_vote.hpp"
+#include "microstructure/labeling/tessellation_labeler.hpp"
+#include "microstructure/mesh/element_key.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/mesh_sampler.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_options.hpp"
+#include "microstructure/seeding/seed_element_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -46,16 +57,6 @@
 #include <vector>
 
 #include "axom/core/execution/execution_space.hpp"
-#include "microstructure/geometry/seed_index.hpp"
-#include "microstructure/labeling/connected_labeler.hpp"
-#include "microstructure/labeling/quadrature_vote.hpp"
-#include "microstructure/labeling/tessellation_labeler.hpp"
-#include "microstructure/mesh/element_key.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/mesh_sampler.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_options.hpp"
-#include "microstructure/seeding/seed_element_locator.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

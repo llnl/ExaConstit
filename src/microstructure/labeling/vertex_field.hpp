@@ -1,5 +1,9 @@
 #pragma once
 
+#include "microstructure/mesh/element_mask.hpp"
+#include "microstructure/microstructure_types.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <array>
@@ -8,10 +12,6 @@
 #include <memory>
 #include <mpi.h>
 #include <vector>
-
-#include "microstructure/mesh/element_mask.hpp"
-#include "microstructure/microstructure_types.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 
 /**
  * @file vertex_field.hpp

@@ -9,10 +9,10 @@
  */
 #include "microstructure/mesh/serial_order.hpp"
 
+#include "microstructure/util/collective_errors.hpp"
+
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/util/collective_errors.hpp"
 
 namespace exaconstit::microstructure {
 

@@ -14,6 +14,11 @@
  * (generated seeds) and test_tool_data_sources.cmake.
  * Registered at 1-4 MPI ranks.
  */
+#include "microstructure/io/output_writer.hpp"
+#include "microstructure/labeling/grain_statistics.hpp"
+#include "microstructure/mesh/mesh_adjacency.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_types.hpp"
 #include "utilities/auto_mesh.hpp"
 
 #include "mfem.hpp"
@@ -34,11 +39,6 @@
 #include <utility>
 #include <vector>
 
-#include "microstructure/io/output_writer.hpp"
-#include "microstructure/labeling/grain_statistics.hpp"
-#include "microstructure/mesh/mesh_adjacency.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_types.hpp"
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;

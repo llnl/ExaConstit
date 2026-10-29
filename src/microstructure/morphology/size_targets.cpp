@@ -5,15 +5,15 @@
  */
 #include "microstructure/morphology/size_targets.hpp"
 
+#include "microstructure/util/counter_rng.hpp"
+#include "microstructure/util/random_distributions.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
-
-#include "microstructure/util/counter_rng.hpp"
-#include "microstructure/util/random_distributions.hpp"
 
 namespace exaconstit::microstructure {
 

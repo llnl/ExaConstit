@@ -23,17 +23,6 @@
  * only the plate warped, the active elements are straight, so the masked run takes the corner
  * field exactly like the straight reference (the straightness test looks at active elements).
  */
-#include "mfem.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <map>
-#include <memory>
-#include <mpi.h>
-#include <string>
-#include <vector>
-
 #include "microstructure/labeling/connected_labeler.hpp"
 #include "microstructure/labeling/fragment_cleanup.hpp"
 #include "microstructure/labeling/geodesic_fim.hpp"
@@ -47,6 +36,18 @@
 #include "microstructure/mesh/serial_order.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
+
+#include "mfem.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mpi.h>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

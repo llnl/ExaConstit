@@ -13,6 +13,10 @@
  */
 #include "microstructure/morphology/lloyd.hpp"
 
+#include "microstructure/mesh/straight_sided.hpp"
+#include "microstructure/morphology/sample_labels.hpp"
+#include "microstructure/seeding/material_point_locator.hpp"
+
 #include "mfem.hpp"
 
 #include <cmath>
@@ -21,10 +25,6 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
-
-#include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/morphology/sample_labels.hpp"
-#include "microstructure/seeding/material_point_locator.hpp"
 
 namespace exaconstit::microstructure {
 

@@ -26,6 +26,11 @@
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows.
  */
+#include "microstructure/conformal/conformal_fitter.hpp"
+#include "microstructure/mesh/serial_order.hpp"
+#include "microstructure/microstructure_driver.hpp"
+#include "microstructure/microstructure_options.hpp"
+
 #include "mfem.hpp"
 
 #include <algorithm>
@@ -40,10 +45,6 @@
 #include <vector>
 
 #include "common/voxel_fixture.hpp"
-#include "microstructure/conformal/conformal_fitter.hpp"
-#include "microstructure/mesh/serial_order.hpp"
-#include "microstructure/microstructure_driver.hpp"
-#include "microstructure/microstructure_options.hpp"
 #include <gtest/gtest.h>
 
 namespace ms = exaconstit::microstructure;

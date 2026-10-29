@@ -190,7 +190,7 @@ public:
         return "Element Centroids";
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) override;
 };
 
@@ -231,7 +231,7 @@ public:
         return "Element Volumes";
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) override;
 };
 
@@ -343,7 +343,7 @@ public:
         return "Cauchy Stress";
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> stress_gf,
@@ -386,7 +386,7 @@ public:
         return "Von Mises Stress";
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> von_mises,
@@ -431,7 +431,7 @@ public:
         return "Hydrostatic Stress";
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> hydro_static,
@@ -663,7 +663,7 @@ public:
         return true;
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     /**
      * @brief Apply non-negative constraint to state variable field
      *
@@ -718,7 +718,7 @@ public:
         return true;
     }
 
-EXACONSTIT_CUDA_PROTECTED:
+    EXACONSTIT_CUDA_PROTECTED:
     virtual void
     PostProcessStateVariable(std::shared_ptr<mfem::ParGridFunction> grid_function,
                              std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
