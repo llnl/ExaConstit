@@ -91,8 +91,10 @@ class QuaternionMathTest(unittest.TestCase):
     """The matrix and exponential-map conversions give the standard quaternion of a rotation."""
 
     def test_quarter_turn_about_z(self):
-        # 90 degrees about z maps x -> y: R = [[0,-1,0],[1,0,0],[0,0,1]]; its quaternion is
-        # (cos 45, 0, 0, sin 45). The exp map of the same rotation is (0, 0, pi/2).
+        """
+        90 degrees about z maps x -> y: R = [[0,-1,0],[1,0,0],[0,0,1]]; its quaternion is (cos
+        45, 0, 0, sin 45). The exp map of the same rotation is (0, 0, pi/2).
+        """
         expected = np.array([math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)])
         from_matrix = msio.quat_from_matrix([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
         from_expmap = msio.quat_from_expmap([0.0, 0.0, 0.5 * math.pi])
@@ -100,8 +102,10 @@ class QuaternionMathTest(unittest.TestCase):
         np.testing.assert_allclose(from_expmap, expected, atol=1e-15)
 
     def test_general_rotation_matrix_and_expmap_agree(self):
-        # The same rotation (2 rad about (1,2,3)) given as a Rodrigues matrix and as an exp map
-        # must give the same quaternion, equal to the closed form.
+        """
+        The same rotation (2 rad about (1,2,3)) given as a Rodrigues matrix and as an exp map
+        must give the same quaternion, equal to the closed form.
+        """
         axis, angle = np.array([1.0, 2.0, 3.0]), 2.0
         expected = axis_angle_quat(axis, angle)
         q_matrix = msio.quat_from_matrix(rodrigues_matrix(axis, angle))
@@ -110,8 +114,10 @@ class QuaternionMathTest(unittest.TestCase):
         np.testing.assert_allclose(q_expmap, expected, atol=1e-14)
 
     def test_matrix_quat_matrix_round_trip(self):
-        # Random rotations plus half turns about x, y, z and a diagonal: half turns make
-        # trace = -1, so Shepperd's method must use each of its x, y, z branches.
+        """
+        Random rotations plus half turns about x, y, z and a diagonal: half turns make trace =
+        -1, so Shepperd's method must use each of its x, y, z branches.
+        """
         rng = np.random.default_rng(12345)
         cases = [(rng.normal(size=3), rng.uniform(0.0, math.pi)) for _ in range(50)]
         cases += [([1, 0, 0], math.pi), ([0, 1, 0], math.pi), ([0, 0, 1], math.pi),
@@ -125,8 +131,10 @@ class QuaternionMathTest(unittest.TestCase):
             self.assertTrue(same_rotation(q, axis_angle_quat(axis, angle), 1e-14))
 
     def test_expmap_large_and_small_angles(self):
-        # An angle above pi gives w < 0 in the closed form; the helper returns -q (same
-        # rotation) with w >= 0. A tiny angle uses the series and still matches.
+        """
+        An angle above pi gives w < 0 in the closed form; the helper returns -q (same rotation)
+        with w >= 0. A tiny angle uses the series and still matches.
+        """
         axis = np.array([0.3, -0.4, 0.5])
         unit = axis / np.linalg.norm(axis)
         q = msio.quat_from_expmap(4.0 * unit)
@@ -137,14 +145,14 @@ class QuaternionMathTest(unittest.TestCase):
         np.testing.assert_allclose(q_small, axis_angle_quat(axis, 1e-7), atol=1e-16)
 
     def test_conjugate_is_transpose(self):
-        # Conjugating the quaternion inverts the rotation, i.e. transposes the matrix.
+        """Conjugating the quaternion inverts the rotation, i.e. transposes the matrix."""
         matrix = rodrigues_matrix([2.0, -1.0, 0.5], 1.1)
         q = msio.quat_from_matrix(matrix)
         np.testing.assert_allclose(msio.matrix_from_quat(msio.conjugate_quat(q)), matrix.T,
                                    atol=1e-14)
 
     def test_rotation_matrix_problem(self):
-        # A rotation passes; a reflection and a sheared matrix are reported.
+        """A rotation passes; a reflection and a sheared matrix are reported."""
         self.assertIsNone(msio.rotation_matrix_problem(rodrigues_matrix([1, 1, 0], 0.7)))
         self.assertIn("reflection", msio.rotation_matrix_problem(np.diag([1.0, 1.0, -1.0])))
         sheared = np.eye(3)
@@ -160,8 +168,10 @@ class SeedTableWriterTest(unittest.TestCase):
     """The seed table writer round-trips exactly and refuses what the C++ reader refuses."""
 
     def test_round_trip_is_bitwise(self):
-        # 17 significant digits make text -> double exact: values like 0.1 and 1/3 come back
-        # with the identical bit pattern.
+        """
+        17 significant digits make text -> double exact: values like 0.1 and 1/3 come back with
+        the identical bit pattern.
+        """
         path = os.path.join(case_dir("seed_writer"), "round_trip.csv")
         q = axis_angle_quat([1, 2, 3], 0.9)
         columns = {"id": [7, 3], "x": [0.1, 1.0 / 3.0], "y": [-2.5e-7, 1e10], "z": [0.0, -1.0],
@@ -175,8 +185,10 @@ class SeedTableWriterTest(unittest.TestCase):
             self.assertEqual(f.readline().strip(), "# ExaConstit seed table v1")
 
     def test_byte_order_mark_is_ignored(self):
-        # Spreadsheet programs may start a UTF-8 file with a byte-order mark; the reader drops
-        # it (like the C++ reader), so the first header name is still "x"
+        """
+        Spreadsheet programs may start a UTF-8 file with a byte-order mark; the reader drops it
+        (like the C++ reader), so the first header name is still "x".
+        """
         path = os.path.join(case_dir("seed_writer"), "bom.csv")
         with open(path, "w", encoding="utf-8-sig") as out:
             out.write("x,y,z\n1.5,2,3\n")
@@ -185,6 +197,10 @@ class SeedTableWriterTest(unittest.TestCase):
         self.assertEqual(table["x"][0], 1.5)
 
     def test_invalid_tables_are_refused(self):
+        """
+        Partial or non-unit quaternions, duplicate ids, two size columns, a missing coordinate,
+        phases outside 1..INT_MAX and an empty table each raise ConverterError.
+        """
         path = os.path.join(case_dir("seed_writer"), "bad.csv")
         base = {"x": [0.0], "y": [0.0], "z": [0.0]}
         bad_cases = [
@@ -207,6 +223,10 @@ class VoxelMapWriterTest(unittest.TestCase):
     """The voxel map writer stores the canonical layout and sorts the per-grain table by id."""
 
     def test_round_trip_and_feature_sorting(self):
+        """
+        A written voxel map reads back unchanged, with the grain table sorted by feature id and its
+        quaternions and phases reordered to match.
+        """
         path = os.path.join(case_dir("voxel_writer"), "map.h5")
         ids = np.arange(24, dtype=np.int32).reshape(2, 3, 4) % 3   # values 0, 1, 2
         quats = np.array([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
@@ -223,8 +243,10 @@ class VoxelMapWriterTest(unittest.TestCase):
         self.assertEqual(result["feature_phase"].dtype, np.int32)
 
     def test_layout_is_datasets_only_blueprint(self):
-        # Conduit never reads HDF5 attributes, so the whole file must be datasets; the grid is a
-        # Blueprint uniform mesh whose dims count POINTS (cells + 1)
+        """
+        Conduit never reads HDF5 attributes, so the whole file must be datasets; the grid is a
+        Blueprint uniform mesh whose dims count POINTS (cells + 1).
+        """
         import h5py
         path = os.path.join(case_dir("voxel_writer"), "layout.h5")
         ids = np.arange(1, 25, dtype=np.int64).reshape(2, 3, 4)
@@ -232,6 +254,10 @@ class VoxelMapWriterTest(unittest.TestCase):
                              attributes={"converter": "test"})
         with h5py.File(path, "r") as h5:
             def no_attributes(name, obj):
+                """
+                Fails if the HDF5 object has any attributes (the format stores everything as
+                datasets).
+                """
                 self.assertEqual(len(obj.attrs), 0, name)
             h5.visititems(no_attributes)
             self.assertEqual(len(h5.attrs), 0)
@@ -246,6 +272,10 @@ class VoxelMapWriterTest(unittest.TestCase):
             self.assertEqual(h5["provenance/converter"][()].decode(), "test")
 
     def test_grain_table_only_file(self):
+        """
+        A file holding only a grain table reads back without grain_ids, sorted by id; phase 0, a
+        non-unit quaternion and an unknown column are refused.
+        """
         path = os.path.join(case_dir("voxel_writer"), "seeds.h5")
         msio.write_microstructure_file(path, {"id": [3, 1], "position": [[1, 2, 3], [4, 5, 6]],
                                               "phase": [2, 1]})
@@ -262,8 +292,10 @@ class VoxelMapWriterTest(unittest.TestCase):
             msio.write_microstructure_file(path, {"id": [1], "radius": [1.0]})   # unknown
 
     def test_reads_conduit_written_strings_and_scalars(self):
-        # Conduit (and so the generator's [Output] microstructure_file) stores a string as an
-        # array of 1-byte characters ending in a NUL and a number as a 1-element array
+        """
+        Conduit (and so the generator's [Output] microstructure_file) stores a string as an array
+        of 1-byte characters ending in a NUL and a number as a 1-element array.
+        """
         import h5py
         path = os.path.join(case_dir("voxel_writer"), "conduit_style.h5")
         text = np.frombuffer(msio.MICROSTRUCTURE_FORMAT_NAME.encode() + b"\0", dtype="S1")
@@ -277,6 +309,9 @@ class VoxelMapWriterTest(unittest.TestCase):
         np.testing.assert_array_equal(data["grains"]["quat"], [[1, 0, 0, 0], [0, 1, 0, 0]])
 
     def test_invalid_maps_are_refused(self):
+        """
+        Zero spacing, a rank-2 grid, feature id 0 and grain ids above the C int range are refused.
+        """
         path = os.path.join(case_dir("voxel_writer"), "bad.h5")
         ids = np.ones((2, 2, 2), dtype=np.int64)
         with self.assertRaises(msio.ConverterError):
@@ -299,6 +334,7 @@ class HelpTest(unittest.TestCase):
     """Every converter answers --help (argparse) and exits cleanly."""
 
     def test_help(self):
+        """Every converter script prints its usage text and exits with status 0 for --help."""
         for script in ("hexrd_grains_to_seeds.py", "midas_grains_to_seeds.py",
                        "spparks_to_voxels.py", "exaca_to_voxels.py"):
             result = run_script(script, ["--help"])
@@ -335,6 +371,7 @@ class HexrdConverterTest(unittest.TestCase):
     """grains.out -> seed table: position t_vec_c, quaternion of exp_map_c, filters."""
 
     def setUp(self):
+        """Writes a three-grain HEXRD grains.out file used by every test of this class."""
         self.dir = case_dir("hexrd")
         self.input = os.path.join(self.dir, "grains.out")
         # Three grains; grain 2 has low completeness and grain 5 a large chi^2
@@ -344,6 +381,10 @@ class HexrdConverterTest(unittest.TestCase):
         write_hexrd_grains(self.input, self.grains)
 
     def test_conversion_and_filters(self):
+        """
+        Units scaling and the completeness and chi^2 filters keep only grain 0, at 10 times its
+        position, with the quaternion of its exponential map.
+        """
         output = os.path.join(self.dir, "seeds.csv")
         result = run_script("hexrd_grains_to_seeds.py",
                             [self.input, output, "--conjugate", "no", "--units-scale", "10",
@@ -360,7 +401,7 @@ class HexrdConverterTest(unittest.TestCase):
         np.testing.assert_allclose(q, expected, atol=1e-15)
 
     def test_conjugate_yes_and_large_angle(self):
-        # Grain 2 has |exp map| = 2.78 rad; --conjugate yes flips the vector part
+        """Grain 2 has |exp map| = 2.78 rad; --conjugate yes flips the vector part."""
         output = os.path.join(self.dir, "seeds_conj.csv")
         result = run_script("hexrd_grains_to_seeds.py", [self.input, output, "--conjugate", "yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -375,8 +416,10 @@ class HexrdConverterTest(unittest.TestCase):
             np.testing.assert_allclose(q, expected, atol=1e-15)
 
     def test_nan_fit_quality(self):
-        # A NaN chi^2 would fail every filter comparison and vanish silently; it is an error
-        # unless --drop-nan, which drops it and reports the count
+        """
+        A NaN chi^2 would fail every filter comparison and vanish silently; it is an error unless
+        --drop-nan, which drops it and reports the count.
+        """
         nan_input = os.path.join(self.dir, "grains_nan.out")
         write_hexrd_grains(nan_input, self.grains + [(8, 0.9, float("nan"), [0.1, 0.1, 0.1],
                                                       [0.0, 0.0, 0.0])])
@@ -391,12 +434,16 @@ class HexrdConverterTest(unittest.TestCase):
         np.testing.assert_array_equal(msio.read_seed_table(output)["id"], [1, 3, 6])
 
     def test_required_conjugate_flag(self):
+        """Leaving out --conjugate is an argparse usage error (status 2) that names the flag."""
         result = run_script("hexrd_grains_to_seeds.py",
                             [self.input, os.path.join(self.dir, "x.csv")])
         self.assertEqual(result.returncode, 2)            # argparse usage error
         self.assertIn("--conjugate", result.stderr)
 
     def test_bad_column_count_names_line(self):
+        """
+        A row with the wrong number of columns is refused with a message naming the file and line.
+        """
         bad = os.path.join(self.dir, "bad.out")
         with open(bad, "w") as out:
             out.write("# header\n1 0.9 0.001 0.1 0.2\n")
@@ -436,6 +483,10 @@ class MidasConverterTest(unittest.TestCase):
     """Grains.csv -> seed table: quaternion of O (6-decimal input), radius, phase, filters."""
 
     def setUp(self):
+        """
+        Writes a three-grain MIDAS Grains.csv file with known rotations, positions, radii,
+        confidences and phases.
+        """
         self.dir = case_dir("midas")
         self.input = os.path.join(self.dir, "Grains.csv")
         self.rotations = [([1, 2, 3], 0.7), ([0, 0, 1], math.pi), ([-1, 0.5, 0.2], 2.9)]
@@ -465,6 +516,9 @@ class MidasConverterTest(unittest.TestCase):
             self.assertEqual(table["phase"][row], self.grains[k]["phase"])
 
     def test_conversion(self):
+        """
+        Units scaling and the confidence filter keep grains 0 and 2 with the expected table columns.
+        """
         output = os.path.join(self.dir, "seeds.csv")
         result = run_script("midas_grains_to_seeds.py",
                             [self.input, output, "--conjugate", "no", "--units-scale", "1e-3",
@@ -473,7 +527,7 @@ class MidasConverterTest(unittest.TestCase):
         self.check_table(msio.read_seed_table(output), [0, 2], conjugate=False)
 
     def test_conjugate_and_no_header_fallback(self):
-        # Without the %GrainID line the ProcessGrains.c column order is assumed
+        """Without the %GrainID line the ProcessGrains.c column order is assumed."""
         no_header = os.path.join(self.dir, "Grains_noheader.csv")
         write_midas_grains(no_header, self.grains, header=False)
         output = os.path.join(self.dir, "seeds_conj.csv")
@@ -483,6 +537,10 @@ class MidasConverterTest(unittest.TestCase):
         self.check_table(msio.read_seed_table(output), [0, 1, 2], conjugate=True)
 
     def test_errors(self):
+        """
+        A missing --conjugate, a zero radius without --no-radius and a matrix that is not a rotation
+        are each refused with a clear message.
+        """
         out = os.path.join(self.dir, "x.csv")
         # Missing --conjugate is a usage error
         result = run_script("midas_grains_to_seeds.py", [self.input, out])
@@ -510,7 +568,7 @@ class MidasConverterTest(unittest.TestCase):
         self.assertIn("GrainID 10", result.stderr)
 
     def test_id_offset(self):
-        # ExaConstit ids start at 1: GrainID 0 is refused unless --id-offset makes it >= 1
+        """ExaConstit ids start at 1: GrainID 0 is refused unless --id-offset makes it >= 1."""
         grains = [dict(g) for g in self.grains]
         for k, g in enumerate(grains):
             g["id"] = k
@@ -562,6 +620,9 @@ class SpparksConverterTest(unittest.TestCase):
     """SPPARKS dump -> voxel map: each site is one voxel holding its spin."""
 
     def setUp(self):
+        """
+        Writes a two-snapshot SPPARKS dump on a 4 x 3 x 2 lattice used by every test of this class.
+        """
         self.dir = case_dir("spparks")
         self.dims = (4, 3, 2)
         self.input = os.path.join(self.dir, "potts.dump")
@@ -570,6 +631,7 @@ class SpparksConverterTest(unittest.TestCase):
                            [lambda i, j, k: 9, spparks_spin])
 
     def expected_ids(self):
+        """Returns the spin of the second snapshot at each site, shaped (nz, ny, nx)."""
         nx, ny, nz = self.dims
         ids = np.zeros((nz, ny, nx), dtype=np.int64)
         for k in range(nz):
@@ -579,6 +641,10 @@ class SpparksConverterTest(unittest.TestCase):
         return ids
 
     def test_last_snapshot_corner_sites(self):
+        """
+        The last snapshot with corner sites gives the expected grain ids, a zero origin, the scaled
+        spacing and a grain table without orientations.
+        """
         output = os.path.join(self.dir, "map.h5")
         result = run_script("spparks_to_voxels.py", [self.input, output, "--units-scale", "2"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -594,6 +660,10 @@ class SpparksConverterTest(unittest.TestCase):
         self.assertNotIn("feature_quat", voxels)
 
     def test_first_snapshot_center_sites(self):
+        """
+        The first snapshot with centre sites puts the lower corner half a spacing below the first
+        site.
+        """
         output = os.path.join(self.dir, "map_first.h5")
         result = run_script("spparks_to_voxels.py",
                             [self.input, output, "--snapshot", "0", "--site-location", "center"])
@@ -604,9 +674,11 @@ class SpparksConverterTest(unittest.TestCase):
         np.testing.assert_array_equal(voxels["origin"], [-0.25, -0.25, -0.25])
 
     def test_spacing_from_extent_not_smallest_gap(self):
-        # 200 sites at a = 0.123457 printed with %g (6 digits): the smallest printed gap is
-        # 0.1234 (4.6e-4 relative error), while (max - min)/(n - 1) = 24.5679/199 recovers a
-        # to about 2e-6 relative (the %g rounding of the last coordinate divided by 199)
+        """
+        200 sites at a = 0.123457 printed with %g (6 digits): the smallest printed gap is 0.1234
+        (4.6e-4 relative error), while (max - min)/(n - 1) = 24.5679/199 recovers a to about 2e-6
+        relative (the %g rounding of the last coordinate divided by 199).
+        """
         fine = os.path.join(self.dir, "fine.dump")
         write_spparks_dump(fine, (200, 2, 1), 0.123457, [spparks_spin])
         output = os.path.join(self.dir, "fine.h5")
@@ -617,8 +689,10 @@ class SpparksConverterTest(unittest.TestCase):
         np.testing.assert_allclose(voxels["spacing"][:2], [0.123457, 0.123457], rtol=1e-5)
 
     def test_box_bounds_mismatch_is_refused(self):
-        # A box one cell longer in y than the sites (e.g. a missing plane) disagrees with the
-        # detected lattice far beyond the %g precision
+        """
+        A box one cell longer in y than the sites (e.g. a missing plane) disagrees with the
+        detected lattice far beyond the %g precision.
+        """
         bad_box = os.path.join(self.dir, "bad_box.dump")
         write_spparks_dump(bad_box, self.dims, 0.5, [spparks_spin], box_cells=(4, 4, 2))
         result = run_script("spparks_to_voxels.py", [bad_box, os.path.join(self.dir, "x.h5")])
@@ -627,6 +701,7 @@ class SpparksConverterTest(unittest.TestCase):
         self.assertIn("axis 1", result.stderr)
 
     def test_missing_site_is_refused(self):
+        """A dump with a lattice site missing is refused."""
         holes = os.path.join(self.dir, "holes.dump")
         write_spparks_dump(holes, self.dims, 1.0, [spparks_spin], drop_site=True)
         result = run_script("spparks_to_voxels.py", [holes, os.path.join(self.dir, "x.h5")])
@@ -666,6 +741,10 @@ class ExacaConverterTest(unittest.TestCase):
     """ExaCA VTK + orientation file -> voxel map with renumbered ids and per-grain quaternions."""
 
     def setUp(self):
+        """
+        Builds the ExaCA GrainID, LayerID and Temperature fields and an orientation file with three
+        known rotations.
+        """
         self.dir = case_dir("exaca")
         self.dims = (4, 3, 2)
         nx, ny, nz = self.dims
@@ -688,6 +767,10 @@ class ExacaConverterTest(unittest.TestCase):
                           + "\n")
 
     def convert(self, binary, extra):
+        """
+        Writes the ExaCA VTK file (binary or ASCII), runs exaca_to_voxels.py with the extra
+        arguments and returns the voxel map read back.
+        """
         vtk = os.path.join(self.dir, "grains_%s.vtk" % ("bin" if binary else "ascii"))
         write_exaca_vtk(vtk, self.dims, self.origin, self.spacing, self.fields, binary)
         output = os.path.join(self.dir, "map_%s.h5" % ("bin" if binary else "ascii"))
@@ -696,6 +779,10 @@ class ExacaConverterTest(unittest.TestCase):
         return msio.read_voxel_map(output)
 
     def check_map(self, voxels, conjugate):
+        """
+        Checks the renumbered grain ids, the scaled cell-corner origin and spacing, and each grain's
+        quaternion (conjugated when conjugate is true).
+        """
         # Negative ids: -g -> max positive id (4) + g, so -1 -> 5 and -5 -> 9; 0 stays 0
         expected = np.where(self.ids < 0, 4 - self.ids, self.ids)
         self.assertTrue(np.array_equal(voxels["grain_ids"], expected))
@@ -714,7 +801,7 @@ class ExacaConverterTest(unittest.TestCase):
             np.testing.assert_allclose(voxels["feature_quat"][row], q_expected, atol=1e-14)
 
     def test_ascii_and_binary(self):
-        # The same grain structure in text and binary VTK gives the same voxel map
+        """The same grain structure in text and binary VTK gives the same voxel map."""
         args = ["--units-scale", "1e6", "--orientations", self.orient, "--conjugate", "no"]
         ascii_map = self.convert(False, args)
         binary_map = self.convert(True, args)
@@ -723,12 +810,16 @@ class ExacaConverterTest(unittest.TestCase):
         self.assertTrue(np.array_equal(ascii_map["grain_ids"], binary_map["grain_ids"]))
 
     def test_conjugate_yes(self):
+        """
+        With --conjugate yes, each quaternion is the conjugate of the one from the ExaCA rotation
+        matrix.
+        """
         voxels = self.convert(True, ["--units-scale", "1e6", "--orientations", self.orient,
                                      "--conjugate", "yes"])
         self.check_map(voxels, conjugate=True)
 
     def test_quaternion_file_layout(self):
-        # A 4-value file in x y z w order is reordered to w x y z (and nothing else)
+        """A 4-value file in x y z w order is reordered to w x y z (and nothing else)."""
         quat_file = os.path.join(self.dir, "orient_xyzw.csv")
         quats = [axis_angle_quat(*r) for r in self.rotations]
         with open(quat_file, "w") as out:
@@ -747,9 +838,11 @@ class ExacaConverterTest(unittest.TestCase):
         self.assertIn("--quat-layout", result.stderr)
 
     def test_large_ascii_grid_is_fast(self):
-        # 64^3 = 262144 points with three text fields: the reader parses only GrainID, with
-        # numpy in bounded slices, and skips the other two blocks without parsing them. The
-        # time limit is generous; the old per-value reader also used about 100 bytes per value
+        """
+        64^3 = 262144 points with three text fields: the reader parses only GrainID, with numpy
+        in bounded slices, and skips the other two blocks without parsing them. The time limit is
+        generous.
+        """
         n = 64
         rng = np.random.default_rng(3)
         ids = rng.integers(-50, 200, size=(n, n, n))
@@ -770,6 +863,10 @@ class ExacaConverterTest(unittest.TestCase):
         self.assertTrue(np.array_equal(voxels["grain_ids"], np.where(ids < 0, 199 - ids, ids)))
 
     def test_required_flags_and_negative_id_error(self):
+        """
+        A missing --conjugate, --negative-ids error with nucleated grains and an unknown field name
+        are each refused with a clear message.
+        """
         vtk = os.path.join(self.dir, "grains_flags.vtk")
         write_exaca_vtk(vtk, self.dims, self.origin, self.spacing, self.fields, False)
         out = os.path.join(self.dir, "x.h5")

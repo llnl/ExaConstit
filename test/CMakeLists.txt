@@ -207,7 +207,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      moved nodes and mechanics runs on it; the hook fits mechanics' own mesh at 2 ranks;
     #      the two mechanics results must agree. Then the passthrough case of step 6 and the
     #      order-2 auto box with the fit.
-    #  10. Validation: geodesic grains with fitted boundaries on a BCC strut lattice
+    #  10. geodesic grains with fitted boundaries on a BCC strut lattice
     #      with filleted junctions, a tet and a hex mesh, through mechanics at 2 ranks
     #      (test/data/microstructure/lattice/ has the meshes and the script that made them).
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
