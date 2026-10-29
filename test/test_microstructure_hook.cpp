@@ -402,6 +402,7 @@ TEST(microstructure_hook, simulation_state_matches_direct_generation) {
     }
 }
 
+/** MPI-aware gtest main: initializes MPI and HYPRE, runs every test on every rank. */
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
     mfem::Hypre::Init();
