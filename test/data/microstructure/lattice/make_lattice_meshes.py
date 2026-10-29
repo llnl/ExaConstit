@@ -18,13 +18,18 @@ Node optimization (both): minimize the sum over element corners of mu^p, with mu
 tets; 1 for a cube corner or a regular tet), det regularized so inverted corners untangle, plus
 a penalty holding the strut-surface nodes on phi = 0 (raised in steps, then an exact projection);
 box-plane coordinates stay fixed. First p = 1 (untangling), then p = 4 (the worst corners
-weigh most, which leaves the fit room under its quality limits). JAX gives the gradients,
-scipy's L-BFGS minimizes.
+weigh most, which leaves the fit room under its quality limits). scipy's L-BFGS minimizes; the
+shape energy and its gradient come from lattice_energy.cpp (OpenMP over the elements, compiled
+with g++ on first use; --engine native, the default) or from JAX (--engine jax, the same energy
+on one CPU core). The level set evaluates each strut only near itself, where it can matter.
+
+Every stage prints a timed progress line (run with python -u to see them as they come).
 
 Output: MFEM mesh v1.0, element attribute 1; boundary attributes 1 z = 0, 2 x = 0, 3 y = 0,
 4 z = n, 5 x = n, 6 y = n, 7 the strut surfaces.
 
-Needs numpy, scipy, scikit-image and jax; tet also the gmsh Python module (4.15).
+Needs numpy, scipy, scikit-image, jax and g++ with OpenMP (native engine); tet also the gmsh
+Python module (4.15).
 The committed meshes:
   python3 make_lattice_meshes.py tet lattice_bcc_tet.mesh
   python3 make_lattice_meshes.py hex lattice_bcc_hex.mesh
@@ -34,6 +39,7 @@ import itertools
 import math
 import os
 import tempfile
+import time
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, gaussian_filter
@@ -47,8 +53,17 @@ parser.add_argument("--radius", type=float, default=0.12)
 parser.add_argument("--fillet", type=float, default=0.15)
 parser.add_argument("--voxels", type=int, default=32, help="hex: grid cubes per unit")
 parser.add_argument("--size", type=float, default=0.08, help="tet: gmsh element size")
+parser.add_argument("--engine", choices=("native", "jax"), default="native",
+                    help="node optimization energy: native = lattice_energy.cpp (OpenMP, built "
+                         "with g++ on first use), jax = the same energy in JAX (one CPU core)")
 args = parser.parse_args()
 n, r, rho = args.cells, args.radius, args.fillet
+START = time.time()
+
+
+def stage(message):
+    """Prints a progress line with the elapsed time (flushed, so logs show it at once)."""
+    print(f"[{time.time() - START:7.1f} s] {message}", flush=True)
 L = float(n)
 
 
@@ -59,8 +74,11 @@ def lattice_phi(m, pad=0.35):
     h = 1.0 / m
     npad = int(math.ceil(pad / h))
     ax = np.arange(-npad, n * m + npad + 1) * h
-    G = np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1)
-    du = np.full(G.shape[:3], np.inf)
+    du = np.full((len(ax),) * 3, np.inf)
+    # With a fillet only du < r + rho is used, so each strut is evaluated on the grid points of
+    # its own bounding box widened by r + rho (exact); without one, du - r is the level set
+    # everywhere and every strut is evaluated on the whole grid
+    reach = r + rho if rho > 0 else np.inf
     for i, j, l in itertools.product(range(-1, n + 1), repeat=3):
         c = np.array([i + 0.5, j + 0.5, l + 0.5])
         for d in itertools.product((-0.5, 0.5), repeat=3):
@@ -68,9 +86,16 @@ def lattice_phi(m, pad=0.35):
             lo, hi = np.minimum(a, b), np.maximum(a, b)
             if np.any(hi < -pad - r) or np.any(lo > n + pad + r):
                 continue
+            box = [slice(max(0, int(np.searchsorted(ax, lo[k] - reach))),
+                         int(np.searchsorted(ax, hi[k] + reach, side="right")))
+                   for k in range(3)]
+            if any(sl.start >= sl.stop for sl in box):
+                continue
+            G = np.stack(np.meshgrid(ax[box[0]], ax[box[1]], ax[box[2]], indexing="ij"), -1)
             ab = b - a
             t = np.clip(((G - a) @ ab) / (ab @ ab), 0, 1)
-            du = np.minimum(du, np.linalg.norm(G - (a + t[..., None] * ab), axis=-1))
+            sub = du[box[0], box[1], box[2]]
+            np.minimum(sub, np.linalg.norm(G - (a + t[..., None] * ab), axis=-1), out=sub)
     if rho <= 0:
         return ax, h, du - r
     closed = gaussian_filter(rho - distance_transform_edt(du < r + rho) * h, 1.2) < 0
@@ -79,6 +104,7 @@ def lattice_phi(m, pad=0.35):
 
 
 ax, hp, phi = lattice_phi(160)
+stage(f"level set at 160 points per unit: {phi.size} points")
 x0g, ng = ax[0], len(ax)
 PG = np.stack([phi, *np.gradient(phi, hp)], -1)
 
@@ -118,6 +144,7 @@ def tet_mesh():
     ax80, h80, phi80 = lattice_phi(m)
     G = np.meshgrid(ax80, ax80, ax80, indexing="ij")
     box = np.max(np.stack([v for g in G for v in (-g, g - L)]), 0)
+    stage("level set at 80 points per unit")
     V, T, _, _ = marching_cubes(np.maximum(phi80, box), 0.0, spacing=(h80,) * 3)
     V = np.clip(V + ax80[0], 0, L)
     key = np.round(V / 1e-9).astype(np.int64)
@@ -150,7 +177,9 @@ def tet_mesh():
                           ("Mesh.Algorithm", 6), ("Mesh.Algorithm3D", 1),
                           ("Mesh.Optimize", 1), ("Mesh.OptimizeNetgen", 1)):
             gmsh.option.setNumber(key_, val)
+        stage(f"surface: {len(T)} triangles; gmsh volume meshing")
         gmsh.model.mesh.generate(3)
+        stage("gmsh volume mesh done; Netgen and Relocate3D optimization")
         gmsh.model.mesh.optimize("Netgen")
         gmsh.model.mesh.optimize("Relocate3D")
         tags, coords, _ = gmsh.model.mesh.getNodes()
@@ -259,6 +288,69 @@ def boundary(E, X, faces):
 
 
 # ----- node optimization -----
+def native_value_grad(E, corners, w_inv, S, h):
+    """The energy of optimize() and its gradient with the shape term from lattice_energy.cpp
+    (OpenMP over elements) and the surface term in numpy; same signature as the JAX version."""
+    import ctypes
+    import subprocess
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    lib_dir = tempfile.mkdtemp(prefix="lattice_energy_")
+    lib_path = os.path.join(lib_dir, "liblattice_energy.so")
+    subprocess.run(["g++", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC",
+                    os.path.join(here, "lattice_energy.cpp"), "-o", lib_path], check=True)
+    lib = ctypes.CDLL(lib_path)
+    dp = ctypes.POINTER(ctypes.c_double)
+    lib.lattice_energy.restype = ctypes.c_double
+    lib.lattice_energy.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_long),
+                                   ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_int, dp,
+                                   dp, ctypes.c_double, ctypes.c_double, dp]
+    elems = np.ascontiguousarray(E, dtype=np.int64)
+    corner_table = np.ascontiguousarray(corners, dtype=np.int32)
+    winv = np.ascontiguousarray(np.asarray(w_inv, dtype=float))
+    num_terms = len(E) * len(corners)
+    offsets = np.array([[c & 1, (c >> 1) & 1, (c >> 2) & 1] for c in range(8)])
+
+    def value_grad(X, w, delta, power):
+        """Energy and gradient at the node positions X (numpy arrays)."""
+        X = np.ascontiguousarray(X, dtype=float)
+        grad = np.zeros_like(X)
+        total = lib.lattice_energy(len(elems), elems.shape[1],
+                                   elems.ctypes.data_as(ctypes.POINTER(ctypes.c_long)),
+                                   len(corner_table),
+                                   corner_table.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                                   len(X), X.ctypes.data_as(dp), winv.ctypes.data_as(dp),
+                                   float(delta), float(power), grad.ctypes.data_as(dp))
+        value = total / num_terms
+        grad /= num_terms
+        # surface term w sum(phi(x_s)^2) / (h^2 |S|): trilinear phi and its gradient (the
+        # clipped coordinates and the cell index are constant, as in the JAX version)
+        if w != 0.0 and len(S):
+            p = X[S]
+            u_raw = (p - x0g) / hp
+            u = np.clip(u_raw, 0, ng - 1.000001)
+            inside = (u_raw > 0) & (u_raw < ng - 1.000001)
+            i0 = np.floor(u).astype(np.int64)
+            f = u - i0
+            val = np.zeros(len(p))
+            dval = np.zeros((len(p), 3))
+            for o in offsets:
+                weights = np.where(o, f, 1 - f)
+                idx = i0 + o
+                corner_phi = phi[idx[:, 0], idx[:, 1], idx[:, 2]]
+                val += np.prod(weights, axis=1) * corner_phi
+                for k in range(3):
+                    others = np.prod(np.delete(weights, k, axis=1), axis=1)
+                    dval[:, k] += (1.0 if o[k] else -1.0) * others * corner_phi
+            dval = dval * inside / hp
+            scale = w / (h * h * max(len(S), 1))
+            value += scale * np.sum(val ** 2)
+            np.add.at(grad, S, scale * 2.0 * val[:, None] * dval)
+        return value, grad
+
+    return value_grad
+
+
 def optimize(X0, E, bdr):
     """Node optimization of the module docstring; returns the optimized node positions."""
     import jax
@@ -306,6 +398,8 @@ def optimize(X0, E, bdr):
                 + w * jnp.sum(trilinear(X[S]) ** 2) / (h * h * max(len(S), 1)))
 
     value_grad = jax.jit(jax.value_and_grad(energy))
+    if args.engine == "native":
+        value_grad = native_value_grad(E, corners, w_inv if tet else np.eye(3), S, h)
     X = X0.copy()
 
     def run(w, delta, power, iters):
@@ -315,10 +409,14 @@ def optimize(X0, E, bdr):
             """Energy value and gradient with the free coordinates set to z."""
             Y = X.copy()
             Y[free] = z
-            v, g = value_grad(jnp.asarray(Y), w, delta, power)
+            Yin = Y if args.engine == "native" else jnp.asarray(Y)
+            v, g = value_grad(Yin, w, delta, power)
             return float(v), np.asarray(g)[free]
-        X[free] = minimize(f, X[free], jac=True, method="L-BFGS-B",
-                           options={"maxiter": iters, "maxcor": 30}).x
+        result = minimize(f, X[free], jac=True, method="L-BFGS-B",
+                          options={"maxiter": iters, "maxcor": 30})
+        X[free] = result.x
+        stage(f"smoothing pass (power {power:g}, surface weight {w:g}): {result.nit} "
+              f"iterations, energy {result.fun:.6g}")
 
     for power in (1.0, 4.0):
         for w, delta in ((10.0, 1e-2), (100.0, 1e-4), (1e3, 0.0), (1e4, 0.0)):
