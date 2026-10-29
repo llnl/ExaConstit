@@ -1,4 +1,4 @@
-# The curved end-to-end matrix (WP-CV5): GenerateMicrostructure on genuinely curved hex and tet
+# The curved end-to-end matrix: GenerateMicrostructure on genuinely curved hex and tet
 # meshes of order 2 and 3 in the Gauss-Lobatto and closed-uniform bases, for the Euclidean
 # (centroid and vote), connected and geodesic (FIM and graph) modes, Lloyd + volume fit,
 # Johnson-Mehl and a passthrough attribute. Each run is compared exactly with a single-rank run in

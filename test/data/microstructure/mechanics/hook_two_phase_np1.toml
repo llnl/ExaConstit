@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_two_phase" (1 MPI rank).
+# ExaConstit deck for the end-to-end test "hook_two_phase" (1 MPI rank).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck,
 # props_cp_voce.txt and state_cp_voce.txt into a scratch directory and runs mechanics on it with

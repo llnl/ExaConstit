@@ -1,4 +1,4 @@
-# Generator options for the Stage 2 end-to-end test "conformal" (test/CMakeLists.txt): the 8
+# Generator options for the end-to-end test "conformal" (test/CMakeLists.txt): the 8
 # Voronoi grains of voronoi_auto.toml on the 8x8x8 auto box, with the grain boundaries fitted
 # ([Conformal] enabled = true). The mesh file carries the moved nodes; grain_file = "auto" writes
 # no grain file after a fit (an auto box rebuilt by ExaConstit would lose the moved nodes), so

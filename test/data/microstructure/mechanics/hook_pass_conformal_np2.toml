@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 2 end-to-end test "conformal" with a passthrough part (2 MPI
+# ExaConstit deck for the end-to-end test "conformal" with a passthrough part (2 MPI
 # ranks).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt runs it in the scratch

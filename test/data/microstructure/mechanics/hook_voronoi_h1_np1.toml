@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_refined" (1 MPI rank).
+# ExaConstit deck for the end-to-end test "hook_refined" (1 MPI rank).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck and the
 # material files into a scratch directory and runs mechanics on it.

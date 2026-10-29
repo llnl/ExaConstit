@@ -1,10 +1,10 @@
-# Generator input of the Stage 1d end-to-end test "seed table".
+# Generator input of the end-to-end test "seed table".
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_data_sources.cmake
 # copies the seed table e2e/seed_table_roi.csv into <build>/test/microstructure/
-# end_to_end_stage1d/inputs/, then runs
+# end_to_end_data_sources/inputs/, then runs
 #     microstructure_generator -i test/data/microstructure/e2e/seed_table_roi.toml
-# in end_to_end_stage1d/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
+# in end_to_end_data_sources/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
 # byte-identical files, and then runs mechanics on the result (decks
 # test/data/microstructure/mechanics/ms_seed_table_np{1,2}.toml, two [[Materials]] blocks).
 #

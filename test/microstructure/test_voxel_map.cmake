@@ -1,4 +1,4 @@
-# Voxel maps (Stage 1d): the HDF5 voxel map reader (io/voxel_map_io) and the voxel labeler
+# Voxel maps: the HDF5 voxel map reader (io/voxel_map_io) and the voxel labeler
 # (labeling/voxel_labeler).
 #
 # test_voxel_map writes its own HDF5 fixtures (canonical, DREAM.3D SIMPL v6 and DREAM3D-NX-like

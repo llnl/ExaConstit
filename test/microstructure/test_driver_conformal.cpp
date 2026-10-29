@@ -1,6 +1,6 @@
 /**
  * @file test_driver_conformal.cpp
- * @brief Driver-level tests of the Stage 2 conformal grain boundary step ([Conformal] enabled)
+ * @brief Driver-level tests of the conformal grain boundary step ([Conformal] enabled)
  * in GenerateMicrostructure (exaconstit_microstructure).
  *
  * What is checked, and why:
@@ -12,14 +12,14 @@
  *  - Tet box: the tet floor (mean ratio) holds.
  *  - A mesh with order-2 Nodes (as ExaConstit's mesh at [Mesh] order = 2) is fitted and keeps its
  *    Nodes; order 3 is refused on every rank with std::invalid_argument.
- *  - The Phase 1 grain sources without analytic boundaries: a voxel map (the shared voxelized
+ *  - Grain sources without analytic boundaries: a voxel map (the shared voxelized
  *    Voronoi fixture, one element per voxel) and geodesic labels on the U-shaped part fit every
  *    grain boundary node to the smoothed staircase; connected labels on the U-shaped part use
  *    analytic targets where valid and the smoothed staircase elsewhere. Each keeps the floor, no
  *    inversion, the part's volume and a smaller distance to the targets.
  *  - A passthrough plate (bottom quarter of a box): its elements keep their grain, the nodes on
  *    its top face keep z bit for bit, and its volume is unchanged.
- *  - mono_def essential dofs (V3): on the hex, tet and order-2 boxes the nodes that ExaConstit's
+ *  - mono_def essential dofs: on the hex, tet and order-2 boxes the nodes that ExaConstit's
  *    mono_def boundary conditions select (1e-12 tests against the global min / max coordinates,
  *    system_driver.cpp) are the same before and after the fit.
  *  - Without the step nothing moves (the vertices of the input mesh are kept bit for bit).
@@ -141,7 +141,7 @@ void CheckFit(const char* name, DriverRun& run, double floor, double volume) {
     }
 }
 
-/** The U-shaped part of the Stage 1e tests (320 hexahedra, volume 5). */
+/** The U-shaped part of the distance-mode tests (320 hexahedra, volume 5). */
 mfem::Mesh UShape() {
     return mfem::Mesh((data_dir / "microstructure/u_shape_hex.mesh").string().c_str());
 }
@@ -234,6 +234,10 @@ int MonoDefChanges(mfem::ParMesh& fitted, mfem::ParMesh& input, int& marked) {
 
 } // namespace
 
+// Hex box without Nodes: the fit moves vertices only when enabled, keeps the hex quality floor
+// and the box volume (the outer faces stay planar), brings the nodes closer to the analytic
+// boundaries, changes the grain of exactly the elements the repair reports, and leaves the
+// mono_def boundary nodes as they were.
 TEST(DriverConformal, HexBox) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(12, 12, 12, mfem::Element::HEXAHEDRON);
     const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
@@ -260,12 +264,13 @@ TEST(DriverConformal, HexBox) {
     EXPECT_EQ(changed, r.conformal_repair.flips);
     EXPECT_LT(changed, serial.GetNE() / 20);
     EXPECT_NE(r.adjacency, nullptr);
-    // mono_def boundary conditions find the same nodes (V3)
+    // mono_def boundary conditions find the same nodes
     int marked = 0;
     EXPECT_EQ(MonoDefChanges(*fitted.pmesh, *input, marked), 0);
     EXPECT_GT(marked, 0);
     if (mfem::Mpi::Root()) {
-        std::printf("hex box: %d grains, %d flips, deviation %.3f -> %.3f h, sj %.3f\n",
+        std::printf("hex box: %d grains, %d flips, deviation %.3f -> %.3f h, sj %.3f, "
+                    "aspect %.3f, %d rounds, %d solves\n",
                     fitted.result.num_grains,
                     changed,
                     r.conformal_fit.initial_deviation,
@@ -277,6 +282,8 @@ TEST(DriverConformal, HexBox) {
     }
 }
 
+// Tet box: the tet mean-ratio floor holds, nothing inverts, the deviation does not grow and the
+// volume is kept; mono_def finds the same nodes.
 TEST(DriverConformal, TetBox) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
     const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
@@ -293,6 +300,7 @@ TEST(DriverConformal, TetBox) {
     EXPECT_NEAR(Volume(*fitted.pmesh), 1.0, 1e-12);
 }
 
+// Order-3 Nodes are not supported by the fit: every rank throws std::invalid_argument.
 TEST(DriverConformal, RefusesHigherOrder) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
@@ -302,6 +310,7 @@ TEST(DriverConformal, RefusesHigherOrder) {
                  std::invalid_argument);
 }
 
+// Order-2 Nodes (ExaConstit's [Mesh] order = 2) are fitted at every nodal point and stay order 2.
 TEST(DriverConformal, OrderTwoHook) {
     // A mesh with order-2 Nodes, as ExaConstit's mesh at [Mesh] order = 2: the fit moves every
     // nodal point and the mesh keeps its order-2 Nodes
@@ -315,13 +324,14 @@ TEST(DriverConformal, OrderTwoHook) {
     run.result = ms::GenerateMicrostructure(Options(true), *run.pmesh, MPI_COMM_WORLD, &run.report);
     CheckFit("order 2", run, ms::MESH_QUALITY_FLOOR_HEX, 1.0);
     int marked = 0;
-    EXPECT_EQ(MonoDefChanges(*run.pmesh, *input, marked), 0); // every nodal point (V3)
+    EXPECT_EQ(MonoDefChanges(*run.pmesh, *input, marked), 0); // every nodal point
     EXPECT_GT(marked, 0);
     ASSERT_NE(run.pmesh->GetNodes(), nullptr);
     EXPECT_EQ(run.pmesh->GetNodes()->FESpace()->GetMaxElementOrder(), 2);
 }
 
 #ifdef AXOM_USE_HDF5
+// Voxel grains have no analytic boundary, so every fitted node targets the smoothed staircase.
 TEST(DriverConformal, VoxelMap) {
     using voxel_fixture::H;
     using voxel_fixture::NX;
@@ -351,6 +361,8 @@ TEST(DriverConformal, VoxelMap) {
 }
 #endif
 
+// Geodesic labels have no analytic boundary (every node on the smoothed staircase); connected
+// labels keep analytic targets where the cells are unchanged, so fewer nodes are smoothed.
 TEST(DriverConformal, GeodesicAndConnected) {
     mfem::Mesh serial = UShape();
     ms::MicrostructureOptions options = Options(true);
@@ -366,6 +378,8 @@ TEST(DriverConformal, GeodesicAndConnected) {
     EXPECT_LT(connected.report.conformal_smoothed_nodes, connected.report.conformal_fit.fit_nodes);
 }
 
+// A passthrough plate keeps its shape: its elements keep their grain, its top face nodes keep z
+// exactly, and its volume stays 1/4.
 TEST(DriverConformal, PassthroughPlate) {
     // Box 8 x 8 x 8; the bottom two layers (z < 1/4) are a passthrough plate (attribute 2)
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);

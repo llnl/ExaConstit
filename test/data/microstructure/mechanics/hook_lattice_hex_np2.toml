@@ -1,10 +1,10 @@
-# ExaConstit deck for the Stage 2 validation test "lattice hex" (V4, 2 MPI ranks).
+# ExaConstit deck for the validation test "lattice hex" (2 MPI ranks).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt
 # (test_microstructure_hook_e2e_lattice_hex) copies this deck, the mesh and the material files
 # into a scratch directory and runs mechanics on it with 2 MPI ranks.
 #
-# What it exercises: the motivating use case of Stage 2, grains on a strut lattice with fitted
+# What it exercises: the motivating use case of the conformal fit, grains on a strut lattice with fitted
 # grain boundaries: a BCC strut lattice with filleted junctions meshed with hexes (voxels, a
 # pillow layer and node optimization; lattice/make_lattice_meshes.py), 12 grains grown along
 # paths that stay inside the struts (distance = "geodesic") from [Mesh.Microstructure],

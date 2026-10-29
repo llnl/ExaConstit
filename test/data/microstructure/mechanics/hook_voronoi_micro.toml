@@ -1,4 +1,4 @@
-# Generator options for the Stage 1f end-to-end tests (form 1 of [Mesh.Microstructure],
+# Generator options for the end-to-end tests (form 1 of [Mesh.Microstructure],
 # `file = "hook_voronoi_micro.toml"` in hook_voronoi_np1.toml and hook_curved_np1.toml; also the
 # tool's input for the curved case, with -m bulged_cube_order2.mesh -o curved_tool).
 #

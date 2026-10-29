@@ -1,6 +1,6 @@
-# Generator input of the Stage 1e end-to-end test "connected distance on the U-shaped part".
+# Generator input of the end-to-end test "connected distance on the U-shaped part".
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake runs
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_distance_modes.cmake runs
 #     microstructure_generator -i test/data/microstructure/e2e/connected_ushape.toml
 #                              -m test/data/microstructure/u_shape_hex.mesh
 # (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI
@@ -8,7 +8,7 @@
 # result (deck test/data/microstructure/mechanics/ms_connected_ushape_np2.toml).
 #
 # What it exercises: the part is [0,3] x [0,2] x [0,1] without the notch [1,2] x [1,2] x [0,1].
-# These are the 8 seeds of the Stage 1b/1c fragment test (e2e/u_shape_fragments.toml): seeds drawn
+# These are the 8 seeds of the fragment test (e2e/u_shape_fragments.toml): seeds drawn
 # anywhere in the bounding box (sampling_domain = "bbox"), so several straight-line (Voronoi) cells
 # reach across the empty notch and own elements in both arms. With straight-line distance the
 # fragment cleanup then finds 4 extra pieces (10 final grains). With distance = "connected" every

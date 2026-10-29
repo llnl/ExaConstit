@@ -1,6 +1,6 @@
 /*
  * test_curved_pipeline: the whole generator (GenerateMicrostructure) on genuinely curved meshes
- * (WP-CV5, the curved end-to-end matrix).
+ * (the curved end-to-end matrix).
  *
  * Meshes: a 4 x 4 x 4 box of hexes or tets with order-2 or order-3 Nodes in the Gauss-Lobatto or
  * the closed-uniform H1 basis, moved off the straight map by a smooth warp (so the elements are

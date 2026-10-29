@@ -598,14 +598,14 @@ basename = "from_file"
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stage 1b/1c options (fragment cleanup, quadrature voting, periodicity, anisotropy kinds, volume
-// fitting, Lloyd relaxation, size distributions, Johnson-Mehl nucleation)
+// Generated-seed options (fragment cleanup, quadrature voting, periodicity, anisotropy kinds,
+// volume fitting, Lloyd relaxation, size distributions, Johnson-Mehl nucleation)
 // ---------------------------------------------------------------------------------------------
 
 // The new keys must default to the documented "off" values, so an options file written before
 // they existed means exactly what it meant then (apart from fragments = "auto", whose split
 // behavior is now active).
-TEST(MicrostructureOptions, Stage1bcDefaults) {
+TEST(MicrostructureOptions, GeneratedSeedsDefaults) {
     const auto options = FromString("[Seeds]\nnum_seeds = 5\n");
     EXPECT_EQ(options.cleanup.keep_component, "largest");
     EXPECT_EQ(options.cleanup.min_fragment_elements, 8);
@@ -634,7 +634,7 @@ TEST(MicrostructureOptions, Stage1bcDefaults) {
 
 // Every new key is read into its field, including integers for real values (rate = 60) and the
 // inline-table forms of anisotropy and fit_volumes.
-TEST(MicrostructureOptions, Stage1bcKeysParse) {
+TEST(MicrostructureOptions, GeneratedSeedsKeysParse) {
     const auto options = FromString(R"(
 [Seeds]
 placement = "johnson_mehl"
@@ -713,7 +713,7 @@ TEST(MicrostructureOptions, AnisotropyKindPrecedence) {
 
 // The example files of the new features parse to the values they spell out and validate as
 // written (all use auto meshes, so no input file is needed).
-TEST(MicrostructureOptions, ParseStage1bcExamples) {
+TEST(MicrostructureOptions, ParseGeneratedSeedsExamples) {
     const auto periodic = ms::MicrostructureOptions::parse_options_file(
         data_dir / "microstructure/periodic_vote_auto.toml");
     EXPECT_EQ(periodic.tessellation.periodic, (std::array<bool, 3>{true, true, true}));
@@ -768,7 +768,7 @@ TEST(MicrostructureOptions, ParseStage1bcExamples) {
 // case changes the valid baseline (4 random Voronoi seeds on a 2^3 auto box) in one respect, so a
 // false result can only come from that change; the valid variants show the checks are not too
 // strict.
-TEST(MicrostructureOptions, Stage1bcValidationFailures) {
+TEST(MicrostructureOptions, GeneratedSeedsValidationFailures) {
     auto validate_with = [](auto&& mutate) {
         auto options = ValidAutoOptions();
         mutate(options);
@@ -1066,13 +1066,13 @@ TEST(MicrostructureOptions, PhaseToRegionFile) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stage 1d: seed tables, ROI and filler, voxel maps, phases and regions, passthrough attributes
+// Data sources: seed tables, ROI and filler, voxel maps, phases and regions, passthrough attributes
 // ---------------------------------------------------------------------------------------------
 
-// The Stage 1d keys are off by default, so existing options files behave exactly as before:
+// The data-source keys are off by default, so options files that do not use them get:
 // tessellation source, no ROI or filler, no attribute domain, single region, and the [VoxelMap]
 // defaults (canonical format, no quaternion declarations, centroid sampling).
-TEST(MicrostructureOptions, Stage1dDefaults) {
+TEST(MicrostructureOptions, DataSourcesDefaults) {
     const ms::MicrostructureOptions options;
     EXPECT_EQ(options.source.type, "tessellation");
     EXPECT_FALSE(options.seeds.use_roi);
@@ -1095,13 +1095,13 @@ TEST(MicrostructureOptions, Stage1dDefaults) {
     EXPECT_FALSE(options.regions.has_filler_phase);
 }
 
-// Every Stage 1d key lands in its field: [Mesh] attribute lists (TOML map keys are strings, read
+// Every data-source key lands in its field: [Mesh] attribute lists (TOML map keys are strings, read
 // as integers), the ROI inline table and filler keys, [Source] type = "voxel_map" with every
 // [VoxelMap] key (conjugate is a boolean -> 0/1), the [Regions] phase keys (phases as an array of
 // inline tables), and anisotropy kind "per_seed". Values that cannot be stored throw while
 // parsing: a non-integer attribute key, an ROI without its upper corner, a phases entry without
 // a fraction, and a conjugate that is not a boolean.
-TEST(MicrostructureOptions, Stage1dKeysParse) {
+TEST(MicrostructureOptions, DataSourcesKeysParse) {
     const auto options = FromString(R"(
 [Mesh]
 active_attributes = [1, 4]
@@ -1191,10 +1191,10 @@ filler_phase = 4
     EXPECT_THROW(FromString("[VoxelMap]\nsampling = \"nearest\"\n"), std::invalid_argument);
 }
 
-// validate() refuses each impossible Stage 1d combination; each case changes a valid baseline
+// validate() refuses each impossible data-source combination; each case changes a valid baseline
 // in one respect (the valid variants show the checks are not too strict). The seed table baseline
 // uses the checked-in minimal_xyz.csv (validate only checks that it exists).
-TEST(MicrostructureOptions, Stage1dValidationFailures) {
+TEST(MicrostructureOptions, DataSourcesValidationFailures) {
     using O = ms::MicrostructureOptions;
     const fs::path table = data_dir / "microstructure/seed_tables/minimal_xyz.csv";
     auto table_options = [&]() {
@@ -1334,7 +1334,7 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
         o.seeds.boundary_clearance = 0.1;
     }));
     // Size-related keys are ignored with a warning (connected / geodesic distance is refused:
-    // see Stage1eValidationFailures)
+    // see DistanceModesValidationFailures)
     EXPECT_TRUE(check(voxel_options(), [](O& o) {
         o.seeds.size.mean_diameter = 0.2;
     }));
@@ -1477,10 +1477,10 @@ TEST(MicrostructureOptions, Stage1dValidationFailures) {
     }));
 }
 
-// The Stage 1d example files parse to the values they spell out and validate once their input
+// The data-source example files parse to the values they spell out and validate once their input
 // files are found (paths are relative to the directory the tool runs in; the placeholder mesh and
 // voxel map names are replaced by existing files here).
-TEST(MicrostructureOptions, ParseStage1dExamples) {
+TEST(MicrostructureOptions, ParseDataSourcesExamples) {
     const fs::path dir = data_dir / "microstructure";
     auto table = ms::MicrostructureOptions::parse_options_file(dir / "seed_table_auto.toml");
     EXPECT_EQ(table.seeds.source, "file");
@@ -1521,7 +1521,7 @@ TEST(MicrostructureOptions, ParseStage1dExamples) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stage 1e: distance modes
+// Distance modes
 // ---------------------------------------------------------------------------------------------
 
 // Defaults of the distance-mode keys: Euclidean distance, 16 connected rounds, and the geodesic
@@ -1529,7 +1529,7 @@ TEST(MicrostructureOptions, ParseStage1dExamples) {
 // The keys parse from [Tessellation]: `distance`, `connected_max_rounds` and the inline table
 // `geodesic = {solver = ...}`; an unknown solver name is stored as written (validate() rejects
 // it, so the user sees it with every other problem).
-TEST(MicrostructureOptions, Stage1eKeysParse) {
+TEST(MicrostructureOptions, DistanceModesKeysParse) {
     const auto defaults = FromString("");
     EXPECT_EQ(defaults.tessellation.distance, ms::DistanceMode::EUCLIDEAN);
     EXPECT_EQ(defaults.tessellation.connected_max_rounds, 16);
@@ -1572,15 +1572,8 @@ TEST(MicrostructureOptions, Stage1eKeysParse) {
     EXPECT_THROW(FromString("[Tessellation]\ndistance = \"shortest\"\n"), std::invalid_argument);
 }
 
-// validate() enforces the Stage 1e scope. Each case changes a valid baseline in one respect:
-// - both modes refuse periodic axes, fit_volumes, Lloyd / centroidal power and voxel maps (they
-//   work on a plain, non-periodic labeling of the active material with fixed seeds);
-// - geodesic needs a metric whose value is a length: Voronoi (d) or Additive (d - a_i, also with
-//   Johnson-Mehl); Laguerre and Quadric are refused, and so is any anisotropy kind;
-// - connected works with every metric (here Laguerre and a per-seed Quadric seed table);
-// - connected_max_rounds in 0..1000 (the labeler's CONNECTED_MAX_ROUNDS_LIMIT) and a solver
-//   "graph" or "fim", in any mode; valid settings of an unselected mode only warn;
-// - passthrough parts and seed tables are fine (the modes run on the active part).
+// [Conformal] parses (off by default) and validate() accepts it with every grain source and
+// metric, but refuses it with periodic axes (the fit would have to match opposite box faces).
 TEST(MicrostructureOptions, ConformalParseAndValidation) {
     // Parsed from [Conformal]; off by default
     EXPECT_FALSE(FromString("").conformal.enabled);
@@ -1596,7 +1589,7 @@ TEST(MicrostructureOptions, ConformalParseAndValidation) {
     EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.metric = ms::MetricType::LAGUERRE;
     }));
-    // Every Phase 1 grain source is accepted (non-analytic boundaries use the smoothed
+    // Every grain source is accepted (non-analytic boundaries use the smoothed
     // staircase, passthrough interfaces stay in place); only periodic axes are refused
     EXPECT_TRUE(check(ValidAutoOptions(), [](O& o) {
         o.tessellation.distance = ms::DistanceMode::CONNECTED;
@@ -1617,7 +1610,18 @@ TEST(MicrostructureOptions, ConformalParseAndValidation) {
     }));
 }
 
-TEST(MicrostructureOptions, Stage1eValidationFailures) {
+// validate() enforces the limits of the distance modes. Each case changes a valid baseline in one
+// respect:
+// - both modes refuse periodic axes, fit_volumes, Lloyd / centroidal power and voxel maps (they
+//   work on a plain, non-periodic labeling of the active material with fixed seeds);
+// - geodesic: Voronoi and Additive (also with Johnson-Mehl) run on the single-front solvers;
+//   Laguerre and per-seed tensors need solver "fim" (several seeds per node); an anisotropy needs
+//   metric "quadric"; max_seeds_per_node must be in 1..64 and elongation "auto" or in [1, 1e4];
+// - connected works with every metric (here Laguerre and a per-seed Quadric seed table);
+// - connected_max_rounds in 0..1000 (the labeler's CONNECTED_MAX_ROUNDS_LIMIT) and a solver
+//   "graph" or "fim", in any mode; valid settings of an unselected mode only warn;
+// - passthrough parts and seed tables are fine (the modes run on the active part).
+TEST(MicrostructureOptions, DistanceModesValidationFailures) {
     using O = ms::MicrostructureOptions;
     auto check = [](O o, auto&& mutate) {
         mutate(o);
@@ -1813,9 +1817,9 @@ TEST(MicrostructureOptions, Stage1eValidationFailures) {
     }));
 }
 
-// The Stage 1e example files parse to the values they spell out and validate once the mesh path
-// (relative to the directory the tool runs in) is made absolute.
-TEST(MicrostructureOptions, ParseStage1eExamples) {
+// The distance-mode example files parse to the values they spell out and validate once the mesh
+// path (relative to the directory the tool runs in) is made absolute.
+TEST(MicrostructureOptions, ParseDistanceModesExamples) {
     const fs::path dir = data_dir / "microstructure";
     auto connected = ms::MicrostructureOptions::parse_options_file(dir / "connected_ushape.toml");
     EXPECT_EQ(connected.tessellation.distance, ms::DistanceMode::CONNECTED);

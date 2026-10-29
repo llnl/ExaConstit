@@ -1,6 +1,6 @@
 /**
  * @file test_conformal_fit.cpp
- * @brief Tests of conformal/conformal_fitter and conformal/quality (Stage 2d): the mesh nodes
+ * @brief Tests of conformal/conformal_fitter and conformal/quality: the mesh nodes
  * moved toward the analytic grain boundaries by a spring-balanced pseudo-elastic morph, with a
  * fixed quality floor.
  *
@@ -16,17 +16,17 @@
  *  - A 20-grain Voronoi polycrystal (hex 16^3): the floor holds, almost no element is below 0.5,
  *    and the mean deviation drops well below the staircase's.
  *  - Thin grains: a grain two elements thick squeezed by two inclined boundaries keeps the limits
- *    and its volume (E1); a grain one element thick is reported as under-resolved and its grain
- *    boundary nodes are held (E5).
+ *    and its volume; a grain one element thick is reported as under-resolved and its grain
+ *    boundary nodes are held.
  *  - Jittered tets (8^3 x 6 Kuhn mesh with interior vertices moved up to 0.2 element sizes): poor
  *    input tets below the mean ratio floor, the fit still reduces the deviation by a quarter or
  * more and keeps the limits relative to the input.
  *  - Order-2 Nodes (hex 6^3, 8 grains): every nodal point is fitted (more than twice the fitted
  *    nodes of order 1), the limits hold, no element folds on a denser Gauss-Lobatto grid, box faces
  *    are kept, and WORLD agrees with SELF to the solver tolerance.
- *  - 120° tricrystal (V1; hex 12^3, tet 8^3): the triple line nodes end below 0.6 of their
+ *  - 120° tricrystal (hex 12^3, tet 8^3): the triple line nodes end below 0.6 of their
  *    starting distance from the analytic line, all of them FIT, limits kept.
- *  - Curved boundary convergence (V2; Additive bicrystal, hyperboloid boundary, hex 8^3 and
+ *  - Curved boundary convergence (Additive bicrystal, hyperboloid boundary, hex 8^3 and
  *    16^3): grain volume and boundary area against an exact reference; the fitted area error is
  *    well below the staircase's and below 30 %, the fitted volume error halves from 8^3 to 16^3
  *    and ends below 2 %. (The fitted area does not converge, see the test.)
@@ -376,11 +376,10 @@ void CheckBisector(mfem::Mesh& serial, bool tet, double fit_ratio) {
 }
 
 /**
- * V1: tricrystal with 120 degree junctions. Three Voronoi seeds 0.3 from (0.47, 0.53) at 90, 210
+ * Tricrystal with 120 degree junctions. Three Voronoi seeds 0.3 from (0.47, 0.53) at 90, 210
  * and 330 degrees, all at z = 0.5: the three bisectors meet at 120 degrees along the vertical line
  * x = 0.47, y = 0.53 (off the lattice). The nodes with three labels (the discrete triple line)
- * must end much closer to it (below 0.6 of their starting distance; with the tenth-strength
- * triple line springs of the first fitter they did not move at all), every node with three
+ * must end much closer to it (below 0.6 of their starting distance), every node with three
  * labels must be FIT, and the limits hold.
  */
 void CheckTricrystal(mfem::Element::Type type, int n) {
@@ -528,6 +527,11 @@ void DomeAndShear(mfem::Mesh& serial, double shear) {
     });
 }
 
+/**
+ * 12 grains in a box with a domed top and tilted sides (DomeAndShear): the limits hold, no node
+ * leaves its flat face, the deviation drops, and boundary nodes that moved stay on the curved and
+ * tilted surfaces (drift below 1e-9).
+ */
 void CheckCurved(mfem::Element::Type type, int n, double shear) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, type);
     DomeAndShear(serial, shear);
@@ -562,6 +566,8 @@ void CheckCurved(mfem::Element::Type type, int n, double shear) {
 
 } // namespace
 
+// The unit cube and the regular tet are perfect elements (scaled Jacobian 1, aspect ratio 1); a
+// cube with one vertex moved past the opposite face is inverted (negative scaled Jacobian).
 TEST(MeshQuality, SimpleElements) {
     mfem::Mesh cube = mfem::Mesh::MakeCartesian3D(1, 1, 1, mfem::Element::HEXAHEDRON);
     double sj, ar, det;
@@ -588,38 +594,44 @@ TEST(MeshQuality, SimpleElements) {
     EXPECT_LT(q.min_scaled_jacobian, 0.0);
 }
 
+// Inclined Voronoi bicrystal on hexes: limits hold, the deviation drops below 0.4 of the
+// staircase's (shallow 1:5 steps, the worst case for the hex aspect ratio), grain 1 keeps half the
+// volume, and the run matches the single-rank one.
 TEST(ConformalFit, HexInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
     CheckBisector(serial, false, 0.4);
 }
 
+// The same bicrystal on tets (deviation below 0.55 of the staircase's).
 TEST(ConformalFit, TetInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::TETRAHEDRON);
     CheckBisector(serial, true, 0.55);
 }
 
+// 120-degree tricrystal on hexes (see CheckTricrystal).
 TEST(ConformalFit, HexTricrystal) {
     CheckTricrystal(mfem::Element::HEXAHEDRON, 12);
 }
 
+// 120-degree tricrystal on tets (see CheckTricrystal).
 TEST(ConformalFit, TetTricrystal) {
     CheckTricrystal(mfem::Element::TETRAHEDRON, 8);
 }
 
+// An Additive (Johnson-Mehl) bicrystal, seeds (0.3, 0.5, 0.5) and (0.7, 0.5, 0.5) with
+// weights 0 and 0.3: the boundary |x - s1| = |x - s2| - 0.3 is one sheet of a hyperboloid of
+// revolution about the seed axis (foci the seeds, a = 0.15, c = 0.2, b^2 = c^2 - a^2),
+// x(rho) = 0.5 - a sqrt(1 + rho^2 / b^2), which meets the face x = 0 in a circle of radius
+// rho0 = b sqrt((0.5 / a)^2 - 1) = 0.42. Grain 1 volume = 2 pi int_0^rho0 x(rho) rho drho and
+// boundary area = 2 pi int_0^rho0 sqrt(1 + x'(rho)^2) rho drho (Gauss-Legendre, smooth
+// integrands: exact to rounding).
+// Measured (hex, order 1, 6 to 32 elements per unit): the fitted volume error falls from
+// 3-5 % (6-8 per unit) to 0.1-1.2 % (12-32), the staircase's from 16 % to 0.6-2 %; the
+// fitted area stays 10-25 % too large at every resolution (the staircase's 40-60 %), because
+// the fit leaves a waviness of a fraction of h at the stair corners whose slope does not
+// shrink with h (the quality limits keep the corner elements from flattening). Order 2 and
+// tets behave the same way. So area is checked against the staircase, not for convergence.
 TEST(ConformalFit, CurvedBoundaryConvergence) {
-    // V2: an Additive (Johnson-Mehl) bicrystal, seeds (0.3, 0.5, 0.5) and (0.7, 0.5, 0.5) with
-    // weights 0 and 0.3: the boundary |x - s1| = |x - s2| - 0.3 is one sheet of a hyperboloid of
-    // revolution about the seed axis (foci the seeds, a = 0.15, c = 0.2, b^2 = c^2 - a^2),
-    // x(rho) = 0.5 - a sqrt(1 + rho^2 / b^2), which meets the face x = 0 in a circle of radius
-    // rho0 = b sqrt((0.5 / a)^2 - 1) = 0.42. Grain 1 volume = 2 pi int_0^rho0 x(rho) rho drho and
-    // boundary area = 2 pi int_0^rho0 sqrt(1 + x'(rho)^2) rho drho (Gauss-Legendre, smooth
-    // integrands: exact to rounding).
-    // Measured (hex, order 1, 6 to 32 elements per unit): the fitted volume error falls from
-    // 3-5 % (6-8 per unit) to 0.1-1.2 % (12-32), the staircase's from 16 % to 0.6-2 %; the
-    // fitted area stays 10-25 % too large at every resolution (the staircase's 40-60 %), because
-    // the fit leaves a waviness of a fraction of h at the stair corners whose slope does not
-    // shrink with h (the quality limits keep the corner elements from flattening). Order 2 and
-    // tets behave the same way. So area is checked against the staircase, not for convergence.
     ms::SeedSet seeds;
     seeds.x = {0.3, 0.7};
     seeds.y = {0.5, 0.5};
@@ -670,6 +682,9 @@ TEST(ConformalFit, CurvedBoundaryConvergence) {
     EXPECT_LT(volume_errors[1], 0.02);
 }
 
+// 20 scattered Voronoi grains on 16^3 hexes: no inversion, the hex floor and aspect ceiling hold,
+// fewer than 2 % of elements fall below a scaled Jacobian of 0.5, the deviation drops below 0.75 of
+// the staircase's, and no node leaves its box face.
 TEST(ConformalFit, HexPolycrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(16, 16, 16, mfem::Element::HEXAHEDRON);
     Fitted f = Fit(serial, MPI_COMM_WORLD, ScatteredSeeds(20));
@@ -694,11 +709,11 @@ TEST(ConformalFit, HexPolycrystal) {
     }
 }
 
+// The middle of three grains in a row is two elements thick and both its (inclined)
+// boundaries pull its nodes inward; the limits hold and it keeps its volume. With the seeds
+// closer, the middle grain is one element thick: it has no interior node, is reported as
+// under-resolved, and its nodes keep their positions.
 TEST(ConformalFit, ThinGrains) {
-    // E1: the middle of three grains in a row is two elements thick and both its (inclined)
-    // boundaries pull its nodes inward; the limits hold and it keeps its volume. E5: with the seeds
-    // closer, the middle grain is one element thick: it has no interior node, is reported as
-    // under-resolved, and its nodes keep their positions.
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(10, 10, 10, mfem::Element::HEXAHEDRON);
     const auto run = [&](double middle, double spread, double tilt) {
         ms::SeedSet s;
@@ -738,12 +753,12 @@ TEST(ConformalFit, ThinGrains) {
     EXPECT_EQ(GlobalSum(held_wrong), 0);
 }
 
+// An unstructured-like tet mesh: the interior vertices of an 8^3 x 6 Kuhn mesh moved by up to
+// 0.2 element sizes (fixed pseudo-random sequence), so the worst tets start below the mean
+// ratio floor, as in meshes from a mesh generator (a gmsh cube's worst tet: 0.33). The fit must
+// still move the boundaries (it could hardly move with the scaled Jacobian rules), keep the
+// limits relative to the input, and invert nothing.
 TEST(ConformalFit, JitteredTetPolycrystal) {
-    // An unstructured-like tet mesh: the interior vertices of an 8^3 x 6 Kuhn mesh moved by up to
-    // 0.2 element sizes (fixed pseudo-random sequence), so the worst tets start below the mean
-    // ratio floor, as in meshes from a mesh generator (a gmsh cube's worst tet: 0.33). The fit must
-    // still move the boundaries (it could hardly move with the scaled Jacobian rules), keep the
-    // limits relative to the input, and invert nothing.
     const int n = 8;
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::TETRAHEDRON);
     double r = 0.4321;
@@ -771,10 +786,10 @@ TEST(ConformalFit, JitteredTetPolycrystal) {
     }
 }
 
+// Order-2 Nodes: every nodal point is fitted (curved grain boundaries). The quality limits
+// hold at the nodal points; an independent check on a denser Gauss-Lobatto grid (5 points
+// per direction) finds no folded element either.
 TEST(ConformalFit, HexOrderTwoPolycrystal) {
-    // Order-2 Nodes: every nodal point is fitted (curved grain boundaries). The quality limits
-    // hold at the nodal points; an independent check on a denser Gauss-Lobatto grid (5 points
-    // per direction) finds no folded element either.
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     const ms::SeedSet seeds = ScatteredSeeds(8);
     Fitted f = Fit(serial, MPI_COMM_WORLD, seeds, "", false, 2);
@@ -814,18 +829,20 @@ TEST(ConformalFit, HexOrderTwoPolycrystal) {
     }
 }
 
+// Domed top and tilted sides, hexes (see CheckCurved).
 TEST(ConformalFit, HexCurvedAndTiltedBoundary) {
     CheckCurved(mfem::Element::HEXAHEDRON, 12, 0.2);
 }
 
+// Domed top and tilted sides, tets (see CheckCurved).
 TEST(ConformalFit, TetCurvedAndTiltedBoundary) {
     CheckCurved(mfem::Element::TETRAHEDRON, 8, 0.2);
 }
 
+// A hex box whose side x = 1 bulges out (x = 1 + 0.3 y (1 - y)), so the curved wall meets
+// the flat top and bottom at rims. The inclined bisector crosses both rims: its nodes on a
+// rim slide along it instead of being held, and every sliding node stays on its surfaces
 TEST(ConformalFit, HexCurvedWallRim) {
-    // A hex box whose side x = 1 bulges out (x = 1 + 0.3 y (1 - y)), so the curved wall meets
-    // the flat top and bottom at rims. The inclined bisector crosses both rims: its nodes on a
-    // rim slide along it (E7) instead of being held, and every sliding node stays on its surfaces
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
     serial.Transform([](const mfem::Vector& p, mfem::Vector& y) {
         y = p;
@@ -898,6 +915,8 @@ TEST(ConformalFit, HexCurvedWallRim) {
     }
 }
 
+// Not a check: writes slices of a fitted polycrystal for inspection when CONFORMAL_DUMP_DIR is
+// set (skipped otherwise).
 TEST(ConformalFit, DumpSlices) {
     const char* dir = std::getenv("CONFORMAL_DUMP_DIR");
     if (dir == nullptr) {

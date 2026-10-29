@@ -1,4 +1,4 @@
-# Element mask in seeding and morphology (WP-CV2a): seeds, surface clearance, weighted samples and
+# Element mask in seeding and morphology: seeds, surface clearance, weighted samples and
 # Lloyd relaxation on a box whose bottom layers are inactive, compared with a mesh of only the
 # active part, at np 1-4.
 ms_add_gtest(NAME          test_mask_seeding

@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_two_phase", tool path (2 MPI ranks).
+# ExaConstit deck for the end-to-end test "hook_two_phase", tool path (2 MPI ranks).
 # No [Mesh.Microstructure]: it reads the files the standalone tool writes for
 # test/data/microstructure/phase_fractions_auto.toml (the same options as the inline table of
 # hook_two_phase_np1.toml: 40 seeds, rng_seed 8, phases 1 / 2 at 0.6 / 0.4, phase 2

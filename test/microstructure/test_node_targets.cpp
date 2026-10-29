@@ -1,6 +1,6 @@
 /**
  * @file test_node_targets.cpp
- * @brief Tests of conformal/manifold_projector.hpp and conformal/node_targets (Stage 2b, part 1):
+ * @brief Tests of conformal/manifold_projector.hpp and conformal/node_targets:
  * targets of grain boundary nodes on the analytic boundaries, and their validation.
  *
  * What is checked, and why:
@@ -223,6 +223,9 @@ constexpr int HELD = static_cast<int>(ms::TargetStatus::HELD);
 
 } // namespace
 
+// Two planes (x + y = 0, z = 0.5): the closest point (-0.2, 0.2, 0.5) is found in one Newton step
+// (the second only confirms it, the constraints being linear); two parallel planes have no common
+// point and are reported SINGULAR.
 TEST(ManifoldProjector, PlanesAndSingularRows) {
     ms::VoronoiMetric unused{};
     const double x[3] = {0.3, 0.7, -0.2};
@@ -246,6 +249,9 @@ TEST(ManifoldProjector, PlanesAndSingularRows) {
               ms::ProjectionResult::SINGULAR);
 }
 
+// Inclined Voronoi bicrystal: every two-grain node targets its closest point on the bisector
+// within the coordinates it may move (box-face coordinates stay), computed here in closed form;
+// the distributed run equals the single-rank one.
 TEST(NodeTargets, VoronoiInclinedBicrystal) {
     const ms::SeedSet seeds = MakeSeeds({{0.3, 0.4, 0.5}, {0.7, 0.55, 0.45}});
     const auto labels_of = [&](mfem::Mesh& m) {
@@ -292,8 +298,8 @@ TEST(NodeTargets, VoronoiInclinedBicrystal) {
     EXPECT_LE(s.max_move_ratio, 1.0);
 }
 
+// Regular tetrahedron of seeds around the center; one weight moves the quad point
 TEST(NodeTargets, LaguerreQuadPoint) {
-    // Regular tetrahedron of seeds around the center; one weight moves the quad point
     const double r = 0.3 / std::sqrt(3.0);
     const ms::SeedSet seeds = MakeSeeds({{0.5 + r, 0.5 + r, 0.5 + r},
                                          {0.5 + r, 0.5 - r, 0.5 - r},
@@ -377,8 +383,8 @@ TEST(NodeTargets, LaguerreQuadPoint) {
     EXPECT_GT(GlobalSum(triple_fit), 0);
 }
 
+// |y - s0| - 0.15 = |y - s1|: one sheet of a hyperboloid around s1
 TEST(NodeTargets, AdditiveCurvedBoundary) {
-    // |y - s0| - 0.15 = |y - s1|: one sheet of a hyperboloid around s1
     const ms::SeedSet seeds = MakeSeeds({{0.2, 0.5, 0.5}, {0.8, 0.45, 0.5}}, {0.15, 0.0});
     const auto labels_of = [&](mfem::Mesh& m) {
         return SeedLabels(m, ms::MetricType::ADDITIVE, seeds);
@@ -429,10 +435,10 @@ TEST(NodeTargets, AdditiveCurvedBoundary) {
     EXPECT_GT(GlobalSum(fit), 0);
 }
 
+// Tet box with a domed top z = 1 + 0.3 x (1 - x) + 0.3 y (1 - y): flat triangles with
+// slightly different normals, one curved surface. The inclined Voronoi bisector crosses it;
+// its nodes on the dome must reach the bisector while staying on the dome's triangles.
 TEST(NodeTargets, CurvedTopSurface) {
-    // Tet box with a domed top z = 1 + 0.3 x (1 - x) + 0.3 y (1 - y): flat triangles with
-    // slightly different normals, one curved surface. The inclined Voronoi bisector crosses it;
-    // its nodes on the dome must reach the bisector while staying on the dome's triangles.
     const ms::SeedSet seeds = MakeSeeds({{0.3, 0.4, 0.5}, {0.7, 0.55, 0.45}});
     const auto labels_of = [&](mfem::Mesh& m) {
         return SeedLabels(m, ms::MetricType::VORONOI, seeds);
@@ -507,10 +513,10 @@ TEST(NodeTargets, CurvedTopSurface) {
     EXPECT_EQ(dist.targets->Summary().status[FAKE], 0);
 }
 
+// The domed tet box again, with the bisector x = 0.47 and max_move = 2: dome nodes 1.2 to 1.8
+// element sizes from the bisector reach it only through a patch of two face rings (the
+// one-ring ends one element away and its closest point would stick to the patch border)
 TEST(NodeTargets, FarTargetOnCurvedSurface) {
-    // The domed tet box again, with the bisector x = 0.47 and max_move = 2: dome nodes 1.2 to 1.8
-    // element sizes from the bisector reach it only through a patch of two face rings (the
-    // one-ring ends one element away and its closest point would stick to the patch border)
     const ms::SeedSet seeds = MakeSeeds({{0.27, 0.5, 0.5}, {0.67, 0.5, 0.5}});
     const auto labels_of = [&](mfem::Mesh& m) {
         return SeedLabels(m, ms::MetricType::VORONOI, seeds);
@@ -607,11 +613,11 @@ TEST(NodeTargets, FarTargetOnCurvedSurface) {
     EXPECT_EQ(CompareWithSerial(f, self), 0);
 }
 
+// The inclined Voronoi bicrystal on a finer mesh, treated as if its boundary had no analytic
+// description (no seeds): every boundary node gets the smoothed staircase, which must lie
+// much closer to the true bisector than the staircase nodes, keep the box face coordinates
+// bit for bit and be the same bits for every partition.
 TEST(NodeTargets, SmoothedStaircase) {
-    // The inclined Voronoi bicrystal on a finer mesh, treated as if its boundary had no analytic
-    // description (no seeds): every boundary node gets the smoothed staircase, which must lie
-    // much closer to the true bisector than the staircase nodes, keep the box face coordinates
-    // bit for bit and be the same bits for every partition.
     const ms::SeedSet seeds = MakeSeeds({{0.3, 0.4, 0.5}, {0.7, 0.55, 0.45}});
     const auto labels_of = [&](mfem::Mesh& m) {
         return SeedLabels(m, ms::MetricType::VORONOI, seeds);
@@ -698,9 +704,9 @@ TEST(NodeTargets, SmoothedStaircase) {
     EXPECT_LT(sums2[1], 0.6 * sums2[0]);
 }
 
+// Grain 1 -> s0, grain 2 -> s2: their bisector x = 1/2 is where the labels meet, but every
+// point of it is closer to the unused seed s1 at the center line
 TEST(NodeTargets, Validation) {
-    // Grain 1 -> s0, grain 2 -> s2: their bisector x = 1/2 is where the labels meet, but every
-    // point of it is closer to the unused seed s1 at the center line
     const ms::SeedSet seeds = MakeSeeds({{0.0, 0.5, 0.5}, {0.5, 0.5, 0.5}, {1.0, 0.5, 0.5}});
     const auto halves = [](mfem::Mesh& m) {
         mfem::Array<int> labels(m.GetNE());

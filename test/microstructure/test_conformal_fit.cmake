@@ -1,4 +1,4 @@
-# Conformal fitting, Stage 2d: spring-balanced pseudo-elastic fitting and element quality
+# Conformal fitting: spring-balanced pseudo-elastic fitting and element quality
 # (ms_conformal: conformal/conformal_fitter, conformal/quality).
 #
 # test_conformal_fit checks the quality measures on simple elements (scaled Jacobian, aspect ratio

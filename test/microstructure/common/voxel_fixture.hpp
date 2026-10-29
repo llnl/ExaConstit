@@ -4,7 +4,7 @@
  * @brief Shared test fixture: a small voxelized Voronoi microstructure written as HDF5 voxel maps
  * in the canonical ExaConstit microstructure file layout (io/microstructure_file_io.hpp) and the
  * DREAM.3D (SIMPL v6 and NX-like) layouts. Used by test_voxel_map (reader and labeler) and
- * test_driver_stage1d (the driver's voxel-map path).
+ * test_driver_data_sources (the driver's voxel-map path).
  *
  * **The map.** A 20 x 16 x 12 voxel grid with voxel size h = 1/16 and origin 0 (so the box is
  * [0, 1.25] x [0, 1] x [0, 0.75], and every voxel boundary is exactly representable in floating

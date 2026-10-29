@@ -1,6 +1,6 @@
 /**
  * @file test_label_repair.cpp
- * @brief Tests of conformal/label_repair (Stage 2c): element flips that remove peninsulas and bad
+ * @brief Tests of conformal/label_repair: element flips that remove peninsulas and bad
  * nodes before conformal fitting.
  *
  * What is checked, and why:
@@ -9,9 +9,9 @@
  *  - Stray element: an element of grain 3 inside grain 1, far from grain 3's own cell, makes its
  *    nodes fake junctions; the repair flips it to grain 1 and no bad node is left.
  *  - Guard: a grain of one element is never emptied (the flip is blocked, its nodes stay unfit).
- *  - A flip never splits a grain (E4): a U one element thick whose bottom lies in another grain's
+ *  - A flip never splits a grain: a U one element thick whose bottom lies in another grain's
  *    analytic cell stays in one piece; the flips that would cut it are undone.
- *  - Pinches (E3) are bad nodes: flips remove most of the pinches of a checkerboard around a
+ *  - Pinches are bad nodes: flips remove most of the pinches of a checkerboard around a
  *    line, and the remaining pinched nodes are held.
  *  - A peninsula in a non-analytic grain (grain_seed = -1, as for voxel maps) is still repaired,
  *    but a fixed label (a passthrough part) is never flipped into or out of.
@@ -163,11 +163,11 @@ int Pieces(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int grain) {
 
 } // namespace
 
+// Grain 3 is a U one element thick inside grain 1: its arm tips reach into the analytic cell
+// of its seed (above y = 0.575, the bisector of the two seeds), its bottom lies in grain 1's
+// cell, so the bottom's nodes are fake junctions and its elements flip candidates. Flipping a
+// bottom element would cut the U in two; such flips must be undone.
 TEST(LabelRepair, FlipsNeverSplitAGrain) {
-    // Grain 3 is a U one element thick inside grain 1: its arm tips reach into the analytic cell
-    // of its seed (above y = 0.575, the bisector of the two seeds), its bottom lies in grain 1's
-    // cell, so the bottom's nodes are fake junctions and its elements flip candidates. Flipping a
-    // bottom element would cut the U in two; such flips must be undone (E4).
     const ms::SeedSet seeds = MakeSeeds({{0.5, 0.2, 0.5}, {0.5, 0.95, 0.5}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(8, 8, 8, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
@@ -194,9 +194,9 @@ TEST(LabelRepair, FlipsNeverSplitAGrain) {
     }
 }
 
+// A 2 x 2 checkerboard around a vertical line (both grains pinch along it), without
+// analytic boundaries: the pinched nodes are bad, flips remove pinches
 TEST(LabelRepair, PinchesAreRemoved) {
-    // A 2 x 2 checkerboard around a vertical line (both grains pinch along it, E3), without
-    // analytic boundaries: the pinched nodes are bad, flips remove pinches
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
     mfem::Array<int> labels(pmesh->GetNE());
@@ -221,6 +221,8 @@ TEST(LabelRepair, PinchesAreRemoved) {
     EXPECT_EQ(result.report.bad_nodes_after, 0);
 }
 
+// One element of grain 1 pushed into grain 2 shares one face with its grain and five with grain
+// 2, a peninsula: one flip returns it, and the labels equal the clean Voronoi labels.
 TEST(LabelRepair, PeninsulaFlipsBack) {
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
@@ -236,6 +238,8 @@ TEST(LabelRepair, PeninsulaFlipsBack) {
     EXPECT_EQ(result.report.bad_nodes_after, 0);
 }
 
+// An element of grain 3 inside grain 1, far from grain 3's own cell, makes its nodes fake
+// junctions; flipping it to grain 1 leaves no bad node and restores the clean labels.
 TEST(LabelRepair, StrayElementFlipsToItsSurroundings) {
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {0.9, 0.9, 0.9}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
@@ -249,8 +253,8 @@ TEST(LabelRepair, StrayElementFlipsToItsSurroundings) {
     EXPECT_EQ(Differences(labels, clean), 0);
 }
 
+// Seed 3 is far outside: its only element is the stray one
 TEST(LabelRepair, OneElementGrainIsNotEmptied) {
-    // Seed 3 is far outside: its only element is the stray one
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}, {5.0, 5.0, 5.0}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
@@ -264,17 +268,17 @@ TEST(LabelRepair, OneElementGrainIsNotEmptied) {
     EXPECT_EQ(result.report.flips, 0);
     EXPECT_EQ(result.report.bad_nodes_before, 8);
     // The one-element grain has no interior node: its 8 nodes are held in the final targets
-    // (under-resolved, E5) instead of counting as unfit
+    // (under-resolved) instead of counting as unfit
     EXPECT_EQ(result.report.bad_nodes_after, 0);
     EXPECT_EQ(result.targets->Summary().under_resolved_grains, 1);
     EXPECT_EQ(result.targets->Summary().reason[static_cast<int>(ms::TargetReason::UNDER_RESOLVED)],
               8);
 }
 
+// A stray element of grain 1 inside grain 2 (a peninsula). Grain 2 without an analytic
+// boundary (grain_seed -1, as for voxel maps): the peninsula is still repaired. Grain 2 as a
+// fixed label (a passthrough part): nothing is flipped into or out of it.
 TEST(LabelRepair, NonAnalyticAndFixedLabels) {
-    // A stray element of grain 1 inside grain 2 (a peninsula). Grain 2 without an analytic
-    // boundary (grain_seed -1, as for voxel maps): the peninsula is still repaired. Grain 2 as a
-    // fixed label (a passthrough part): nothing is flipped into or out of it.
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
@@ -297,9 +301,9 @@ TEST(LabelRepair, NonAnalyticAndFixedLabels) {
     EXPECT_EQ(fixed.report.peninsulas_before, 0); // a fixed label is not a peninsula grain
 }
 
+// An element of grain 1 whose center lies half an element past the bisector, inside grain 2:
+// it flips to grain 2 (its face neighbors there grew from seed 1), and only once
 TEST(LabelRepair, FlipToCurrentOwner) {
-    // An element of grain 1 whose center lies half an element past the bisector, inside grain 2:
-    // it flips to grain 2 (its face neighbors there grew from seed 1), and only once
     const ms::SeedSet seeds = MakeSeeds({{0.25, 0.5, 0.5}, {0.75, 0.5, 0.5}});
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(6, 6, 6, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial, MPI_COMM_WORLD);
@@ -318,9 +322,9 @@ TEST(LabelRepair, FlipToCurrentOwner) {
               0);
 }
 
+// 12 seeds from a fixed pseudo-random sequence; labels perturbed on about 1 element in 10 by
+// taking the label of the next element in the serial order (a deterministic, messy start)
 TEST(LabelRepair, RankInvariance) {
-    // 12 seeds from a fixed pseudo-random sequence; labels perturbed on about 1 element in 10 by
-    // taking the label of the next element in the serial order (a deterministic, messy start)
     std::vector<std::array<double, 3>> p;
     double r = 0.1234;
     const auto next = [&r]() {

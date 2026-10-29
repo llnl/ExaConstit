@@ -1,4 +1,4 @@
-# Curved-element geometry (WP-CV4): surface clearance on warped bilinear and genuinely curved
+# Curved-element geometry: surface clearance on warped bilinear and genuinely curved
 # (bulged order-2) faces against brute-force and analytic distances, element volumes after serial,
 # partitioned and ParPrint round trips of a bulged mesh, point-in-material classification next to
 # a strongly curved face against a brute-force reference, the sampled curved element boxes, the

@@ -156,7 +156,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
 endif()
 
 ####################################
-# [Mesh.Microstructure]: mechanics generates its grains in memory (Stage 1f)
+# [Mesh.Microstructure]: mechanics generates its grains in memory
 ####################################
 # Extensive suite only (EXACONSTIT_ENABLE_EXTENSIVE_TESTS, default OFF), and only when the
 # generator is built (ENABLE_MICROSTRUCTURE). Run them with
@@ -182,7 +182,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     # test/data/microstructure/mechanics/ (hook_*.toml; each explains its role). The steps form a
     # chain through CTest fixtures (FIXTURES_SETUP / FIXTURES_REQUIRED: CTest runs them in order
     # and skips a step whose prerequisite failed), like the generator chains in
-    # test/microstructure/test_tool_stage1d.cmake and test_tool_stage1e.cmake:
+    # test/microstructure/test_tool_data_sources.cmake and test_tool_distance_modes.cmake:
     #   1. setup: empties <build>/test/microstructure_hook_e2e and copies the decks, the generator
     #      options file and the material files into it.
     #   2. hook_vs_tool: the standalone tool on voronoi_auto.toml and mechanics on its files
@@ -207,7 +207,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
     #      moved nodes and mechanics runs on it; the hook fits mechanics' own mesh at 2 ranks;
     #      the two mechanics results must agree. Then the passthrough case of step 6 and the
     #      order-2 auto box with the fit.
-    #  10. Stage 2 validation (V4): geodesic grains with fitted boundaries on a BCC strut lattice
+    #  10. Validation: geodesic grains with fitted boundaries on a BCC strut lattice
     #      with filleted junctions, a tet and a hex mesh, through mechanics at 2 ranks
     #      (test/data/microstructure/lattice/ has the meshes and the script that made them).
     # Each mechanics run with the hook goes through a small `cmake -P` script that runs the MPI
@@ -607,7 +607,7 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS AND ENABLE_MICROSTRUCTURE)
                     SETUP   ms_hook_run_conformal_passthrough
                     NEEDS   ms_hook_tool_files
                     PROGRAM $<TARGET_FILE:mechanics> -opt hook_pass_conformal_np2.toml)
-        # Step 10: strut lattices (V4), tet and hex, curved strut surfaces and rims
+        # Step 10: strut lattices, tet and hex, curved strut surfaces and rims
         foreach(_kind tet hex)
             ms_hook_run(NAME    test_microstructure_hook_e2e_lattice_${_kind}
                         NP      2

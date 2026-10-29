@@ -1,4 +1,4 @@
-# Conformal fitting, Stage 2c: label repair (ms_conformal: conformal/label_repair).
+# Conformal fitting: label repair (ms_conformal: conformal/label_repair).
 #
 # test_label_repair checks that a peninsula element flips back, that a stray element of a far grain
 # flips to its surroundings and leaves no bad node, that a one-element grain is never emptied (its

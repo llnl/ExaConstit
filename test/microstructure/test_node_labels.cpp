@@ -1,6 +1,6 @@
 /**
  * @file test_node_labels.cpp
- * @brief Tests of conformal/node_labels (Stage 2a): label sets, boundary surfaces and constraint
+ * @brief Tests of conformal/node_labels: label sets, boundary surfaces and constraint
  * counts of the mesh nodes.
  *
  * What is checked, and why:
@@ -20,7 +20,7 @@
  *  - Fixed labels (a passthrough plate under a bicrystal): the plate's top face is a flat boundary
  *    surface with the exact normal +-e_z for the nodes on it, the fixed label leaves their label
  *    sets, nodes inside the plate keep it, and each interface face is counted by one rank.
- *  - Pinches (E3): a checkerboard around a vertical line pinches both grains at exactly the 5
+ *  - Pinches: a checkerboard around a vertical line pinches both grains at exactly the 5
  *    nodes of the line; a bicrystal has none.
  *  - Invalid input throws on every rank.
  *
@@ -206,6 +206,8 @@ constexpr int QUAD = static_cast<int>(ms::JunctionKind::QUAD_POINT);
 
 } // namespace
 
+// Bicrystal split at x = 0.5 on a 4^3 hex mesh: every node matches the serial reference, and the
+// 5 x 5 nodes of the interface split into 9 interior, 12 box-face and 4 box-edge face nodes.
 TEST(NodeLabels, HexBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     LabeledMesh run = CheckAgainstReference(
@@ -224,8 +226,8 @@ TEST(NodeLabels, HexBicrystal) {
     EXPECT_EQ(s.max_labels, 2);
 }
 
+// z < 1/2: grain 1; above, three 120-degree sectors around the vertical line x = y = 1/2
 TEST(NodeLabels, TricrystalOnFourthGrain) {
-    // z < 1/2: grain 1; above, three 120-degree sectors around the vertical line x = y = 1/2
     const double pi = 3.14159265358979323846;
     const auto label = [pi](const double* x) {
         if (x[2] < 0.5) {
@@ -251,9 +253,9 @@ TEST(NodeLabels, TricrystalOnFourthGrain) {
               1);
 }
 
+// Four quadrants: the vertical line x = y = 1/2 has 4 labels; its two ends on the bottom
+// and top faces have 3 + 1 constraints
 TEST(NodeLabels, QuadrantsOverConstrainedAtTheBox) {
-    // Four quadrants: the vertical line x = y = 1/2 has 4 labels; its two ends on the bottom
-    // and top faces have 3 + 1 constraints
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     LabeledMesh run = CheckAgainstReference(
         serial,
@@ -268,6 +270,7 @@ TEST(NodeLabels, QuadrantsOverConstrainedAtTheBox) {
     EXPECT_EQ(s.max_labels, 4);
 }
 
+// An inclined interface on a tet mesh: every node matches the serial reference.
 TEST(NodeLabels, TetInclinedBicrystal) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::TETRAHEDRON);
     CheckAgainstReference(
@@ -278,6 +281,8 @@ TEST(NodeLabels, TetInclinedBicrystal) {
         BoxSurfaces);
 }
 
+// Order-2 Nodes, hex and tet: every nodal point (edge and face dofs included) matches the serial
+// reference, and the field uses the mesh's Nodes.
 TEST(NodeLabels, OrderTwoNodes) {
     for (const auto type : {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON}) {
         mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(3, 3, 3, type);
@@ -292,9 +297,9 @@ TEST(NodeLabels, OrderTwoNodes) {
     }
 }
 
+// Top face z = 1 + 0.18 |x - 1/2|: two planes tilted by atan(0.18) = 10.2 degrees each, a
+// 20.4-degree crease along x = 1/2. All other faces stay planar.
 TEST(NodeLabels, FeatureAngle) {
-    // Top face z = 1 + 0.18 |x - 1/2|: two planes tilted by atan(0.18) = 10.2 degrees each, a
-    // 20.4-degree crease along x = 1/2. All other faces stay planar.
     const auto roof = [](mfem::Mesh& mesh) {
         mesh.Transform([](const mfem::Vector& x, mfem::Vector& y) {
             y = x;
@@ -341,10 +346,10 @@ TEST(NodeLabels, FeatureAngle) {
     }
 }
 
+// Bottom quarter (z < 1/4): a fixed label (a passthrough plate); above, a bicrystal split at
+// x = 1/2. The plate's top face is a boundary surface for the nodes above it, the fixed label
+// leaves their label sets, and nodes inside the plate keep it as their only label.
 TEST(NodeLabels, FixedLabelInterface) {
-    // Bottom quarter (z < 1/4): a fixed label (a passthrough plate); above, a bicrystal split at
-    // x = 1/2. The plate's top face is a boundary surface for the nodes above it, the fixed label
-    // leaves their label sets, and nodes inside the plate keep it as their only label.
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     const LabelFunction label = [](const double* x) {
         return x[2] < 0.25 ? 3 : (x[0] < 0.5 ? 1 : 2);
@@ -408,9 +413,9 @@ TEST(NodeLabels, FixedLabelInterface) {
     EXPECT_EQ(faces, 16);
 }
 
+// A 2 x 2 checkerboard around the vertical line x = y = 1/2: each grain touches itself only
+// along that line, so its 5 nodes are pinched and no other node is
 TEST(NodeLabels, Pinches) {
-    // A 2 x 2 checkerboard around the vertical line x = y = 1/2: each grain touches itself only
-    // along that line, so its 5 nodes are pinched (E3) and no other node is
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
     std::unique_ptr<mfem::ParMesh> pmesh = Distribute(serial);
     const LabelFunction checker = [](const double* x) {
@@ -431,6 +436,8 @@ TEST(NodeLabels, Pinches) {
     EXPECT_EQ(plain.NumPinched(), 0);
 }
 
+// A grain id < 1, a feature angle outside its range and a label array of the wrong size each
+// throw std::invalid_argument on every rank.
 TEST(NodeLabels, InvalidInputThrowsOnEveryRank) {
     mfem::Mesh serial = mfem::Mesh::MakeCartesian3D(2, 2, 2, mfem::Element::HEXAHEDRON);
     auto pmesh = Distribute(serial);

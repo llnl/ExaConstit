@@ -7,11 +7,11 @@
  *     for bitwise rank-count independence (METIS partition, a scattered partition with an empty
  *     rank, and a single-rank MPI_COMM_SELF reference computed in the same run);
  *   - CompareWithTargetVolumes: element-level seed volumes against size-control targets;
- *   - the new grain-table columns (neighbors and target volumes; Stage 1d phase, filler and voxel
+ *   - the new grain-table columns (neighbors and target volumes; phase, filler and voxel
  *     feature id) and the grain adjacency CSV writer (io/output_writer.hpp).
  *
  * The end-to-end runs of the tool through mechanics are CTest chains in test_tool_outputs.cmake
- * (Stages 1b/1c) and test_tool_stage1d.cmake (Stage 1d).
+ * (generated seeds) and test_tool_data_sources.cmake.
  * Registered at 1-4 MPI ranks.
  */
 #include "utilities/auto_mesh.hpp"
@@ -591,7 +591,7 @@ TEST(OutputWriter, NeighborColumnsAndAdjacencyCsv) {
     fs::remove_all(dir);
 }
 
-// The Stage 1d grain-table columns follow the optional-column rule: MakeGrainTable copies the
+// The data-source grain-table columns follow the optional-column rule: MakeGrainTable copies the
 // phase column only when some grain has a phase (-1 = none, as for a passthrough grain) and the
 // filler column only when some grain is a filler grain; the caller adds feature ids for voxel
 // maps. The new columns come after the older ones (phase, filler, feature_id), so existing column
@@ -600,7 +600,7 @@ TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
     if (Rank() != 0) {
         return;
     }
-    const fs::path dir = ScratchDir("test_tool_outputs_stage1d_scratch");
+    const fs::path dir = ScratchDir("test_tool_outputs_data_sources_scratch");
     fs::create_directories(dir);
 
     ms::MicrostructureResult result;
@@ -629,8 +629,8 @@ TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
     EXPECT_EQ(table.filler, (std::vector<int>{0, 1, 0}));
     table.num_elements = {2, 3, 4};
     table.feature_id = {21, 3, -1};
-    ms::WriteGrainTable(dir / "stage1d.csv", table);
-    EXPECT_EQ(ReadText(dir / "stage1d.csv"),
+    ms::WriteGrainTable(dir / "data_sources.csv", table);
+    EXPECT_EQ(ReadText(dir / "data_sources.csv"),
               "grain_id,qw,qx,qy,qz,region,source_id,num_elements,phase,filler,feature_id\n"
               "1,1,0,0,0,1,5,2,0,0,21\n"
               "2,0,1,0,0,2,7,3,4,1,3\n"

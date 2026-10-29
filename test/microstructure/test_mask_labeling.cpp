@@ -1,7 +1,6 @@
 /*
  * test_mask_labeling: labeling, connected and geodesic distance modes and fragment cleanup
- * restricted to the active elements of a mesh by an element mask (mesh/element_mask.hpp,
- * WP-CV2b).
+ * restricted to the active elements of a mesh by an element mask (mesh/element_mask.hpp).
  *
  * Setup. A grid of 4 x 2 x 6 cells of size 0.25 (x in [0, 1], z in [0, 1.5]). The bottom two
  * layers (z < 0.5) are an inactive plate. Above it the active part is a U turned upside down: two

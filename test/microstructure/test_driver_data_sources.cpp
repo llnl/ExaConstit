@@ -1,6 +1,6 @@
 /**
- * @file test_driver_stage1d.cpp
- * @brief Driver-level tests of the Stage 1d features wired into GenerateMicrostructure
+ * @file test_driver_data_sources.cpp
+ * @brief Driver-level tests of the data-source features wired into GenerateMicrostructure
  * (microstructure_driver.cpp): seed tables, the region of interest (ROI) with random filler
  * seeds, volume targets from the table, voxel maps, phases and regions, and passthrough mesh
  * parts.
@@ -19,17 +19,17 @@
  *  6. a build plate kept as a passthrough region: region ids, the identity quaternion of the
  *     plate grain, and the tool-facing adjacency that belongs to the whole mesh;
  *  7. refused combinations;
- *  8. the Stage 1d example options files that run on an auto mesh.
+ *  8. the data-source example options files that run on an auto mesh.
  *
  * **Fixtures.** Rank 0 writes the seed tables (CSV) and the voxel maps (HDF5, from the shared
- * common/voxel_fixture.hpp) into `test_driver_stage1d_data/np<N>/` under the working directory
+ * common/voxel_fixture.hpp) into `test_driver_data_sources_data/np<N>/` under the working directory
  * (the build tree when run by ctest; never /tmp), then all ranks meet at a barrier.
  *
  * **Rank-count independence.** Every driver run is done twice in the same process: distributed
  * over MPI_COMM_WORLD and alone on every rank with MPI_COMM_SELF (exactly the np = 1 answer). The
  * labels gathered into serial element order and every per-grain table (orientations bitwise,
  * source ids, regions, phases, filler flags) must agree. Running the executable at np = 1..4
- * (test_driver_stage1d.cmake) therefore compares np = 2, 3, 4 against np = 1.
+ * (test_driver_data_sources.cmake) therefore compares np = 2, 3, 4 against np = 1.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever.
@@ -99,7 +99,7 @@ mfem::Mesh AutoHex(int nx, int ny, int nz, double lx = 1.0, double ly = 1.0, dou
 
 /** Directory of this run's fixtures (one per rank count, so concurrent np runs never collide). */
 fs::path DataDir() {
-    return fs::path("test_driver_stage1d_data") / ("np" + std::to_string(NumRanks()));
+    return fs::path("test_driver_data_sources_data") / ("np" + std::to_string(NumRanks()));
 }
 
 /** Formats a double with 17 significant digits (round-trips exactly through strtod). */
@@ -546,7 +546,7 @@ bool Refused(mfem::ParMesh& pmesh, const ms::MicrostructureOptions& options) {
 // {1, 3, 7} go to regions through the many-to-one map {1: 1, 3: 1, 7: 2}, so region 1 holds
 // phases {1, 3} and region 2 phase 7. With phase 7 non-crystalline, region 2 is flagged and its
 // grains get the identity quaternion while the others keep their measured ones.
-TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
+TEST(DriverDataSources, SeedTableLabelsQuaternionsAndRegions) {
     WriteFixtures();
     mfem::Mesh serial = AutoHex(8, 8, 8);
     ms::MicrostructureOptions options = TableOptions("measured.csv");
@@ -636,7 +636,7 @@ TEST(DriverStage1d, SeedTableLabelsQuaternionsAndRegions) {
 // V_roi = 1/8, V_outside = 7/8, and the automatic count is round(6 * 7) = 42. Every table seed
 // lies in the closed ROI, no filler seed strictly inside it; filler grains carry the filler flag
 // and ids >= 100, and with fragments = "auto" (merge for data sources) nothing is split.
-TEST(DriverStage1d, RoiAndFillerSeeds) {
+TEST(DriverDataSources, RoiAndFillerSeeds) {
     WriteFixtures();
     mfem::Mesh serial = AutoHex(8, 8, 8);
     ms::MicrostructureOptions options = TableOptions("roi.csv");
@@ -703,7 +703,7 @@ TEST(DriverStage1d, RoiAndFillerSeeds) {
 // fit then reaches the 5% tolerance on the quadrature points (the fit report's last error).
 // With ROI and filler the table targets share the ROI volume V_roi = 1/8 and the filler seeds
 // share V_outside = 7/8 equally.
-TEST(DriverStage1d, VolumeTargetsFromTable) {
+TEST(DriverDataSources, VolumeTargetsFromTable) {
     WriteFixtures();
     mfem::Mesh serial = AutoHex(12, 12, 12);
     ms::MicrostructureOptions options = TableOptions("sized.csv");
@@ -777,7 +777,7 @@ TEST(DriverStage1d, VolumeTargetsFromTable) {
 // stores float32 x y z w, so with quat_layout = "xyzw" and conjugate = false the result is the
 // float-rounded w x y z quaternion divided by its norm (float rounding moves the norm off 1 by
 // ~1e-8, so normalization is visible here).
-TEST(DriverStage1d, VoxelMapsBothFormats) {
+TEST(DriverDataSources, VoxelMapsBothFormats) {
     WriteFixtures();
     using voxel_fixture::H;
     using voxel_fixture::NX;
@@ -861,7 +861,7 @@ TEST(DriverStage1d, VoxelMapsBothFormats) {
 // skips validate() fails on every rank when the features are read (the reader refuses, so the
 // orientation would never be guessed). Voxel maps refuse tessellation options (here a Laguerre
 // metric) before any work.
-TEST(DriverStage1d, VoxelMapRefusals) {
+TEST(DriverDataSources, VoxelMapRefusals) {
     WriteFixtures();
     mfem::Mesh serial = AutoHex(4, 4, 4, 1.25, 1.0, 0.75);
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
@@ -891,7 +891,7 @@ TEST(DriverStage1d, VoxelMapRefusals) {
 // The active elements are labeled exactly as on a mesh of the active layers alone (the voxels
 // are read by position, the fill does not cross the plate, and compaction, cleanup and the
 // per-grain tables see the same features); every plate element carries the extra last grain.
-TEST(DriverStage1d, VoxelMapWithPassthroughPlate) {
+TEST(DriverDataSources, VoxelMapWithPassthroughPlate) {
     WriteFixtures();
     using voxel_fixture::H;
     using voxel_fixture::NX;
@@ -962,7 +962,7 @@ TEST(DriverStage1d, VoxelMapWithPassthroughPlate) {
 // on this uniform mesh a grain's volume is its element count / 1000, so v_max / V = (largest
 // element count) / 1000. The phases are compact-numbered into regions 1 and 2, and the result
 // is identical on every rank count (RunAndCompare compares grain_phase).
-TEST(DriverStage1d, PhaseFractionsWithinBound) {
+TEST(DriverDataSources, PhaseFractionsWithinBound) {
     mfem::Mesh serial = AutoHex(10, 10, 10);
     ms::MicrostructureOptions options;
     options.seeds.num_seeds = 30;
@@ -1026,7 +1026,7 @@ mfem::Mesh PlateMesh() {
 // count and computes grain statistics on the returned labels, which give the plate grain its 72
 // elements. A passthrough region equal to the grains' region (1) is allowed (one region); a gap
 // (region 3 with no region 2) is refused.
-TEST(DriverStage1d, BuildPlatePassthrough) {
+TEST(DriverDataSources, BuildPlatePassthrough) {
     mfem::Mesh serial = PlateMesh();
     ms::MicrostructureOptions options;
     options.seeds.num_seeds = 10;
@@ -1087,7 +1087,7 @@ TEST(DriverStage1d, BuildPlatePassthrough) {
 // as a seed list with the same orientations, it reproduces the same labels on the same mesh
 // (no cleanup changes in this run, checked first) and the orientations to round-off (they are
 // normalized again on reading). The plate stays a passthrough part.
-TEST(DriverStage1d, MicrostructureFileExportRoundTrip) {
+TEST(DriverDataSources, MicrostructureFileExportRoundTrip) {
     mfem::Mesh serial = PlateMesh();
     ms::MicrostructureOptions options;
     options.seeds.num_seeds = 10;
@@ -1148,7 +1148,7 @@ TEST(DriverStage1d, MicrostructureFileExportRoundTrip) {
 // a seed table (measured positions would move / be replaced), filler without an ROI, sizes from
 // the source without a table, and data the options need but the table lacks (quaternions,
 // phases, shape tensors, a size column).
-TEST(DriverStage1d, RefusedCombinations) {
+TEST(DriverDataSources, RefusedCombinations) {
     WriteFixtures();
     mfem::Mesh plate = PlateMesh();
     Distributed d = Distribute(plate, MPI_COMM_WORLD);
@@ -1204,7 +1204,7 @@ TEST(DriverStage1d, RefusedCombinations) {
 // The orientation assigner normalizes supplied rows (here norm 2 -> the same direction with norm
 // 1, sign kept), normalizes random rows the same way, and refuses a zero or non-finite supplied row
 // instead of silently writing the identity. Host only, no MPI.
-TEST(DriverStage1d, AssignerNormalizesSuppliedQuaternions) {
+TEST(DriverDataSources, AssignerNormalizesSuppliedQuaternions) {
     ms::MicrostructureResult result;
     const std::vector<std::int64_t> ids = {5, 6};
     std::vector<double> rows = {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -1228,7 +1228,7 @@ TEST(DriverStage1d, AssignerNormalizesSuppliedQuaternions) {
 // would be empty. With the mean table weight (no size targets) or their own target weight plus
 // the mean table offset (size targets from the table), every seed owns elements. Filler spacing
 // (filler_min_distance_factor) keeps two filler seeds from sharing one element.
-TEST(DriverStage1d, FillerWeightsFollowTableWeights) {
+TEST(DriverDataSources, FillerWeightsFollowTableWeights) {
     WriteFixtures();
     mfem::Mesh serial = AutoHex(8, 8, 8);
     ms::MicrostructureOptions options = TableOptions("offset.csv");
@@ -1263,7 +1263,7 @@ TEST(DriverStage1d, FillerWeightsFollowTableWeights) {
 // derived id, not the parent's. Which filler seeds produce a split depends on their random
 // positions, so the first RNG key (1..40) that yields a split filler grain is used; the check is
 // deterministic for that key.
-TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
+TEST(DriverDataSources, SplitDataDrivenGrainsInheritParentData) {
     WriteFixtures();
     mfem::Mesh serial = UShape(4);
     ms::MicrostructureOptions options = TableOptions("ushape.csv");
@@ -1343,7 +1343,7 @@ TEST(DriverStage1d, SplitDataDrivenGrainsInheritParentData) {
 // 3 non-crystalline and without phases. Mapping the plate to region 4 leaves region 3 unused,
 // which only the driver can see (the number of phase regions is known after the table is read):
 // it is refused on every rank.
-TEST(DriverStage1d, PassthroughWithPhaseRegions) {
+TEST(DriverDataSources, PassthroughWithPhaseRegions) {
     WriteFixtures();
     mfem::Mesh serial = PlateMesh();
     ms::MicrostructureOptions options = TableOptions("plate.csv");
@@ -1376,7 +1376,7 @@ TEST(DriverStage1d, PassthroughWithPhaseRegions) {
 // nucleation, Laguerre sizes with Lloyd relaxation and the volume fit) completes, with seeding,
 // labeling, cleanup, the passthrough mapping and the whole-mesh adjacency, and the labels equal
 // the single-rank reference.
-TEST(DriverStage1d, RankWithoutActiveElements) {
+TEST(DriverDataSources, RankWithoutActiveElements) {
     mfem::Mesh serial = PlateMesh();
     const int nranks = NumRanks();
     std::vector<int> owner(static_cast<std::size_t>(serial.GetNE()));
@@ -1443,7 +1443,7 @@ TEST(DriverStage1d, RankWithoutActiveElements) {
 // 8. Example options files
 // ---------------------------------------------------------------------------------------------
 
-// The Stage 1d examples that run on an auto mesh go through the driver unchanged (apart from the
+// The data-source examples that run on an auto mesh go through the driver unchanged (apart from the
 // seed table path, which is relative to the directory the tool runs in), and give the same
 // result on every rank count. seed_table_auto.toml uses every column of the checked-in
 // all_columns.csv: ROI with filler, normalized table quaternions, phases -> regions with a
@@ -1451,7 +1451,7 @@ TEST(DriverStage1d, RankWithoutActiveElements) {
 // tensors (the filler seeds get their own spherical tensors, so every seed has 6 tensor
 // entries).
 // phase_fractions_auto.toml: synthetic phases on random seeds, one of them non-crystalline.
-TEST(DriverStage1d, ExampleOptionsFilesRun) {
+TEST(DriverDataSources, ExampleOptionsFilesRun) {
     for (const char* name : {"seed_table_auto.toml", "phase_fractions_auto.toml"}) {
         SCOPED_TRACE(name);
         ms::MicrostructureOptions options = ms::MicrostructureOptions::parse_options_file(

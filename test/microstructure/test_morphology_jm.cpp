@@ -24,7 +24,7 @@
 #include <gtest/gtest.h>
 
 /*
- * Tests of Stage 1c morphology control:
+ * Tests of the morphology (size) control:
  *  - Johnson-Mehl nucleation and growth (seeding/johnson_mehl.hpp): the analytic two-nucleus
  *    boundary, the "already transformed" rule, the stopping rules, rank-count independence and
  *    the classical grain density;

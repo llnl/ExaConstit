@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_passthrough" (2 MPI ranks).
+# ExaConstit deck for the end-to-end test "hook_passthrough" (2 MPI ranks).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt runs it in the scratch
 # directory after the tool step, which writes voronoi_auto.mesh.gz there (the 8x8x8 box with the

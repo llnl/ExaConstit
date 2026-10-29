@@ -1,6 +1,6 @@
-# Generator input of the Stage 2 end-to-end test "Laguerre grains along paths".
+# Generator input of the end-to-end test "Laguerre grains along paths".
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake runs
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_distance_modes.cmake runs
 #     microstructure_generator -i test/data/microstructure/e2e/geodesic_laguerre_ushape.toml
 #                              -m test/data/microstructure/u_shape_hex.mesh
 # (paths shown relative to the repository root; CTest passes absolute paths) at 1 and at 2 MPI

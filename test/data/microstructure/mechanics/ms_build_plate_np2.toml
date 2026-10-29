@@ -1,9 +1,9 @@
-# ExaConstit deck for the microstructure generator Stage 1d end-to-end test "build plate"
+# ExaConstit deck for the microstructure generator end-to-end test "build plate"
 # (2 MPI ranks).
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_data_sources.cmake
 # copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
-# build directory, writes the input mesh at test time (test_tool_stage1d), runs there
+# build directory, writes the input mesh at test time (test_tool_data_sources), runs there
 #     microstructure_generator -i test/data/microstructure/e2e/build_plate.toml
 # (paths shown relative to the repository root; CTest passes absolute paths) at 2 MPI ranks
 # (basename "e2e_build_plate"), and then runs mechanics on this deck with 2 MPI ranks.

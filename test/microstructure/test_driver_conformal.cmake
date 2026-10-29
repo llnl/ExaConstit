@@ -1,8 +1,8 @@
-# Driver-level tests of the Stage 2 conformal grain boundary step ([Conformal] enabled) wired into
+# Driver-level tests of the conformal grain boundary step ([Conformal] enabled) wired into
 # GenerateMicrostructure (exaconstit_microstructure): a hex box without Nodes (the step runs, the
 # fitted positions become the vertices, quality floor, smaller distance to the analytic boundaries,
 # box volume kept, few label changes, nothing moves without the step), a tet box (tet floor), an
-# order-2 mesh (fitted, keeps its Nodes) and the refusal of order 3, and the Phase 1 grain sources
+# order-2 mesh (fitted, keeps its Nodes) and the refusal of order 3, and the grain sources
 # without analytic boundaries (voxel map, geodesic and connected labels on the U-shaped part:
 # smoothed staircase targets) and a passthrough plate (interface kept in place), and that the
 # nodes ExaConstit's mono_def boundary conditions select are the same before and after the fit

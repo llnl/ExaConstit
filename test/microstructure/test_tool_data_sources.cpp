@@ -1,11 +1,11 @@
 /**
- * @file test_tool_stage1d.cpp
- * @brief Input writer of the Stage 1d end-to-end chain (test_tool_stage1d.cmake).
+ * @file test_tool_data_sources.cpp
+ * @brief Input writer of the Data-source end-to-end chain (test_tool_data_sources.cmake).
  *
  * The chain runs the microstructure_generator tool on data-driven inputs and then ExaConstit's
  * mechanics on the results. Three of its inputs are written here, at test time, into the
- * working directory of this test (<build>/test/microstructure/end_to_end_stage1d/inputs), instead
- * of being checked in:
+ * working directory of this test (<build>/test/microstructure/end_to_end_data_sources/inputs),
+ * instead of being checked in:
  *   - e2e_two_phase.dream3d: a DREAM.3D (SIMPL v6 layout) voxel map with two phases and its
  *     per-feature quaternions stored x y z w (scalar last), as DREAM.3D writes them;
  *   - e2e_plate_box.mesh: a hex box whose two bottom element layers carry attribute 2 (a build

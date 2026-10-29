@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_vs_tool"
+# ExaConstit deck for the end-to-end test "hook_vs_tool"
 # (2 MPI ranks).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt

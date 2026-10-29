@@ -1,6 +1,6 @@
 /*
  * test_curved_geometry: the generator's geometric building blocks on curved and warped elements
- * (WP-CV4).
+ *.
  *
  * Every curved mesh here is genuinely curved: the nodes are moved off the straight map after
  * Mesh::SetCurvature (a "bulge" of the top face), so a code path that silently used the element
@@ -198,7 +198,7 @@ double TopSurfaceHeight(mfem::Mesh& mesh, double x, double y, double top_min_z) 
 }
 
 /**
- * The point-in-element test of the locator before WP-CV4, for comparison only: plain Newton from
+ * A simpler point-in-element test, for comparison only: plain Newton from
  * the element center, an "Outside" answer trusted as final, and the projected fallback only when
  * Newton did not converge. Used to report how many classifications the retries fix.
  */
@@ -234,7 +234,7 @@ const mfem::Element::Type kTypes[] = {mfem::Element::HEXAHEDRON, mfem::Element::
 //------------------------------------------------------------------------------------------------
 
 // Planar faces keep their two triangles: a 2x2x2 hex cube (no Nodes) has 24 boundary quads, all
-// planar, so the surface is 48 triangles, as before warped faces were subdivided.
+// planar, so the surface is 48 triangles (no planar face is subdivided).
 TEST(CurvedGeometry, ClearancePlanarFacesUnchanged) {
     mfem::Mesh mesh = UnitCube(2, mfem::Element::HEXAHEDRON);
     const ms::BoundaryClearance clearance(mesh, 0.1, true);
@@ -691,7 +691,7 @@ TEST(CurvedGeometry, PerturbedElementsKeepInteriorPoints) {
 // found inside (they are points of the element by construction), and points mapped from
 // reference points just outside the faces r = 1 and r = 2 (radius exactly linear in the first
 // reference coordinate, so they lie at r < 1 or r > 2, outside the sector) must be found
-// outside. Newton started only from the element center (the test before WP-CV4) converges for
+// outside. Newton started only from the element center (the simpler test) converges for
 // some interior points near the ends of the arc to a second solution outside the reference
 // element and calls them outside (60 of 1200 at order 2, 90 at order 3 when written); the
 // retries from the closest nodal point and the closest lattice point find them. The test checks

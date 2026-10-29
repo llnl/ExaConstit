@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_restart"
+# ExaConstit deck for the end-to-end test "hook_restart"
 # (part A, writes the checkpoint).
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies the three

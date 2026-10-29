@@ -99,7 +99,7 @@ bool Contains(const std::string& text, const std::string& part) {
 namespace {
 
 // The voxelized tessellation and the HDF5 fixture writers live in common/voxel_fixture.hpp
-// (shared with test_driver_stage1d).
+// (shared with test_driver_data_sources).
 using namespace voxel_fixture;
 
 /** Directory of this run's fixtures (one per rank count, so concurrent np runs never collide). */

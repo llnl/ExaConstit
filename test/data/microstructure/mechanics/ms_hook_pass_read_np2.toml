@@ -1,4 +1,4 @@
-# ExaConstit deck for the Stage 1f end-to-end test "hook_passthrough", read-back run (2 MPI
+# ExaConstit deck for the end-to-end test "hook_passthrough", read-back run (2 MPI
 # ranks). No [Mesh.Microstructure]: it reads the grain mesh the hook run hook_pass_np2.toml wrote
 # (one part per rank, already refined, so ref_ser = ref_par = 0) with the hook's record
 # orientation file and region map, and must reproduce that run's results.

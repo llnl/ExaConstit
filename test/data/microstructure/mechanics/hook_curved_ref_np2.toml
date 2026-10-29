@@ -1,4 +1,4 @@
-# ExaConstit deck for the Wave 8 end-to-end test "hook_curved_ref" (2 MPI ranks; see
+# ExaConstit deck for the end-to-end test "hook_curved_ref" (2 MPI ranks; see
 # hook_curved_ref_np1.toml for what it exercises). Identical to the np1 deck except the basename.
 #
 # Hand-written, not generated. The CTest chain in test/CMakeLists.txt copies this deck and the

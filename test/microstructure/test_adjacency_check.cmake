@@ -1,4 +1,4 @@
-# Conformal fitting, Stage 2c, second part: the grain adjacency of the mesh compared with the
+# Conformal fitting: the grain adjacency of the mesh compared with the
 # analytic one (ms_conformal: conformal/adjacency_check).
 #
 # test_adjacency_check checks Voronoi slabs whose mesh and analytic graphs agree, the same slabs

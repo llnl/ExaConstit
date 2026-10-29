@@ -1,12 +1,12 @@
-# Generator input of the Stage 1d end-to-end test "build plate".
+# Generator input of the end-to-end test "build plate".
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
-# writes the mesh <build>/test/microstructure/end_to_end_stage1d/inputs/e2e_plate_box.mesh at
-# test time (test_tool_stage1d: an 8 x 8 x 10 hex box on [0, 1] x [0, 1] x [0, 1.25] whose two
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_data_sources.cmake
+# writes the mesh <build>/test/microstructure/end_to_end_data_sources/inputs/e2e_plate_box.mesh at
+# test time (test_tool_data_sources: an 8 x 8 x 10 hex box on [0, 1] x [0, 1] x [0, 1.25] whose two
 # bottom element layers have attribute 2, the rest attribute 1, with ExaConstit's auto-mesh
 # boundary ids), then runs
 #     microstructure_generator -i test/data/microstructure/e2e/build_plate.toml
-# in end_to_end_stage1d/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
+# in end_to_end_data_sources/np1 and np2 (1 and 2 MPI ranks), checks that both runs write
 # byte-identical files, and then runs mechanics on the result (deck
 # test/data/microstructure/mechanics/ms_build_plate_np2.toml, two [[Materials]] blocks).
 #

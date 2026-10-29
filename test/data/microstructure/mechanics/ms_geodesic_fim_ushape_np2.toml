@@ -1,7 +1,7 @@
-# ExaConstit deck for the microstructure generator Stage 1e end-to-end test "geodesic FIM U shape"
+# ExaConstit deck for the microstructure generator end-to-end test "geodesic FIM U shape"
 # (2 MPI ranks).
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1e.cmake
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_distance_modes.cmake
 # copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
 # build directory, runs there
 #     microstructure_generator -i test/data/microstructure/e2e/geodesic_fim_ushape.toml
@@ -11,7 +11,7 @@
 # test passes when mechanics completes.
 #
 # What it exercises: the generator's serial mesh file of the U-shaped part labeled with a
-# Stage 1e distance mode, read through ExaConstit's type = "file" mesh path, and its orientation
+# distance mode, read through ExaConstit's type = "file" mesh path, and its orientation
 # file. Five fixed steps of 0.1 s keep it short.
 Version = "0.8.0"
 basename = "ms_geodesic_fim_ushape_np2"

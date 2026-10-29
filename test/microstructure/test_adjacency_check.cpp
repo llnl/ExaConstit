@@ -1,6 +1,6 @@
 /**
  * @file test_adjacency_check.cpp
- * @brief Tests of conformal/adjacency_check (Stage 2c, second part): the grain adjacency of the
+ * @brief Tests of conformal/adjacency_check: the grain adjacency of the
  * mesh compared with the analytic one.
  *
  * What is checked, and why:
@@ -96,6 +96,8 @@ const ms::SeedSet& Slabs() {
 
 } // namespace
 
+// Four slabs labeled by their own seeds: the mesh graph is the analytic chain 0-1-2-3 (3 pairs),
+// so nothing is fake or missing.
 TEST(AdjacencyCheck, SlabsAgree) {
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(8, 3, 3, mfem::Element::HEXAHEDRON);
     const auto labels = [](mfem::Mesh& m) {
@@ -111,6 +113,8 @@ TEST(AdjacencyCheck, SlabsAgree) {
     EXPECT_TRUE(c.missing_examples.empty());
 }
 
+// One element layer of slab 2 relabeled to grain 4: (1, 3) touch only in the mesh (their
+// bisector lies inside slab 2) and (1, 2) only analytically, one fake and one missing pair.
 TEST(AdjacencyCheck, FakeAndMissingPair) {
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(8, 3, 3, mfem::Element::HEXAHEDRON);
     // The first element layer of slab 2 (centers at x = 0.5625) goes to grain 4
@@ -136,6 +140,8 @@ TEST(AdjacencyCheck, FakeAndMissingPair) {
     EXPECT_EQ(c.missing_examples[0], (std::array<int, 2>{1, 2}));
 }
 
+// A grain without seed has no analytic boundary to compare with, so its pair is unchecked; without
+// analytic targets all three pairs are.
 TEST(AdjacencyCheck, GrainsWithoutSeedAreUnchecked) {
     mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(8, 3, 3, mfem::Element::HEXAHEDRON);
     const auto labels = [](mfem::Mesh& m) {
@@ -155,6 +161,8 @@ TEST(AdjacencyCheck, GrainsWithoutSeedAreUnchecked) {
     EXPECT_EQ(n.unchecked, 3);
 }
 
+// 30 random Voronoi grains: the counts satisfy discrete - fake = analytic - missing (both sides
+// are the pairs found both ways), and every count and example equals the single-rank run.
 TEST(AdjacencyCheck, PolycrystalIsPartitionIndependent) {
     std::mt19937 rng(7);
     std::uniform_real_distribution<double> u(0.0, 1.0);

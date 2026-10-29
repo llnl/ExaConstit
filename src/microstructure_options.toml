@@ -275,8 +275,8 @@
 # Not allowed inside ExaConstit's [Mesh.Microstructure]: there it follows rtmodel.
 exec = "cpu"
 
-# deterministic = true   reserved for a future "bit-for-bit identical on CPU and GPU" mode; it
-#                        does nothing yet (results never depend on the rank count anyway)
+# deterministic = true   accepted but has no effect (results never depend on the rank count;
+#                        bit-for-bit CPU/GPU agreement is not guaranteed)
 
 # =====================================
 # MESH (the mesh the generator READS)
@@ -1108,7 +1108,7 @@ exec = "cpu"
     # - "from_source" = from your data: the qw, qx, qy, qz columns of a seed table, or the
     #                   orientations of a voxel map. Grains without one (filler grains) get
     #                   random orientations. Needs Seeds.source = "file" or a voxel map.
-    # - "list"        = planned (a separate orientation list); refused for now
+    # - "list"        = not implemented (a separate orientation list); refused with a message
     source = "random"
 
 # =====================================
@@ -1227,7 +1227,7 @@ exec = "cpu"
 # of 0.25 on the test meshes, at the same quality). Every nodal point of the element is checked
 # against the quality limits.
 #
-# Needs: no periodic axes (not planned), and a hex or tet mesh of order 1 or 2. Other
+# Needs: no periodic axes, and a hex or tet mesh of order 1 or 2. Other
 # combinations are refused with a message.
 #
 # Files: the mesh file and the ParaView view hold the moved nodes. An auto mesh ([Mesh] type =

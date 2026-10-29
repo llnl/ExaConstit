@@ -1,6 +1,6 @@
 /**
- * @file test_driver_stage1e.cpp
- * @brief Driver-level tests of the Stage 1e distance modes wired into GenerateMicrostructure
+ * @file test_driver_distance_modes.cpp
+ * @brief Driver-level tests of the distance modes wired into GenerateMicrostructure
  * (microstructure_driver.cpp): Tessellation.distance = "euclidean", "connected" and "geodesic".
  *
  * Covered paths:
@@ -17,12 +17,12 @@
  *     splits it off; connected mode leaves it to the cleanup as an unanchored body; and two
  *     blocks touching only along an edge, which geodesic paths cross (the face-based cleanup
  *     then splits the second block off);
- *  6. the refused combinations (Stage 1e scope, unavailable solver);
- *  7. the Stage 1e example options files.
+ *  6. the refused combinations (unsupported combinations, unavailable solver);
+ *  7. the distance-mode example options files.
  *
- * **Fixtures.** Rank 0 writes the seed tables (CSV) into `test_driver_stage1e_data/np<N>/` under
- * the working directory (the build tree when run by ctest; never /tmp), then all ranks meet at a
- * barrier. Meshes are built in memory (grid of unit-spaced hexahedra with some cells removed).
+ * **Fixtures.** Rank 0 writes the seed tables (CSV) into `test_driver_distance_modes_data/np<N>/`
+ * under the working directory (the build tree when run by ctest; never /tmp), then all ranks meet
+ * at a barrier. Meshes are built in memory (grid of unit-spaced hexahedra with some cells removed).
  *
  * **Rank-count independence.** Every driver run is done twice in the same process: distributed
  * over MPI_COMM_WORLD (METIS partition) and alone on every rank with MPI_COMM_SELF (exactly the
@@ -84,7 +84,7 @@ int NumRanks() {
 
 /** Directory of this run's fixtures (one per rank count, so concurrent np runs never collide). */
 fs::path DataDir() {
-    return fs::path("test_driver_stage1e_data") / ("np" + std::to_string(NumRanks()));
+    return fs::path("test_driver_distance_modes_data") / ("np" + std::to_string(NumRanks()));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -573,7 +573,7 @@ std::vector<int> DirectGeodesicLabels(mfem::Mesh& serial,
 // crosses the notch in those modes, and grain 42 lies in one arm only. The driver's labels equal
 // the direct library calls (seed order is grain order in both). Seed 42 lies outside the material
 // in all modes; geodesic reports it as snapped.
-TEST(DriverStage1e, UShapeThreeModes) {
+TEST(DriverDistanceModes, UShapeThreeModes) {
     WriteFixtures();
     mfem::Mesh serial = UShape();
     ms::MicrostructureOptions options = TableOptions("ushape.csv");
@@ -635,7 +635,7 @@ TEST(DriverStage1e, UShapeThreeModes) {
 // Quadrature-vote sampling in both modes (the orphan relabeling and the geodesic point labels
 // use the 8^vote_levels voting points): the driver still equals the direct library calls and no
 // grain crosses the notch. Keep rule "seed" runs with the mode's own anchors.
-TEST(DriverStage1e, VoteSamplingAndSeedKeepRule) {
+TEST(DriverDistanceModes, VoteSamplingAndSeedKeepRule) {
     WriteFixtures();
     mfem::Mesh serial = UShape();
     ms::MicrostructureOptions options = TableOptions("ushape.csv");
@@ -674,7 +674,7 @@ TEST(DriverStage1e, VoteSamplingAndSeedKeepRule) {
 // along paths in the material. The driver passes additive = true: for both solvers its labels
 // equal a direct solver call with additive = true on the nuclei it reports, and no grain crosses
 // the notch.
-TEST(DriverStage1e, GeodesicJohnsonMehl) {
+TEST(DriverDistanceModes, GeodesicJohnsonMehl) {
     mfem::Mesh serial = UShape();
     ms::MicrostructureOptions options;
     options.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
@@ -718,7 +718,7 @@ TEST(DriverStage1e, GeodesicJohnsonMehl) {
 // equal those of the U-shaped part alone (matched by element center), and the notch is the extra
 // last grain. (Seed 42 lies inside the passthrough notch, i.e. outside the active material, in
 // both runs.)
-TEST(DriverStage1e, PassthroughNotchKeepsPathsInActivePart) {
+TEST(DriverDistanceModes, PassthroughNotchKeepsPathsInActivePart) {
     WriteFixtures();
     mfem::Mesh box = BoxWithNotchAttribute();
     mfem::Mesh ushape = UShape();
@@ -775,7 +775,7 @@ TEST(DriverStage1e, PassthroughNotchKeepsPathsInActivePart) {
 // every seed keeps its own grain (source id = its table id) in the first cube: in these modes the
 // driver always keeps the piece holding the seed's anchor / source element, so the larger
 // leftover cube cannot take over a seed's identity (with keep rule "largest" it would).
-TEST(DriverStage1e, UnreachedBodySplitOff) {
+TEST(DriverDistanceModes, UnreachedBodySplitOff) {
     WriteFixtures();
     mfem::Mesh serial = TwoBodies();
     const std::vector<std::array<double, 3>> center = Centers(serial);
@@ -825,7 +825,7 @@ TEST(DriverStage1e, UnreachedBodySplitOff) {
 // fragment of that grain; it has no face neighbor to merge into, so even "merge" (the "auto"
 // policy for seed tables) splits it off into a new grain with a derived source id, as documented.
 // With fragments = "none" the run keeps one grain with one extra fragment.
-TEST(DriverStage1e, GeodesicThroughEdgeContact) {
+TEST(DriverDistanceModes, GeodesicThroughEdgeContact) {
     WriteFixtures();
     mfem::Mesh serial = EdgeContactBlocks();
     const std::vector<std::array<double, 3>> center = Centers(serial);
@@ -862,11 +862,10 @@ TEST(DriverStage1e, GeodesicThroughEdgeContact) {
 // ---------------------------------------------------------------------------------------------
 
 // The driver refuses (std::invalid_argument on every rank, before any collective work) every
-// combination outside the Stage 1e scope: periodic axes, Lloyd, the volume fit and voxel maps with
-// either mode; geodesic with Laguerre / Quadric or with an anisotropy; a rounds cap outside
-// 0..CONNECTED_MAX_ROUNDS_LIMIT; an
-// unknown solver (in any mode).
-TEST(DriverStage1e, RefusedCombinations) {
+// combination the distance modes do not support: periodic axes, Lloyd, the volume fit and voxel
+// maps with either mode; geodesic with Laguerre / Quadric or with an anisotropy; a rounds cap
+// outside 0..CONNECTED_MAX_ROUNDS_LIMIT; an unknown solver (in any mode).
+TEST(DriverDistanceModes, RefusedCombinations) {
     mfem::Mesh serial = exaconstit::MakeAutoHexMesh({4, 4, 4}, {1.0, 1.0, 1.0});
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
     using O = ms::MicrostructureOptions;
@@ -943,7 +942,7 @@ TEST(DriverStage1e, RefusedCombinations) {
 // the labels equal the distributed run's and stay close to the Euclidean (exact, endless) columns
 // on this convex part. Seed weights from a seed table under quadric need the FIM solver (the
 // graph solver keeps one seed per node).
-TEST(DriverStage1e, GeodesicQuadricColumnar) {
+TEST(DriverDistanceModes, GeodesicQuadricColumnar) {
     WriteFixtures();
     mfem::Mesh serial = exaconstit::MakeAutoHexMesh({8, 8, 32}, {1.0, 1.0, 4.0});
     ms::MicrostructureOptions options;
@@ -991,7 +990,7 @@ TEST(DriverStage1e, GeodesicQuadricColumnar) {
 // (size_targets.hpp). The weighted solver (seed lists) runs, no list overflows, the labels equal
 // the distributed run's, and with fragments = "none" no grain crosses the notch. The same seed
 // table weights under quadric (global tensor) also run through the weighted solver.
-TEST(DriverStage1e, GeodesicLaguerreUShape) {
+TEST(DriverDistanceModes, GeodesicLaguerreUShape) {
     WriteFixtures();
     mfem::Mesh serial = UShape();
     ms::MicrostructureOptions options;
@@ -1027,7 +1026,7 @@ TEST(DriverStage1e, GeodesicLaguerreUShape) {
 // half-axes). The weighted solver runs with one stretch per seed; with only three seeds no list can
 // overflow, so the distributed run equals the single-rank one, and on this convex part the labels
 // stay close to the straight-line per-seed labels. The graph solver is refused.
-TEST(DriverStage1e, GeodesicPerSeedTensors) {
+TEST(DriverDistanceModes, GeodesicPerSeedTensors) {
     WriteFixtures();
     mfem::Mesh serial = exaconstit::MakeAutoHexMesh({12, 12, 12}, {1.0, 1.0, 1.0});
     ms::MicrostructureOptions options = TableOptions("shapes.csv");
@@ -1055,10 +1054,10 @@ TEST(DriverStage1e, GeodesicPerSeedTensors) {
 // 7. Example options files
 // ---------------------------------------------------------------------------------------------
 
-// The Stage 1e examples (all on u_shape_hex.mesh, whose path is relative to the directory the
+// The distance-mode examples (all on u_shape_hex.mesh, whose path is relative to the directory the
 // tool runs in) validate, run through the driver and give the same result on every rank count;
 // each runs the mode it names and no grain crosses the notch.
-TEST(DriverStage1e, ExampleOptionsFilesRun) {
+TEST(DriverDistanceModes, ExampleOptionsFilesRun) {
     const fs::path dir = data_dir / "microstructure";
     for (const char* name :
          {"connected_ushape.toml", "geodesic_ushape.toml", "geodesic_johnson_mehl_ushape.toml"}) {

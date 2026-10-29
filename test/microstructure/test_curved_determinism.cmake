@@ -1,4 +1,4 @@
-# Curved-element determinism (WP-CV1): owner-broadcast vertex positions from the Nodes
+# Curved-element determinism: owner-broadcast vertex positions from the Nodes
 # (mesh/vertex_coordinates), quantized element keys (mesh/element_key), element-weighted seeding
 # and fragment cleanup on genuinely warped order-2/3 meshes, the hook-style path (SetCurvature +
 # parallel refinement) against a single-rank run, and periodic face pairing on a curved periodic

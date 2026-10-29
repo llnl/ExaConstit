@@ -1,6 +1,6 @@
 /*
  * test_curved_determinism: vertex positions, element keys, seeding, fragment cleanup and periodic
- * face pairing on genuinely curved meshes and on meshes refined in parallel (WP-CV1).
+ * face pairing on genuinely curved meshes and on meshes refined in parallel.
  *
  * Background. For a mesh with high-order Nodes, MFEM's vertex array is a partition-dependent
  * average (ParMesh) or stale after node motion (Mesh::Transform), and after a parallel
@@ -586,8 +586,8 @@ TEST(PeriodicPairing, CurvedPeriodicBox) {
 // Periodic pairing on a mesh whose Nodes were moved after distribution (ParMesh::Transform moves
 // only the Nodes, mesh.cpp:14072-14078), so the vertex array still describes the unit cube while
 // the geometry is [0.5, 2.5]^3. The box comes from the Nodes; the faces must be found from the
-// Nodes too (with the vertex array no face lies on the planes, which used to skip the pairing
-// silently).
+// Nodes too (with the vertex array no face would lie on the planes and the pairing would find
+// nothing).
 TEST(PeriodicPairing, StaleVertexArray) {
     const int n = 3;
     for (const auto type : {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON}) {
@@ -622,7 +622,7 @@ TEST(PeriodicPairing, StaleVertexArray) {
 }
 
 // Failure cases, thrown on every rank: (1) a periodic box larger than the mesh puts no face on
-// the planes of an axis (zero plane faces is an error, no longer a silent skip); (2) a face whose
+// the planes of an axis (zero plane faces is an error, not a silent skip); (2) a face whose
 // corners lie on the plane x = 1 but whose middle bulges off it is not a plane face, so its
 // partner on x = 0 is unmatched.
 TEST(PeriodicPairing, ZeroPlaneFacesAndBulgedFaceThrow) {

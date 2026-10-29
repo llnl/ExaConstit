@@ -558,17 +558,17 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
 // Options the pipeline cannot honor must be refused, on every rank together and before any
 // collective work, instead of being silently ignored:
 // - Regions.mode = "from_phase" with random seeds: random seeds carry no phases, so there is
-//   nothing to build regions from (regions from phases are implemented since Stage 1d, for seed
-//   tables and voxel maps; see test_driver_stage1d);
-// - Seeds.source = "file" without Seeds.file: seed tables are implemented since Stage 1d, but
-//   the driver refuses a table source that names no table;
-// - connected / geodesic distance outside the Stage 1e scope (connected with a periodic axis,
+//   nothing to build regions from (regions from phases work for seed tables and voxel maps; see
+//   test_driver_data_sources);
+// - Seeds.source = "file" without Seeds.file: the driver refuses a table source that names no
+//   table;
+// - combinations the distance modes do not support (connected with a periodic axis,
 //   geodesic with the Laguerre metric, whose values are not path lengths; the labeler's
 //   CheckSupportedTessellation, which the driver calls before seeding; the modes themselves are
-//   tested in test_driver_stage1e), "list" orientations (not implemented) and a vote level
+//   tested in test_driver_distance_modes), "list" orientations (not implemented) and a vote level
 //   outside 0..3.
-// (Fragment splitting, quadrature voting and periodic grains are implemented since Stage 1b; see
-// test_driver_stage1bc.)
+// (Fragment splitting, quadrature voting and periodic grains are tested in
+// test_driver_generated_seeds.)
 TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     mfem::Mesh serial = AutoHex(4);
     Distributed dist = Distribute(serial, MPI_COMM_WORLD);

@@ -1,4 +1,4 @@
-# Conformal fitting, Stage 2b part 1: targets on the analytic grain boundaries (ms_conformal:
+# Conformal fitting: targets on the analytic grain boundaries (ms_conformal:
 # conformal/manifold_projector.hpp, conformal/node_targets).
 #
 # test_node_targets checks the projector on planes and dependent rows; the targets of a Voronoi

@@ -1,4 +1,4 @@
-# Conformal fitting, Stage 2a: node label sets (ms_conformal: conformal/node_labels).
+# Conformal fitting: node label sets (ms_conformal: conformal/node_labels).
 #
 # test_node_labels compares the label set and boundary surface count of every node of a round-robin
 # distributed mesh with a serial reference computed in the test (hex, tet and order-2 Nodes), the

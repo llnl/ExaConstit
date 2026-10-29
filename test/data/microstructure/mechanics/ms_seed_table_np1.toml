@@ -1,7 +1,7 @@
-# ExaConstit deck for the microstructure generator Stage 1d end-to-end test "seed table"
+# ExaConstit deck for the microstructure generator end-to-end test "seed table"
 # (1 MPI rank).
 #
-# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_stage1d.cmake
+# Hand-written, not generated. The CTest chain in test/microstructure/test_tool_data_sources.cmake
 # copies this deck, props_cp_voce.txt and state_cp_voce.txt into a scratch directory under the
 # build directory, runs there
 #     microstructure_generator -i test/data/microstructure/e2e/seed_table_roi.toml

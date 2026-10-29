@@ -1,6 +1,6 @@
 /*
  * test_mask_seeding: seeding and morphology restricted to the active elements of a mesh by an
- * element mask (mesh/element_mask.hpp, WP-CV2a).
+ * element mask (mesh/element_mask.hpp).
  *
  * Setup. A box of 4 x 4 x 6 cells of size 0.25 (z from 0 to 1.5) whose bottom two layers
  * (z < 0.5) are inactive, like a build plate under a part. The reference is a separate mesh of

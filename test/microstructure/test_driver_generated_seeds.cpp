@@ -1,6 +1,6 @@
 /**
- * @file test_driver_stage1bc.cpp
- * @brief Driver-level tests of the Stage 1b/1c features wired into GenerateMicrostructure
+ * @file test_driver_generated_seeds.cpp
+ * @brief Driver-level tests of the generated-seed features wired into GenerateMicrostructure
  * (microstructure_driver.cpp) and of the shared utilities added with them.
  *
  * Covered paths: fragment cleanup (split, merge, small grains, keep the seed's piece) on a
@@ -16,7 +16,7 @@
  * alone on every rank with MPI_COMM_SELF, which is exactly the np = 1 answer. The labels are
  * gathered into serial element order and must be identical, as must the grain count, the
  * orientations (bitwise) and the source ids. Running the executable at np = 1..4
- * (test_driver_stage1bc.cmake) therefore compares np = 2, 3, 4 against np = 1.
+ * (test_driver_generated_seeds.cmake) therefore compares np = 2, 3, 4 against np = 1.
  *
  * Assertions use EXPECT_* (not ASSERT_*) wherever a later collective call follows: an ASSERT
  * returns from the test on one rank only, and the other ranks would then wait forever in that
@@ -339,7 +339,7 @@ std::vector<int> GrainSizes(const std::vector<int>& labels, int num_grains) {
 // split fragments, the split grains carry derived (negative) source ids, and their orientations
 // differ from their parent's. The result is identical on every rank count, also on a scattered
 // partition with an empty rank.
-TEST(DriverStage1bc, FragmentSplitOnUShapedPart) {
+TEST(DriverGeneratedSeeds, FragmentSplitOnUShapedPart) {
     GridMesh grid = UShape(4);
     ms::MicrostructureOptions options = QuickOptions(14, 21u);
     options.seeds.sampling_domain = "bbox";
@@ -365,7 +365,7 @@ TEST(DriverStage1bc, FragmentSplitOnUShapedPart) {
 // fragments = "merge" with min_grain_elements = 4 on the same part: the extra pieces join a
 // neighboring grain instead, so the grain count never exceeds the labeled count, every grain is
 // one piece, and no grain is smaller than 4 elements unless the cleanup reports it as kept.
-TEST(DriverStage1bc, FragmentMergeAndSmallGrains) {
+TEST(DriverGeneratedSeeds, FragmentMergeAndSmallGrains) {
     GridMesh grid = UShape(4);
     ms::MicrostructureOptions options = QuickOptions(14, 21u);
     options.seeds.sampling_domain = "bbox";
@@ -393,7 +393,7 @@ TEST(DriverStage1bc, FragmentMergeAndSmallGrains) {
 // belong to the grain with the seed's own source id after splitting, i.e. the seed's piece kept
 // the identity (and orientation), and the other pieces were split off. Seeds are found with the
 // element-key map of the structured grid (cell = floor(p / h)).
-TEST(DriverStage1bc, KeepSeedComponent) {
+TEST(DriverGeneratedSeeds, KeepSeedComponent) {
     const int n = 4;
     GridMesh grid = UShape(n);
     ms::MicrostructureOptions plain = QuickOptions(14, 21u);
@@ -444,7 +444,7 @@ TEST(DriverStage1bc, KeepSeedComponent) {
 // both kinds of piece): one grain reaches across the empty slot with a large piece, which is
 // still split into a grain of its own (at least min_fragment_elements = 8 elements), and one
 // tiny piece is merged ("split" would have split both). Every grain is one piece afterwards.
-TEST(DriverStage1bc, AutoStillSplitsLargeLatticeGapPieces) {
+TEST(DriverGeneratedSeeds, AutoStillSplitsLargeLatticeGapPieces) {
     GridMesh grid = UShape(4);
     ms::MicrostructureOptions options = QuickOptions(8, 11u);
     options.seeds.sampling_domain = "bbox";
@@ -471,7 +471,7 @@ TEST(DriverStage1bc, AutoStillSplitsLargeLatticeGapPieces) {
 // labels): 6 single elements touch the rest of their grain only along an edge (measured). They
 // are tiny (1 < 8 elements), so "auto" merges all of them and the run ends with the 20 seed
 // grains, each one face-connected piece; "split" would have made 26 grains of them.
-TEST(DriverStage1bc, AutoMergesEdgeConnectedArtifacts) {
+TEST(DriverGeneratedSeeds, AutoMergesEdgeConnectedArtifacts) {
     mfem::Mesh serial((data_dir / "cube_tet.mesh").string().c_str(), 1, 1, true);
     const ms::MicrostructureOptions options = QuickOptions(20, 42u);
     const RunPair runs = RunAndCompare(serial, options);
@@ -497,7 +497,7 @@ TEST(DriverStage1bc, AutoMergesEdgeConnectedArtifacts) {
 // grains. With min_fragment_elements = 0 and min_fragment_fraction = 0.5 the 48-piece is tiny by
 // the fraction rule (48 < 0.5 x 113) and merges into grain 2 too: 2 grains. Both are identical
 // for every rank count and on a partition with an empty rank.
-TEST(DriverStage1bc, SplitLargeMergeTinyPolicy) {
+TEST(DriverGeneratedSeeds, SplitLargeMergeTinyPolicy) {
     mfem::Mesh serial = AutoHex(10, 4, 4);
     auto label_of = [](mfem::Mesh& mesh, int e) {
         mfem::Vector c(3);
@@ -572,7 +572,7 @@ TEST(DriverStage1bc, SplitLargeMergeTinyPolicy) {
 // (LabelTessellationByQuadratureVote with the same seeds and vote level) when cleanup is off,
 // reports the elements cut by grain boundaries, and is rank-count independent (cube_tet mesh,
 // levels 1 and 2).
-TEST(DriverStage1bc, QuadratureVoteMatchesLibrary) {
+TEST(DriverGeneratedSeeds, QuadratureVoteMatchesLibrary) {
     mfem::Mesh serial((data_dir / "cube_tet.mesh").string().c_str(), 1, 1, true);
     for (const int levels : {1, 2}) {
         SCOPED_TRACE("vote_levels " + std::to_string(levels));
@@ -606,7 +606,7 @@ TEST(DriverStage1bc, QuadratureVoteMatchesLibrary) {
 // keys of the element in the wrapped neighboring cell. With only x periodic, 16 pairs are found
 // and the y/z boundary faces stay unpaired (fewer neighbors). Checked on the METIS partition and
 // on a scattered partition with an empty rank, where most periodic partners live on other ranks.
-TEST(DriverStage1bc, PeriodicFacePairing) {
+TEST(DriverGeneratedSeeds, PeriodicFacePairing) {
     const int n = 4;
     mfem::Mesh serial = AutoHex(n, n, n);
     // Serial element id of cell (i, j, k): from the element centroid
@@ -682,7 +682,7 @@ TEST(DriverStage1bc, PeriodicFacePairing) {
 // every grain is one piece when matching periodic faces count as connected, while at least one
 // grain falls apart into several pieces when they do not (a grain that wraps around a face). The
 // result is rank-count independent.
-TEST(DriverStage1bc, PeriodicGrainWrapsAsOneGrain) {
+TEST(DriverGeneratedSeeds, PeriodicGrainWrapsAsOneGrain) {
     mfem::Mesh serial = AutoHex(8, 8, 8);
     for (const bool vote : {false, true}) {
         SCOPED_TRACE(vote ? "quadrature vote" : "centroid");
@@ -714,7 +714,7 @@ TEST(DriverStage1bc, PeriodicGrainWrapsAsOneGrain) {
 // (|s_i - s_j| >= kappa (r_i + r_j), with r from the reported per-seed target volumes), the
 // targets fill the material, the fit increased the dual function monotonically and ended below
 // its starting error, and everything is rank-count independent.
-TEST(DriverStage1bc, LognormalPolydisperseFit) {
+TEST(DriverGeneratedSeeds, LognormalPolydisperseFit) {
     mfem::Mesh serial = AutoHex(10, 10, 10);
     ms::MicrostructureOptions options = QuickOptions(0, 3u);
     options.seeds.size.distribution = "lognormal";
@@ -773,7 +773,7 @@ TEST(DriverStage1bc, LognormalPolydisperseFit) {
 
 // Lloyd relaxation (Voronoi, 4 steps) lowers the CVT energy monotonically; centroidal power mode
 // (Laguerre, equal targets) refits after every step. Both are rank-count independent.
-TEST(DriverStage1bc, LloydAndCentroidalPower) {
+TEST(DriverGeneratedSeeds, LloydAndCentroidalPower) {
     mfem::Mesh serial = AutoHex(8, 8, 8);
     ms::MicrostructureOptions lloyd = QuickOptions(10, 9u);
     lloyd.tessellation.lloyd_iterations = 4;
@@ -799,7 +799,7 @@ TEST(DriverStage1bc, LloydAndCentroidalPower) {
 // Columnar grains along z (anisotropy kind "columnar", A = I - z z^T): the metric ignores z, so
 // every element of one (x, y) column of the box carries the same grain (cleanup off). Lamellar
 // grains with normal z are the opposite: every z layer of elements carries one grain.
-TEST(DriverStage1bc, ColumnarAndLamellarGrains) {
+TEST(DriverGeneratedSeeds, ColumnarAndLamellarGrains) {
     const int n = 6;
     mfem::Mesh serial = AutoHex(n, n, 2 * n, 1.0, 1.0, 2.0);
     auto check = [&](const std::string& kind) {
@@ -832,7 +832,7 @@ TEST(DriverStage1bc, ColumnarAndLamellarGrains) {
 // GenerateJohnsonMehlSeeds (same parameters), labeled with the Additive metric and their weights
 // a = -v t, so the driver labels equal LabelTessellation with those seeds (cleanup off). The
 // report carries the nucleation counts, and the run is rank-count independent.
-TEST(DriverStage1bc, JohnsonMehlSeeds) {
+TEST(DriverGeneratedSeeds, JohnsonMehlSeeds) {
     mfem::Mesh serial = AutoHex(6, 6, 6);
     ms::MicrostructureOptions options = QuickOptions(0, 5u);
     options.seeds.placement = ms::SeedPlacement::JOHNSON_MEHL;
@@ -864,7 +864,7 @@ TEST(DriverStage1bc, JohnsonMehlSeeds) {
 
 // Every example options file of the new features (test/data/microstructure) runs through the
 // driver on its auto mesh and gives the same microstructure for every rank count.
-TEST(DriverStage1bc, ExampleFilesRun) {
+TEST(DriverGeneratedSeeds, ExampleFilesRun) {
     for (const char* name : {"periodic_vote_auto.toml",
                              "lognormal_fit_auto.toml",
                              "columnar_auto.toml",
@@ -887,9 +887,9 @@ TEST(DriverStage1bc, ExampleFilesRun) {
 
 // Options the pipeline refuses before any work (on every rank, std::invalid_argument): an
 // orientation source other than "random" (from_source / list), Johnson-Mehl with a periodic axis,
-// and polydisperse placement with a sampling box. These used to fail only at the end of the run
-// or deep inside seeding.
-TEST(DriverStage1bc, RefusedCombinations) {
+// and polydisperse placement with a sampling box. Refusing them up front avoids a failure at the
+// end of the run or deep inside seeding.
+TEST(DriverGeneratedSeeds, RefusedCombinations) {
     mfem::Mesh serial = AutoHex(4, 4, 4);
     Distributed d = Distribute(serial, MPI_COMM_WORLD);
     auto refused = [&](auto&& mutate) {
@@ -931,7 +931,7 @@ TEST(DriverStage1bc, RefusedCombinations) {
 // with its rank number; when ranks 0 and last fail, rank 0's message wins (the lowest rank).
 // ThrowIfAnyRank throws the common message everywhere; AnyRank and LowestRankWith agree on all
 // ranks. Nothing is thrown when no rank fails.
-TEST(DriverStage1bc, CollectiveErrorsAgree) {
+TEST(DriverGeneratedSeeds, CollectiveErrorsAgree) {
     const int rank = Rank();
     const int last = NumRanks() - 1;
     EXPECT_NO_THROW(ms::ThrowIfAnyRankFailed(MPI_COMM_WORLD, ""));
@@ -968,7 +968,7 @@ TEST(DriverStage1bc, CollectiveErrorsAgree) {
 // accepted seeds never come closer than rho_i + rho_j (periodic minimum image on a periodic
 // box too), the seeds are identical for every rank count, and radii whose spheres would fill
 // more than 30% of the volume are refused on every rank.
-TEST(DriverStage1bc, PolydisperseRsaSeeds) {
+TEST(DriverGeneratedSeeds, PolydisperseRsaSeeds) {
     mfem::Mesh serial = AutoHex(6, 6, 6);
     for (const bool periodic : {false, true}) {
         SCOPED_TRACE(periodic ? "periodic" : "not periodic");
@@ -1020,7 +1020,7 @@ TEST(DriverStage1bc, PolydisperseRsaSeeds) {
 // weights as the quadrature-order overload with the same MFEM rule, and QuadraturePointSampler
 // returns the same values chunk by chunk as in one piece (hex box and cube_tet, distributed; an
 // empty rank returns empty arrays).
-TEST(DriverStage1bc, SamplerRuleOverload) {
+TEST(DriverGeneratedSeeds, SamplerRuleOverload) {
     mfem::Mesh hex = AutoHex(3, 3, 3);
     mfem::Mesh tet((data_dir / "cube_tet.mesh").string().c_str(), 1, 1, true);
     for (mfem::Mesh* serial : {&hex, &tet}) {
@@ -1074,7 +1074,7 @@ TEST(DriverStage1bc, SamplerRuleOverload) {
 // exact default, whose pre-v4.10 rule had the weight -2/15), every sample weight is positive, and
 // the weights of each order add up to the material volume (the unit cube). The guard inside
 // MakeQuadratureWeightedSamples would throw on every rank for a non-positive rule.
-TEST(DriverStage1bc, QuadratureSamplesArePositive) {
+TEST(DriverGeneratedSeeds, QuadratureSamplesArePositive) {
     mfem::Mesh tet((data_dir / "cube_tet.mesh").string().c_str(), 1, 1, true);
     Distributed d = Distribute(tet, MPI_COMM_WORLD);
     for (int order = -1; order <= 12; ++order) {
