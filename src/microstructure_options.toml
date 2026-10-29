@@ -45,9 +45,9 @@
 # To look at the grains: open results/<your deck's basename>/grains_paraview/grains_paraview.pvd
 # in ParaView and color by grain_id. With [Visualizations] paraview = true, ExaConstit's own
 # output also carries a "Grain ID" field next to stresses and strains.
-# A complete deck of this kind (FCC crystal plasticity, tension to 1% strain) is
-# 01_voronoi/voronoi.toml of the microstructure_examples set, which also shows Laguerre,
-# columnar and Johnson-Mehl grains and thick-ring meshes.
+# A complete deck of this kind (8 grains, FCC crystal plasticity, five steps) is
+# test/data/microstructure/mechanics/hook_voronoi_np2.toml in the ExaConstit repository; its
+# material files props_cp_voce.txt and state_cp_voce.txt are in test/data.
 #
 # Which route to use:
 #   - Inside ExaConstit ([Mesh.Microstructure], above): simplest; nothing to keep track of. The
@@ -691,9 +691,9 @@ exec = "cpu"
     # Example: N = 100 grains in a unit cube: rate = (100 / 0.896)^(4/3), about 540.
     # The formula is for an infinite body. A finite part gets a few more grains (grains at the
     # surface can only grow inward, which leaves room for more), and [Cleanup] then merges the
-    # last tiny ones. Example 04 of microstructure_examples: rate 500 predicts 95, 99 grains
-    # appeared, 89 were left after cleanup with min_grain_elements = 8. Check the count printed
-    # at the end of the run and adjust rate.
+    # last tiny ones. Example: test/data/microstructure/johnson_mehl_auto.toml (unit cube,
+    # rate 60) predicts 19 grains; 17 appeared and 16 were left (one grain got no element).
+    # Check the count printed at the end of the run and adjust rate.
     #
     # If you want something else:
     #   - an exact grain count: set num_nuclei = N and a rate somewhat above the formula's value

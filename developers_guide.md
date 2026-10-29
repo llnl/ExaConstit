@@ -245,6 +245,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - **`simulation_state.hpp/cpp`**: Central state container class
 - **`restart_checkpoint.hpp/cpp`**: Writing checkpoints and restarting from them (requires Axom; see `doc/restart.md`)
 - **`exa_sidre_parmesh.hpp/cpp`**: Writing and rebuilding the parallel mesh for checkpoints
+- **`microstructure_hook.hpp/cpp`**: The `[Mesh.Microstructure]` hook: runs the microstructure generator in memory on mechanics' own mesh and hands the grains, orientations and region map to `SimulationState`
 
 **Manages**:
 - Finite element spaces and mesh data
@@ -294,6 +295,22 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - Experimental finite element enhancements
 - Performance optimizations for specific use cases
 - Research and development components
+
+#### `microstructure/`
+**Purpose**: The microstructure generator: places grain seeds in any hex or tet mesh (curved ones included), assigns every element a grain, orientations and regions, and optionally moves the nodes so the element faces follow the grain boundaries. It is used both by the standalone tool `bin/microstructure_generator` and by the `[Mesh.Microstructure]` hook in `sim_state/`. Built when `ENABLE_MICROSTRUCTURE=ON` (the default; requires Axom).
+- **`microstructure_driver.hpp/cpp`**: `GenerateMicrostructure`, the entry point shared by the tool and the hook
+- **`microstructure_options.hpp/cpp`**: The generator options and their validation; the user reference is `src/microstructure_options.toml`
+- **`seeding/`**: Seed placement (random, minimum distance, Johnson-Mehl nucleation, seed tables, regions of interest) and the partition-independent element and point searches
+- **`labeling/`**: Grain labels per element: Voronoi and Laguerre cells, voxel maps, distances along the material (connected and geodesic modes) and fragment cleanup
+- **`morphology/`**: Lloyd relaxation and the weight fit that matches target grain sizes
+- **`conformal/`**: Label repair and the node fit that makes element faces follow grain boundaries
+- **`geometry/`, `mesh/`, `io/`, `orientation/`, `regions/`, `util/`**: Seed search index and distance metrics; mesh adjacency, masks and sampling; file readers and writers; orientation and region assignment; random numbers and collective error helpers
+- **`tools/microstructure_generator.cpp`**: The standalone tool
+
+**Rules for changes**:
+- Results must not depend on the number of MPI ranks or on the partition: every choice is made by a partition-independent key (element or vertex key) with ties broken by the smallest key, and the tests compare runs on different rank counts.
+- Theory, derivations and file formats go in `doc/microstructure.md`; every option is described in `src/microstructure_options.toml`, and `test_options` checks that file against the defaults in `microstructure_options.hpp`.
+- The Python converters for measured and simulated data (HEXRD, MIDAS, ExaCA, SPPARKS) are in `scripts/microstructure/`.
 
 ### Organization Principles
 - **Modular Design**: Clear separation between components
@@ -588,6 +605,14 @@ max_iter = 25
 
 # Enable specific features
 -DENABLE_CALIPER=ON
+
+# Microstructure generator (default ON, needs Axom) and its optional strict floating point
+# mode (-ffp-contract=off in its kernels, fewer CPU/GPU round-off differences)
+-DENABLE_MICROSTRUCTURE=ON
+-DMICROSTRUCTURE_STRICT_FP=ON
+
+# Register the extensive (non-CI) tests, including all microstructure tests
+-DEXACONSTIT_ENABLE_EXTENSIVE_TESTS=ON
 ```
 
 ### Running Tests
@@ -603,6 +628,11 @@ Some tests take too long for CI and are only registered when configured with
 simulations; anyone changing that code must run them locally and make sure they pass:
 ```bash
 ctest -L long --output-on-failure
+```
+The microstructure tests (registered with `-DEXACONSTIT_ENABLE_EXTENSIVE_TESTS=ON`) carry the
+label `microstructure`; anyone changing `src/microstructure` or the hook must run them:
+```bash
+ctest -L microstructure --output-on-failure
 ```
 No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults to the
 number of logical cores detected at configure time.

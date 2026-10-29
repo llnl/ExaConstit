@@ -41,10 +41,9 @@ in a volume V need I/v = (N / (0.896 V))^(4/3).
 **Finite parts.** The formula is for an infinite body. Grains at a free surface can only grow
 inward, which leaves room for more nuclei, so finite parts tend to get somewhat more grains. For
 small counts the random scatter (about the square root of the count) is larger than that effect.
-Examples: example 04 of the `microstructure_examples` set (unit cube, I/v = 500): the formula
-predicts 95, 99 nuclei formed, and 89 grains remained after cleanup with `min_grain_elements = 8`.
-`test/data/microstructure/johnson_mehl_auto.toml` (unit cube, I/v = 60, rng_seed 5): the formula
-predicts 19 grains, 17 nuclei formed, and 16 grains remained (one nucleus won no element).
+Example: `test/data/microstructure/johnson_mehl_auto.toml` (unit cube, I/v = 60, rng_seed 5):
+the formula predicts 19 grains, 17 nuclei formed, and 16 grains remained (one nucleus won no
+element).
 
 **Completion time.** The untransformed fraction drops below 5% at
 t = (ln 20 / ((pi/3) I v^3))^(1/4) = 1.30 (I v^3)^(-1/4).
