@@ -189,7 +189,7 @@ double get_number(const toml::value& value) {
  */
 template <std::size_t N>
 std::array<double, N> get_number_array(const toml::value& table, const std::string& key) {
-    const auto& array = toml::find(table, key).as_array();
+    const toml::value array = toml::find(table, key).as_array();
     if (array.size() != N) {
         std::ostringstream err;
         err << "Microstructure options: '" << key << "' needs " << N << " values, got "
@@ -399,7 +399,7 @@ MeshInput mesh_from_toml(const toml::value& toml_input) {
 
     // [Mesh.Auto]: box dimensions and element counts of the generated hex mesh.
     if (toml_input.contains("Auto")) {
-        const auto& auto_section = toml::find(toml_input, "Auto");
+        const toml::value auto_section = toml::find(toml_input, "Auto");
         warn_unknown_keys(auto_section, "Mesh.Auto", {"length", "mxyz", "ncuts", "nxyz"});
 
         // Box size per direction (real numbers; integers are accepted too).
@@ -585,7 +585,7 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
     // Region of interest of the seed table and the filler seeds outside it. The box corners
     // (hi > lo) and the combinations are checked in validate().
     if (toml_input.contains("roi")) {
-        const auto& roi = toml::find(toml_input, "roi");
+        const toml::value roi = toml::find(toml_input, "roi");
         warn_unknown_keys(roi, "Seeds.roi", {"lo", "hi"});
         if (!roi.contains("lo") || !roi.contains("hi")) {
             throw std::invalid_argument(
@@ -608,7 +608,7 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
 
     // [Seeds.Size]: target grain size distribution (values checked in validate())
     if (toml_input.contains("Size")) {
-        const auto& size = toml::find(toml_input, "Size");
+        const toml::value size = toml::find(toml_input, "Size");
         warn_unknown_keys(size,
                           "Seeds.Size",
                           {"distribution",
@@ -639,7 +639,7 @@ SeedOptions seeds_from_toml(const toml::value& toml_input) {
 
     // [Seeds.JohnsonMehl]: nucleation and growth parameters (values checked in validate())
     if (toml_input.contains("JohnsonMehl")) {
-        const auto& jm = toml::find(toml_input, "JohnsonMehl");
+        const toml::value jm = toml::find(toml_input, "JohnsonMehl");
         warn_unknown_keys(
             jm, "Seeds.JohnsonMehl", {"rate", "growth_speed", "end_time", "num_nuclei"});
         if (jm.contains("rate")) {
@@ -735,7 +735,7 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
     // Anisotropy tensor, first as an inline table, then the bare shorthand.
     // Whether the tensor is a valid metric (positive definite) is checked in validate().
     if (toml_input.contains("anisotropy")) {
-        const auto& anisotropy = toml::find(toml_input, "anisotropy");
+        const toml::value anisotropy = toml::find(toml_input, "anisotropy");
         warn_unknown_keys(
             anisotropy, "Tessellation.anisotropy", {"kind", "global_tensor", "axis", "normal"});
         if (anisotropy.contains("global_tensor")) {
@@ -820,7 +820,7 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
             toml_input, "connected_max_rounds", "Tessellation.connected_max_rounds");
     }
     if (toml_input.contains("geodesic")) {
-        const auto& geodesic = toml::find(toml_input, "geodesic");
+        const toml::value geodesic = toml::find(toml_input, "geodesic");
         warn_unknown_keys(
             geodesic, "Tessellation.geodesic", {"solver", "elongation", "max_seeds_per_node"});
         if (geodesic.contains("max_seeds_per_node")) {
@@ -832,7 +832,7 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
         }
         // elongation = "auto" (stored as 0) or a number (range checked in validate())
         if (geodesic.contains("elongation")) {
-            const auto& value = toml::find(geodesic, "elongation");
+            const toml::value value = toml::find(geodesic, "elongation");
             if (value.is_string()) {
                 if (value.as_string() != "auto") {
                     throw std::invalid_argument("Tessellation.geodesic.elongation must be "
@@ -860,7 +860,7 @@ TessellationOptions tessellation_from_toml(const toml::value& toml_input) {
 
     // Volume fitting, as an inline table.
     if (toml_input.contains("fit_volumes")) {
-        const auto& fit = toml::find(toml_input, "fit_volumes");
+        const toml::value fit = toml::find(toml_input, "fit_volumes");
         warn_unknown_keys(
             fit, "Tessellation.fit_volumes", {"enabled", "tolerance", "max_iterations", "samples"});
         if (fit.contains("enabled")) {
@@ -954,7 +954,7 @@ OutputOptions output_from_toml(const toml::value& toml_input) {
     // grain_file has three states ("auto", "true", "false"), so it is stored as a string. Accept
     // the natural boolean spelling as well and convert it to the matching string.
     if (toml_input.contains("grain_file")) {
-        const auto& value = toml::find(toml_input, "grain_file");
+        const toml::value value = toml::find(toml_input, "grain_file");
         if (value.is_boolean()) {
             if (value.as_boolean()) {
                 output.grain_file = "true";
@@ -1173,7 +1173,8 @@ RegionOptions regions_from_toml(const toml::value& toml_input) {
     }
     // Target fractions: an array of inline tables, each with an id and a fraction
     if (toml_input.contains("phases")) {
-        for (const auto& entry : toml::find(toml_input, "phases").as_array()) {
+        const toml::value phases = toml::find(toml_input, "phases");
+        for (const auto& entry : phases.as_array()) {
             warn_unknown_keys(entry, "Regions.phases[]", {"id", "fraction"});
             if (!entry.contains("id") || !entry.contains("fraction")) {
                 throw std::invalid_argument("Microstructure options: every 'Regions.phases' entry "
@@ -1306,7 +1307,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
     // outright: if it were merely warned about, the tool would tessellate random seeds instead
     // and produce a completely different microstructure without the user noticing.
     if (toml_input.contains("Source")) {
-        const auto& source = toml::find(toml_input, "Source");
+        const toml::value source = toml::find(toml_input, "Source");
         warn_unknown_keys(source, "Source", {"type"});
         if (source.contains("type")) {
             const auto type = toml::find<std::string>(source, "type");
@@ -1333,7 +1334,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
 
     // [Cleanup]: small tables, read inline.
     if (toml_input.contains("Cleanup")) {
-        const auto& cleanup = toml::find(toml_input, "Cleanup");
+        const toml::value cleanup = toml::find(toml_input, "Cleanup");
         warn_unknown_keys(cleanup,
                           "Cleanup",
                           {"fragments",
@@ -1363,7 +1364,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
 
     // [Orientations]
     if (toml_input.contains("Orientations")) {
-        const auto& orientations = toml::find(toml_input, "Orientations");
+        const toml::value orientations = toml::find(toml_input, "Orientations");
         warn_unknown_keys(orientations, "Orientations", {"source"});
         if (orientations.contains("source")) {
             options.orientations.source = toml::find<std::string>(orientations, "source");
@@ -1377,7 +1378,7 @@ MicrostructureOptions MicrostructureOptions::from_toml(const toml::value& toml_i
 
     // [Conformal]
     if (toml_input.contains("Conformal")) {
-        const auto& conformal = toml::find(toml_input, "Conformal");
+        const toml::value conformal = toml::find(toml_input, "Conformal");
         warn_unknown_keys(conformal, "Conformal", {"enabled"});
         if (conformal.contains("enabled")) {
             options.conformal.enabled = toml::find<bool>(conformal, "enabled");
