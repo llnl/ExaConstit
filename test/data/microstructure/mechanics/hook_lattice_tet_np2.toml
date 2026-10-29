@@ -4,12 +4,12 @@
 # (test_microstructure_hook_e2e_lattice_tet) copies this deck, the mesh and the material files
 # into a scratch directory and runs mechanics on it with 2 MPI ranks.
 #
-# What it exercises: the motivating use case of the conformal fit, grains on a strut lattice with fitted
-# grain boundaries: a BCC strut lattice with filleted junctions meshed with tets (gmsh, then
-# node optimization; lattice/make_lattice_meshes.py), 12 grains grown along paths that stay
-# inside the struts (distance = "geodesic") from [Mesh.Microstructure], [Conformal] enabled
-# (curved strut surfaces, rims where struts meet the box faces), then two steps of mechanics.
-# The physics (material, tension along z) is that of hook_conformal_np2.toml.
+# What it exercises: the motivating use case of the conformal fit, grains on a strut lattice with
+# fitted grain boundaries: a BCC strut lattice with filleted junctions meshed with tets (gmsh, then
+# node optimization; lattice/make_lattice_meshes.py), 12 grains grown along paths that stay inside
+# the struts (distance = "geodesic") from [Mesh.Microstructure], [Conformal] enabled (curved strut
+# surfaces, rims where struts meet the box faces), then two steps of mechanics. The physics
+# (material, tension along z) is that of hook_conformal_np2.toml.
 Version = "0.10.0"
 basename = "hook_lattice_tet_np2"
 

@@ -54,6 +54,8 @@ L = float(n)
 
 # ----- level set -----
 def lattice_phi(m, pad=0.35):
+    """Grid axis, spacing and filleted level set phi (negative inside) at m points per unit,
+    padded by `pad` around the box."""
     h = 1.0 / m
     npad = int(math.ceil(pad / h))
     ax = np.arange(-npad, n * m + npad + 1) * h
@@ -98,6 +100,7 @@ def phi_grad(p):
 
 
 def on_box(p):
+    """True where a coordinate lies on a box plane (0 or L)."""
     return (np.abs(p) < 1e-9 * L) | (np.abs(p - L) < 1e-9 * L)
 
 
@@ -107,6 +110,8 @@ TET_FACES = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]
 
 
 def tet_mesh():
+    """Tet mesh of the lattice: marching cubes to an STL, then gmsh volume meshing (see the
+    module docstring); returns nodes and tets."""
     import gmsh
     from skimage.measure import marching_cubes
     m = 80
@@ -166,6 +171,8 @@ def tet_mesh():
 
 
 def hex_mesh():
+    """Hex mesh of the lattice: the voxel core plus one pillow layer to the surface (see the
+    module docstring); returns nodes and hexes."""
     m = args.voxels
     N, h = n * m, L / (n * m)
     centers = (np.indices((N, N, N)).reshape(3, -1).T + 0.5) * h
@@ -212,7 +219,8 @@ def hex_mesh():
         nv = nv / max(np.linalg.norm(nv), 1e-300)
         free = ~onbox
 
-        def phi_dom(p):  # struts intersected with the box planes the node is not on
+        def phi_dom(p):
+            """Level set of the struts cut by the box planes the node is not on (max of the two)."""
             bt = np.max(np.concatenate([-p[free], p[free] - L])) if free.any() else -np.inf
             return max(float(phi_grad(p)[0][0]), float(bt))
         lo, hi = 0.0, 4.0 * h
@@ -229,6 +237,8 @@ def hex_mesh():
 
 
 def boundary(E, X, faces):
+    """Boundary faces of the elements E as (attribute, corner tuple): 1-6 for the box planes, 7
+    for the strut surfaces."""
     count = {}
     for e in E:
         for f in faces:
@@ -250,6 +260,7 @@ def boundary(E, X, faces):
 
 # ----- node optimization -----
 def optimize(X0, E, bdr):
+    """Node optimization of the module docstring; returns the optimized node positions."""
     import jax
     import jax.numpy as jnp
     jax.config.update("jax_enable_x64", True)
@@ -268,6 +279,7 @@ def optimize(X0, E, bdr):
     PHI, Ej = jnp.asarray(phi), jnp.asarray(E)
 
     def trilinear(p):
+        """Trilinear interpolation of phi and its gradient at the points p (JAX)."""
         u = jnp.clip((p - x0g) / hp, 0, ng - 1.000001)
         i0 = jnp.floor(u).astype(jnp.int32)
         f = u - i0
@@ -280,6 +292,8 @@ def optimize(X0, E, bdr):
         return out
 
     def energy(X, w, delta, power):
+        """Shape energy sum of mu^power over the corners plus w times the surface penalty, det
+        regularized by delta."""
         P = X[Ej]
         c, a, b, d = corners.T
         M = jnp.stack([P[:, a] - P[:, c], P[:, b] - P[:, c], P[:, d] - P[:, c]], -1)
@@ -295,7 +309,10 @@ def optimize(X0, E, bdr):
     X = X0.copy()
 
     def run(w, delta, power, iters):
+        """Minimizes the energy over the free coordinates with L-BFGS-B for at most `iters`
+        iterations."""
         def f(z):
+            """Energy value and gradient with the free coordinates set to z."""
             Y = X.copy()
             Y[free] = z
             v, g = value_grad(jnp.asarray(Y), w, delta, power)
@@ -320,6 +337,8 @@ def optimize(X0, E, bdr):
 
 
 def quality(X, E):
+    """One-line quality summary: smallest mean ratio (tets) or scaled Jacobian (hexes) and the
+    inverted count."""
     if E.shape[1] == 4:
         e = [X[E[:, k]] - X[E[:, 0]] for k in (1, 2, 3)]
         vol = np.einsum("ij,ij->i", np.cross(e[0], e[1]), e[2]) / 6

@@ -1,5 +1,5 @@
-# Microstructure generator example: 20 Voronoi grains on the tetrahedral mesh test/data/cube_tet.mesh,
-# written both as one serial mesh file and as a 4-part parallel mesh.
+# Microstructure generator example: 20 Voronoi grains on the tetrahedral mesh
+# test/data/cube_tet.mesh, written both as one serial mesh file and as a 4-part parallel mesh.
 #
 # Run with (from this directory, since floc below is relative to the working directory; or
 # override the mesh with -m <path to cube_tet.mesh>):
