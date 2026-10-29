@@ -257,7 +257,7 @@
 # rotate BOTH the positions and the orientations in your own script before writing the seed
 # table or voxel map. None of the converters rotate data.
 #
-# Texture without measured grains: there is no built-in texture option yet. Sample N
+# Texture without measured grains: there is no built-in texture option. Sample N
 # orientations from your ODF (e.g. MTEX calcOrientations), write a seed table with random
 # x, y, z and those qw, qx, qy, qz, then use [Seeds] source = "file" and [Orientations]
 # source = "from_source". Seed tables are used as given, so space the random positions in your
@@ -281,8 +281,9 @@ exec = "cpu"
 # =====================================
 # MESH (the mesh the generator READS)
 # =====================================
-# The finite element mesh to put grains on. The generator never moves or changes elements: it
-# only sets every element's attribute to its grain number (1..N).
+# The finite element mesh to put grains on. The generator sets every element's attribute to its
+# grain number (1..N) and changes nothing else, unless [Conformal] is enabled: that step moves
+# the nodes (elements and connectivity stay the same).
 # Any element type and order MFEM reads works: hexes, tets, wedges, curved (high-order) elements.
 #
 # This table is about the mesh going IN. To save the mesh with its grains for later simulations
@@ -703,8 +704,8 @@ exec = "cpu"
     #     structure, so use placement = "rejection" and metric = "voronoi" instead;
     #   - a prescribed size distribution: Johnson-Mehl cannot do that; use [Seeds.Size] with
     #     laguerre and fit_volumes instead;
-    #   - a rate that changes with time: supported inside the library but not exposed as an
-    #     option yet.
+    #   - a rate that changes with time: supported inside the library
+    #     (JohnsonMehlParameters::rate_function) but not available as an option.
     #
     # Needs [Tessellation] metric = "additive". Cannot be combined with [Seeds.Size],
     # fit_volumes, lloyd_iterations or periodic (those would undo what the model produced);
@@ -840,7 +841,7 @@ exec = "cpu"
     # Along x, y, z: a grain cut by one face of the box continues on the opposite face, like a
     # tile of an infinite material. For RVEs meant for periodic boundary conditions, and for
     # grain statistics without the bias of grains cut at the box faces. (ExaConstit's mechanics
-    # does not offer periodic boundary conditions yet; the microstructure itself is periodic.)
+    # has no periodic boundary conditions; only the microstructure itself is periodic.)
     # Needs a mesh with matching faces on opposite sides (every auto box has them).
     # Cannot be combined with fit_volumes, lloyd_iterations, Johnson-Mehl, passthrough_attributes
     # or distance = "connected" / "geodesic".
@@ -976,8 +977,8 @@ exec = "cpu"
 # shape). It does not replace the mesh. If you want one element per voxel, as ExaConstit's
 # auto mesh + grain_file did, use [Mesh] type = "auto" with ncuts = the voxel counts (nx, ny,
 # nz) and length = counts x spacing, placed so the boxes coincide (translate if needed).
-# Note: only voxel maps on a regular box grid can be read today. Data on other point layouts
-# (an unstructured point cloud, the elements of another mesh) cannot be used yet.
+# Note: only voxel maps on a regular box grid can be read. Data on other point layouts (an
+# unstructured point cloud, the elements of another mesh) cannot be used.
 
 [VoxelMap]
     # File layout:
@@ -1068,8 +1069,8 @@ exec = "cpu"
     # What to do with a grain in several pieces:
     # - "auto"  = sensible default: for random seeds, big separate pieces become grains of their
     #             own (a grain really cut in two by a hole) and tiny pieces join the neighbor
-    #             they touch most; for seed tables, every extra piece joins a neighbor (a
-    #             measured grain must not multiply)
+    #             they touch most; for seed tables and voxel maps, every extra piece joins a
+    #             neighbor (a measured grain must not multiply)
     # - "split" = every extra piece becomes a new grain (with a new random orientation)
     # - "merge" = every extra piece joins the neighbor it touches most
     # - "none"  = leave it; only count and report the pieces
@@ -1084,6 +1085,8 @@ exec = "cpu"
     # Which piece keeps the grain's number and orientation:
     # - "largest" = the biggest piece
     # - "seed"    = the piece holding the seed (or the biggest, if the seed is in none)
+    # With Tessellation.distance = "connected" or "geodesic" the piece grown from the seed is
+    # always kept, whatever this says.
     keep_component = "largest"
 
     # Grains with fewer elements than this join the neighbor they touch most (0 or 1 = off).
@@ -1115,8 +1118,8 @@ exec = "cpu"
 # REGIONS (which material each grain is)
 # =====================================
 # ExaConstit gives material properties by region: region r uses the r-th [[Materials]] block.
-# This table decides the region of every grain, usually through its phase (see "WORDS USED IN
-# THIS FILE"). Passthrough blocks ([Mesh]) bring their own regions.
+# This table decides the region of every grain, usually through its phase (see "WORDS ABOUT
+# MEASURED DATA"). Passthrough blocks ([Mesh]) bring their own regions.
 # In an ExaConstit simulation, the number of [[Materials]] blocks must equal the number of
 # regions produced.
 
@@ -1203,7 +1206,7 @@ exec = "cpu"
 # How close the boundaries get, measured on the generator's own test meshes (illustrative, not a
 # guarantee): grain boundary nodes start on average about 0.4 element sizes from where they
 # should go and end about 0.2-0.25 on hex meshes, for analytic and smoothed boundaries alike,
-# and about 0.23-0.26 on tet meshes (structured or from a mesh generator). The log prints these
+# and about 0.2-0.26 on tet meshes (structured or from a mesh generator). The log prints these
 # distances, how many nodes used the smoothed staircase, and the smallest scaled Jacobian, mean
 # ratio and largest aspect ratio before and after, so check them for your mesh. For grains grown
 # from seeds it also compares which grains touch in the mesh with which should touch: pairs that

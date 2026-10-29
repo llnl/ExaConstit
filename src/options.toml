@@ -979,7 +979,9 @@ grain_file = "grains.txt"
     # missed. Exception: element-weighted seeding (Seeds.placement =
     # "element_weighted", or the automatic fallback for very sparse domains) keys
     # its random numbers on the elements, so its seeds change with refinement.
-    # The generator works in place on this mesh (no mesh copy). With p_refinement
+    # The generator works in place on this mesh (no mesh copy); with [Conformal]
+    # enabled = true it also moves the nodes of this mesh (order 1 or 2) so the grain
+    # boundaries become smooth, before the simulation starts. With p_refinement
     # > 0 ExaConstit's mesh carries high-order Nodes; on straight-sided meshes the
     # seeds are still exactly those of the same mesh without Nodes, while element
     # centroids may differ in the last bits, so a grain boundary passing exactly
