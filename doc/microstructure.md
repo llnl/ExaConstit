@@ -39,10 +39,12 @@ using integral_0^inf exp(-a t^4) dt = Gamma(5/4) a^(-1/4). Gamma(5/4) = 0.9064 a
 in a volume V need I/v = (N / (0.896 V))^(4/3).
 
 **Finite parts.** The formula is for an infinite body. Grains at a free surface can only grow
-inward, which leaves room for more nuclei, so finite parts get somewhat more grains; [Cleanup] then
-merges the smallest ones. Example 04 of `microstructure_examples` (unit cube, I/v = 500): the
-formula predicts 95, 99 nuclei formed, 89 grains remained after cleanup with
-`min_grain_elements = 8`.
+inward, which leaves room for more nuclei, so finite parts tend to get somewhat more grains. For
+small counts the random scatter (about the square root of the count) is larger than that effect.
+Examples: example 04 of the `microstructure_examples` set (unit cube, I/v = 500): the formula
+predicts 95, 99 nuclei formed, and 89 grains remained after cleanup with `min_grain_elements = 8`.
+`test/data/microstructure/johnson_mehl_auto.toml` (unit cube, I/v = 60, rng_seed 5): the formula
+predicts 19 grains, 17 nuclei formed, and 16 grains remained (one nucleus won no element).
 
 **Completion time.** The untransformed fraction drops below 5% at
 t = (ln 20 / ((pi/3) I v^3))^(1/4) = 1.30 (I v^3)^(-1/4).
@@ -63,8 +65,9 @@ References:
 
 `distance = "geodesic"` measures distance along paths that stay inside the material. The solver
 (`labeling/geodesic_fim.hpp`, `labeling/geodesic_graph.hpp`) grows **one** front outward from all
-seeds at once; every mesh vertex keeps the first arrival and the seed it came from. The front
-starts at seed i with the value -a_i (its head start), so the result is
+seeds at once; every field node (a mesh vertex, or every nodal point of a curved mesh) keeps the
+first arrival and the seed it came from. The front starts at seed i with the value -a_i (its head
+start), so the result is
 
     T(x) = min_i ( d_path(x, s_i) - a_i ).
 
@@ -102,7 +105,7 @@ ranks.
 
 **Laguerre and weighted quadric** (closest = d^2 - w_i, `labeling/geodesic_weighted.hpp`). A heavy
 seed can own points that another seed's front reaches first, so one front per mesh is not enough:
-every mesh vertex keeps a short list of (seed, path length) pairs, and the eikonal update runs per
+every field node keeps a short list of (seed, path length) pairs, and the eikonal update runs per
 seed. A seed j *dominates* seed i at a vertex when it is both closer (d_j <= d_i) and has the lower
 value (d_j^2 - w_j <= d_i^2 - w_i). Then j wins at every point reached from seed i through that
 vertex: with L the remaining path length,
@@ -373,9 +376,9 @@ analytic-only pairs are 0 to 5 at every resolution.
 **Fit: spring-balanced pseudo-elastic morph.** The mesh is treated as a linear elastic solid with
 Young's modulus 1 (times a per-element stiffening factor) and Poisson ratio 0.3, assembled on the
 input geometry. Every fitted node v is pulled toward its target t_v by a spring of stiffness
-k_v = c h_v m_v, the same on faces, triple lines and quad points (a tenth on triple lines, the
-first choice, left them about where they started: a 120° tricrystal's triple line nodes stayed
-0.5 h from the line, against 0.24 h now). The displacement u minimizes
+k_v = c h_v m_v, the same on faces, triple lines and quad points (a weaker spring on triple lines,
+a tenth, leaves them about where they start: a 120° tricrystal's triple line nodes stay 0.5 h
+from the line, against 0.24 h with equal springs). The displacement u minimizes
 
     1/2 u^T K u + 1/2 sum_v k_v |x_v + u_v - t_v|^2,
 
