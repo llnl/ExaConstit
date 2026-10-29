@@ -2,3 +2,7 @@
 # First clang-format run so lots of changes...
 fec3a715e3c8c9e86a92c03f8e6501ad58bbe68f
 726c934ef7ae9ba95e4b63cccce7799b603bcf8d
+# clang-format of the microstructure library, tool and tests
+fe91fe9292f8df21750692295e70fc8d5a55f987
+# clang-format of all source and test files after the include-group and access-macro fixes
+a0fed02141382a74264016c399c1f84dc0460363
