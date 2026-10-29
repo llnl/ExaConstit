@@ -108,7 +108,7 @@ SortIncludes: CaseSensitive
 IncludeBlocks: Regroup
 IncludeCategories:
   # ExaConstit project headers (quoted includes from project directories)
-  - Regex:           '^"(boundary_conditions|fem_operators|mfem_expt|models|options|postprocessing|sim_state|solvers|system_driver|umats|utilities)/'
+  - Regex:           '^"(boundary_conditions|fem_operators|mfem_expt|microstructure|models|options|postprocessing|sim_state|solvers|system_driver|umats|utilities)/'
     Priority:        1
     CaseSensitive:   true
   - Regex:           '^"(system_driver)'
@@ -146,6 +146,12 @@ PenaltyBreakFirstLessLess: 120
 PenaltyBreakString: 1000
 PenaltyExcessCharacter: 1000000
 PenaltyReturnTypeOnItsOwnLine: 60
+
+# Access-specifier macros from utilities/cuda_access.hpp (public under nvcc so device lambdas
+# can live in private and protected methods); expanding them keeps class bodies formatted
+Macros:
+  - EXACONSTIT_CUDA_PRIVATE=private
+  - EXACONSTIT_CUDA_PROTECTED=protected
 
 # Misc
 ReflowComments: true
