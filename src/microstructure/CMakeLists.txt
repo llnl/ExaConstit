@@ -164,9 +164,9 @@ ms_add_module(NAME ms_labeling GLOBS labeling/* orientation/* regions/*
 # (seeding).
 ms_add_module(NAME ms_morphology GLOBS morphology/*
               DEPENDS_ON ms_seeding ms_labeling ms_geometry ms_mesh)
-# conformal/ (Stage 2, conformal grain boundaries): node label sets and node targets on the
-# analytic grain boundaries. Uses the node numbering and rank exchange of labeling/vertex_field
-# and the exact seed search of geometry/seed_index.
+# conformal/ (conformal grain boundaries): node labels and targets on the analytic or smoothed
+# grain boundaries, label repair and the node fit. Uses the node numbering and rank exchange of
+# labeling/vertex_field and the exact seed search of geometry/seed_index.
 ms_add_module(NAME ms_conformal GLOBS conformal/*
               DEPENDS_ON ms_labeling ms_geometry ms_mesh)
 

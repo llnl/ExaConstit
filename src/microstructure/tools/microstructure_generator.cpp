@@ -36,7 +36,7 @@
  *     a voxel map, with its file and format), how the grains were made (seed generator,
  *     Johnson-Mehl nucleation, seed table with its region of interest and filler seeds, or voxel
  *     map grid, fill and read counts), the distance mode of the labeling (connected: relabeling
- *     rounds and counts; geodesic: solver, rounds, unreached elements), what each optional stage
+ *     rounds and counts; geodesic: solver, rounds, unreached elements), what each optional step
  *     did (size targets, Lloyd
  *     relaxation, volume fit with the element-level volume errors against the targets, periodic
  *     images, quadrature vote, fragment cleanup), grain statistics, phase fractions and regions,
@@ -272,9 +272,8 @@ std::string DistanceHeaderLine(const ms::GenerationReport& report) {
 }
 
 /*
- * DistanceText: the distance-mode section of the rank-0 log (Stage 1e). Prints nothing for the
- * default straight-line ("euclidean") mode and for voxel maps, so the logs of earlier stages do
- * not change.
+ * DistanceText: the distance-mode section of the rank-0 log. Prints nothing for the default
+ * straight-line ("euclidean") mode and for voxel maps.
  *  - connected: grains are the straight-line cells cut down to the elements joined to the seed
  *    through material. Reports the relabeling rounds, the elements moved to another seed, the
  *    orphans left after connected_max_rounds (merged later by the fragment cleanup), the elements
@@ -864,16 +863,16 @@ void CopyFittedCorners(MPI_Comm comm,
 
 /** Paths of everything written, for the summary. */
 struct WrittenFiles {
-    fs::path serial_mesh;
-    std::string parallel_prefix;
-    int num_parts = 0;
-    fs::path orientation_file;
-    fs::path grain_file;
-    fs::path region_map;
-    fs::path grain_table;
-    fs::path grain_adjacency;
-    fs::path microstructure_file;
-    fs::path paraview;
+    fs::path serial_mesh;         ///< serial mesh file (empty if not written)
+    std::string parallel_prefix;  ///< file prefix of the parallel decomposition (or empty)
+    int num_parts = 0;            ///< parts of the parallel decomposition
+    fs::path orientation_file;    ///< per-grain orientations
+    fs::path grain_file;          ///< per-element grain ids (auto meshes)
+    fs::path region_map;          ///< grain -> region map (more than one region)
+    fs::path grain_table;         ///< <base>_grains.csv
+    fs::path grain_adjacency;     ///< <base>_adjacency.csv (or empty)
+    fs::path microstructure_file; ///< <base>.h5 (or empty)
+    fs::path paraview;            ///< ParaView collection (or empty)
 };
 
 /*
@@ -1031,6 +1030,7 @@ void PrintSummary(const ms::MicrostructureOptions& options,
 
 } // namespace
 
+/* main: the flow listed in the file comment (steps 1-8 below). */
 int main(int argc, char** argv) {
     // ---- 1. MPI and command line -------------------------------------------------------------
     mfem::Mpi::Init(argc, argv);

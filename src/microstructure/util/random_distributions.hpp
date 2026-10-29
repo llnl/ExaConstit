@@ -27,6 +27,7 @@
 namespace exaconstit::microstructure {
 
 namespace detail {
+/** 2 pi, for the Box-Muller angle and random rotations. */
 constexpr double TWO_PI = 6.283185307179586476925286766559;
 } // namespace detail
 

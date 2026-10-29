@@ -63,7 +63,8 @@ enum class RngPurpose : std::uint32_t {
     PHASE = 7,          ///< phase assignment
     /**
      * Element-volume-weighted seed sampling: arrival times and in-element positions of the
-     * points an element emits (id = 64-bit hash of the element centroid, all 64 bits used).
+     * points an element emits (id = the element's 64-bit key, mesh/element_key.hpp: a hash of
+     * its rounded corner positions; all 64 bits used).
      * A purpose of its own keeps these streams disjoint from the SEED_POSITION candidate streams
      * for every possible hash value.
      */
@@ -83,11 +84,11 @@ namespace detail {
 
 // Philox4x32 round multipliers and key increments (Salmon et al. 2011; identical to
 // Random123's PHILOX_M4x32_0/1 and PHILOX_W32_0/1). Changing any of them changes every stream.
-constexpr std::uint32_t PHILOX_M0 = 0xD2511F53u;
-constexpr std::uint32_t PHILOX_M1 = 0xCD9E8D57u;
-constexpr std::uint32_t PHILOX_W0 = 0x9E3779B9u;          // golden ratio
-constexpr std::uint32_t PHILOX_W1 = 0xBB67AE85u;          // sqrt(3) - 1
-constexpr double INV_2_POW_53 = 1.0 / 9007199254740992.0; // 2^-53
+constexpr std::uint32_t PHILOX_M0 = 0xD2511F53u;          ///< multiplier of words 0-1
+constexpr std::uint32_t PHILOX_M1 = 0xCD9E8D57u;          ///< multiplier of words 2-3
+constexpr std::uint32_t PHILOX_W0 = 0x9E3779B9u;          ///< key increment 0 (golden ratio)
+constexpr std::uint32_t PHILOX_W1 = 0xBB67AE85u;          ///< key increment 1 (sqrt(3) - 1)
+constexpr double INV_2_POW_53 = 1.0 / 9007199254740992.0; ///< 2^-53
 
 } // namespace detail
 
