@@ -1,0 +1,25 @@
+# The columnar grains of columnar.toml, split into two phases by volume (70% phase 1, 30%
+# phase 2); each phase becomes its own region (material) in ExaConstit.
+# Figure: doc/microstructure_figures/gallery_columnar_phases.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 2.0]
+        ncuts = [100, 100, 200]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 3
+    min_distance_factor = 0.4
+
+[Tessellation]
+    metric = "quadric"
+    global_tensor = [1.0, 1.0, 0.04, 0.0, 0.0, 0.0]
+
+[Regions]
+    mode = "phase_fractions"
+    phases = [{ id = 1, fraction = 0.7 }, { id = 2, fraction = 0.3 }]
+
+[Output]
+    basename = "columnar_two_phases"
+    paraview = true

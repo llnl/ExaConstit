@@ -1,0 +1,24 @@
+# 1000 equiaxed Voronoi grains in a unit cube meshed with 100^3 hexahedra (about 1000 elements
+# per grain). Figures: doc/microstructure_figures/box_1000_conformal_pair.jpg and
+# box_1000_closeup_pair.jpg (right halves).
+# The same grains as box_1000_grains.toml, with the grain boundaries fitted ([Conformal]).
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [100, 100, 100]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 1
+    min_distance_factor = 0.5
+
+[Tessellation]
+    metric = "voronoi"
+
+[Output]
+    basename = "box_1000_conformal"
+    paraview = true
+
+[Conformal]
+    enabled = true

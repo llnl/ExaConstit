@@ -21,7 +21,7 @@ Formats written:
   `[Source] type = "voxel_map"`, `format = "exaconstit"` (with a voxel map) or `[Seeds] source =
   "file"` (grain table with positions). Written with h5py only (`write_microstructure_file`,
   `write_voxel_map`); the Conduit Python module is not needed. Specification:
-  `doc/microstructure.md`, section 3.2.
+  `doc/microstructure.md`, section 11.2.
 - **ExaConstit seed table v1** (CSV, `[Seeds] source = "file"`, optional): `#` comments, a header
   of column names, one seed per row; real numbers with 17 significant digits. Ids start at 1:
   `hexrd_grains_to_seeds.py` writes HEXRD grain ID + 1 (HEXRD counts from 0), and

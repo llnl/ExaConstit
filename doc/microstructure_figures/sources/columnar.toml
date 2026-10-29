@@ -1,0 +1,21 @@
+# 1000 columnar grains along z (the build direction of an additively made part), five times
+# longer than wide, in a 1 x 1 x 2 bar of 100 x 100 x 200 hexes.
+# Figure: doc/microstructure_figures/gallery_columnar.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 2.0]
+        ncuts = [100, 100, 200]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 3
+    min_distance_factor = 0.4
+
+[Tessellation]
+    metric = "quadric"
+    global_tensor = [1.0, 1.0, 0.04, 0.0, 0.0, 0.0]
+
+[Output]
+    basename = "columnar"
+    paraview = true

@@ -1,0 +1,22 @@
+# Johnson-Mehl nucleation and growth, rate chosen for about 1000 grains in the unit cube:
+# rate = (1000 / 0.896)^(4/3), about 11600.
+# Figure: doc/microstructure_figures/gallery_johnson_mehl.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [100, 100, 100]
+
+[Seeds]
+    placement = "johnson_mehl"
+    rng_seed = 3
+    [Seeds.JohnsonMehl]
+        rate = 11600.0
+        growth_speed = 1.0
+
+[Tessellation]
+    metric = "additive"
+
+[Output]
+    basename = "johnson_mehl"
+    paraview = true

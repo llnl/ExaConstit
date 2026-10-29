@@ -309,7 +309,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 
 **Rules for changes**:
 - Results must not depend on the number of MPI ranks or on the partition: every choice is made by a partition-independent key (element or vertex key) with ties broken by the smallest key, and the tests compare runs on different rank counts.
-- Theory, derivations and file formats go in `doc/microstructure.md`; every option is described in `src/microstructure_options.toml`, and `test_options` checks that file against the defaults in `microstructure_options.hpp`.
+- The user guide with pictures, theory and file formats is `doc/microstructure.md`; every option is described in `src/microstructure_options.toml`, and `test_options` checks that file against the defaults in `microstructure_options.hpp`. The code map, the rules for changes, algorithm details and the test suite are in `doc/microstructure_developers.md`.
 - The Python converters for measured and simulated data (HEXRD, MIDAS, ExaCA, SPPARKS) are in `scripts/microstructure/`.
 
 ### Organization Principles

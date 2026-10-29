@@ -18,8 +18,8 @@ SPPARKS, ExaCA) into the input files the ExaConstit microstructure generator rea
 
 Both formats are specified in the C++ reader headers,
 ``src/microstructure/io/microstructure_file_io.hpp`` and ``src/microstructure/io/seed_table_io.hpp``
-(user-level description: ``doc/microstructure.md``, section 3); the functions here write exactly
-what the readers expect.
+(user-level description: ``doc/microstructure.md``, sections 7 and 11); the functions here
+write exactly what the readers expect.
 
 Orientations
 ------------

@@ -1,0 +1,23 @@
+# 1000 Laguerre grains whose volumes follow a log-normal size distribution (sigma = 0.5).
+# Figure: doc/microstructure_figures/gallery_laguerre.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [100, 100, 100]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 3
+    [Seeds.Size]
+        distribution = "lognormal"
+        sigma = 0.5
+        polydisperse_placement = true
+
+[Tessellation]
+    metric = "laguerre"
+    fit_volumes = { enabled = true, tolerance = 0.03, max_iterations = 200, samples = "quadrature" }
+
+[Output]
+    basename = "laguerre_lognormal"
+    paraview = true

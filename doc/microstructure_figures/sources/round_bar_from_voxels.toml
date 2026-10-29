@@ -1,0 +1,21 @@
+# A round tensile bar (hexahedra, round_bar.mesh) cut from the voxel map of an additively built
+# block: every element takes the grain of the voxels it covers, with the grain's orientation.
+# Run where make_voxel_example.py wrote am_block.h5 and round_bar.mesh.
+# Figure: doc/microstructure_figures/voxel_round_bar.jpg.
+[Mesh]
+    type = "file"
+    floc = "round_bar.mesh"
+
+[Source]
+    type = "voxel_map"
+
+[VoxelMap]
+    format = "exaconstit"
+    file = "am_block.h5"
+
+[Orientations]
+    source = "from_source"
+
+[Output]
+    basename = "round_bar"
+    paraview = true

@@ -1,0 +1,18 @@
+# 1000 Voronoi grains from purely random seeds on a 100^3 hex unit cube.
+# Figure: doc/microstructure_figures/gallery_voronoi_random.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [100, 100, 100]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 3
+
+[Tessellation]
+    metric = "voronoi"
+
+[Output]
+    basename = "voronoi_random"
+    paraview = true

@@ -1,0 +1,20 @@
+# 1000 equiaxed grains: seeds kept apart, then three Lloyd steps (rounder, more even grains).
+# Figure: doc/microstructure_figures/gallery_equiaxed.jpg.
+[Mesh]
+    type = "auto"
+    [Mesh.Auto]
+        length = [1.0, 1.0, 1.0]
+        ncuts = [100, 100, 100]
+
+[Seeds]
+    num_seeds = 1000
+    rng_seed = 3
+    min_distance_factor = 0.5
+
+[Tessellation]
+    metric = "voronoi"
+    lloyd_iterations = 3
+
+[Output]
+    basename = "equiaxed"
+    paraview = true
