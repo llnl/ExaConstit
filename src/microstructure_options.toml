@@ -157,9 +157,9 @@
 #              stored. The generator can put such a picture onto any mesh ([VoxelMap]).
 # Microstructure file  ExaConstit's own file for grain data (HDF5, usually ending in .h5). It
 #              holds a grain table (one row per grain: grain number, and optionally orientation,
-#              phase, seed position, size, shape) and, optionally, a voxel map. The converters
-#              in scripts/microstructure/ write it, the generator reads it ([Seeds] file or
-#              [VoxelMap] file) and can write one itself ([Output] microstructure_file).
+#              phase, seed position, size, shape) and, optionally, a voxel map. The voxel-map
+#              converters in scripts/microstructure/ write it, the generator reads it ([Seeds]
+#              file or [VoxelMap] file) and can write one itself ([Output] microstructure_file).
 #              Exact contents: doc/microstructure.md, section 3.2.
 # Seed table   A list of grains given as seed points, one per grain, with optional orientation,
 #              phase, size and shape: a microstructure file without a voxel map, or a CSV text

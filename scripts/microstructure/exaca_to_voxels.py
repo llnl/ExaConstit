@@ -122,6 +122,7 @@ class _ByteCursor:
     """
 
     def __init__(self, data, path):
+        """Cursor at the start of `data` (the file's bytes); `path` is used in error messages."""
         self.data = data
         self.pos = 0
         self.path = path

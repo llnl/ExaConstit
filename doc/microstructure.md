@@ -149,10 +149,12 @@ coordinates) is C^T, so a quaternion computed from g must be conjugated.
 
 ### 3.1 Seed table as CSV text ("ExaConstit seed table v1", optional)
 
-The CSV form is for short grain lists written by hand or in a spreadsheet. It is never required:
+The CSV form is for short grain lists written by hand or in a spreadsheet, and the form the HEDM
+converters (`hexrd_grains_to_seeds.py`, `midas_grains_to_seeds.py`) write. It is never required:
 a microstructure file with only a grain table (section 3.2) says the same and is what the
-converters and the generator write. Both are read by `[Seeds] source = "file"`; the reader tells
-them apart by the HDF5 signature at the start of the file.
+generator (`[Output] microstructure_file`) and the Python writer write. Both are read by
+`[Seeds] source = "file"`; the reader tells them apart by the HDF5 signature at the start of the
+file.
 
 Grammar (reader: `src/microstructure/io/seed_table_io.hpp`):
 - UTF-8; a byte-order mark and Windows (CRLF) line endings are accepted.
