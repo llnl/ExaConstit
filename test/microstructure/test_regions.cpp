@@ -281,9 +281,9 @@ TEST(PhaseFractions, InvalidInputsThrow) {
 // Attribute domains: a 6 x 6 x 8 hex box whose two bottom layers (z < 2) are a build plate
 //------------------------------------------------------------------------------------------------
 
-constexpr int PLATE_ATTRIBUTE = 2;
-constexpr int PART_ATTRIBUTE = 1;
-constexpr int GRIP_ATTRIBUTE = 3;
+constexpr int PLATE_ATTRIBUTE = 2; ///< attribute of the build plate
+constexpr int PART_ATTRIBUTE = 1;  ///< attribute of the part
+constexpr int GRIP_ATTRIBUTE = 3;  ///< attribute of the grip
 
 /**
  * The box [0,6] x [0,6] x [0,8] with unit hexes; elements with centroid z < 2 get attribute 2
@@ -310,8 +310,8 @@ mfem::Mesh PlateBox(bool grip = false) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /**
@@ -358,9 +358,9 @@ Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm, bool plate_on_last_ran
 
 /** Labels of the whole plate box in serial element order, identical on every rank. */
 struct PlateResult {
-    std::vector<int> parent_grain;
-    int num_grains = 0;
-    bool all_seeds_above_plate = true;
+    std::vector<int> parent_grain;     ///< grain per element, serial order
+    int num_grains = 0;                ///< grains of the whole mesh (part and passthrough)
+    bool all_seeds_above_plate = true; ///< every seed lies in the part, above the plate
 };
 
 /**
@@ -629,6 +629,7 @@ TEST(AttributeDomain, ToParentRejectsBadGrains) {
 
 } // namespace
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -53,9 +53,9 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr int ACTIVE_ATTRIBUTE = 1;
-constexpr int PLATE_ATTRIBUTE = 2;
-constexpr double PLATE_TOP = 0.5;
+constexpr int ACTIVE_ATTRIBUTE = 1; ///< attribute of the active part
+constexpr int PLATE_ATTRIBUTE = 2;  ///< attribute of the inactive plate
+constexpr double PLATE_TOP = 0.5;   ///< height of the plate's top face
 
 /** Smooth warp of the interior that fixes the box faces' planes (a function of x only). */
 void Warp(const mfem::Vector& x, mfem::Vector& y) {
@@ -91,11 +91,12 @@ mfem::Mesh BuildMesh(bool reference, mfem::Element::Type type, int curved_order)
 
 /** A serial mesh distributed over comm, with the mask of its active attribute. */
 struct MaskedMesh {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    ms::ElementMask mask;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
+    ms::ElementMask mask;                 ///< active elements (attribute ACTIVE_ATTRIBUTE)
 };
 
+/** Distributes `serial` over `comm` and builds the mask. Collective. */
 MaskedMesh Distribute(mfem::Mesh& serial, MPI_Comm comm) {
     MaskedMesh m;
     m.order = ms::BuildSerialOrder(serial, comm);
@@ -119,12 +120,14 @@ void ExpectSameSeeds(const ms::SeedSet& a, const ms::SeedSet& b, const std::stri
     EXPECT_EQ(differ, 0u) << what;
 }
 
+/** One test mesh: element type and curved order (0: straight). */
 struct Variant {
-    mfem::Element::Type type;
-    int curved_order;
-    const char* name;
+    mfem::Element::Type type; ///< hex or tet
+    int curved_order;         ///< order of the curved Nodes, 0 for none
+    const char* name;         ///< name in the test output
 };
 
+/** The test meshes: straight hexes and tets, and an order-2 curved hex. */
 const Variant kVariants[] = {{mfem::Element::HEXAHEDRON, 0, "hex"},
                              {mfem::Element::TETRAHEDRON, 0, "tet"},
                              {mfem::Element::HEXAHEDRON, 2, "curved hex p=2"}};
@@ -427,6 +430,8 @@ TEST(MaskSeeding, NearestVertexReportsEveryCopy) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

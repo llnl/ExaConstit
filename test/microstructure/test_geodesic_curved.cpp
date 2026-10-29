@@ -52,9 +52,10 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr double INF = std::numeric_limits<double>::infinity();
-constexpr double PI = 3.14159265358979323846;
+constexpr double INF = std::numeric_limits<double>::infinity(); ///< The "not reached" distance.
+constexpr double PI = 3.14159265358979323846; ///< pi, for the annulus and sphere geometry.
 
+/** This process's rank in MPI_COMM_WORLD. */
 int WorldRank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -127,8 +128,8 @@ void SetNodes(mfem::Mesh& mesh, int p, int btype) {
 
 /** Inner and outer radius and height of the half annulus. */
 constexpr double ANNULUS_A = 1.0;
-constexpr double ANNULUS_B = 2.0;
-constexpr double ANNULUS_H = 0.5;
+constexpr double ANNULUS_B = 2.0; ///< outer radius
+constexpr double ANNULUS_H = 0.5; ///< height
 
 /**
  * Half annulus a <= r <= b, 0 <= theta <= pi, 0 <= z <= H with nr x nth x nz cells, as order-p
@@ -190,9 +191,9 @@ double AnnulusGeodesic(const double* s, const double* t, bool* blocked) {
 
 /** Field nodes of a run: coordinates, T and label of every local node. */
 struct NodeValues {
-    std::vector<std::array<double, 3>> xyz;
-    std::vector<double> T;
-    std::vector<int> label;
+    std::vector<std::array<double, 3>> xyz; ///< node coordinates
+    std::vector<double> T;                  ///< distance T per node
+    std::vector<int> label;                 ///< seed label per node (-1: none)
 };
 
 /** The local nodes of a field. Not collective. */
@@ -287,8 +288,8 @@ enum class Layout { METIS_WORLD, SCATTERED_WORLD, SELF };
 
 /** The distributed mesh with its serial-order bookkeeping. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /**
@@ -328,13 +329,13 @@ Distributed Distribute(mfem::Mesh& serial, Layout layout) {
 
 /** One geodesic run, gathered. */
 struct GeodesicRun {
-    bool curved = false;
-    int order = 0;
-    std::vector<int> element_seed;
-    NodeValues nodes;
-    ms::GeodesicReport report;
-    std::vector<std::uint64_t> source_keys;
-    std::vector<char> seed_outside;
+    bool curved = false;                    ///< the field used the mesh Nodes (sub-cells)
+    int order = 0;                          ///< lattice order p of the field
+    std::vector<int> element_seed;          ///< seed per element, in serial element order
+    NodeValues nodes;                       ///< field nodes of every rank, gathered
+    ms::GeodesicReport report;              ///< the solver's report
+    std::vector<std::uint64_t> source_keys; ///< source element key per seed
+    std::vector<char> seed_outside;         ///< 1 per seed that lay outside the material
 };
 
 /** A labeler run (FIM or graph) on `serial` distributed per `layout`, gathered. Collective. */
@@ -451,10 +452,10 @@ double CellVolume(const std::vector<const double*>& c) {
 
 /** Largest relative error and smallest signed relative error of a set of samples. */
 struct ErrorStats {
-    double max_abs_rel = 0.0;
-    double min_signed_rel = 0.0;
-    double mean_abs_rel = 0.0;
-    int count = 0;
+    double max_abs_rel = 0.0;    ///< largest |relative error|
+    double min_signed_rel = 0.0; ///< smallest signed relative error
+    double mean_abs_rel = 0.0;   ///< mean |relative error|
+    int count = 0;               ///< samples
 };
 
 /**
@@ -1038,6 +1039,8 @@ TEST(CurvedGeodesic, StraightMeshesKeepTheCornerField) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

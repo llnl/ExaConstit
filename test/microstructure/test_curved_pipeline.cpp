@@ -40,7 +40,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr int PLATE_ATTRIBUTE = 2;
+constexpr int PLATE_ATTRIBUTE = 2; ///< attribute of the passthrough plate of the test mesh
 
 /** Smooth warp moving every node (also on the boundary): genuinely curved elements. */
 void Warp(const mfem::Vector& x, mfem::Vector& y) {
@@ -86,10 +86,11 @@ GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>&
 
 /** One driver run with its labels in serial order and the grain volumes. */
 struct DriverRun {
-    std::vector<int> labels;
-    std::vector<int> attributes; // serial order, of the input mesh
-    ms::MicrostructureResult result;
-    std::vector<double> grain_volume;
+    std::vector<int> labels; ///< grain per element, serial order
+    /** Element attributes of the input mesh, serial order. */
+    std::vector<int> attributes;      // serial order, of the input mesh
+    ms::MicrostructureResult result;  ///< the driver's result
+    std::vector<double> grain_volume; ///< volume of each grain (fixed-point grain statistics)
 };
 
 /** GenerateMicrostructure on `serial` distributed over `comm` (collective), plus statistics. */
@@ -101,7 +102,7 @@ DriverRun RunDriver(mfem::Mesh& serial, const ms::MicrostructureOptions& options
         attributes[e] = pmesh->GetAttribute(e);
     }
     DriverRun run;
-    ms::GenerationReport report;
+    ms::GenerationReport report; ///< the driver's report
     run.result = ms::GenerateMicrostructure(options, *pmesh, comm, &report);
     run.labels = GatherToAll(comm, order, run.result.element_grain);
     run.attributes = GatherToAll(comm, order, attributes);
@@ -113,10 +114,12 @@ DriverRun RunDriver(mfem::Mesh& serial, const ms::MicrostructureOptions& options
 
 /** A named pipeline. */
 struct Pipeline {
-    std::string name;
-    ms::MicrostructureOptions options;
+    std::string name;                  ///< name in the test output
+    ms::MicrostructureOptions options; ///< options of the pipeline
 };
 
+/** The pipelines run on every mesh variant: Euclidean, vote, connected, geodesic (FIM, graph) and a
+ * passthrough plate, 10 seeds each. */
 std::vector<Pipeline> Pipelines() {
     std::vector<Pipeline> out;
     ms::MicrostructureOptions base;
@@ -169,13 +172,15 @@ std::vector<Pipeline> Pipelines() {
     return out;
 }
 
+/** One curved test mesh: element type, Nodes order and nodal basis. */
 struct MeshVariant {
-    mfem::Element::Type type;
-    int order;
-    int basis;
-    std::string name;
+    mfem::Element::Type type; ///< hex or tet
+    int order;                ///< order of the mesh Nodes
+    int basis;                ///< mfem::BasisType of the Nodes
+    std::string name;         ///< name in the test output
 };
 
+/** The curved meshes of the matrix: hex and tet, order 2 and 3, Gauss-Lobatto and uniform nodes. */
 const MeshVariant kMeshes[] = {
     {mfem::Element::HEXAHEDRON, 2, mfem::BasisType::GaussLobatto, "hex p2 GL"},
     {mfem::Element::HEXAHEDRON, 3, mfem::BasisType::GaussLobatto, "hex p3 GL"},
@@ -244,6 +249,8 @@ TEST(CurvedPipeline, TetMatrix) {
     RunMatrix(mfem::Element::TETRAHEDRON);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

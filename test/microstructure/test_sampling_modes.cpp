@@ -48,6 +48,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the test data files (set by CMake). */
 const fs::path data_dir = fs::path(MS_SAMPLING_DATA_DIR);
 
 /** test/data/cube_tet.mesh, read the way ExaConstit reads a [Mesh] type = "file" mesh. */
@@ -90,8 +91,8 @@ ms::SeedSet RandomSeeds(int n, std::uint64_t key, double max_weight = 0.0, bool 
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** Partitions `serial` over `comm` (collective), keeping local -> serial element ids. */
@@ -1269,6 +1270,7 @@ TEST(PeriodicImages, MapToOriginal) {
 }
 
 /** Initializes MPI (mfem::Mpi finalizes it at exit) and runs every test on every rank. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

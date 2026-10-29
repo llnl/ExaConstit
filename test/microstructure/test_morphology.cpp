@@ -106,10 +106,11 @@ bool InLShape(double x, double y, double z, int arm) {
 
 /** A serial mesh distributed over a communicator (collective to build). */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
+/** Distributes `serial` over `comm` (BuildSerialOrder + MakeParMesh). Collective. */
 Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm) {
     Distributed d;
     d.order = ms::BuildSerialOrder(serial, comm);
@@ -774,6 +775,7 @@ TEST(Lloyd, CentroidalPowerKeepsTargets) {
     ExpectBitwiseEqual(got.weight, ref.weight);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

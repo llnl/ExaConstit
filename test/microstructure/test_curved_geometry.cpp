@@ -41,14 +41,16 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr double kPi = 3.141592653589793;
+constexpr double kPi = 3.141592653589793; ///< pi.
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     return rank;
 }
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int n = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &n);
@@ -225,6 +227,7 @@ bool SingleStartInside(mfem::Mesh& mesh, int e, const std::array<double, 3>& p) 
     return inverse.Transform(point, ip) == mfem::InverseElementTransformation::Inside;
 }
 
+/** The element types every test runs on. */
 const mfem::Element::Type kTypes[] = {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON};
 
 } // namespace
@@ -923,6 +926,7 @@ TEST(CurvedGeometry, ParaViewHighOrderForCurvedMesh) {
     EXPECT_EQ(sizes[1], ne);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

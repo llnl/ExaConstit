@@ -34,6 +34,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** A seed set with the points p as positions (no other columns). */
 ms::SeedSet MakeSeeds(const std::vector<std::array<double, 3>>& p) {
     ms::SeedSet s;
     for (const auto& q : p) {
@@ -88,6 +89,7 @@ ms::AdjacencyComparison Compare(mfem::Mesh& serial,
     return ms::CompareAdjacency(targets, grain_seed);
 }
 
+/** Four seeds on a line along x: four Voronoi slabs, each a quarter of the box. */
 const ms::SeedSet& Slabs() {
     static const ms::SeedSet s = MakeSeeds(
         {{0.125, 0.5, 0.5}, {0.375, 0.5, 0.5}, {0.625, 0.5, 0.5}, {0.875, 0.5, 0.5}});
@@ -200,6 +202,7 @@ TEST(AdjacencyCheck, PolycrystalIsPartitionIndependent) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

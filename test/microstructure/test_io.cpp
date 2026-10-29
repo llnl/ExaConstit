@@ -37,6 +37,7 @@ namespace fs = std::filesystem;
 namespace {
 
 /** This process's rank in MPI_COMM_WORLD. */
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -44,6 +45,7 @@ int Rank() {
 }
 
 /** Number of ranks in MPI_COMM_WORLD. */
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int n = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &n);
@@ -174,18 +176,22 @@ double TotalVolume(mfem::Mesh& mesh) {
  */
 class FullDiskSink : public std::streambuf {
 public:
+    /** Accepts at most `capacity` bytes. */
     explicit FullDiskSink(std::size_t capacity) : m_capacity(capacity) {}
+    /** Bytes stored so far. */
     std::size_t BytesAccepted() const {
         return m_stored.size();
     }
 
 protected:
+    /** Stores what still fits and reports how many bytes it took. */
     std::streamsize xsputn(const char* data, std::streamsize count) override {
         const std::size_t room = m_capacity - m_stored.size();
         const std::size_t take = std::min(room, static_cast<std::size_t>(count));
         m_stored.append(data, take);
         return static_cast<std::streamsize>(take);
     }
+    /** One character through xsputn; eof when it does not fit. */
     int_type overflow(int_type c) override {
         if (traits_type::eq_int_type(c, traits_type::eof())) {
             return traits_type::not_eof(c);
@@ -195,8 +201,8 @@ protected:
     }
 
 private:
-    std::size_t m_capacity;
-    std::string m_stored;
+    std::size_t m_capacity; ///< largest number of bytes accepted
+    std::string m_stored;   ///< the bytes accepted
 };
 
 /**
@@ -463,7 +469,7 @@ TEST(MicrostructureIo, RegionMapAndGrainFile) {
 // wrong length (2 values instead of 3 per grain) is rejected.
 TEST(MicrostructureIo, GrainTableCsv) {
     const fs::path dir = RankDir("csv");
-    ms::MicrostructureResult result;
+    ms::MicrostructureResult result; ///< the driver's result
     result.num_grains = 2;
     result.grain_quat = {1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5};
     result.grain_region = {1, 2};
@@ -612,6 +618,7 @@ TEST(MicrostructureIo, GzipWriterPropagatesWriterException) {
 
 #endif // MFEM_USE_ZLIB
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char* argv[]) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

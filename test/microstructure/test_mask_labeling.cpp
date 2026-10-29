@@ -53,17 +53,19 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr int ACTIVE_ATTRIBUTE = 1;
-constexpr int PLATE_ATTRIBUTE = 2;
-constexpr int NX = 4;
-constexpr int NY = 2;
-constexpr int NZ = 6;
-constexpr double H = 0.25;
+constexpr int ACTIVE_ATTRIBUTE = 1; ///< attribute of the active (generated) cells
+constexpr int PLATE_ATTRIBUTE = 2;  ///< attribute of the inactive plate
+constexpr int NX = 4;               ///< cells along x
+constexpr int NY = 2;               ///< cells along y
+constexpr int NZ = 6;               ///< cells along z
+constexpr double H = 0.25;          ///< cell edge length
 
+/** True for the plate cells: the two bottom layers (z < 0.5). */
 bool IsPlate(int, int, int k) {
     return k < 2;
 }
 
+/** True for the active cells: the two columns and the top bridge above the plate. */
 bool IsActive(int i, int, int k) {
     return k >= 2 && (i == 0 || i == NX - 1 || k == NZ - 1);
 }
@@ -132,13 +134,14 @@ mfem::Mesh BuildMesh(bool reference, bool tets) {
 
 /** The distributed mesh, its mask (active attribute) and adjacency. */
 struct Run {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    ms::ElementMask mask;
-    std::unique_ptr<ms::MeshAdjacency> adjacency;
-    MPI_Comm comm = MPI_COMM_NULL;
+    ms::SerialOrder order;                        ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh;         ///< the distributed mesh
+    ms::ElementMask mask;                         ///< active elements (attribute ACTIVE_ATTRIBUTE)
+    std::unique_ptr<ms::MeshAdjacency> adjacency; ///< face adjacency of the whole mesh
+    MPI_Comm comm = MPI_COMM_NULL;                ///< communicator of the run
 };
 
+/** Distributes `serial` over `comm` and builds the mask and the adjacency. Collective. */
 std::unique_ptr<Run> Distribute(mfem::Mesh& serial, MPI_Comm comm) {
     auto run = std::make_unique<Run>();
     run->comm = comm;
@@ -204,6 +207,7 @@ bool InactiveCarry(const Run& run, const mfem::Array<int>& labels, int placehold
     return ok == 1;
 }
 
+/** Seeds s0 at the bottom and s1 at the top of the left column (see the file comment). */
 ms::SeedSet TwoSeeds() {
     ms::SeedSet seeds;
     seeds.x = {0.125, 0.125};
@@ -477,6 +481,8 @@ TEST(MaskLabeling, CurvedPlateKeepsTheCornerField) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

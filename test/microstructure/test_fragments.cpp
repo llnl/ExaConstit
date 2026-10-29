@@ -52,8 +52,8 @@ namespace {
 
 /** A grid-built mesh and the grid cell (i, j, k) of every element. */
 struct GridMesh {
-    mfem::Mesh mesh;
-    std::vector<std::array<int, 3>> cell;
+    mfem::Mesh mesh;                      ///< the mesh
+    std::vector<std::array<int, 3>> cell; ///< grid cell (i, j, k) of each element
 };
 
 /**
@@ -140,8 +140,8 @@ GridMesh UShape(int n, bool tets) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** Partitions `serial` over `comm` (collective), keeping local -> serial element ids. */
@@ -183,11 +183,11 @@ Distributed DistributeWithEmptyLastRank(mfem::Mesh& serial, MPI_Comm comm) {
 
 /** Cleanup result in serial element order, identical on every rank. */
 struct SerialResult {
-    std::vector<int> grain;
-    int num_grains = 0;
-    std::vector<int> parent;
-    std::vector<std::int64_t> source;
-    ms::FragmentCleanupReport report;
+    std::vector<int> grain;           ///< grain per element
+    int num_grains = 0;               ///< grains after cleanup
+    std::vector<int> parent;          ///< input grain each output grain came from
+    std::vector<std::int64_t> source; ///< source id of each output grain
+    ms::FragmentCleanupReport report; ///< the cleanup report
 };
 
 /**
@@ -809,7 +809,7 @@ TEST(FragmentCleanup, RandomVoronoiRankInvariance) {
         for (int e = 0; e < grid.mesh.GetNE(); e++) {
             label[static_cast<std::size_t>(e)] = lg[e];
         }
-        std::vector<std::int64_t> source;
+        std::vector<std::int64_t> source; ///< source id of each output grain
         for (const int seed : labels.grain_seed) {
             source.push_back(seeds.source_id[static_cast<std::size_t>(seed)]);
         }
@@ -1137,6 +1137,7 @@ TEST(FragmentCleanup, InvalidInputThrowsOnAllRanks) {
     EXPECT_EQ(ok.num_grains, 1); // grain 2 has no element and is dropped by the renumbering
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

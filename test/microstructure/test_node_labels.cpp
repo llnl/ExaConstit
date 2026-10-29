@@ -48,9 +48,12 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Point coordinates rounded to 1e-9, to match points across meshes and ranks. */
 using Key = std::array<long long, 3>;
+/** Grain of a point (the labeling of a test case). */
 using LabelFunction = std::function<int(const double*)>;
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int WorldSize() {
     int size = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -84,8 +87,8 @@ mfem::Array<int> CenterLabels(mfem::Mesh& mesh, const LabelFunction& label) {
 
 /** Reference per node: label set and position. */
 struct RefNode {
-    std::set<int> labels;
-    std::array<double, 3> x{};
+    std::set<int> labels;      ///< labels of the elements containing the node
+    std::array<double, 3> x{}; ///< node position
 };
 
 /**
@@ -130,8 +133,8 @@ using SurfaceFunction = std::function<int(const double*)>;
 
 /** A distributed mesh and its node labels (declared in this order: the labels go first). */
 struct LabeledMesh {
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    std::unique_ptr<ms::NodeLabels> nl;
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
+    std::unique_ptr<ms::NodeLabels> nl;   ///< the node labels
 };
 
 /**
@@ -201,7 +204,9 @@ std::int64_t CountOwned(const ms::NodeLabels& nl,
     return count;
 }
 
+/** index of the FACE junction kind in the summary counts */
 constexpr int FACE = static_cast<int>(ms::JunctionKind::FACE);
+/** index of the QUAD_POINT kind */
 constexpr int QUAD = static_cast<int>(ms::JunctionKind::QUAD_POINT);
 
 } // namespace
@@ -455,6 +460,7 @@ TEST(NodeLabels, InvalidInputThrowsOnEveryRank) {
     EXPECT_THROW(ms::NodeLabels(*pmesh, short_labels), std::invalid_argument);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

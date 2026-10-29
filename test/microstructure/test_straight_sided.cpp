@@ -57,6 +57,7 @@ void ExpectSameSeeds(const ms::SeedSet& a, const ms::SeedSet& b) {
     }
 }
 
+/** The element types every test runs on. */
 const mfem::Element::Type kTypes[] = {mfem::Element::HEXAHEDRON, mfem::Element::TETRAHEDRON};
 
 } // namespace
@@ -193,7 +194,7 @@ TEST(StraightSided, SameSeedsAndLabelsAsWithoutNodes) {
             mfem::Mesh serial = UnitCube(4, type);
             serial.SetCurvature(order);
             auto pmesh = Distribute(serial);
-            ms::GenerationReport report;
+            ms::GenerationReport report; ///< the driver's report
             const ms::MicrostructureResult result = ms::GenerateMicrostructure(
                 options, *pmesh, MPI_COMM_WORLD, &report);
             ExpectSameSeeds(report.seeds, plain_report.seeds);
@@ -221,6 +222,7 @@ TEST(StraightSided, SameSeedsAndLabelsAsWithoutNodes) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

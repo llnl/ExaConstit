@@ -68,14 +68,18 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the example options files and meshes (set by CMake). */
+/** Directory of the example options files and meshes (set by CMake). */
 const fs::path data_dir = fs::path(MS_DRIVER_DATA_DIR);
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     return rank;
 }
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int nranks = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);
@@ -369,8 +373,8 @@ ms::MicrostructureOptions TableOptions(const std::string& name) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** Partitions `serial` over `comm` with METIS (collective), keeping local -> serial ids. */
@@ -395,9 +399,9 @@ GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>&
 
 /** One driver run, with the labels in serial element order (on every rank). */
 struct DriverRun {
-    std::vector<int> labels;
-    ms::MicrostructureResult result;
-    ms::GenerationReport report;
+    std::vector<int> labels;         ///< grain per element, serial order
+    ms::MicrostructureResult result; ///< the driver's result
+    ms::GenerationReport report;     ///< the driver's report
 };
 
 /** GenerateMicrostructure on `serial` distributed over `comm` (collective over comm). */
@@ -412,8 +416,8 @@ DriverRun RunDriver(mfem::Mesh& serial, const ms::MicrostructureOptions& options
 
 /** Distributed run (WORLD) and the single-rank reference (SELF) of the same options. */
 struct RunPair {
-    DriverRun world;
-    DriverRun alone;
+    DriverRun world; ///< the run on MPI_COMM_WORLD
+    DriverRun alone; ///< the single-rank run on MPI_COMM_SELF
 };
 
 /**
@@ -1078,6 +1082,8 @@ TEST(DriverDistanceModes, ExampleOptionsFilesRun) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

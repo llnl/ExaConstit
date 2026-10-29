@@ -47,14 +47,17 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Point coordinates rounded to 1e-9, to match points across meshes and ranks. */
 using Key = std::array<long long, 3>;
 
+/** The Key of the center of element e. */
 Key CenterKey(mfem::Mesh& mesh, int e) {
     mfem::Vector c(3);
     mesh.GetElementCenter(e, c);
     return {std::llround(c(0) * 1e9), std::llround(c(1) * 1e9), std::llround(c(2) * 1e9)};
 }
 
+/** A seed set with the points p as positions (no other columns). */
 ms::SeedSet MakeSeeds(const std::vector<std::array<double, 3>>& p) {
     ms::SeedSet s;
     for (const auto& q : p) {
@@ -86,6 +89,7 @@ mfem::Array<int> VoronoiLabels(mfem::Mesh& mesh, const ms::SeedSet& s) {
     return labels;
 }
 
+/** Distributes `serial` over `comm` round robin (element e on rank e mod size). Collective. */
 std::unique_ptr<mfem::ParMesh> Distribute(mfem::Mesh& serial, MPI_Comm comm) {
     int size = 1;
     MPI_Comm_size(comm, &size);
@@ -108,10 +112,12 @@ WithStray(mfem::Mesh& mesh, const mfem::Array<int>& base, const Key& stray, int 
     return labels;
 }
 
+/** The Key of the point (x, y, z). */
 Key KeyOf(double x, double y, double z) {
     return {std::llround(x * 1e9), std::llround(y * 1e9), std::llround(z * 1e9)};
 }
 
+/** Sum of `local` over MPI_COMM_WORLD (collective). */
 int GlobalSum(int local) {
     MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     return local;
@@ -386,6 +392,7 @@ TEST(LabelRepair, RankInvariance) {
     EXPECT_LT(2 * rd.bad_nodes_after, rd.bad_nodes_before);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -32,8 +32,11 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Axom execution space of the tests (host). */
 using Exec = axom::SEQ_EXEC;
+/** A 3D point (Axom primal). */
 using Point3 = axom::primal::Point<double, 3>;
+/** An axis-aligned 3D box. */
 using Box3 = axom::primal::BoundingBox<double, 3>;
 
 /** @brief Allocator id for SEQ BVH arrays (host memory). */
@@ -43,15 +46,19 @@ int HostAllocator() {
 
 /** @brief Query points stored as three mfem::Vectors (the SeedIndex input format). */
 struct Queries {
+    /** Query coordinates. */
     mfem::Vector x, y, z;
+    /** Sizes all three vectors to n points. */
     void Resize(int n) {
         x.SetSize(n);
         y.SetSize(n);
         z.SetSize(n);
     }
+    /** Number of query points. */
     int Size() const {
         return x.Size();
     }
+    /** Sets query point q to (a, b, c). */
     void Set(int q, double a, double b, double c) {
         x(q) = a;
         y(q) = b;
@@ -983,6 +990,7 @@ TEST(MetricFunctors, DispatchMetricSelectsType) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char* argv[]) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

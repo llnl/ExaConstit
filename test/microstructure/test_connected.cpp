@@ -62,6 +62,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the test meshes and options files (set by CMake). */
 const std::string data_dir = MS_CONNECTED_DATA_DIR;
 
 // ------------------------------------------------------------------------------------------------
@@ -121,8 +122,8 @@ mfem::Mesh LoadUShape() {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** METIS partition of `serial` over `comm`. Collective. */
@@ -176,9 +177,9 @@ GatherAll(MPI_Comm comm, const Distributed& d, const mfem::Array<int>& local, in
 
 /** Input (Euclidean) and output (connected) labels in serial order, and the report. */
 struct RunResult {
-    std::vector<int> input;
-    std::vector<int> output;
-    ms::ConnectedLabelReport report;
+    std::vector<int> input;          ///< Euclidean seed per element, serial order
+    std::vector<int> output;         ///< connected seed per element, serial order
+    ms::ConnectedLabelReport report; ///< the labeler's report
 };
 
 /**
@@ -308,7 +309,8 @@ std::vector<int> PiecesPerLabel(const std::vector<std::vector<int>>& nbrs,
 
 /** Sample points of every element of the serial mesh: nq points per element, x/y/z/w. */
 struct SerialSamples {
-    int nq = 1;
+    int nq = 1; ///< points per element
+    /** Point coordinates and weights, element-major (nq per element). */
     std::vector<double> x, y, z, w;
 };
 
@@ -405,15 +407,15 @@ int RefLabel(ms::MetricType metric,
 
 /** Result of the serial reference. */
 struct RefResult {
-    std::vector<int> input;
-    std::vector<int> output;
+    std::vector<int> input;                          ///< Euclidean seed per element, serial order
+    std::vector<int> output;                         ///< connected seed per element, serial order
     std::vector<std::uint64_t> anchor_key;           ///< label-independent (SeedAnchorElementKeys)
     std::vector<std::uint64_t> connected_anchor_key; ///< label-aware (ConnectedAnchorKeys)
-    int rounds = 0;
-    std::int64_t relabeled = 0;
-    std::int64_t unresolved = 0;
-    std::int64_t unanchored = 0;
-    int seeds_without_cell = 0;
+    int rounds = 0;                                  ///< relabeling rounds performed
+    std::int64_t relabeled = 0;                      ///< elements moved to another seed
+    std::int64_t unresolved = 0;                     ///< orphans left after the last round
+    std::int64_t unanchored = 0;                     ///< elements of bodies without any seed anchor
+    int seeds_without_cell = 0;                      ///< seeds that label no element
 };
 
 /**
@@ -1228,6 +1230,8 @@ TEST(ConnectedLabeler, InvalidInputThrowsOnAllRanks) {
     EXPECT_EQ(report.unresolved_elements, 0);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -43,6 +43,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -284,6 +285,7 @@ TEST(EndToEndInputs, SpparksDump) {
     EXPECT_EQ(count, (std::map<int, int>{{0, 1}, {1, 126}, {2, 128}, {3, 128}, {4, 129}}));
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

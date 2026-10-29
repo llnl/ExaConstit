@@ -76,16 +76,20 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the example options files and meshes (set by CMake). */
+/** Directory of the example options files and meshes (set by CMake). */
 const fs::path data_dir = fs::path(MS_DRIVER_DATA_DIR);
 
-constexpr double PI = 3.14159265358979323846;
+constexpr double PI = 3.14159265358979323846; ///< pi.
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     return rank;
 }
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int nranks = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);
@@ -124,7 +128,7 @@ const std::array<std::array<double, 3>, 8> kTablePos = {{{0.21, 0.19, 0.22},
                                                          {0.77, 0.72, 0.78}}};
 /** Their ids (not 0..7), phases {1, 3, 7} and table volumes (ratios 1..8). */
 const std::array<std::int64_t, 8> kTableId = {10, 4, 7, 22, 15, 3, 9, 30};
-const std::array<int, 8> kTablePhase = {1, 3, 7, 1, 3, 7, 1, 3};
+const std::array<int, 8> kTablePhase = {1, 3, 7, 1, 3, 7, 1, 3}; ///< phase of each table row
 
 /**
  * Quaternion row i of the table (w x y z). Row 0 has norm 1.0004 (accepted: | |q| - 1 | <=
@@ -274,8 +278,8 @@ ms::SeedTable ReadTableAlone(const std::string& name) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** Partitions `serial` over `comm` with METIS (collective), keeping local -> serial ids. */
@@ -300,9 +304,9 @@ GatherToAll(MPI_Comm comm, const ms::SerialOrder& order, const mfem::Array<int>&
 
 /** One driver run, with the labels in serial element order (on every rank). */
 struct DriverRun {
-    std::vector<int> labels;
-    ms::MicrostructureResult result;
-    ms::GenerationReport report;
+    std::vector<int> labels;         ///< grain per element, serial order
+    ms::MicrostructureResult result; ///< the driver's result
+    ms::GenerationReport report;     ///< the driver's report
     /** Element count of every grain from the report's adjacency (ComputeGrainStatistics). */
     std::vector<std::int64_t> stats_elements;
 };
@@ -433,8 +437,8 @@ void ExpectNormalizedFrom(const double* q,
 
 /** Distributed run (WORLD) and the single-rank reference (SELF) of the same options. */
 struct RunPair {
-    DriverRun world;
-    DriverRun alone;
+    DriverRun world; ///< the run on MPI_COMM_WORLD
+    DriverRun alone; ///< the single-rank run on MPI_COMM_SELF
 };
 
 /**
@@ -1205,7 +1209,7 @@ TEST(DriverDataSources, RefusedCombinations) {
 // 1, sign kept), normalizes random rows the same way, and refuses a zero or non-finite supplied row
 // instead of silently writing the identity. Host only, no MPI.
 TEST(DriverDataSources, AssignerNormalizesSuppliedQuaternions) {
-    ms::MicrostructureResult result;
+    ms::MicrostructureResult result; ///< the driver's result
     const std::vector<std::int64_t> ids = {5, 6};
     std::vector<double> rows = {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     ms::AssignMixedGrainOrientations(1u, ids, rows, {1, 0}, result);
@@ -1470,6 +1474,8 @@ TEST(DriverDataSources, ExampleOptionsFilesRun) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

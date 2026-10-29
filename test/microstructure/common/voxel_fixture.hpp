@@ -42,11 +42,12 @@ namespace fs = std::filesystem;
 // The voxelized tessellation
 // ---------------------------------------------------------------------------------------------
 
-inline constexpr int NX = 20;
-inline constexpr int NY = 16;
-inline constexpr int NZ = 12;
+inline constexpr int NX = 20; ///< voxels along x
+inline constexpr int NY = 16; ///< voxels along y
+inline constexpr int NZ = 12; ///< voxels along z
+/** Voxel edge length 1/16 (exact in binary), mesh units. */
 inline constexpr double H = 0.0625; // voxel size 1/16 (exact in binary)
-inline constexpr int NUM_SEEDS = 6;
+inline constexpr int NUM_SEEDS = 6; ///< seeds of the voxelized Voronoi tessellation
 /** Feature id of seed i (deliberately not 1..6). */
 inline const std::array<int, NUM_SEEDS> kFeatureId = {3, 5, 8, 13, 21, 34};
 /** The feature ids the mesh uses (CompactFeatureLabels' grain_feature for the full map). */
@@ -113,7 +114,7 @@ struct VoxelMapData {
     std::vector<std::int64_t> ids;    ///< with the hole (0)
     std::vector<std::int64_t> filled; ///< without the hole (what the fill must restore)
     std::array<int, 3> hole_lo{};     ///< first voxel of the 2 x 2 x 2 hole
-    int hole_feature = 0;
+    int hole_feature = 0;             ///< feature id the hole voxels had before they were set to 0
 };
 
 /**
@@ -196,8 +197,9 @@ inline int FeaturePhase(int r) {
 
 /** Closes an HDF5 handle at scope exit. */
 struct Closer {
-    hid_t id;
-    herr_t (*close)(hid_t);
+    hid_t id;               ///< the HDF5 handle (negative: nothing to close)
+    herr_t (*close)(hid_t); ///< the HDF5 close function matching the handle type
+    /** Closes the handle if it is valid. */
     ~Closer() {
         if (id >= 0) {
             close(id);
@@ -208,6 +210,7 @@ struct Closer {
 /** Writer for one fixture file (created/truncated in the constructor). */
 class H5Writer {
 public:
+    /** Creates (truncates) the HDF5 file; groups along dataset paths are created as needed. */
     explicit H5Writer(const fs::path& path) {
         m_file = H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
         if (m_file < 0) {
@@ -217,11 +220,14 @@ public:
         m_lcpl = H5Pcreate(H5P_LINK_CREATE);
         H5Pset_create_intermediate_group(m_lcpl, 1);
     }
+    /** Closes the property list and the file. */
     ~H5Writer() {
         H5Pclose(m_lcpl);
         H5Fclose(m_file);
     }
+    /** Not copyable: owns HDF5 handles. */
     H5Writer(const H5Writer&) = delete;
+    /** Not copy-assignable (owns HDF5 handles). */
     H5Writer& operator=(const H5Writer&) = delete;
 
     /** Writes `data` (memory type mem_type) as a dataset of file type file_type and shape dims. */
@@ -285,8 +291,8 @@ public:
     }
 
 private:
-    hid_t m_file = -1;
-    hid_t m_lcpl = -1;
+    hid_t m_file = -1; ///< the open file
+    hid_t m_lcpl = -1; ///< link creation properties (create intermediate groups)
 };
 
 /** Voxel ids as int32 (DREAM.3D type). */
@@ -296,13 +302,13 @@ inline std::vector<int> AsInt32(const std::vector<std::int64_t>& ids) {
 
 /** Options of a canonical fixture. */
 struct CanonicalOptions {
-    std::vector<std::int64_t> ids;              ///< voxel ids (x fastest), dims[0..2]
-    std::array<hsize_t, 3> dims = {NX, NY, NZ}; ///< voxel counts x, y, z
-    std::array<double, 3> origin = {0.0, 0.0, 0.0};
-    std::array<double, 3> spacing = {H, H, H};
-    bool rank4_uint16 = false; ///< store as uint16 (nz, ny, nx, 1)
-    bool flat = false;         ///< store flat (nx ny nz), as Conduit writes
-    bool features = true;      ///< write feature_ids with quat and phase (else only the grid's ids)
+    std::vector<std::int64_t> ids;                  ///< voxel ids (x fastest), dims[0..2]
+    std::array<hsize_t, 3> dims = {NX, NY, NZ};     ///< voxel counts x, y, z
+    std::array<double, 3> origin = {0.0, 0.0, 0.0}; ///< lower corner of voxel (0,0,0), file units
+    std::array<double, 3> spacing = {H, H, H};      ///< voxel edge lengths, file units
+    bool rank4_uint16 = false;                      ///< store as uint16 (nz, ny, nx, 1)
+    bool flat = false;                              ///< store flat (nx ny nz), as Conduit writes
+    bool features = true; ///< write feature_ids with quat and phase (else only the grid's ids)
     std::vector<int> feature_ids = {21, 3, 34, 8, 13, 5}; ///< unsorted on purpose
     int bad_quat_id = -1;                                 ///< this id gets a quaternion of norm 0.5
     std::int64_t format_version = 1;                      ///< written format_version

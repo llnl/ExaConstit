@@ -754,6 +754,7 @@ TEST(Seeding, RoundBoxOutward) {
 
 // mfem::Mpi::Init initializes MPI and finalizes it automatically at exit, as in the other
 // microstructure tests. Every rank runs all tests, since GenerateSeeds is collective.
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

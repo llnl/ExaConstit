@@ -52,8 +52,11 @@ namespace {
 
 namespace fs = std::filesystem;
 
+/** Directory of the example options files and meshes (set by CMake). */
+/** Directory of the example options files and meshes (set by CMake). */
 const fs::path data_dir = fs::path(MS_DRIVER_DATA_DIR);
 
+/** Options of the tests: 8 random Voronoi seeds, the conformal step on or off. */
 ms::MicrostructureOptions Options(bool conformal) {
     ms::MicrostructureOptions o;
     o.seeds.num_seeds = 8;
@@ -62,12 +65,14 @@ ms::MicrostructureOptions Options(bool conformal) {
     return o;
 }
 
+/** One driver run: the (possibly fitted) mesh, the result and the report. */
 struct DriverRun {
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    ms::MicrostructureResult result;
-    ms::GenerationReport report;
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
+    ms::MicrostructureResult result;      ///< the driver's result
+    ms::GenerationReport report;          ///< the driver's report
 };
 
+/** Distributes `serial` over MPI_COMM_WORLD and runs GenerateMicrostructure (collective). */
 DriverRun Generate(mfem::Mesh& serial, const ms::MicrostructureOptions& options) {
     DriverRun run;
     const ms::SerialOrder order = ms::BuildSerialOrder(serial, MPI_COMM_WORLD);
@@ -76,6 +81,7 @@ DriverRun Generate(mfem::Mesh& serial, const ms::MicrostructureOptions& options)
     return run;
 }
 
+/** Generate with Options(conformal). */
 DriverRun Generate(mfem::Mesh& serial, bool conformal) {
     return Generate(serial, Options(conformal));
 }
@@ -415,6 +421,8 @@ TEST(DriverConformal, PassthroughPlate) {
     EXPECT_NEAR(GrainVolume(run, plate), 0.25, 1e-14);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     mfem::Hypre::Init();

@@ -43,6 +43,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Axom execution space of the tests (host). */
 using Exec = axom::SEQ_EXEC;
 
 /** Allocator id for SEQ BVH arrays (host memory). */
@@ -50,6 +51,7 @@ int HostAllocator() {
     return axom::execution_space<Exec>::allocatorID();
 }
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -979,6 +981,7 @@ TEST(JohnsonMehl, InvalidParametersRejected) {
     EXPECT_EQ(report.candidates_generated, 5000);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

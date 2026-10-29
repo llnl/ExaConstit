@@ -49,6 +49,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the test data files (set by CMake). */
 const fs::path data_dir = fs::path(MS_LABELING_DATA_DIR);
 
 /** test/data/cube_tet.mesh, read the way ExaConstit reads a [Mesh] type = "file" mesh. */
@@ -84,8 +85,8 @@ ms::SeedSet RandomSeeds(int n, std::uint64_t key, double max_weight = 0.0) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** Partitions `serial` over `comm` (collective), keeping local -> serial element ids. */
@@ -375,7 +376,7 @@ TEST(GenerateMicrostructure, RankCountIndependent) {
 
         // Distributed run, gathered to rank 0 in serial element order
         Distributed dist = Distribute(serial, MPI_COMM_WORLD);
-        ms::GenerationReport report;
+        ms::GenerationReport report; ///< the driver's report
         ms::MicrostructureResult result = ms::GenerateMicrostructure(
             options, *dist.pmesh, MPI_COMM_WORLD, &report);
         result.element_grain.HostRead();
@@ -505,7 +506,7 @@ TEST(OrientationAssigner, RandomKeyedBySourceIdAndPassThrough) {
     const std::uint64_t rng_seed = 99u;
 
     ms::OrientationOptions random;
-    ms::MicrostructureResult result;
+    ms::MicrostructureResult result; ///< the driver's result
     ms::AssignOrientations(random, rng_seed, seeds, grain_seed, result);
     EXPECT_EQ(result.num_grains, 3);
     EXPECT_EQ(result.grain_source_id, (std::vector<std::int64_t>{10, 77, 5}));
@@ -608,6 +609,7 @@ TEST(GenerateMicrostructure, UnsupportedOptionsThrowOnAllRanks) {
     }));
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

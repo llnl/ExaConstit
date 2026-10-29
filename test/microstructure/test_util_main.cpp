@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+/** MPI-aware gtest main (see the file comment). */
 int main(int argc, char* argv[]) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -31,6 +31,7 @@ int Rank(MPI_Comm comm = MPI_COMM_WORLD) {
 }
 
 /** @brief Number of ranks in MPI_COMM_WORLD. */
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int nranks = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);
@@ -66,8 +67,8 @@ void VertexAverage(const mfem::Mesh& mesh, int e, double c[3]) {
 
 /** @brief A ParMesh together with the serial order it was built with. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** @brief Partitions `serial` over MPI_COMM_WORLD and builds the ParMesh (collective). */
@@ -86,26 +87,28 @@ Distributed Distribute(mfem::Mesh& serial) {
  * from the GPU first if needed, so the checks below work for every Device configuration.
  */
 struct HostElementSamples {
+    /** Takes host pointers (HostRead) of every array of `s`. */
     explicit HostElementSamples(const ms::ElementSamples& s)
         : size(s.volume.Size()), cx(s.cx.HostRead()), cy(s.cy.HostRead()), cz(s.cz.HostRead()),
           volume(s.volume.HostRead()) {}
-    int size;
-    const mfem::real_t* cx;
-    const mfem::real_t* cy;
-    const mfem::real_t* cz;
-    const mfem::real_t* volume;
+    int size;                   ///< number of entries
+    const mfem::real_t* cx;     ///< centroid x per element
+    const mfem::real_t* cy;     ///< centroid y per element
+    const mfem::real_t* cz;     ///< centroid z per element
+    const mfem::real_t* volume; ///< volume per element
 };
 
 /** @brief Host pointers to QuadraturePointSamples outputs (see HostElementSamples). */
 struct HostQuadraturePointSamples {
+    /** Takes host pointers (HostRead) of every array of `s`. */
     explicit HostQuadraturePointSamples(const ms::QuadraturePointSamples& s)
         : size(s.x.Size()), x(s.x.HostRead()), y(s.y.HostRead()), z(s.z.HostRead()),
           weight(s.weight.HostRead()) {}
-    int size;
-    const mfem::real_t* x;
-    const mfem::real_t* y;
-    const mfem::real_t* z;
-    const mfem::real_t* weight;
+    int size;                   ///< number of entries
+    const mfem::real_t* x;      ///< point x
+    const mfem::real_t* y;      ///< point y
+    const mfem::real_t* z;      ///< point z
+    const mfem::real_t* weight; ///< w_q detJ_q per point
 };
 
 } // namespace
@@ -550,6 +553,7 @@ TEST(MicrostructureMesh, PreflightFlagsNonconformingAndPeriodic) {
 
 // mfem::Mpi::Init initializes MPI and finalizes it automatically at exit, as in the other
 // microstructure tests. Every rank runs all tests, since most of them make collective calls.
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

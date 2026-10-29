@@ -39,20 +39,23 @@ namespace fs = std::filesystem;
 
 namespace {
 
+/** Directory of the seed table test files (set by CMake). */
 const fs::path data_dir = fs::path(MS_SEED_TABLE_DATA_DIR);
-constexpr double PI = 3.141592653589793238462643383279502884;
+constexpr double PI = 3.141592653589793238462643383279502884; ///< pi.
 
 /** The double that strtod reads from `text` (the reader's own conversion). */
 double D(const char* text) {
     return std::strtod(text, nullptr);
 }
 
+/** This process's rank in MPI_COMM_WORLD. */
 int WorldRank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     return rank;
 }
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int WorldSize() {
     int size = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -74,6 +77,9 @@ fs::path WriteText(const std::string& name, const std::string& content) {
     return path;
 }
 
+/**
+ * Reads the seed table at `path` with the given scale and shift (collective over MPI_COMM_WORLD).
+ */
 ms::SeedTable Read(const fs::path& path, double scale = 1.0, std::array<double, 3> shift = {}) {
     ms::SeedTableParameters params;
     params.path = path;
@@ -141,6 +147,7 @@ void ExpectSameSeeds(const ms::SeedSet& a, const ms::SeedSet& b) {
     EXPECT_EQ(a.source_id, b.source_id);
 }
 
+/** True when (x, y, z) lies strictly inside the box [lo, hi]. */
 bool StrictlyInside(double x,
                     double y,
                     double z,
@@ -685,6 +692,7 @@ TEST(SeedGeneratorExtensions, StallMessageNamesExclusionBox) {
     EXPECT_THROW(ms::ValidateSeedingParameters(params), std::invalid_argument);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -71,8 +71,10 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Point coordinates rounded to 1e-9, to match points across meshes and ranks. */
 using Key = std::array<long long, 3>;
 
+/** The Key of point x. */
 Key MakeKey(const double* x) {
     return {std::llround(x[0] * 1e9), std::llround(x[1] * 1e9), std::llround(x[2] * 1e9)};
 }
@@ -109,6 +111,7 @@ ms::SeedSet ScatteredSeeds(int n, int skip = 0) {
     return s;
 }
 
+/** 1-based Voronoi grain of every element (nearest seed to its center). */
 mfem::Array<int> VoronoiLabels(mfem::Mesh& mesh, const ms::SeedSet& s) {
     mfem::Array<int> labels(mesh.GetNE());
     mfem::Vector c(3);
@@ -196,11 +199,11 @@ double InterfaceArea(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int a
 
 /** A fitted mesh with what produced it. */
 struct Fitted {
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    mfem::Array<int> labels;
-    ms::LabelRepairResult repair;
-    ms::ConformalFitReport report;
-    mfem::Vector x0; ///< node positions before fitting (Nodes layout)
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
+    mfem::Array<int> labels;              ///< grain per local element after the repair
+    ms::LabelRepairResult repair;         ///< the label repair (report, node labels and targets)
+    ms::ConformalFitReport report;        ///< the fit's report
+    mfem::Vector x0;                      ///< node positions before fitting (Nodes layout)
 };
 
 void WriteElements(mfem::ParMesh& pmesh,
@@ -252,6 +255,7 @@ Fitted Fit(mfem::Mesh& serial,
     return f;
 }
 
+/** Volume of `grain` over all ranks (collective). */
 double GrainVolume(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int grain) {
     double v = 0.0;
     for (int e = 0; e < pmesh.GetNE(); ++e) {
@@ -261,6 +265,7 @@ double GrainVolume(mfem::ParMesh& pmesh, const mfem::Array<int>& labels, int gra
     return v;
 }
 
+/** Sum of `local` over MPI_COMM_WORLD (collective). */
 int GlobalSum(int local) {
     MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     return local;
@@ -1093,6 +1098,7 @@ void WriteSections(mfem::ParMesh& pmesh,
 
 } // namespace
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     mfem::Hypre::Init();

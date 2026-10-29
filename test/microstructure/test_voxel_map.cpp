@@ -62,12 +62,14 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** This process's rank in MPI_COMM_WORLD. */
 int Rank() {
     int r = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &r);
     return r;
 }
 
+/** The number of ranks of MPI_COMM_WORLD. */
 int NumRanks() {
     int n = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &n);
@@ -114,7 +116,8 @@ fs::path Fixture(const std::string& name) {
 
 /** File-unit description of voxel_scaled.h5 (units_scale 1e-3, see WriteFixtures). */
 const std::array<double, 3> kScaledOrigin = {-10.0, 5.0, 2.0};
-const std::array<double, 3> kScaledSpacing = {62.5, 62.5, 62.5};
+const std::array<double, 3> kScaledSpacing = {62.5, 62.5, 62.5}; ///< voxel edge lengths, file units
+/** translation after scaling, mesh units */
 const std::array<double, 3> kScaledTranslate = {0.01, -0.005, -0.002};
 
 /** Writes every fixture once (rank 0), then synchronizes (collective). */
@@ -251,8 +254,8 @@ ms::VoxelMapParameters Dream3d(const std::string& name) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /**
@@ -1149,6 +1152,7 @@ TEST(VoxelMapReader, BuiltWithoutHdf5) {
 #endif // AXOM_USE_HDF5
 
 /** Initializes MPI (mfem::Mpi finalizes it at exit) and runs every test on every rank. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

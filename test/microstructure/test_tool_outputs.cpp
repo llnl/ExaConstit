@@ -46,8 +46,10 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Directory of the test meshes and options files (set by CMake). */
 const fs::path data_dir = fs::path(MS_TOOL_OUTPUTS_DATA_DIR);
 
+/** This process's rank in `comm`. */
 int Rank(MPI_Comm comm = MPI_COMM_WORLD) {
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
@@ -56,8 +58,8 @@ int Rank(MPI_Comm comm = MPI_COMM_WORLD) {
 
 /** A distributed mesh with its serial-order bookkeeping. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** METIS partition of `serial` over `comm` (collective). */
@@ -113,6 +115,7 @@ std::array<double, 3> VertexAverage(const mfem::Mesh& mesh, int e) {
     return c;
 }
 
+/** Grain of a point (the labeling of a test case). */
 using LabelFunction = std::function<int(const std::array<double, 3>&)>;
 
 /** Label of every local element from its vertex average. */
@@ -603,7 +606,7 @@ TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
     const fs::path dir = ScratchDir("test_tool_outputs_data_sources_scratch");
     fs::create_directories(dir);
 
-    ms::MicrostructureResult result;
+    ms::MicrostructureResult result; ///< the driver's result
     result.num_grains = 3;
     result.grain_quat = {1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0};
     result.grain_region = {1, 2, 3};
@@ -646,6 +649,7 @@ TEST(OutputWriter, PhaseFillerAndFeatureColumns) {
     fs::remove_all(dir);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

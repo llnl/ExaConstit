@@ -49,8 +49,9 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr double INF = std::numeric_limits<double>::infinity();
+constexpr double INF = std::numeric_limits<double>::infinity(); ///< The "not reached" distance.
 
+/** This process's rank in MPI_COMM_WORLD. */
 int WorldRank() {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -59,8 +60,8 @@ int WorldRank() {
 
 /** A grid-built mesh and the grid cell (i, j, k) of every element. */
 struct GridMesh {
-    mfem::Mesh mesh;
-    std::vector<std::array<int, 3>> cell;
+    mfem::Mesh mesh;                      ///< the mesh
+    std::vector<std::array<int, 3>> cell; ///< grid cell (i, j, k) of each element
 };
 
 /**
@@ -130,8 +131,8 @@ GridMesh BuildGrid(int nx, int ny, int nz, double h, bool tets, Kept kept) {
 
 /** The distributed mesh with the serial-order bookkeeping needed to gather results. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
 /** How to distribute a serial mesh for one run. */
@@ -184,8 +185,8 @@ std::map<std::array<double, 3>, int> SerialVertexIds(const mfem::Mesh& serial) {
 
 /** Per-vertex values of a VertexField in serial vertex order (identical on every rank). */
 struct SerialVertexValues {
-    std::vector<double> T;
-    std::vector<int> label;
+    std::vector<double> T;    ///< distance T per vertex
+    std::vector<int> label;   ///< seed label per vertex (-1: none)
     bool copies_agree = true; ///< all copies of every shared vertex held the same (T, label)
     bool all_found = true;    ///< every local vertex was found in the serial mesh
 };
@@ -278,10 +279,10 @@ std::vector<int> GatherElements(MPI_Comm comm,
 
 /** A geodesic run in serial order. */
 struct GeodesicRun {
-    std::vector<int> element_seed;
-    SerialVertexValues vertex;
-    ms::GeodesicReport report;
-    ms::SourceReport sources;
+    std::vector<int> element_seed; ///< seed per element, serial order
+    SerialVertexValues vertex;     ///< vertex values in serial vertex order
+    ms::GeodesicReport report;     ///< the solver's report
+    ms::SourceReport sources;      ///< source elements of the seeds
 };
 
 /** LabelGeodesicGraph on `serial` distributed per `layout`, gathered. Collective. */
@@ -942,6 +943,8 @@ TEST(GeodesicGraph, InvalidInputThrowsOnAllRanks) {
     EXPECT_EQ(ok.report.unreached_elements, 0);
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

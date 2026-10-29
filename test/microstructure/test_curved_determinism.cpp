@@ -43,7 +43,7 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
-constexpr double PI = 3.141592653589793;
+constexpr double PI = 3.141592653589793; ///< pi.
 
 /** Smooth warp that moves every interior and boundary node (genuinely curved elements). */
 void Warp(const mfem::Vector& x, mfem::Vector& y) {
@@ -99,10 +99,11 @@ mfem::Mesh WarpedBox(int order, mfem::Element::Type type) {
 
 /** The distributed mesh plus the serial-order bookkeeping. */
 struct Distributed {
-    ms::SerialOrder order;
-    std::unique_ptr<mfem::ParMesh> pmesh;
+    ms::SerialOrder order;                ///< partitioning and local-to-serial element map
+    std::unique_ptr<mfem::ParMesh> pmesh; ///< the distributed mesh
 };
 
+/** Distributes `serial` over `comm` (BuildSerialOrder + MakeParMesh). Collective. */
 Distributed Distribute(mfem::Mesh& serial, MPI_Comm comm) {
     Distributed d;
     d.order = ms::BuildSerialOrder(serial, comm);
@@ -192,12 +193,14 @@ mfem::Array<int> NoisyVoronoiLabels(mfem::ParMesh& pmesh, const ms::SeedSet& see
 
 /** Element-weighted seeding, then noisy labels and fragment cleanup, gathered to serial order. */
 struct PipelineResult {
-    ms::SeedSet seeds;
-    std::vector<int> labels; // after cleanup, serial order
-    int num_grains = 0;
-    ms::FragmentCleanupReport report;
+    ms::SeedSet seeds; ///< the element-weighted seeds
+    /** Grain per element after cleanup, serial order. */
+    std::vector<int> labels;          // after cleanup, serial order
+    int num_grains = 0;               ///< grains after cleanup
+    ms::FragmentCleanupReport report; ///< the cleanup report
 };
 
+/** Runs the pipeline of PipelineResult on `serial` distributed over `comm`. Collective. */
 PipelineResult RunPipeline(mfem::Mesh& serial, MPI_Comm comm) {
     Distributed d = Distribute(serial, comm);
     ms::SeedingParameters params;
@@ -653,6 +656,7 @@ TEST(PeriodicPairing, ZeroPlaneFacesAndBulgedFaceThrow) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);

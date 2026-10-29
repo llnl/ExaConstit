@@ -55,8 +55,10 @@ namespace ms = exaconstit::microstructure;
 
 namespace {
 
+/** Point coordinates rounded to 1e-9, to match points across meshes and ranks. */
 using Key = std::array<long long, 3>;
 
+/** The Key of point x. */
 Key MakeKey(const double* x) {
     return {std::llround(x[0] * 1e9), std::llround(x[1] * 1e9), std::llround(x[2] * 1e9)};
 }
@@ -102,9 +104,9 @@ mfem::Array<int> SeedLabels(mfem::Mesh& mesh, ms::MetricType metric, const ms::S
 
 /** A mesh with its node labels and targets (members destroyed in reverse order). */
 struct Fitted {
-    std::unique_ptr<mfem::ParMesh> pmesh;
-    std::unique_ptr<ms::NodeLabels> labels;
-    std::unique_ptr<ms::NodeTargets> targets;
+    std::unique_ptr<mfem::ParMesh> pmesh;     ///< the distributed mesh
+    std::unique_ptr<ms::NodeLabels> labels;   ///< the node labels
+    std::unique_ptr<ms::NodeTargets> targets; ///< the node targets
 };
 
 /**
@@ -208,18 +210,21 @@ bool OnTriangles(const std::vector<std::array<double, 9>>& tris, const double* y
     return false;
 }
 
+/** Sum of `local` over MPI_COMM_WORLD (collective). */
 int GlobalSum(int local) {
     MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     return local;
 }
 
+/** True when coordinate c lies on a face of the unit box. */
 bool OnBoxFace(double c) {
     return c == 0.0 || c == 1.0;
 }
 
-constexpr int FIT = static_cast<int>(ms::TargetStatus::FIT);
+constexpr int FIT = static_cast<int>(ms::TargetStatus::FIT); ///< summary index of FIT
+/** summary index of FAKE_JUNCTION */
 constexpr int FAKE = static_cast<int>(ms::TargetStatus::FAKE_JUNCTION);
-constexpr int HELD = static_cast<int>(ms::TargetStatus::HELD);
+constexpr int HELD = static_cast<int>(ms::TargetStatus::HELD); ///< summary index of HELD
 
 } // namespace
 
@@ -764,6 +769,7 @@ TEST(NodeTargets, Validation) {
     }
 }
 
+/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
