@@ -492,8 +492,8 @@ TEST(AttributeDomain, PlateAndGrip) {
 }
 
 /*
- * Curved passthrough with a basis that is not Gauss-Lobatto (the case the earlier ParSubMesh copy
- * distorted: it rebuilt the sub-mesh Nodes as Gauss-Lobatto and copied the values index by index).
+ * Curved passthrough with a basis that is not Gauss-Lobatto (a sub-mesh copy would distort it: it
+ * rebuilds the sub-mesh Nodes as Gauss-Lobatto and copies the values index by index).
  * The parent gets order-3 Nodes in a closed-uniform H1 basis, bent smoothly
  * (x += 0.05 sin(z), y += 0.03 sin(x z)), and the mask works on the parent itself: the material
  * volume the seed generator measures equals the volume of the active elements integrated

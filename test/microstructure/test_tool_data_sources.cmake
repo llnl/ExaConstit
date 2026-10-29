@@ -5,7 +5,7 @@
 # for the first three, hand-written mechanics decks in test/data/microstructure/mechanics/):
 #   seed_table     a measured seed table (e2e/seed_table_roi.csv) on a 2 x 1 x 1 auto bar:
 #                  orientations from the table, a region of interest with random filler grains
-#                  outside it, phases 0 and 1 -> region 1 and phase 2 -> region 2;
+#                  outside it, phases 1 and 2 -> region 1 and phase 3 -> region 2;
 #   voxel_dream3d  a two-phase DREAM.3D (SIMPL v6) voxel map with x y z w quaternions, on a hex
 #                  mesh twice as coarse as the voxels (quadrature vote), one region per phase;
 #   build_plate    a hex box whose bottom layers (attribute 2) are a passthrough build plate in
