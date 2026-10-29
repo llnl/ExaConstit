@@ -72,32 +72,6 @@ enum class Slide : char {
     FIXED = 3   ///< on three or more surfaces (a corner): does not move
 };
 
-/**
- * @brief Moves y to the nearest point on one plane, or on the line where two planes meet: the
- * planes are n_k . x = c_k with unit normals n_k (num = 1 or 2, two planes not parallel), and the
- * nearest point is y - N^T (N N^T)^-1 (N y - c) with N the matrix whose rows are the normals.
- * (boundary_projector.cpp has the same formula with a guard for nearly parallel planes; the
- * planes here are surfaces separated by a sharp edge, never parallel.)
- */
-void ProjectOntoPlanes(const double (*n)[3], const double* c, int num, double y[3]) {
-    double r[2];
-    for (int k = 0; k < num; ++k) {
-        r[k] = n[k][0] * y[0] + n[k][1] * y[1] + n[k][2] * y[2] - c[k];
-    }
-    double a[2] = {r[0], 0.0};
-    if (num == 2) {
-        const double g = n[0][0] * n[1][0] + n[0][1] * n[1][1] + n[0][2] * n[1][2];
-        const double det = 1.0 - g * g;
-        a[0] = (r[0] - g * r[1]) / det;
-        a[1] = (r[1] - g * r[0]) / det;
-    }
-    for (int k = 0; k < num; ++k) {
-        for (int d = 0; d < 3; ++d) {
-            y[d] -= a[k] * n[k][d];
-        }
-    }
-}
-
 /** @brief True when n points exactly along a coordinate axis (two components exactly zero), as
  * the normals of box faces do. */
 bool IsAxis(const double n[3]) {

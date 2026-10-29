@@ -13,8 +13,8 @@
 
 /**
  * @file seed_element_locator.hpp
- * @brief Finds, for seed points, the mesh element that contains them, or the nearest element
- * centroid or mesh vertex, the same way on every rank count and partition.
+ * @brief Finds, for seed points, the mesh element that contains them, the nearest element
+ * centroid, or the nearest of any set of points, the same way on every rank count and partition.
  *
  * **Why.** The connected and geodesic distance modes start each grain from one element of the
  * mesh that "belongs" to its seed: the element containing the seed, or for a seed outside the
@@ -23,16 +23,17 @@
  * named by a partition-independent key and every tie is broken by the smallest key:
  * - element key: a 64-bit hash of the element's corner positions rounded to a fine grid
  *   (mesh/element_key.hpp);
- * - vertex key: the splitmix64 hash of the single vertex's exact coordinates (VertexKey below),
- *   taken from the owner-broadcast vertex positions (mesh/vertex_coordinates.hpp), so every copy
- *   of a shared vertex has the same coordinates and key on every rank.
+ * - vertex key: the splitmix64 hash of a single point's exact coordinates (VertexKey below). For
+ *   mesh vertices or field nodes the coordinates are the owner-broadcast ones
+ *   (mesh/vertex_coordinates.hpp), so every copy of a shared point has the same key on every
+ *   rank.
  *
  * **How.** Each rank answers for its own local elements or vertices, and the answers are combined
  * with MPI_Allreduce(MIN):
  * - containment: smallest key of a local element containing the point, then MIN over ranks;
  * - nearest: smallest squared distance d^2 on each rank, MIN over ranks, then the smallest key
  *   among the local candidates at exactly that d^2 (other ranks contribute UINT64_MAX), MIN over
- *   ranks. Distances of a given element centroid or vertex are computed with the same formula from
+ *   ranks. Distances of a given element centroid or point are computed with the same formula from
  *   the same numbers on every rank, so "exactly equal" means the same thing everywhere.
  *
  * The local searches use an Axom BVH (bounding volume hierarchy: a tree of nested bounding boxes
@@ -40,7 +41,7 @@
  * about log(number of local elements) instead of a loop over all of them:
  * - containment: element boxes of MaterialPointLocator, spin::BVH::findPoints, then the exact
  *   point-in-element test MaterialPointLocator::PointInElement;
- * - nearest: zero-size boxes at the centroids (or vertices), walked with the BVH traverser; a box
+ * - nearest: zero-size boxes at the centroids (or points), walked with the BVH traverser; a box
  *   is opened only if its distance to the point is <= the best d^2 found so far (`<=` so exact
  *   ties are all visited), and the leaf keeps the lexicographically smallest (d^2, key).
  *
@@ -48,10 +49,8 @@
  * source elements, labeling/vertex_field.hpp). The connected mode anchors a seed outside the
  * material to the nearest element *centroid* (of the elements carrying the seed's label,
  * NearestElementCentroidKeys, labeling/connected_labeler.hpp). The geodesic mode snaps it to the
- * elements around the nearest *field node* with its own search over the field nodes
- * (NearestFieldNodes in labeling/vertex_field.cpp: the same (d^2, key) rule as NearestVertex,
- * applied to the nodes that carry its distance field). NearestVertex itself is not called by the
- * generator pipeline; it is kept as a tested utility.
+ * elements around the nearest *field node*: NearestPoints over the nodes that carry its distance
+ * field (NearestFieldNodes in labeling/vertex_field.cpp).
  *
  * All functions are host only (MFEM's point-in-element test runs on the host) and collective.
  */
@@ -100,20 +99,14 @@ struct NearestKeys {
     std::vector<double> distance_squared;
 };
 
-/** @brief NearestKeys plus the position of the nearest vertex. */
-struct NearestVertexResult : NearestKeys {
+/** @brief NearestKeys plus where the winner lies on this rank (result of NearestPoints). */
+struct NearestPointResult : NearestKeys {
     /**
-     * @brief Per listed seed: coordinates of the nearest vertex (DBL_MAX when none), as stored in
-     * VertexCoordinates (the Nodes vertex value for a mesh with continuous Nodes, broadcast from
-     * the owner rank; not Mesh::GetVertex, which can differ for a mesh with Nodes).
+     * @brief Per query: the index, in this rank's point arrays, of this rank's copy of the
+     * winning point, or -1 if this rank holds no copy. A point shared by several ranks (same
+     * coordinates and key on each) is found on every rank that holds it.
      */
-    std::vector<std::array<double, 3>> position;
-    /**
-     * @brief Per listed seed: this rank's 0-based local index of the nearest vertex, or -1 if this
-     * rank does not hold a copy of it. A shared vertex is found on every rank that holds it.
-     * Callers should use this instead of searching for `position` in Mesh::GetVertex.
-     */
-    std::vector<int> local_vertex;
+    std::vector<int> local_point;
 };
 
 /**
@@ -143,34 +136,30 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
                                        const ElementMask* mask = nullptr);
 
 /**
- * @brief For the seeds seed_ids[k], the mesh vertex nearest to the seed (smallest squared
- * distance; ties: smallest VertexKey), over all ranks, with its exact coordinates.
+ * @brief For each query point, the nearest of the points held by all ranks (smallest squared
+ * distance; ties: smallest key), and on every rank that holds a copy of it, that copy's index.
  *
- * Vertices are those of the local mesh (0 <= v < GetNV()) at the positions of VertexCoordinates
- * (mesh/vertex_coordinates.hpp): the Nodes vertex values for a mesh with continuous Nodes (the
- * true geometry, also when the vertex array is stale or partition dependent), else the vertex
- * array, in both cases with the owner's value broadcast to every copy. A vertex shared by several
- * ranks therefore has the same coordinates and key on each of them. The local copies of the
- * winner are reported in NearestVertexResult::local_vertex.
+ * Each rank passes its own points; a point held by several ranks must have the same coordinates
+ * and key on each of them (for example owner-broadcast node coordinates with VertexKey). A rank
+ * holds a copy of the winner exactly when its own local best has the global (d^2, key): its
+ * copies carry the same d^2 and key, and nothing on the rank can beat the global minimum.
  *
- * **Collective** over `comm` (the owner broadcast of VertexCoordinates, then three
- * MPI_Allreduce calls; with a mask on some rank, one more reduction and a neighbor exchange of
- * the candidate flags over the shared vertices). Host only.
+ * **Collective** over `comm` (two MPI_Allreduce calls of the number of queries). Host only.
  *
- * @param pmesh    this rank's part of the 3D mesh (may have no local vertices).
- * @param comm     communicator of the mesh.
- * @param seeds    replicated seed positions.
- * @param seed_ids 0-based indices into `seeds`, the same list on every rank.
- * @param mask     optional active elements: only vertices of an active element (on any rank)
- *                 are candidates. A rank holding a copy of such a vertex only through inactive
- *                 elements still reports its local index in local_vertex.
- * @return per listed seed: vertex key, squared distance and coordinates; identical on every rank.
- * @throws std::invalid_argument on every rank for a seed id outside [0, N) on any rank.
+ * @param comm       communicator over which the points are spread.
+ * @param px, py, pz this rank's points (mesh length units; may be empty).
+ * @param keys       key of each point (same size as px).
+ * @param qx, qy, qz the queries, the same list on every rank.
+ * @return per query: key and squared distance of the winner (identical on every rank) and the
+ *         local index of this rank's copy (rank local).
  */
-NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
-                                  MPI_Comm comm,
-                                  const SeedSet& seeds,
-                                  const std::vector<int>& seed_ids,
-                                  const ElementMask* mask = nullptr);
+NearestPointResult NearestPoints(MPI_Comm comm,
+                                 const std::vector<double>& px,
+                                 const std::vector<double>& py,
+                                 const std::vector<double>& pz,
+                                 const std::vector<std::uint64_t>& keys,
+                                 const std::vector<double>& qx,
+                                 const std::vector<double>& qy,
+                                 const std::vector<double>& qz);
 
 } // namespace exaconstit::microstructure

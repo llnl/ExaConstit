@@ -47,14 +47,13 @@ int AxisOf(const double n[3]) {
  * this (normals within about 0.06 degrees): the two-plane formula below divides by 1 - cos^2. */
 constexpr double PARALLEL_PLANES = 1e-6;
 
-/**
- * @brief Moves y to the nearest point on one plane, or on the line where two planes meet.
- *
- * The planes are n_k . x = c_k with unit normals n_k (k < num, num = 1 or 2). The nearest point
- * is y - N^T (N N^T)^-1 (N y - c), N the matrix whose rows are the normals: the smallest
- * correction that satisfies every plane (the "least-norm" correction). For two planes N N^T is
- * the 2 x 2 matrix [1 g; g 1] with g = n_0 . n_1, inverted in closed form. Two (nearly) parallel
- * planes are the same plane for this purpose, and only the first is used.
+} // namespace
+
+/*
+ * ProjectOntoPlanes: the nearest point is y - N^T (N N^T)^-1 (N y - c), N the matrix whose rows
+ * are the normals: the smallest correction that satisfies every plane (the "least-norm"
+ * correction). For two planes N N^T is the 2 x 2 matrix [1 g; g 1] with g = n_0 . n_1, inverted
+ * in closed form.
  */
 void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double y[3]) {
     double r[2] = {Dot(n[0], y) - c[0], (num == 2) ? Dot(n[1], y) - c[1] : 0.0};
@@ -73,8 +72,6 @@ void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double 
         y[d] -= a[0] * n[0][d] + ((num == 2) ? a[1] * n[1][d] : 0.0);
     }
 }
-
-} // namespace
 
 /*
  * ClosestPointOnTriangle: Ericson's region test (Real-Time Collision Detection, 2005, section

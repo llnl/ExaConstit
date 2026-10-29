@@ -3,7 +3,7 @@
  *
  * Terms used in this file:
  * - BVH (bounding volume hierarchy): a tree of nested bounding boxes that lets us skip elements
- *   or vertices that are provably too far away (axom::spin::BVH).
+ *   or points that are provably too far away (axom::spin::BVH).
  * - Traversal: walking the BVH from the root; Axom's traverser (LinearBVH.hpp, traverse_tree)
  *   opens a child box only if a predicate on (point, box) is true and calls a leaf action for
  *   every leaf it reaches, with leaf_nodes[leaf] = index of the box in the build array
@@ -15,7 +15,6 @@
 
 #include "microstructure/mesh/element_key.hpp"
 #include "microstructure/mesh/straight_sided.hpp"
-#include "microstructure/mesh/vertex_coordinates.hpp"
 #include "microstructure/seeding/material_point_locator.hpp"
 #include "microstructure/util/collective_errors.hpp"
 
@@ -34,48 +33,14 @@ namespace exaconstit::microstructure {
 
 namespace {
 
-/*
- * ReduceSharedVertexMax: values[v] becomes the maximum over every copy of local vertex v (one
- * entry per local vertex). A GroupCommunicator over the mesh's group topology lists, per shared
- * group g >= 1, its vertices in ParMesh::GroupVertex order (as VertexCoordinates does);
- * Reduce(Max) gathers each group's copies on the master and Bcast sends the result back.
- * Collective over the mesh communicator (neighbor messages only). Host only.
- */
-void ReduceSharedVertexMax(const mfem::ParMesh& pmesh, std::vector<int>& values) {
-    mfem::GroupCommunicator gcomm(pmesh.gtopo);
-    mfem::Table& group_entries = gcomm.GroupLDofTable();
-    const int num_groups = pmesh.GetNGroups();
-    int num_entries = 0;
-    for (int g = 1; g < num_groups; ++g) {
-        num_entries += pmesh.GroupNVertices(g);
-    }
-    group_entries.SetDims(num_groups, num_entries);
-    int* row_start = group_entries.GetI();
-    int* entry = group_entries.GetJ();
-    row_start[0] = 0;
-    int next = 0;
-    if (num_groups > 1) {
-        row_start[1] = 0; // group 0 (this rank alone) has no shared entries
-    }
-    for (int g = 1; g < num_groups; ++g) {
-        for (int j = 0; j < pmesh.GroupNVertices(g); ++j) {
-            entry[next++] = pmesh.GroupVertex(g, j);
-        }
-        row_start[g + 1] = next;
-    }
-    gcomm.Finalize();
-    gcomm.Reduce<int>(values.data(), mfem::GroupCommunicator::Max<int>);
-    gcomm.Bcast(values.data());
-}
-
-/** "No key" marker (larger than any real key; also the answer for "no element / vertex"). */
+/** "No key" marker (larger than any real key; also the answer for "no element / point"). */
 constexpr std::uint64_t NO_KEY = std::numeric_limits<std::uint64_t>::max();
 
 /** A 3D point of the searches (Axom primal). */
 using Point = MaterialPointLocator::PointType;
 /** An axis-aligned 3D box of the searches. */
 using Box = MaterialPointLocator::BoxType;
-/** The host (sequential) BVH of the nearest-centroid and nearest-vertex searches. */
+/** The host (sequential) BVH of the nearest-centroid and nearest-point searches. */
 using HostBVH = axom::spin::BVH<3, axom::SEQ_EXEC, double>;
 
 /** @brief The splitmix64 mixing step (same constants as element_key.cpp). */
@@ -359,110 +324,26 @@ NearestKeys NearestElementCentroidKeys(mfem::ParMesh& pmesh,
 }
 
 /*
- * NearestVertex
- *
- * Steps:
- *  1. Vertex positions from VertexCoordinates (collective owner broadcast): the Nodes vertex
- *     values for continuous Nodes, else the vertex array, identical on every copy of a shared
- *     vertex. Mesh::GetVertex is not used: for a mesh with Nodes it is an average over the local
- *     elements (partition dependent) or stale after node motion (mesh/vertex_coordinates.hpp).
- *     Keys are VertexKey of those positions.
- *  2. LocalNearest over the local vertices of active elements (all vertices without a mask), then
- *     the global (d^2, key) minimum (ReduceNearest). With a mask the candidate flags are first
- *     made the same on every copy of a shared vertex (maximum over the copies,
- *     ReduceSharedVertexMax): a vertex of an active element on one rank is a candidate on every
- *     rank holding it, so step 3 finds all copies. The candidate set over all ranks is unchanged.
- *  3. Local copies: every rank that holds the winning vertex finds it as its own local best
- *     (it is the global minimum of (d^2, key), so it is also the minimum over any subset that
- *     contains it, and its copies have identical coordinates and key); ReduceNearest flags
- *     exactly those ranks, whose local winner index is the copy.
- *  4. The coordinates of the winning vertex are shared with one more MPI_Allreduce(MIN) in which
- *     ranks that do not hold the winner contribute DBL_MAX.
+ * NearestPoints: LocalNearest over this rank's points (keeping the winning index), then the
+ * global (d^2, key) minimum (ReduceNearest), which also flags the ranks holding the winner.
  */
-NearestVertexResult NearestVertex(mfem::ParMesh& pmesh,
-                                  MPI_Comm comm,
-                                  const SeedSet& seeds,
-                                  const std::vector<int>& seed_ids,
-                                  const ElementMask* mask) {
-    CheckSeedIds(comm, seed_ids, static_cast<int>(seeds.Size()), "NearestVertex");
-
-    // Step 1: local vertices (owner-broadcast positions, collective) and their keys
-    const VertexCoordinates coordinates(pmesh);
-    const int nv = coordinates.NumVertices();
-    // Candidate vertices: those of at least one local active element (every vertex without a
-    // mask). Candidate i is local vertex candidate_vertex[i].
-    // A rank without elements has no mask while others may have one: the decision to exchange
-    // the flags is reduced so that every rank takes part
-    const bool masked = AnyRank(mask != nullptr && mask->active.Size() != 0, comm);
-    std::vector<int> usable(static_cast<std::size_t>(nv), masked ? 0 : 1);
-    if (masked) {
-        mfem::Array<int> element_vertices;
-        for (int e = 0; e < pmesh.GetNE(); ++e) {
-            if (ElementIsActive(mask, e)) {
-                pmesh.GetElementVertices(e, element_vertices);
-                for (const int v : element_vertices) {
-                    usable[static_cast<std::size_t>(v)] = 1;
-                }
-            }
-        }
-        ReduceSharedVertexMax(pmesh, usable);
-    }
-    std::vector<int> candidate_vertex;
-    std::vector<double> px;
-    std::vector<double> py;
-    std::vector<double> pz;
-    std::vector<std::uint64_t> keys;
-    for (int v = 0; v < nv; ++v) {
-        if (usable[static_cast<std::size_t>(v)] == 0) {
-            continue;
-        }
-        const double* x = coordinates.Vertex(v);
-        candidate_vertex.push_back(v);
-        px.push_back(x[0]);
-        py.push_back(x[1]);
-        pz.push_back(x[2]);
-        keys.push_back(VertexKey(x[0], x[1], x[2]));
-    }
-
-    // Queries: the listed seeds
-    const std::size_t nq = seed_ids.size();
-    std::vector<double> qx(nq), qy(nq), qz(nq);
-    for (std::size_t k = 0; k < nq; ++k) {
-        const auto s = static_cast<std::size_t>(seed_ids[k]);
-        qx[k] = seeds.x[s];
-        qy[k] = seeds.y[s];
-        qz[k] = seeds.z[s];
-    }
-
-    // Steps 2-3: local search, global reduction, local copies of the winner
-    NearestVertexResult out;
+NearestPointResult NearestPoints(MPI_Comm comm,
+                                 const std::vector<double>& px,
+                                 const std::vector<double>& py,
+                                 const std::vector<double>& pz,
+                                 const std::vector<std::uint64_t>& keys,
+                                 const std::vector<double>& qx,
+                                 const std::vector<double>& qy,
+                                 const std::vector<double>& qz) {
+    NearestPointResult out;
     std::vector<int> winner;
     LocalNearest(px, py, pz, keys, qx, qy, qz, out.distance_squared, out.key, &winner);
     const std::vector<char> mine = ReduceNearest(comm, out.distance_squared, out.key);
-    out.local_vertex.assign(nq, -1);
-    for (std::size_t k = 0; k < nq; ++k) {
-        if (mine[k] != 0) {
-            out.local_vertex[k] = candidate_vertex[static_cast<std::size_t>(winner[k])];
+    out.local_point.assign(qx.size(), -1);
+    for (std::size_t q = 0; q < qx.size(); ++q) {
+        if (mine[q] != 0) {
+            out.local_point[q] = winner[q];
         }
-    }
-
-    // Step 4: the winner's coordinates on every rank
-    std::vector<double> pos(3 * nq, DBL_MAX);
-    for (std::size_t k = 0; k < nq; ++k) {
-        if (mine[k] != 0) {
-            const auto v = static_cast<std::size_t>(winner[k]);
-            pos[3 * k + 0] = px[v];
-            pos[3 * k + 1] = py[v];
-            pos[3 * k + 2] = pz[v];
-        }
-    }
-    if (nq > 0) {
-        MPI_Allreduce(
-            MPI_IN_PLACE, pos.data(), static_cast<int>(3 * nq), MPI_DOUBLE, MPI_MIN, comm);
-    }
-    out.position.resize(nq);
-    for (std::size_t k = 0; k < nq; ++k) {
-        out.position[k] = {pos[3 * k + 0], pos[3 * k + 1], pos[3 * k + 2]};
     }
     return out;
 }

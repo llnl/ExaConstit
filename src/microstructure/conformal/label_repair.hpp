@@ -147,37 +147,4 @@ LabelRepairResult RepairLabels(mfem::ParMesh& pmesh,
                                const std::vector<int>& grain_seed,
                                const LabelRepairOptions& options = {});
 
-/**
- * @brief Switches elements whose *current* center lies clearly inside another grain's cell. After
- * nodes have moved, an element can end up past the exact boundary of a neighboring grain; it then
- * belongs to that grain. Not used by the generator pipeline (GenerateMicrostructure); kept as a
- * tested utility.
- *
- * For every element of a grain with a seed that has not switched before (`flipped`): the seed
- * with the smallest metric value at the element center is found (exact seed search). If it is not
- * the element's own seed, the distance of the center past the boundary between the two seeds,
- * estimated as (f_own - f_best) / |grad f_own - grad f_best| (f the metric of each seed), is
- * compared with `hysteresis` times the element size (Mesh::GetElementSize(e, 0)). Beyond it, the
- * element takes the grain of a face neighbor that grew from the best seed (the smallest such
- * grain; with none, it does not switch). Switched elements are marked in `flipped`, so an element
- * switches at most once over repeated calls.
- *
- * Same result on any partition: element centers come from the element's own nodes and every rank
- * holds all seeds. Host only. Collective (ghost labels of face neighbors, global count).
- * @param element_label in: grain per local element (1-based); out: after the switches.
- * @param hysteresis    how far past the boundary, in element sizes, the center must lie (>= 0).
- * @param flipped       per local element, in/out: 1 = has switched (resized to the number of
- *                      elements and zeroed when empty).
- * @return the number of switches, summed over all ranks.
- * The other parameters are those of RepairLabels.
- */
-std::int64_t FlipToCurrentOwner(mfem::ParMesh& pmesh,
-                                mfem::Array<int>& element_label,
-                                MetricType metric,
-                                const SeedSet& seeds,
-                                const MetricSetup& setup,
-                                const std::vector<int>& grain_seed,
-                                double hysteresis,
-                                std::vector<char>& flipped);
-
 } // namespace exaconstit::microstructure

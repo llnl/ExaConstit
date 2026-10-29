@@ -238,6 +238,19 @@ void ProjectOnNodeSurfaces(const NodeLabels& labels,
                            double y[3]);
 
 /**
+ * @brief Moves y to the nearest point on one plane, or on the line where two planes meet. Host,
+ * not collective.
+ *
+ * The planes are n_k . x = c_k with unit normals n_k (k < num). Two (nearly) parallel planes are
+ * the same plane for this purpose, and only the first is used.
+ * @param n   unit normals of the planes (rows; only the first num are read).
+ * @param c   plane offsets (mesh length units).
+ * @param num number of planes, 1 or 2.
+ * @param y   in: the point; out: its projection (mesh length units).
+ */
+void ProjectOntoPlanes(const double n[2][3], const double c[2], int num, double y[3]);
+
+/**
  * @brief Closest point p to y on the triangle with corners a, b, c (Ericson's region test, see
  * the file comment). Host, not collective.
  * @param interior out: true when p lies strictly inside the triangle, false when it lies on an

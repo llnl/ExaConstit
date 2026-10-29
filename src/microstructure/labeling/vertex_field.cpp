@@ -19,8 +19,8 @@
  * - CSR (compressed sparse row): a list of lists stored as offsets + items (see the header).
  * - Lexicographic minimum of pairs (T, label): the pair with the smallest T, and among pairs with
  *   that T the smallest label.
- * - BVH (bounding volume hierarchy): a tree of nested bounding boxes that lets us skip field
- *   nodes that are provably too far from a seed (axom::spin::BVH), used to snap outside seeds.
+ * - BVH (bounding volume hierarchy): a tree of nested bounding boxes that lets the seed searches
+ *   (seeding/seed_element_locator.hpp) skip elements or nodes provably too far from a seed.
  * - mfem::forall: MFEM's parallel loop; a GPU kernel when the mfem::Device has a CUDA or HIP
  *   backend, a plain host loop otherwise. MFEM_HOST_DEVICE marks code callable inside it.
  */
@@ -37,7 +37,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cfloat>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -48,28 +47,12 @@
 #include <string>
 #include <vector>
 
-#include "axom/core.hpp"
-#include "axom/primal/geometry/BoundingBox.hpp"
-#include "axom/primal/geometry/Point.hpp"
-#include "axom/primal/operators/squared_distance.hpp"
-#include "axom/spin/BVH.hpp"
-
 namespace exaconstit::microstructure {
 
 namespace {
 
 /** @brief +infinity, the "not reached" distance. */
 constexpr double INF = std::numeric_limits<double>::infinity();
-
-/** @brief "No key" marker of the nearest-node search (larger than any real key). */
-constexpr std::uint64_t NO_KEY = std::numeric_limits<std::uint64_t>::max();
-
-/** @brief A 3D point of the node search (Axom primal type). */
-using BvhPoint = axom::primal::Point<double, 3>;
-/** @brief An axis-aligned 3D box of the node search (one zero-size box per field node). */
-using BvhBox = axom::primal::BoundingBox<double, 3>;
-/** @brief The host (sequential) BVH used to find the field node nearest to an outside seed. */
-using HostBVH = axom::spin::BVH<3, axom::SEQ_EXEC, double>;
 
 /**
  * @brief Squared distance between point p and local node v of the coordinate table
@@ -318,118 +301,47 @@ mfem::IntegrationPoint ReferencePoint(mfem::ParMesh& mesh, int e, double px, dou
 }
 
 /**
- * @brief Result of NearestFieldNodes, per query: this rank's local index of the winning node when
- * this rank holds a copy of it, else -1 (rank-local; several ranks hold copies of a shared node).
+ * @brief For each query point, the field node nearest to it over all ranks (smallest squared
+ * distance, ties by smallest VertexKey of the node's coordinates): NearestPoints
+ * (seeding/seed_element_locator.hpp) over this rank's candidate nodes, at the field's own
+ * owner-broadcast coordinates, so every copy of a shared node has the same distance and key.
+ * With `node_used` (element mask) only nodes flagged 1 are candidates; the flag is identical on
+ * all copies, so copies still agree. Collective (two MPI_Allreduce calls). Host only.
+ * @return per query: this rank's local index of the winning node when this rank holds a copy of
+ *         it, else -1 (rank local; several ranks hold copies of a shared node).
  */
-struct NearestNodeResult {
-    std::vector<int> local_node; ///< per query: local index of the winner's copy here, or -1
-};
-
-/**
- * @brief For each query point, the field node nearest to it over all ranks: smallest squared
- * distance, ties by smallest VertexKey (seeding/seed_element_locator.hpp) of the node's
- * coordinates; returns, on every rank holding a copy of the winner, that copy's local index.
- *
- * This is NearestVertex of seed_element_locator.cpp applied to the field's own (owner-broadcast)
- * coordinates instead of Mesh::GetVertex: the same local search (a host BVH over zero-size boxes,
- * opened while "squared distance to the box <= best so far", so every exact tie reaches the leaf,
- * which keeps the lexicographic minimum of (d^2, key)), the same arithmetic and the same
- * reduction (MIN of d^2, then MIN of the keys at that d^2). For a corner field of a mesh without
- * Nodes the coordinates equal Mesh::GetVertex bit for bit, so the winner is exactly
- * NearestVertex's. A rank holds a copy of the winner exactly when its own local best has the
- * global (d^2, key): copies carry the same (owner-broadcast) coordinates, hence the same d^2 and
- * key, and nothing on this rank can beat the global minimum; so no lookup by position (and no
- * mesh-sized search table) is needed. With `node_used` (element mask) only nodes flagged 1 are
- * candidates; the flag is identical on all copies, so copies still agree. Collective (two
- * MPI_Allreduce calls). Host only.
- */
-NearestNodeResult NearestFieldNodes(MPI_Comm comm,
-                                    const mfem::Vector& coords,
-                                    int num_nodes,
-                                    const std::vector<double>& qx,
-                                    const std::vector<double>& qy,
-                                    const std::vector<double>& qz,
-                                    const int* node_used) {
-    const std::size_t nq = qx.size();
+std::vector<int> NearestFieldNodes(MPI_Comm comm,
+                                   const mfem::Vector& coords,
+                                   int num_nodes,
+                                   const std::vector<double>& qx,
+                                   const std::vector<double>& qy,
+                                   const std::vector<double>& qz,
+                                   const int* node_used) {
     const double* xyz = coords.HostRead();
-    std::vector<double> best_d2(nq, DBL_MAX);
-    std::vector<std::uint64_t> best_key(nq, NO_KEY);
-    std::vector<int> best_node(nq, -1);
-
-    // Local search over this rank's (used) nodes; candidate c is node candidate_node[c]
+    // Candidate c is node candidate_node[c]
     std::vector<int> candidate_node;
+    std::vector<double> px;
+    std::vector<double> py;
+    std::vector<double> pz;
+    std::vector<std::uint64_t> keys;
     for (int v = 0; v < num_nodes; ++v) {
         if (node_used == nullptr || node_used[v] != 0) {
             candidate_node.push_back(v);
+            px.push_back(xyz[3 * v]);
+            py.push_back(xyz[3 * v + 1]);
+            pz.push_back(xyz[3 * v + 2]);
+            keys.push_back(VertexKey(xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]));
         }
     }
-    const int num_candidates = static_cast<int>(candidate_node.size());
-    if (num_candidates > 0 && nq > 0) {
-        std::vector<std::uint64_t> keys(static_cast<std::size_t>(num_nodes));
-        std::vector<BvhBox> boxes(static_cast<std::size_t>(num_candidates));
-        for (int c = 0; c < num_candidates; ++c) {
-            const int v = candidate_node[static_cast<std::size_t>(c)];
-            keys[static_cast<std::size_t>(v)] = VertexKey(
-                xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]);
-            boxes[static_cast<std::size_t>(c)] = BvhBox(
-                BvhPoint{xyz[3 * v], xyz[3 * v + 1], xyz[3 * v + 2]});
-        }
-        HostBVH bvh;
-        bvh.initialize(boxes.data(), static_cast<axom::IndexType>(num_candidates));
-        const auto traverser = bvh.getTraverser();
-        for (std::size_t q = 0; q < nq; ++q) {
-            double d2_best = DBL_MAX;
-            std::uint64_t key_best = NO_KEY;
-            int node_best = -1;
-            // Leaf: exact squared distance, then the (d^2, key) order
-            auto leaf_action = [&](std::int32_t leaf, const std::int32_t* leaf_nodes) {
-                const int v = candidate_node[static_cast<std::size_t>(leaf_nodes[leaf])];
-                const double dx = xyz[3 * v + 0] - qx[q];
-                const double dy = xyz[3 * v + 1] - qy[q];
-                const double dz = xyz[3 * v + 2] - qz[q];
-                const double d2 = dx * dx + dy * dy + dz * dz;
-                const std::uint64_t key = keys[static_cast<std::size_t>(v)];
-                if (d2 < d2_best || (d2 == d2_best && key < key_best)) {
-                    d2_best = d2;
-                    key_best = key;
-                    node_best = v;
-                }
-            };
-            // Predicate: open a box unless it is provably farther than the best so far
-            auto predicate = [&](const BvhPoint& query, const BvhBox& box) -> bool {
-                return axom::primal::squared_distance(query, box) <= d2_best;
-            };
-            traverser.traverse_tree(BvhPoint{qx[q], qy[q], qz[q]}, leaf_action, predicate);
-            best_d2[q] = d2_best;
-            best_key[q] = key_best;
-            best_node[q] = node_best;
+    const NearestPointResult nearest = NearestPoints(comm, px, py, pz, keys, qx, qy, qz);
+    std::vector<int> local_node(qx.size(), -1);
+    for (std::size_t q = 0; q < qx.size(); ++q) {
+        const int c = nearest.local_point[q];
+        if (c >= 0) {
+            local_node[q] = candidate_node[static_cast<std::size_t>(c)];
         }
     }
-
-    // Global (d^2, key) minimum, then the winner's coordinates
-    const int n = static_cast<int>(nq);
-    std::vector<double> global_d2(best_d2);
-    if (n > 0) {
-        MPI_Allreduce(MPI_IN_PLACE, global_d2.data(), n, MPI_DOUBLE, MPI_MIN, comm);
-    }
-    std::vector<std::uint64_t> key(best_key);
-    for (std::size_t q = 0; q < nq; ++q) {
-        if (best_d2[q] != global_d2[q]) {
-            key[q] = NO_KEY; // another rank is nearer
-        }
-    }
-    const std::vector<std::uint64_t> local_key(key);
-    if (n > 0) {
-        MPI_Allreduce(MPI_IN_PLACE, key.data(), n, MPI_UINT64_T, MPI_MIN, comm);
-    }
-    NearestNodeResult out;
-    out.local_node.assign(nq, -1);
-    for (std::size_t q = 0; q < nq; ++q) {
-        if (key[q] != NO_KEY && local_key[q] == key[q]) {
-            out.local_node[q] = best_node[q];
-        }
-    }
-    return out;
+    return local_node;
 }
 
 } // namespace
@@ -1452,18 +1364,18 @@ SourceReport VertexField::InitializeSources(const SeedSet& seeds,
             qy[static_cast<std::size_t>(j)] = seeds.y[s];
             qz[static_cast<std::size_t>(j)] = seeds.z[s];
         }
-        const NearestNodeResult nearest = NearestFieldNodes(comm,
-                                                            m_coords,
-                                                            m_num_vertices,
-                                                            qx,
-                                                            qy,
-                                                            qz,
-                                                            HasMask() ? m_node_used.HostRead()
-                                                                      : nullptr);
+        const std::vector<int> nearest_node = NearestFieldNodes(comm,
+                                                                m_coords,
+                                                                m_num_vertices,
+                                                                qx,
+                                                                qy,
+                                                                qz,
+                                                                HasMask() ? m_node_used.HostRead()
+                                                                          : nullptr);
         // Step 3b: this rank's copy of that node (if any), then its elements' keys
         std::vector<std::uint64_t> snap_key(static_cast<std::size_t>(num_out), none);
         for (int j = 0; j < num_out; ++j) {
-            const int v = nearest.local_node[static_cast<std::size_t>(j)];
+            const int v = nearest_node[static_cast<std::size_t>(j)];
             if (v < 0) {
                 continue; // the node is not on this rank
             }

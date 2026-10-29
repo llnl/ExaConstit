@@ -16,7 +16,7 @@
  * - the max_rounds cap leaves counted orphans;
  * - a seed whose own element is won by a neighbor keeps its other elements (Voronoi corner seed,
  *   Laguerre), and a seed that labels no element has no cell (counted);
- * - the shared seed element locator (containing element, nearest centroid, nearest vertex);
+ * - the shared seed element locator (containing element, nearest centroid, nearest point);
  * - a seed outside the material is anchored to the nearest element;
  * - vote sampling.
  *
@@ -1046,7 +1046,7 @@ BruteContaining(const mfem::Mesh& mesh, const std::vector<std::uint64_t>& keys, 
 
 } // namespace
 
-// The three locator functions against brute force on the serial mesh, on a METIS partition and on
+// The three locator searches against brute force on the serial mesh, on a METIS partition and on
 // a round-robin partition whose last rank owns no element (that rank contributes "nothing found"
 // to every reduction). The seeds include a point on a face shared by two elements and one on an
 // edge shared by four (the smallest key must win), points outside the mesh, and points at exactly
@@ -1152,11 +1152,35 @@ TEST(SeedElementLocator, MatchesBruteForceWithTiesAndEmptyRank) {
         EXPECT_EQ(nc.key, ref_centroid_key);
         EXPECT_EQ(nc.distance_squared, ref_centroid_d2);
 
-        const ms::NearestVertexResult nv = ms::NearestVertex(
-            *d.pmesh, MPI_COMM_WORLD, seeds, all_ids);
-        EXPECT_EQ(nv.key, ref_vertex_key);
-        EXPECT_EQ(nv.distance_squared, ref_vertex_d2);
-        EXPECT_EQ(nv.position, ref_vertex_pos);
+        // NearestPoints over the local vertices (the grid has no Nodes, so every copy of a shared
+        // vertex has the same coordinates); a rank that reports a copy holds the right position,
+        // and at least one rank holds each winner
+        std::vector<double> px, py, pz;
+        std::vector<std::uint64_t> vertex_keys;
+        for (int v = 0; v < d.pmesh->GetNV(); ++v) {
+            const double* x = d.pmesh->GetVertex(v);
+            px.push_back(x[0]);
+            py.push_back(x[1]);
+            pz.push_back(x[2]);
+            vertex_keys.push_back(ms::VertexKey(x[0], x[1], x[2]));
+        }
+        const ms::NearestPointResult np = ms::NearestPoints(
+            MPI_COMM_WORLD, px, py, pz, vertex_keys, seeds.x, seeds.y, seeds.z);
+        EXPECT_EQ(np.key, ref_vertex_key);
+        EXPECT_EQ(np.distance_squared, ref_vertex_d2);
+        std::vector<int> holders(static_cast<std::size_t>(n), 0);
+        for (std::size_t k = 0; k < holders.size(); ++k) {
+            const int i = np.local_point[k];
+            if (i >= 0) {
+                holders[k] = 1;
+                const auto ui = static_cast<std::size_t>(i);
+                EXPECT_EQ((std::array<double, 3>{px[ui], py[ui], pz[ui]}), ref_vertex_pos[k]);
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, holders.data(), n, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        for (const int h : holders) {
+            EXPECT_GE(h, 1);
+        }
 
         // A sub-list in another order gives the matching entries
         const std::vector<int> some = {5, 3};
@@ -1231,7 +1255,6 @@ TEST(ConnectedLabeler, InvalidInputThrowsOnAllRanks) {
     EXPECT_EQ(report.unresolved_elements, 0);
 }
 
-/** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 /** MPI-aware gtest main: MPI is initialized before the tests and finalized at exit by mfem::Mpi. */
 int main(int argc, char** argv) {
     mfem::Mpi::Init(argc, argv);
