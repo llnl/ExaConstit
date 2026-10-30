@@ -560,10 +560,10 @@ distance modes prevent this:
 
 ![A smoothed BCC strut lattice with grains grown along the struts, conformal boundaries](microstructure_figures/lattice_geodesic_conformal.jpg)
 
-*About 300 grains in a $3 \times 3 \times 3$ cell BCC strut lattice with filleted (rounded)
-junctions, meshed with about 540 000 tetrahedra (Gmsh) whose node positions were then smoothed
-for element quality. Grains are grown along the struts with geodesic distance, and their
-boundaries fitted with the conformal option: the boundary nodes moved from 0.36 to 0.21 element
+*1750 grains, about 8 per strut, in a $3 \times 3 \times 3$ cell BCC strut lattice with filleted
+(rounded) junctions, meshed with about 1.8 million tetrahedra (Gmsh) whose node positions were then
+smoothed for element quality. Grains are grown along the struts with geodesic distance, and their
+boundaries fitted with the conformal option: the boundary nodes moved from 0.38 to 0.18 element
 sizes from their targets on average, with no inverted element.*
 
 ### How geodesic distance is computed
@@ -594,7 +594,7 @@ The options for the picture:
     type = "file"
     floc = "lattice_bcc_tet_3cells.mesh"
 [Seeds]
-    num_seeds = 300
+    num_seeds = 1750               # about 8 grains per strut
     min_distance_factor = 0.4
 [Tessellation]
     distance = "geodesic"
@@ -604,7 +604,7 @@ The options for the picture:
 
 The lattice meshes are made by
 [`test/data/microstructure/lattice/make_lattice_meshes.py`](../test/data/microstructure/lattice/make_lattice_meshes.py)
-(here `tet lattice_bcc_tet_3cells.mesh --cells 3 --size 0.05`). Options file:
+(here `tet lattice_bcc_tet_3cells.mesh --cells 3 --size 0.03`). Options file:
 [`lattice_geodesic.toml`](microstructure_figures/sources/lattice_geodesic.toml). For parts that
 fill only a tiny fraction of their bounding box, the generator places seeds element by element,
 so those seeds, unlike all others, change when the mesh is refined.
