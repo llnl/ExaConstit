@@ -1122,16 +1122,16 @@ def test_plot_overlay_slope_axes_use_symlog(
 def test_plot_overlay_slope_ylim_robust_against_outliers(
     plot_solutions_module, tmp_path,
 ):
-    """Slope axis ylim should be driven by the BULK of the data,
-    not by extreme outliers (elastic spike, start-of-test
-    numerical noise). Pins the percentile-based fix.
+    """Slope axis ylim follows the per-side rule: the side where the
+    data lives keeps its full range, the minority side is clipped to
+    the bulk envelope (90th percentile of |slope|).
 
     Robert's report: 'the entire range is not plotted only the very
-    start is plotted.' Root cause was ``linthresh = max_abs * 0.001``
-    plus matplotlib's data-range autoscaling letting a 200x outlier
-    dictate the axis. After the fix, ylim follows the 90th-percentile
-    bulk; spikes still plot but extend visibly past the chart edge
-    rather than dominating it.
+    start is plotted.' A large elastic spike followed by a nearly
+    flat (close to perfectly plastic) response washed out the bulk.
+    The symlog axis keeps the bulk readable, and the spike must stay
+    visible because it matters for calibration; a couple of negative
+    start-of-test noise points must not claim half the chart.
     """
     import numpy as np
     import pandas as pd
@@ -1204,25 +1204,33 @@ def test_plot_overlay_slope_ylim_robust_against_outliers(
         if "slope" in (ax.get_title() or "").lower()
     )
     ymin, ymax = slope_ax.get_ylim()
-    abs_extent = max(abs(ymin), abs(ymax))
+    # One archived solution: the slope block once reused the name of the
+    # solution count for its point count, so the title read "Top 133"
+    # and a slider was built for solutions that do not exist.
+    assert fig._suptitle.get_text().startswith("Top 1 solutions")
 
-    # Symmetric ylim — both sides of zero get equal real estate.
-    assert abs(abs(ymin) - abs(ymax)) < 1e-6, (
-        f"slope ylim should be symmetric, got ({ymin}, {ymax})"
+    slopes = np.gradient(sim_stress, strain)
+    bulk = float(np.percentile(np.abs(slopes[slopes != 0]), 90))
+
+    # Majority side (positive): full range, so the elastic spike is on
+    # the chart.
+    assert ymax >= slopes.max(), (
+        f"slope ylim ({ymin}, {ymax}) cuts off the positive spike "
+        f"(max {slopes.max()})"
     )
-
-    # Bulk-driven, not max-driven. The data has |slope| up to 210
-    # but the bulk lives below ~7. The new ylim should be in the
-    # bulk's order of magnitude (single digits to maybe 20), not
-    # the spike's (hundreds). The old code produced ylim ≈ ±300.
-    assert abs_extent < 50, (
-        f"slope ylim ({ymin}, {ymax}) is dominated by spike outliers; "
-        f"expected bulk-driven ylim around ±5"
+    # Minority side (2 negative noise points): clipped to the bulk
+    # envelope, not stretched to the -128 spike.
+    assert abs(ymin + bulk) < 1e-9 * bulk, (
+        f"negative side of slope ylim ({ymin}) should be the bulk "
+        f"envelope -{bulk}"
     )
+    assert abs(ymin) < 50
+    # The smooth bulk (0.7 .. 7) lies entirely inside the visible range.
+    assert ymin < 0.7 and ymax > 7.0
 
-    # The line itself must STILL contain the spike points — the
-    # fix is about visible-range, not data-clipping. The user
-    # sees the line exit the chart at the spike, not the spike
+    # The line itself must STILL contain every spike point — the
+    # rule is about visible range, not data clipping. The negative
+    # noise points exit the chart past the bulk envelope instead of
     # being silently dropped.
     sim_lines = [
         l for l in slope_ax.get_lines()

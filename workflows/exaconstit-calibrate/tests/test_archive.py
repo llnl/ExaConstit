@@ -636,6 +636,13 @@ def test_future_schema_version_raises(tmp_path):
     with pytest.raises(RuntimeError, match="schema version"):
         with ArchiveDB(db) as a:
             pass
+    # ...and the refused open must close its connection, not leave it
+    # for the garbage collector (an unclosed-database ResourceWarning
+    # that surfaced in whichever later test happened to trigger it).
+    archive = ArchiveDB(db)
+    with pytest.raises(RuntimeError, match="schema version"):
+        archive.open()
+    assert archive._conn is None
 
 
 # --- Context-manager discipline ---------------------------------------
