@@ -55,7 +55,7 @@ def _setup(workspace: Path):
     )
     reader = TextTableReader({
         "avg_stress": TextTableSpec(
-            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
             required=True,
         ),
     })

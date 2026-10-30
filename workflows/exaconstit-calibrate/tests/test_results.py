@@ -137,7 +137,7 @@ def test_layout_clear_outputs_tolerates_missing(workspace: Path):
 
 def _stress_spec(required: bool = True) -> TextTableSpec:
     return TextTableSpec(
-        columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+        columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
         required=required,
     )
 
@@ -146,9 +146,9 @@ def _def_grad_spec(required: bool = False) -> TextTableSpec:
     return TextTableSpec(
         columns=[
             "Time", "Volume",
-            "F11", "F12", "F13",
-            "F21", "F22", "F23",
-            "F31", "F32", "F33",
+            "F11", "F21", "F31",
+            "F12", "F22", "F32",
+            "F13", "F23", "F33",
         ],
         required=required,
     )
@@ -164,7 +164,7 @@ def _make_avg_stress(layout: CaseLayout, n: int = 10) -> None:
     for i in range(n):
         t = 0.1 * i
         szz = 100.0 + 200.0 * (1 - 2 ** (-t))
-        # Layout: Time, Volume, Sxx, Syy, Szz, Sxy, Sxz, Syz
+        # Layout: Time, Volume, Sxx, Syy, Szz, Syz, Sxz, Sxy
         rows.append([t, 1.0, 0.0, 0.0, szz, 0.0, 0.0, 0.0])
     _write_table(layout.output_file("avg_stress"), rows)
 
@@ -182,7 +182,7 @@ def test_reader_reads_required_output(workspace: Path):
 
     assert "avg_stress" in rs
     df = rs.df("avg_stress")
-    assert list(df.columns) == ["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"]
+    assert list(df.columns) == ["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"]
     assert len(df) == 10
     assert df["Szz"].iloc[0] == pytest.approx(100.0)
 
@@ -357,7 +357,7 @@ def test_text_reader_parses_indented_commented_header(workspace, tmp_path):
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "avg_stress.txt").write_text(
-        "      # Time            Volume             Sxx               Syy               Szz               Sxy               Sxz               Syz        \n"
+        "      # Time            Volume             Sxx               Syy               Szz               Syz               Sxz               Sxy        \n"
         "    1.00000000e-03    9.99999687e-01   -1.37887089e-10   -1.38705682e-10   -1.28596065e-04    1.25773677e-11    4.52148129e-11    4.09139718e-12\n"
         "    4.12500000e-03    9.99998710e-01   -4.66103996e-15   -4.73576816e-15   -5.30460051e-04    4.72689040e-16    8.44011981e-16    5.07378188e-17\n"
     )
@@ -371,7 +371,7 @@ def test_text_reader_parses_indented_commented_header(workspace, tmp_path):
     )
     reader = TextTableReader({
         "avg_stress": TextTableSpec(
-            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
             required=True,
         ),
     })

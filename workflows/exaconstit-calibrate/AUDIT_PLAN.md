@@ -315,7 +315,7 @@ additional work was completed:
 
 - **Column-name convention aligned to ExaConstit.** All framework
   defaults, docstring examples, fixtures, and the fake binary now
-  use the ``# Time  Volume  Sxx/Syy/Szz/Sxy/Sxz/Syz`` header
+  use the ``# Time  Volume  Sxx/Syy/Szz/Syz/Sxz/Sxy`` header
   format from
   ``ExaConstit/src/postprocessing/postprocessing_file_manager.hpp``
   ``GetVolumeAverageHeader``. `StressStrainExtractor` defaults are
