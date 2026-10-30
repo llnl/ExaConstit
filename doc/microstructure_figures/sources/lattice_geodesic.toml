@@ -1,14 +1,14 @@
-# 1750 grains (about 8 per strut) grown along the struts of a 3 x 3 x 3 cell BCC lattice with
+# 14000 grains (about 65 per strut) grown along the struts of a 3 x 3 x 3 cell BCC lattice with
 # filleted junctions (Gmsh tetrahedra with smoothed nodes), with fitted grain boundaries. The mesh
 # is made by test/data/microstructure/lattice/make_lattice_meshes.py:
-#     python3 make_lattice_meshes.py tet lattice_bcc_tet_3cells.mesh --cells 3 --size 0.03
+#     python3 make_lattice_meshes.py tet lattice_bcc_tet_3cells.mesh --cells 3 --size 0.025
 # Figure: doc/microstructure_figures/lattice_geodesic_conformal.jpg.
 [Mesh]
     type = "file"
     floc = "lattice_bcc_tet_3cells.mesh"
 
 [Seeds]
-    num_seeds = 1750
+    num_seeds = 14000
     rng_seed = 1
     min_distance_factor = 0.4
 

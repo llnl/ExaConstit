@@ -3,8 +3,9 @@
   python3 finish_figures.py trim OUT.jpg IN.png
       IN.png with its white margins cut to a small border, at most 1200 pixels on its longer
       side.
-  python3 finish_figures.py pair OUT.jpg LEFT.png RIGHT.png
-      the two pictures, trimmed, side by side on one white canvas of equal heights.
+  python3 finish_figures.py pair OUT.jpg LEFT.png RIGHT.png [MORE.png ...]
+      the pictures, trimmed, side by side on one white canvas of equal heights (at most 600
+      pixels wide per picture, 1800 in all).
 The output format follows the extension of OUT (.jpg for the guide's pictures).
 """
 import sys
@@ -28,9 +29,9 @@ def trimmed(path):
     return framed
 
 
-def fit_size(image):
-    """Scales the picture down so its longer side is at most MAX_SIDE pixels."""
-    scale = MAX_SIDE / max(image.width, image.height)
+def fit_size(image, max_side=MAX_SIDE):
+    """Scales the picture down so its longer side is at most max_side pixels."""
+    scale = max_side / max(image.width, image.height)
     if scale >= 1.0:
         return image
     size = (round(image.width * scale), round(image.height * scale))
@@ -38,21 +39,25 @@ def fit_size(image):
 
 
 mode, out = sys.argv[1], sys.argv[2]
+max_side = MAX_SIDE
 if mode == "trim":
     result = trimmed(sys.argv[3])
-elif mode == "pair":
-    left, right = trimmed(sys.argv[3]), trimmed(sys.argv[4])
-    height = max(left.height, right.height)
-    left = left.resize((round(left.width * height / left.height), height), Image.LANCZOS)
-    right = right.resize((round(right.width * height / right.height), height), Image.LANCZOS)
-    result = Image.new("RGB", (left.width + right.width, height), "white")
-    result.paste(left, (0, 0))
-    result.paste(right, (left.width, 0))
+elif mode == "pair" and len(sys.argv) >= 5:
+    parts = [trimmed(path) for path in sys.argv[3:]]
+    height = max(part.height for part in parts)
+    parts = [part.resize((round(part.width * height / part.height), height), Image.LANCZOS)
+             for part in parts]
+    result = Image.new("RGB", (sum(part.width for part in parts), height), "white")
+    x = 0
+    for part in parts:
+        result.paste(part, (x, 0))
+        x += part.width
+    max_side = max(MAX_SIDE, min(1800, 600 * len(parts)))
 else:
     sys.exit(__doc__)
 if out.lower().endswith((".jpg", ".jpeg")):
     # ray-traced pictures carry fine noise that JPEG stores far smaller than PNG
-    fit_size(result).save(out, quality=90, optimize=True)
+    fit_size(result, max_side).save(out, quality=90, optimize=True)
 else:
-    fit_size(result).save(out, optimize=True)
+    fit_size(result, max_side).save(out, optimize=True)
 print("wrote", out)

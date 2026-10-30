@@ -1,0 +1,23 @@
+# 40 columnar grains along z in a 3 x 3 x 3 cell BCC strut lattice, grown with geodesic distance.
+# The figure compares distance = "euclidean", "connected" and "geodesic" (change the key below);
+# everything else is the same. The mesh is made by
+# test/data/microstructure/lattice/make_lattice_meshes.py:
+#     python3 make_lattice_meshes.py tet lattice_bcc_tet_3cells_s030.mesh --cells 3 --size 0.03
+# Figure: doc/microstructure_figures/lattice_columns_distance.jpg.
+[Mesh]
+    type = "file"
+    floc = "lattice_bcc_tet_3cells_s030.mesh"
+
+[Seeds]
+    num_seeds = 40
+    rng_seed = 1
+    min_distance_factor = 0.4
+
+[Tessellation]
+    metric = "quadric"
+    anisotropy = { kind = "columnar", axis = [0.0, 0.0, 1.0] }
+    distance = "geodesic"
+
+[Output]
+    basename = "lattice"
+    paraview = true

@@ -161,7 +161,7 @@
 #              phase, seed position, size, shape) and, optionally, a voxel map. The voxel-map
 #              converters in scripts/microstructure/ write it, the generator reads it ([Seeds]
 #              file or [VoxelMap] file) and can write one itself ([Output] microstructure_file).
-#              Exact contents: doc/microstructure.md, section 11.2.
+#              Exact contents: doc/microstructure.md, section 13.2.
 # Seed table   A list of grains given as seed points, one per grain, with optional orientation,
 #              phase, size and shape: a microstructure file without a voxel map, or a CSV text
 #              file (handy for a short list written by hand or in a spreadsheet). Far-field HEDM
@@ -292,7 +292,8 @@ exec = "cpu"
 
 [Mesh]
     # Where the mesh comes from:
-    # - "file"     = one MFEM mesh file (.mesh, or gzip-compressed .mesh.gz), given by floc
+    # - "file"     = one mesh file in any format MFEM reads (MFEM .mesh or gzip-compressed
+    #                .mesh.gz, Gmsh .msh, VTK, ...; see GETTING YOUR MESH IN), given by floc
     # - "auto"     = a box of hexahedra, built exactly like ExaConstit's own [Mesh] type = "auto"
     #                (sizes in [Mesh.Auto] below). Good for RVEs and quick tests.
     # - "parallel" = a mesh already split into one file per MPI rank (for example written by this
@@ -377,7 +378,7 @@ exec = "cpu"
 #   <basename>.h5                 the grain table as a       [Seeds] file, in a later
 #                                 microstructure file        generator run (microstructure_file)
 #   <basename>_paraview/          ParaView files: open the .pvd file, color by "grain_id"
-# Exact layouts of every file: doc/microstructure.md, section 11.4.
+# Exact layouts of every file: doc/microstructure.md, section 13.4.
 #
 # At the end of a run the tool prints the ExaConstit settings to use with these files, with
 # their paths. For an auto box it shows both choices: [Mesh] type = "file" with the written
@@ -594,7 +595,7 @@ exec = "cpu"
     #   3, 25.0, 45.0, 8.0, 0.9238795, 0.3826834, 0.0, 0.0, 2
     # Converters that write this format: scripts/microstructure/hexrd_grains_to_seeds.py (HEXRD
     # grains.out) and midas_grains_to_seeds.py (MIDAS Grains.csv). Exact grammar (spaces,
-    # number formats, refused columns): doc/microstructure.md, section 11.1.
+    # number formats, refused columns): doc/microstructure.md, section 13.1.
     # file = "grains.csv"       (or file = "grains.h5")
 
     # Table coordinates to mesh coordinates: x_mesh = units_scale * x_table + translate.
@@ -686,7 +687,7 @@ exec = "cpu"
     # reached yet, and that untransformed share shrinks quickly over time. Adding up the grains
     # that manage to appear gives about 0.896 (rate / growth_speed)^(3/4) grains per unit
     # volume. This is the classical Johnson-Mehl-Avrami-Kolmogorov result; the number 0.896 and
-    # its derivation and references are in doc/microstructure.md, section 4.4.
+    # its derivation and references are in doc/microstructure.md, section 6.4.
     # Turned around, for about N grains in a part of volume V, keep growth_speed = 1 and set
     #     rate = (N / (0.896 V))^(4/3)
     # Example: N = 100 grains in a unit cube: rate = (100 / 0.896)^(4/3), about 540.
@@ -871,7 +872,7 @@ exec = "cpu"
     #                 (stretched grains, including columnar, lamellar and per_seed; see
     #                 `geodesic` below). With weights ("laguerre", or "quadric" with a weight
     #                 column) or per_seed shapes it needs solver "fim" (why: see
-    #                 doc/microstructure.md, section 6).
+    #                 doc/microstructure.md, section 8.4).
     # "connected" and "geodesic" cannot be combined with periodic, fit_volumes, lloyd_iterations
     # or voxel maps.
     distance = "euclidean"
@@ -1000,7 +1001,7 @@ exec = "cpu"
     # - "dream3d"    = a DREAM.3D file: FeatureIds, AvgQuats and Phases are found by name (or
     #                  set the *_path keys below when the file has several)
     # Exact specification for writing your own files (dataset names, accepted data types, id
-    # rules, chunking and compression): doc/microstructure.md, section 11.2.
+    # rules and compression): doc/microstructure.md, section 13.2.
     format = "exaconstit"
 
     # The file (relative to where you run). Required.
@@ -1100,9 +1101,9 @@ exec = "cpu"
 # =====================================
 # ORIENTATIONS
 # =====================================
-# One crystal orientation per grain: a unit quaternion (w x y z), crystal-to-sample, passive,
-# exactly the convention of ExaConstit's orientation files. Supplied orientations are only
-# normalized to length 1; the generator never converts angle conventions.
+# One crystal orientation per grain: a unit quaternion (w x y z) that takes crystal components
+# to sample components, exactly the convention of ExaConstit's orientation files. Supplied
+# orientations are only normalized to length 1; the generator never converts angle conventions.
 
 [Orientations]
     # - "random"      = random orientations evenly spread over all rotations: no texture.
@@ -1212,8 +1213,7 @@ exec = "cpu"
 # ratio and largest aspect ratio before and after, so check them for your mesh. For grains grown
 # from seeds it also compares which grains touch in the mesh with which should touch: pairs that
 # touch only in the mesh are stair-step contacts, pairs that only should touch have a shared face
-# smaller than the mesh resolves; both shrink as the mesh gets finer (see doc/microstructure.md,
-# section 5).
+# smaller than the mesh resolves; both shrink as the mesh gets finer.
 #
 # Outer surfaces stay where they are: nodes on a flat face of the part slide along that face; on
 # a curved surface they slide along the surface's original elements; on an edge where a curved

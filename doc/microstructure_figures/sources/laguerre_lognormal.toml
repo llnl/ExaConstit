@@ -1,4 +1,4 @@
-# 1000 Laguerre grains whose volumes follow a log-normal size distribution (sigma = 0.5).
+# 1000 Laguerre grains whose equivalent diameters follow a log-normal distribution (sigma = 0.5).
 # Figure: doc/microstructure_figures/gallery_laguerre.jpg.
 [Mesh]
     type = "auto"

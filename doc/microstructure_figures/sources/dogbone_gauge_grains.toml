@@ -1,0 +1,19 @@
+# Grains in the reduced section of a flat tensile specimen (ASTM E8/E8M 6 mm wide subsize
+# specimen, 2 mm thick, in mm); the grips stay one block each with their own material. The mesh
+# (attribute 1 = reduced section with its fillets, 2 = grips) is made by
+#     python3 make_dogbone_mesh.py dogbone.msh --size 0.064
+# Figure: doc/microstructure_figures/dogbone_gauge_grains.jpg.
+[Mesh]
+    type = "file"
+    floc = "dogbone.msh"
+    active_attributes = [1]
+    passthrough_attributes = { "2" = 2 }
+
+[Seeds]
+    num_seeds = 4000
+    rng_seed = 1
+    min_distance_factor = 0.5
+
+[Output]
+    basename = "dogbone"
+    paraview = true

@@ -67,7 +67,7 @@ accepted: Euler angles are a convention conversion.
 What the converter writes
 -------------------------
 An ExaConstit microstructure file with a voxel map (see exaconstit_microstructure_io.py and
-doc/microstructure.md, section 11.2): the grain id of every cell, the lower corner of cell (0,0,0)
+doc/microstructure.md, section 13.2): the grain id of every cell, the lower corner of cell (0,0,0)
 and the cell size, scaled by ``--units-scale``, and a grain table with the grain ids present and,
 with ``--orientations``, their quaternions (w x y z).
 Matrices become quaternions by Shepperd's method (w >= 0), conjugated when ``--conjugate yes``

@@ -179,13 +179,15 @@ its numbered steps.
   `make_lattice_meshes.py`, which builds them (tet or hex); its node optimization uses the OpenMP
   energy kernel `lattice_energy.cpp` (`--engine native`, the default) or JAX (`--engine jax`)
 - **`doc/microstructure_figures/`**: the pictures of the user guide with everything that makes
-  them: `sources/` holds the options file of every picture, `make_voxel_example.py` the data and
-  mesh of the voxel example, and `render_grains.py` the ParaView script that renders a run
-  (`pvbatch --force-offscreen-rendering render_grains.py RUN.pvd OUT.png --cutaway`), and
-  `finish_figures.py` trims a render (or joins two side by side) into the JPEG the guide shows,
-  and `voxels_to_vti.py` turns the voxel map of a microstructure file into a VTK image for
-  rendering. `--cut-exact` cuts with flat planes, which suits meshes whose nodes were moved by
-  the conformal fit.
+  them. `sources/` holds the options file of every picture; `make_voxel_example.py` makes the
+  data and mesh of the voxel example and `make_dogbone_mesh.py` the tensile-specimen mesh.
+  `render_grains.py` is the ParaView script that renders a run
+  (`pvbatch --force-offscreen-rendering render_grains.py RUN.pvd OUT.png --cutaway`);
+  `--cut-exact` cuts with flat planes, which suits meshes whose nodes were moved by the conformal
+  fit, `--gray-above N` draws passthrough blocks gray, and `--elevation 90 --view-up 0 1 0
+  --parallel` gives a plan view. `finish_figures.py` trims a render (or joins several side by
+  side) into the JPEG the guide shows, and `voxels_to_vti.py` turns the voxel map of a
+  microstructure file into a VTK image for rendering.
   When an option changes, re-run the affected options files so the guide stays truthful.
 
 ## Rules every change follows

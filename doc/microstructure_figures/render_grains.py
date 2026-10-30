@@ -6,8 +6,9 @@ Run with ParaView's pvbatch (ParaView 5.11 or newer):
 
 Each grain gets a fixed random color from its grain id, so the same grain has the same color in
 every picture of a run. With --phase-csv, every phase has one flat color instead (phase 1 blue,
-phase 2 orange-red, then purple and yellow). The part is drawn as its outer surface; --cutaway
-removes one corner octant of the bounding box so the inside shows.
+phase 2 orange-red, then purple and yellow); --gray-above draws passthrough blocks (the grain ids
+after the last grain) gray. The part is drawn as its outer surface; --cutaway removes one corner
+octant of the bounding box so the inside shows.
 """
 import argparse
 import math
@@ -35,6 +36,8 @@ parser.add_argument("--grain-field", default="grain_id",
                     help="field holding the grain id (point or cell data)")
 parser.add_argument("--phase-csv", default="",
                     help="the run's <basename>_grains.csv: color by phase families")
+parser.add_argument("--gray-above", type=int, default=0,
+                    help="draw grain ids above this number (passthrough blocks) light gray")
 parser.add_argument("--cutaway", action="store_true", help="remove the +x +y +z corner octant")
 parser.add_argument("--cut-exact", action="store_true",
                     help="cut the corner with flat planes through the elements (instead of "
@@ -47,6 +50,10 @@ parser.add_argument("--elevation", type=float, default=25.0)
 parser.add_argument("--zoom", type=float, default=1.12)
 parser.add_argument("--focus", type=float, nargs=3, default=None,
                     help="look at this point instead of the center")
+parser.add_argument("--view-up", type=float, nargs=3, default=[0.0, 0.0, 1.0],
+                    help="screen-up direction; give e.g. 0 1 0 with --elevation 90 (top view)")
+parser.add_argument("--parallel", action="store_true",
+                    help="parallel projection (no perspective), e.g. for a top view")
 parser.add_argument("--size", type=int, nargs=2, default=[1600, 1200])
 parser.add_argument("--seed", type=int, default=7, help="color permutation")
 parser.add_argument("--raster", action="store_true",
@@ -82,23 +89,14 @@ if args.cutaway:
     lo = [b[0] + (1 - f) * (b[1] - b[0]), b[2] + (1 - f) * (b[3] - b[2]),
           b[4] + (1 - f) * (b[5] - b[4])]
 if args.cutaway and args.cut_exact:
-    # Clip at corner = 0 with corner = min(x - lo_x, y - lo_y, z - lo_z) at the points: positive
-    # exactly inside the corner box, so the cut faces are flat planes through the elements
-    corner = ProgrammableFilter(Input=reader)
-    corner.Script = f"""
-import numpy as np
-from vtk.numpy_interface import dataset_adapter as dsa
-inp = dsa.WrapDataObject(self.GetInput())
-out = dsa.WrapDataObject(self.GetOutput())
-out.ShallowCopy(self.GetInput())
-p = np.asarray(inp.Points)
-out.PointData.append(np.min(p - np.array({lo!r}), axis=1), 'corner')
-"""
-    source = Clip(Input=corner)
-    source.ClipType = "Scalar"
-    source.Scalars = ["POINTS", "corner"]
-    source.Value = 0.0
-    source.Invert = 1  # keep corner <= 0
+    # Clip away the corner box exactly: the cut faces are flat planes through the elements
+    hi = [b[1] + 1.0, b[3] + 1.0, b[5] + 1.0]  # past the part, so only the three inner faces cut
+    source = Clip(Input=reader)
+    source.ClipType = "Box"
+    source.ClipType.Position = lo
+    source.ClipType.Length = [h - l for h, l in zip(hi, lo)]
+    source.Exact = 1
+    source.Invert = 0  # keep what lies outside the box
 elif args.cutaway:
     # Remove the elements whose center lies in the corner box (whole elements, so the cut faces
     # show the element staircase), by flagging them and thresholding the flag away
@@ -145,7 +143,9 @@ phase_hue = [(0.58, 0.65), (0.04, 0.75), (0.80, 0.45), (0.14, 0.70)]
 for i, (k, ph) in enumerate(zip(g.tolist(), p.tolist())):
     key = (k, ph)
     if key not in table:
-        if phase_of:
+        if 0 < {args.gray_above} < k:
+            h, s, v = 0.0, 0.0, 0.72
+        elif phase_of:
             h, s = phase_hue[(ph - 1) % len(phase_hue)]
             v = 0.9
         else:
@@ -204,9 +204,10 @@ view.CameraFocalPoint = center
 view.CameraPosition = [center[0] + dist * math.cos(el) * math.cos(az),
                        center[1] + dist * math.cos(el) * math.sin(az),
                        center[2] + dist * math.sin(el)]
-view.CameraViewUp = [0.0, 0.0, 1.0]
+view.CameraViewUp = list(args.view_up)
 view.CameraViewAngle = 30.0
-view.CameraParallelProjection = 0
+view.CameraParallelProjection = 1 if args.parallel else 0
+view.CameraParallelScale = dist * math.tan(math.radians(15.0))  # same framing as the 30 deg view
 Render(view)
 SaveScreenshot(args.out, view, ImageResolution=args.size, TransparentBackground=0)
 print("wrote", args.out)

@@ -17,7 +17,7 @@
 
 [VoxelMap]
     # "dream3d" (DREAM.3D 6.x SIMPL or DREAM3D-NX files) or "exaconstit" (an ExaConstit
-    # microstructure file with a voxel map, doc/microstructure.md section 11.2)
+    # microstructure file with a voxel map, doc/microstructure.md section 13.2)
     format = "dream3d"
     file = "microstructure.dream3d"
     # FeatureIds, AvgQuats and Phases are found by dataset name; give the HDF5 paths explicitly
