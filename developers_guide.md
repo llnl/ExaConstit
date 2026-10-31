@@ -98,6 +98,7 @@ ExaConstit requires a specific MFEM development branch with ExaConstit-specific 
 - **Repository**: https://github.com/rcarson3/mfem.git
 - **Branch**: `exaconstit-dev`
 - **Version Dependencies**:
+  - **v0.10.1**: Compatible with MFEM hash `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based)
   - **v0.10.0**: Compatible with MFEM hash `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based)
   - **v0.9.0**: Compatible with MFEM hashes `a6bb7b7c2717e991b52ad72460f212f7aec1173e`
   - **v0.8.0**: Compatible with MFEM hashes `31b42daa3cdddeff04ce3f59befa769b262facd7` or `29a8e15382682babe0f5c993211caa3008e1ec96`
@@ -378,7 +379,7 @@ ExaConstit uses TOML-based configuration files for all simulation parameters:
 ### Main Configuration File (`options.toml`)
 ```toml
 basename = "simulation_name"
-version = "0.10.0"
+version = "0.10.1"
 
 [Mesh]
 filename = "mesh.mesh"

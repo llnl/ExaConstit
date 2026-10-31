@@ -780,7 +780,7 @@ You'll need to manually build all dependencies first:
 5. **CHAI** (v2025.12.0)
 6. **Hypre** (v3.1.0)
 7. **METIS** (5.1.0)
-8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 was tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364`)
+8. **MFEM** (`exaconstit-dev` branch of https://github.com/rcarson3/mfem; v0.10.0 and v0.10.1 were tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364`)
 9. **SNLS** (v0.4.4) - built with `USE_BATCH_SOLVERS=ON`
 10. **ExaCMech** (v0.4.3) - built against the standalone SNLS via `SNLS_DIR`
 11. **HDF5** (1.14.6) - serial, C library only
