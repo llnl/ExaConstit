@@ -3,6 +3,15 @@
 All notable changes to ExaConstit are documented in this file, one line per change.
 Entries for releases before v0.10.0 were reconstructed from the release tag notes.
 
+## [Unreleased]
+
+### Added
+- `field_location` option in `[Visualizations]`: `"zone"` (default, one element-averaged value per element) or `"quadrature"` (at each H1 node location of every element, the value of the nearest quadrature point, so bounded quantities such as unit quaternions and non-negative plastic strain stay bounded). Both share the same projection kernels through `VizPointMap`.
+
+### Fixed
+- The `Crystal Orientations` visualization field divided the quaternions by their squared length instead of their length, so they were not unit quaternions.
+- Enabling the `all_state` projection crashed (its vector size was unknown when the visualization fields were created).
+
 ## [v0.10.1] - 2026-10-21
 
 Requires the same MFEM fork commit as v0.10.0.
