@@ -153,6 +153,20 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
                              PASS_REGULAR_EXPRESSION
                                  "exactly as many MPI ranks as it has parts")
     endif()
+
+    # VizPointMap: which quadrature point value each visualization node receives, for zone and
+    # quadrature output, on curved hex and tet meshes with a partial (one material) region.
+    blt_add_executable(NAME       test_viz_point_map
+                       SOURCES    test_viz_point_map.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+    foreach(_np 1 2)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            blt_add_test(NAME          test_viz_point_map_np${_np}
+                         COMMAND       test_viz_point_map
+                         NUM_MPI_TASKS ${_np})
+        endif()
+    endforeach()
 endif()
 
 ####################################
