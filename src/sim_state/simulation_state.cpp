@@ -839,6 +839,15 @@ SimulationState::SimulationState(ExaOptions& options)
         const int space_dim = m_mesh->SpaceDimension();
         std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(0);
         m_map_fec[l2_fec_str] = std::make_shared<mfem::L2_FECollection>(0, space_dim);
+        // Quadrature visualization output: L2 of the mesh order with Gauss-Lobatto nodes, i.e.
+        // nodes at the same reference locations as the H1 displacement nodes
+        if (options.visualization.field_location == VizFieldLocation::QUADRATURE) {
+            const int order = options.mesh.order;
+            std::string l2_viz_str = "L2_" + std::to_string(space_dim) + "D_P" +
+                                     std::to_string(order);
+            m_map_fec[l2_viz_str] = std::make_shared<mfem::L2_FECollection>(
+                order, space_dim, mfem::BasisType::GaussLobatto);
+        }
     }
 
     // Global QuadratureSpace Setup and QFs

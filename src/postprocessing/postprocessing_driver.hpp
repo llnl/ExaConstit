@@ -1,6 +1,7 @@
 #pragma once
 
 #include "postprocessing/projection_class.hpp"
+#include "postprocessing/viz_point_map.hpp"
 #include "sim_state/simulation_state.hpp"
 #include "utilities/cuda_access.hpp"
 #include "utilities/mechanics_kernels.hpp"
@@ -144,7 +145,9 @@ public:
     bool ShouldOutputVisualizationAtStep(int step) const;
 
     // Returns a pointer to a ParFiniteElementSpace (PFES) that's ordered according to VDIMs
-    // and makes use of an L2 FiniteElementCollection
+    // and makes use of the visualization L2 FiniteElementCollection (order 0 for zone output,
+    // mesh order with Gauss-Lobatto nodes for quadrature output).
+    // region = -1 gives the space on the full mesh used by the global (combined) fields.
     // If the vdim is not in the internal mapping than a new PFES will be created
     std::shared_ptr<mfem::ParFiniteElementSpace> GetParFiniteElementSpace(const int region,
                                                                           const int vdim);
@@ -939,13 +942,18 @@ private:
     std::map<int, std::shared_ptr<mfem::ParMesh>> m_map_submesh;
 
     /**
-     * @brief Mapping from partial quadrature space to submesh elements
-     *
-     * Maps region index to element index mapping arrays. Provides translation
-     * between local element indices in partial quadrature spaces and global
-     * element indices in the corresponding submesh.
+     * @brief Where material fields are placed in the visualization output (zone or quadrature)
      */
-    std::map<int, mfem::Array<int>> m_map_pqs2submesh;
+    VizFieldLocation m_viz_location;
+
+    /**
+     * @brief Per-region table of (source quadrature point, output node) pairs
+     *
+     * Built once for each region active on this rank. Every projection reads its input and
+     * places its output through this table, which is what lets zone and quadrature output share
+     * the same kernels. See VizPointMap.
+     */
+    std::map<int, VizPointMap> m_map_viz_points;
 
     /**
      * @brief Grid function storage for all projections

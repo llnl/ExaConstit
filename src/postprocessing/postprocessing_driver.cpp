@@ -120,16 +120,28 @@ RegisterHydroStress(const std::vector<MechType>& region_model_types) {
 /**
  * @brief Register all state variables projections for all regions
  *
+ * @param sim_state Reference to simulation state (for the options)
  * @param region_model_types Vector of material model types per region
  * @return Vector of AllStateVariablesProjection instances
  *
  * Creates projections that output all available state variables
  * for debugging and detailed analysis. State variable count and
  * interpretation depend on the specific material model.
+ *
+ * The vector size must be known here, before the grid functions are created, and must be the
+ * same on every rank (ranks without elements of a region still create its grid function), so it
+ * is taken from the material options rather than from a quadrature function.
  */
 std::vector<std::shared_ptr<ProjectionBase>>
-RegisterAllState(const std::vector<MechType>& region_model_types) {
-    return RegisterGeneric<AllStateVariablesProjection>(region_model_types);
+RegisterAllState(const std::shared_ptr<SimulationState> sim_state,
+                 const std::vector<MechType>& region_model_types) {
+    std::vector<std::shared_ptr<ProjectionBase>> base;
+    const auto& materials = sim_state->GetOptions().materials;
+    for (size_t i = 0; i < region_model_types.size(); i++) {
+        base.emplace_back(
+            std::make_shared<AllStateVariablesProjection>(materials[i].state_vars.num_vars));
+    }
+    return base;
 }
 
 /**
@@ -304,7 +316,7 @@ void PostProcessingDriver::RegisterProjection(const std::string& field) {
     } else if (field == "hydro") {
         projection_class = RegisterHydroStress(m_region_model_types);
     } else if (field == "all_state") {
-        projection_class = RegisterAllState(m_region_model_types);
+        projection_class = RegisterAllState(m_sim_state, m_region_model_types);
     } else if (field == "dpeff") {
         projection_class = RegisterDpEffProjection(m_sim_state, m_region_model_types);
     } else if (field == "eps") {
@@ -368,6 +380,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
                                            ExaOptions& options)
     : m_sim_state(sim_state), m_mpi_rank(0), m_num_regions(sim_state->GetNumberOfRegions()),
       m_aggregation_mode(AggregationMode::BOTH),
+      m_viz_location(options.visualization.field_location),
       m_enable_visualization(options.visualization.visit || options.visualization.conduit ||
                              options.visualization.paraview || options.visualization.adios2),
       m_viz_output_frequency(options.visualization.output_frequency) {
@@ -420,12 +433,16 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
     // Initialize grid functions and data collections
     if (m_enable_visualization) {
         auto mesh = m_sim_state->GetMesh();
+
+        // Local element of each region's partial quadrature space -> element of the mesh the
+        // region is visualized on (the full mesh for one region, its submesh otherwise).
+        std::map<int, mfem::Array<int>> map_pqs2submesh;
         if (m_num_regions == 1) {
             auto l2g = sim_state->GetQuadratureFunction("cauchy_stress_end", 0)
                            ->GetPartialSpaceShared()
                            ->GetLocal2Global();
             mfem::Array<int> pqs2submesh(l2g);
-            m_map_pqs2submesh.emplace(0, std::move(pqs2submesh));
+            map_pqs2submesh.emplace(0, std::move(pqs2submesh));
             m_map_submesh.emplace(0, mesh);
         } else {
             for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
@@ -448,8 +465,22 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
                                             ->GetSubMeshElementFromParent(l2g[i]);
                     pqs2submesh[i] = mapping;
                 }
-                m_map_pqs2submesh.emplace(region, std::move(pqs2submesh));
+                map_pqs2submesh.emplace(region, std::move(pqs2submesh));
             }
+        }
+
+        // Build each region's (source quadrature point, output node) table. Zone output reads
+        // the element averages ("_avg", one point per element); quadrature output reads the
+        // end-of-step quadrature values ("_end") and picks the nearest point for each node.
+        const std::string source_qf_name = (m_viz_location == VizFieldLocation::QUADRATURE)
+                                               ? "cauchy_stress_end"
+                                               : "cauchy_stress_avg";
+        for (auto& [region, pqs2submesh] : map_pqs2submesh) {
+            auto source_qspace =
+                sim_state->GetQuadratureFunction(source_qf_name, region)->GetPartialSpaceShared();
+            auto scalar_fes = GetParFiniteElementSpace(region, 1);
+            m_map_viz_points.emplace(
+                region, VizPointMap(m_viz_location, *source_qspace, *scalar_fes, pqs2submesh));
         }
 
         RegisterDefaultProjections();
@@ -475,9 +506,14 @@ PostProcessingDriver::GetParFiniteElementSpace(const int region, const int vdim)
     }
 
     if (m_map_pfes[region].find(vdim) == m_map_pfes[region].end()) {
-        auto mesh = m_map_submesh[region];
+        auto mesh = (region < 0) ? m_sim_state->GetMesh() : m_map_submesh[region];
         const int space_dim = mesh->SpaceDimension();
-        std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(0);
+        // Zone output: order 0. Quadrature output: Gauss-Lobatto L2 of the mesh order (both
+        // collections are owned by SimulationState).
+        const int order = (m_viz_location == VizFieldLocation::QUADRATURE)
+                              ? m_sim_state->GetOptions().mesh.order
+                              : 0;
+        std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(order);
         auto l2_fec = m_sim_state->GetFiniteElementCollection(l2_fec_str);
         auto value = std::make_shared<mfem::ParFiniteElementSpace>(
             mesh.get(), l2_fec.get(), vdim, mfem::Ordering::byVDIM);
@@ -488,8 +524,10 @@ PostProcessingDriver::GetParFiniteElementSpace(const int region, const int vdim)
 
 void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
                                         [[maybe_unused]] const double time) {
+    // Zone output reads element averages, so refresh them. Quadrature output reads the
+    // end-of-step quadrature values directly and needs no averaging.
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
-        if (!m_sim_state->IsRegionActive(region)) {
+        if (!m_sim_state->IsRegionActive(region) || m_viz_location != VizFieldLocation::ZONE) {
             continue;
         }
         auto state_qf_avg = m_sim_state->GetQuadratureFunction("state_var_avg", region);
@@ -508,14 +546,18 @@ void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
             if (!m_sim_state->IsRegionActive(region)) {
                 continue;
             }
+            // No table means visualization is off (nothing is registered to project)
+            const auto points_it = m_map_viz_points.find(region);
+            if (points_it == m_map_viz_points.end()) {
+                continue;
+            }
             const size_t reg_idx = static_cast<size_t>(region);
-            auto qpts2mesh = m_map_pqs2submesh[region];
+            const auto& points = points_it->second;
             for (auto& reg : m_registered_projections) {
                 if (reg.region_enabled[reg_idx]) {
                     const auto gf_name = GetGridFunctionName(reg.display_name, region);
                     auto& grid_func = m_map_gfs[gf_name];
-                    reg.projection_class[reg_idx]->Execute(
-                        m_sim_state, grid_func, qpts2mesh, region);
+                    reg.projection_class[reg_idx]->Execute(m_sim_state, grid_func, points, region);
                 }
             }
         }
@@ -1429,7 +1471,7 @@ void PostProcessingDriver::InitializeGridFunctions() {
             }
 
             auto gf_name = GetGridFunctionName(reg.display_name, -1);
-            auto fe_space = m_sim_state->GetParFiniteElementSpace(max_vdim);
+            auto fe_space = GetParFiniteElementSpace(-1, max_vdim);
             m_map_gfs.emplace(gf_name, std::make_shared<mfem::ParGridFunction>(fe_space.get()));
             m_map_gfs[gf_name]->operator=(0.0);
         }

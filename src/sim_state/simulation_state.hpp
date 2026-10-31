@@ -968,6 +968,8 @@ public:
      * - "L2_3D_P0": Discontinuous constant elements for 3D
      * - "H1_3D_P1": Continuous linear elements for 3D
      * - "L2_2D_P0": Discontinuous constant elements for 2D
+     * - "L2_3D_P<order>": Discontinuous Gauss-Lobatto elements of the mesh order, only with
+     *   quadrature visualization output (Visualizations field_location = "quadrature")
      *
      * Used internally by GetParFiniteElementSpace() and other methods requiring
      * specific finite element collections.
