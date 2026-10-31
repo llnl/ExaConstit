@@ -564,7 +564,20 @@ grain_file = "grains.txt"
     # 10 = every 10th time step
     # 100 = every 100th time step
     output_frequency = 10
-    
+
+    # ===== Field Location =====
+    # Where material fields (stress, plastic strain, orientations, ...) are placed
+    # in the output. Displacement, velocity and grain IDs are not affected.
+    # "zone"       = one value per element: the volume average of its
+    #                quadrature points (default, smallest files)
+    # "quadrature" = one value at each H1 (displacement) node location of each
+    #                element, copied from the quadrature point closest to that
+    #                node. Shows the variation inside elements. Values are never
+    #                blended across quadrature points, so bounded quantities stay
+    #                bounded (unit quaternions, non-negative plastic strain).
+    #                For mesh order 1 or 2, ParaView shows exactly these values.
+    field_location = "zone"
+
     # ===== IMPORTANT: Visualization Output Location =====
     # Visualization files are always written to:
     #   [PostProcessing.volume_averages.output_directory]/[basename]/visualizations/

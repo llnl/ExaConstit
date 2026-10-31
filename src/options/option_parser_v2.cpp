@@ -1271,6 +1271,11 @@ void ExaOptions::print_visualization_options() const {
     std::cout << "  ADIOS2: " << (visualization.adios2 ? "Enabled" : "Disabled") << "\n";
     std::cout << "  Output frequency: " << visualization.output_frequency << "\n";
     std::cout << "  Output location: " << visualization.floc << "\n";
+    std::cout << "  Field location: "
+              << (visualization.field_location == VizFieldLocation::QUADRATURE
+                      ? "quadrature (nearest quadrature point at each H1 node location)"
+                      : "zone (element average)")
+              << "\n";
 }
 
 void ExaOptions::print_post_processing_options() const {

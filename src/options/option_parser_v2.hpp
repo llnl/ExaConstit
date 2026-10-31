@@ -116,6 +116,23 @@ enum class PreconditionerType {
     NOTYPE     /**< Uninitialized or invalid preconditioner type */
 };
 
+/**
+ * @brief Where field values are placed in the visualization output
+ *
+ * Material quantities (stress, state variables, ...) live at the quadrature points
+ * of each element. For visualization they are written on a discontinuous (L2) field:
+ * - ZONE: one value per element, the volume average of the quadrature point values.
+ * - QUADRATURE: several values per element, placed at the same reference locations as
+ *   the H1 (displacement) nodes. Each of those values is copied from the quadrature
+ *   point closest to it, so no quadrature data is blended together and bounded
+ *   quantities (unit quaternions, non-negative plastic strain, ...) stay bounded.
+ */
+enum class VizFieldLocation {
+    ZONE,       /**< One volume averaged value per element (L2 order 0) */
+    QUADRATURE, /**< Nearest quadrature point value at each H1 node location */
+    NOTYPE      /**< Uninitialized or invalid field location */
+};
+
 enum class LatticeType {
     CUBIC,
     HEXAGONAL,
@@ -1175,6 +1192,13 @@ struct VisualizationOptions {
     int output_frequency = 1;
 
     /**
+     * @brief Where material fields are placed in the visualization output
+     *
+     * TOML key `field_location`: "zone" (default) or "quadrature". See VizFieldLocation.
+     */
+    VizFieldLocation field_location = VizFieldLocation::ZONE;
+
+    /**
      * @brief Base path/filename for visualization output files
      */
     std::filesystem::path floc = "results";
@@ -1753,3 +1777,10 @@ OriType string_to_ori_type(const std::string& str);
  * @return Corresponding LatticeType enum value
  */
 LatticeType string_to_lattice_type(const std::string& str);
+
+/**
+ * @brief Convert string to VizFieldLocation enum
+ * @param str String representation of the field location ("zone", "quadrature")
+ * @return Corresponding VizFieldLocation enum value, or NOTYPE if invalid
+ */
+VizFieldLocation string_to_viz_field_location(const std::string& str);

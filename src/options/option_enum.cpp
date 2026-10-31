@@ -156,3 +156,19 @@ LatticeType string_to_lattice_type(const std::string& str) {
 
     return string_to_enum(str, mapping, LatticeType::CUBIC, "lattice type");
 }
+/**
+ * @brief Convert string to VizFieldLocation enum
+ * @param str String representation of the field location. "zone" (alias "element") gives one
+ *            averaged value per element; "quadrature" (alias "qpt") gives nearest quadrature
+ *            point values at the H1 node locations of each element.
+ * @return Corresponding VizFieldLocation enum value
+ */
+VizFieldLocation string_to_viz_field_location(const std::string& str) {
+    static const std::map<std::string, VizFieldLocation> mapping = {
+        {"zone", VizFieldLocation::ZONE},
+        {"element", VizFieldLocation::ZONE},
+        {"quadrature", VizFieldLocation::QUADRATURE},
+        {"qpt", VizFieldLocation::QUADRATURE}};
+
+    return string_to_enum(str, mapping, VizFieldLocation::NOTYPE, "visualization field location");
+}

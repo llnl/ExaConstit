@@ -421,6 +421,11 @@ VisualizationOptions VisualizationOptions::from_toml(const toml::value& toml_inp
         options.floc = toml::find<std::string>(toml_input, "floc");
     }
 
+    if (toml_input.contains("field_location")) {
+        options.field_location = string_to_viz_field_location(
+            toml::find<std::string>(toml_input, "field_location"));
+    }
+
     return options;
 }
 
@@ -428,6 +433,11 @@ bool VisualizationOptions::validate() const {
     if (output_frequency < 1) {
         WARNING_0_OPT("Error: Visualizations table did not provide a valid output frequency valid "
                       "as it was less than 1");
+        return false;
+    }
+    if (field_location == VizFieldLocation::NOTYPE) {
+        WARNING_0_OPT("Error: Visualizations table field_location must be \"zone\" or "
+                      "\"quadrature\"");
         return false;
     }
     return true;
