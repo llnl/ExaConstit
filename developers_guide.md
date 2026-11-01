@@ -639,6 +639,21 @@ The `test/data/` directory contains various example cases:
 2. Add parsing support in `option_boundary_conditions.cpp`
 3. Update documentation and examples
 
+#### User Functions
+Users can add their own state variable names, initial values and post-processing quantities
+without changing ExaConstit, through plain C++ functions in a shared library (see the USER
+FUNCTIONS section of `src/options.toml` and `examples/user_functions`). The pieces:
+- `src/utilities/user_function_loader.hpp`: the required signatures, loading through
+  `DynamicFunctionLoader`, and the startup check (`CheckUserFunctions`, called from
+  `mechanics_driver.cpp`) that finds each function by the compiler's symbol name for the exact
+  signature.
+- `MultiExaModel::RunStateVariableUserFunctions` calls the register / initialize functions;
+  `PostProcessingDriver::SetupUserFunctions` sets up the post-processing ones.
+- `cmake/ExaConstitConfig.cmake.in` and `cmake/ExaConstitUserLibrary.cmake`: the installed CMake
+  package and `exaconstit_add_user_library()`, also used by the tests in `test/user_functions`.
+When changing a signature, update the `using` aliases in `user_function_loader.hpp`, the docs in
+`src/options.toml`, the example and the test library together.
+
 #### Keeping New State Restartable
 Checkpoints (`src/sim_state/restart_checkpoint.*`, described in `doc/restart.md`) save some
 state automatically and some only because it is listed explicitly. Any new feature that

@@ -7,10 +7,16 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 
 ### Added
 - `field_location` option in `[Visualizations]`: `"zone"` (default, one element-averaged value per element) or `"quadrature"` (at each H1 node location of every element, the value of the nearest quadrature point, so bounded quantities such as unit quaternions and non-negative plastic strain stay bounded). Both share the same projection kernels through `VizPointMap`.
+- Named state variables in the visualization output: `visualize_state_vars` in a `[[Materials]]` table (a list of names or `"all"`) and `region_<N>` in `[PostProcessing.projections] enabled_projections`. Names come from `SimulationState::GetQuadratureFunctionStatePairs`, in registration order; unnamed slots of non-ExaCMech models are written as `State Var <k>`.
+- User functions loaded from shared libraries like a UMAT, as plain C++ functions taking `std::shared_ptr<SimulationState>` and a region: `register_function` / `initialize_function` in `[Materials.State_Vars]` (name state variables, with an optional plot flag, and set their initial values for any material model), and `[[PostProcessing.user_functions]]` entries (per-point quantities written as visualization fields or volume averages / integrals, per material and globally). Every function's library and signature is checked at startup.
+- `find_package(ExaConstit)` CMake package and `exaconstit_add_user_library()` for building user function libraries against an installed ExaConstit, with an example in `examples/user_functions`.
+- `SimulationState::AddQuadratureFunctionStatePair` stops the run for a slice outside the state variables or overlapping another one.
 
 ### Fixed
 - The `Crystal Orientations` visualization field divided the quaternions by their squared length instead of their length, so they were not unit quaternions.
 - Enabling the `all_state` projection crashed (its vector size was unknown when the visualization fields were created).
+- Installed headers kept no directory structure, so headers including e.g. `sim_state/simulation_state.hpp` could not be used from an install.
+- The rank-0 gather of global volume averages sent too few values from a region root whose region had no valid result.
 
 ## [v0.10.1] - 2026-10-21
 
