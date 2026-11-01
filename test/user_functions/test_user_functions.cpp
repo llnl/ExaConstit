@@ -89,6 +89,14 @@ void InitializeUmatStateVariables(std::shared_ptr<SimulationState> sim_state, in
     });
 }
 
+/**
+ * @brief Stops the run: the restart test uses it to check that a restart does not call the
+ * initialize_function (the checkpoint has the state)
+ */
+void InitializeStopsTheRun(std::shared_ptr<SimulationState> /* sim_state */, int /* region */) {
+    MFEM_ABORT("InitializeStopsTheRun was called");
+}
+
 // =================================================================================================
 // State variable functions: wrong ones (each must stop the run with a clear message)
 // =================================================================================================

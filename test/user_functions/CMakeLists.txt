@@ -16,19 +16,59 @@ exaconstit_add_user_library(NAME test_user_functions SOURCES test_user_functions
 set_target_properties(test_user_functions PROPERTIES
                       LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# libtest_user_classes (test_user_classes.cpp) holds the same functions as user classes, built
+# as a user on a shared machine builds theirs: a plain shared library that includes only
+# exaconstit_user.hpp (no ExaConstit, MFEM or MPI headers or settings). The beginner examples of
+# user classes (examples/user_classes) are built the same way, so they keep compiling.
+add_library(test_user_classes SHARED test_user_classes.cpp)
+add_library(example_user_classes SHARED ${CMAKE_SOURCE_DIR}/examples/user_classes/my_output.cpp
+                                        ${CMAKE_SOURCE_DIR}/examples/user_classes/my_state_vars.cpp)
+foreach(_uf_target test_user_classes example_user_classes)
+    target_include_directories(${_uf_target} PRIVATE ${HEADER_INCLUDE_DIR})
+    set_target_properties(${_uf_target} PROPERTIES
+                          CXX_STANDARD 17
+                          CXX_STANDARD_REQUIRED ON
+                          LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+endforeach()
+
 # ------------------------------------------------------------------------------------------------
-# Input decks: one per case, from user_functions.toml.in. Only the UMAT region's state variable
-# functions (and library) change between cases.
-#   <case>|<library of the UMAT region's functions>|<UMAT register_function>
+# Input decks: one per case, from user_functions.toml.in. Only the state variable functions (and
+# their libraries) change between cases. The function fields are TOML values: a quoted function
+# name, or a factory table of libtest_user_classes ("class:<variant>" below).
+#   <case>|<UMAT library>|<UMAT register_function>|<UMAT initialize_function>
+# The ExaCMech region uses the function form, or the class form when the UMAT does. The
+# restart decks run 2 steps: *_restart_write writes a checkpoint after step 1, *_restart reads it.
 # ------------------------------------------------------------------------------------------------
 set(_uf_library "$<TARGET_FILE:test_user_functions>")
+set(_uf_class_library "$<TARGET_FILE:test_user_classes>")
+set(_uf_missing_library "libtest_user_functions_missing${CMAKE_SHARED_LIBRARY_SUFFIX}")
 set(_uf_cases
-    "success|${_uf_library}|RegisterUmatStateVariables"
-    "wrong_arguments|${_uf_library}|RegisterWrongArguments"
-    "extern_c|${_uf_library}|RegisterExternC"
-    "missing_library|libtest_user_functions_missing${CMAKE_SHARED_LIBRARY_SUFFIX}|RegisterUmatStateVariables"
-    "overlap|${_uf_library}|RegisterOverlappingStateVariables"
-    "out_of_range|${_uf_library}|RegisterOutOfRangeStateVariables")
+    "success|${_uf_library}|RegisterUmatStateVariables|InitializeUmatStateVariables"
+    "wrong_arguments|${_uf_library}|RegisterWrongArguments|InitializeUmatStateVariables"
+    "extern_c|${_uf_library}|RegisterExternC|InitializeUmatStateVariables"
+    "missing_library|${_uf_missing_library}|RegisterUmatStateVariables|InitializeUmatStateVariables"
+    "overlap|${_uf_library}|RegisterOverlappingStateVariables|InitializeUmatStateVariables"
+    "out_of_range|${_uf_library}|RegisterOutOfRangeStateVariables|InitializeUmatStateVariables"
+    "class_success|${_uf_class_library}|class:umat_names|class:umat_start"
+    "class_unknown_variant|${_uf_class_library}|class:no_such_variant|class:umat_start"
+    "class_wrong_class|${_uf_class_library}|class:umat_names|class:umat_names"
+    "class_duplicate|${_uf_class_library}|class:duplicate_names|class:umat_start"
+    "class_unknown_input|${_uf_class_library}|class:umat_names|class:ask_unknown_input"
+    "class_throwing|${_uf_class_library}|class:umat_names|class:throwing_initialize"
+    "restart_write|${_uf_library}|RegisterUmatStateVariables|InitializeUmatStateVariables"
+    "restart|${_uf_library}|RegisterUmatStateVariables|InitializeStopsTheRun"
+    "class_restart_write|${_uf_class_library}|class:umat_names|class:umat_start"
+    "class_restart|${_uf_class_library}|class:umat_names|class:throwing_initialize")
+
+# TOML value of a user function key: "Name", or the factory table for class:<variant>
+function(_uf_toml_value OUT_VAR VALUE)
+    if(VALUE MATCHES "^class:(.*)$")
+        set(${OUT_VAR} "{ factory = \"MakeTestClasses\", variant = \"${CMAKE_MATCH_1}\" }"
+            PARENT_SCOPE)
+    else()
+        set(${OUT_VAR} "\"${VALUE}\"" PARENT_SCOPE)
+    endif()
+endfunction()
 
 set(EXACONSTIT_TEST_DATA_DIR ${CMAKE_SOURCE_DIR}/test/data)
 set(USER_FUNCTION_LIBRARY ${_uf_library})
@@ -36,7 +76,27 @@ foreach(_uf_case ${_uf_cases})
     string(REPLACE "|" ";" _uf_fields "${_uf_case}")
     list(GET _uf_fields 0 CASE_NAME)
     list(GET _uf_fields 1 UMAT_STATE_VAR_LIBRARY)
-    list(GET _uf_fields 2 UMAT_REGISTER_FUNCTION)
+    list(GET _uf_fields 2 _uf_register)
+    list(GET _uf_fields 3 _uf_initialize)
+    _uf_toml_value(UMAT_REGISTER_FUNCTION "${_uf_register}")
+    _uf_toml_value(UMAT_INITIALIZE_FUNCTION "${_uf_initialize}")
+    if(CASE_NAME MATCHES "^class_")
+        set(CRYSTAL_STATE_VAR_LIBRARY ${_uf_class_library})
+        _uf_toml_value(CRYSTAL_REGISTER_FUNCTION "class:crystal_names")
+    else()
+        set(CRYSTAL_STATE_VAR_LIBRARY ${_uf_library})
+        _uf_toml_value(CRYSTAL_REGISTER_FUNCTION "RegisterExaCMechStateVariables")
+    endif()
+    set(T_FINAL 0.1)
+    set(RESTART_TABLE "")
+    if(CASE_NAME MATCHES "restart_write$")
+        set(T_FINAL 0.2)
+        set(RESTART_TABLE "[Restart]\n    write = true\n    interval = 1\n    write_final = false")
+    elseif(CASE_NAME MATCHES "restart$")
+        set(T_FINAL 0.2)
+        string(CONCAT RESTART_TABLE "[Restart]\n    read = true\n    read_cycle = 1\n"
+                                    "    read_directory = \"../${CASE_NAME}_write/restart\"")
+    endif()
     # configure_file fills the @...@ fields; file(GENERATE) then replaces the library
     # generator expression with the library's path. Each case runs in its own directory, so
     # the per-rank log files of the runs do not collide.
@@ -59,17 +119,21 @@ blt_add_executable(NAME       test_state_variable_functions
 # mechanics
 target_sources(test_state_variable_functions PRIVATE $<TARGET_OBJECTS:exaconstit_builtin_umat>)
 set_target_properties(test_state_variable_functions PROPERTIES ENABLE_EXPORTS ON)
-add_dependencies(test_state_variable_functions test_user_functions)
-foreach(_np 1 2)
-    if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
-        blt_add_test(NAME              test_user_functions_state_vars_np${_np}
-                     COMMAND           test_state_variable_functions
-                                       ${CMAKE_CURRENT_BINARY_DIR}/success/success.toml
-                     NUM_MPI_TASKS     ${_np}
-                     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/success)
-        set_tests_properties(test_user_functions_state_vars_np${_np} PROPERTIES
-                             RESOURCE_LOCK user_functions_success)
-    endif()
+add_dependencies(test_state_variable_functions test_user_functions test_user_classes)
+# The same check for both forms: the classes register the same names and set the same values
+foreach(_uf_form success class_success)
+    string(REPLACE "success" "state_vars" _uf_name "${_uf_form}")
+    foreach(_np 1 2)
+        if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+            set(_uf_test test_user_functions_${_uf_name}_np${_np})
+            blt_add_test(NAME              ${_uf_test}
+                         COMMAND           test_state_variable_functions
+                                           ${CMAKE_CURRENT_BINARY_DIR}/${_uf_form}/${_uf_form}.toml
+                         NUM_MPI_TASKS     ${_np}
+                         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${_uf_form})
+            set_tests_properties(${_uf_test} PROPERTIES RESOURCE_LOCK user_functions_${_uf_form})
+        endif()
+    endforeach()
 endforeach()
 
 # ------------------------------------------------------------------------------------------------
@@ -85,7 +149,12 @@ set(_uf_failures
     "extern_c|A function of that name exists but is declared extern"
     "missing_library|Could not open the library of the register_function of material"
     "overlap|'porosity' of region .* overlaps 'damage'"
-    "out_of_range|does not fit in the region's 10 state variables")
+    "out_of_range|does not fit in the region's 10 state variables"
+    "class_unknown_variant|does not know the variant 'no_such_variant'"
+    "class_wrong_class|is a .*UmatNames, which is not derived from .*InitializeFunction"
+    "class_duplicate|names the state variable 'damage', which material umat_2 already has"
+    "class_unknown_input|asks for the input 'no_such_input'.*Its inputs are:"
+    "class_throwing|deliberate error from ThrowingInitialize")
 foreach(_uf_failure ${_uf_failures})
     string(REPLACE "|" ";" _uf_fields "${_uf_failure}")
     list(GET _uf_fields 0 _uf_case)
@@ -97,6 +166,34 @@ foreach(_uf_failure ${_uf_failures})
     set_tests_properties(test_user_functions_${_uf_case} PROPERTIES
                          PASS_REGULAR_EXPRESSION "${_uf_message}")
 endforeach()
+
+# ------------------------------------------------------------------------------------------------
+# Restart (needs Axom): the initialize function / class does not run on a restart, since the
+# checkpoint has the state. The restart's initialize stops the run if it is called.
+# ------------------------------------------------------------------------------------------------
+if(ENABLE_AXOM)
+    foreach(_uf_rs restart class_restart)
+        set(_uf_rs_dir ${CMAKE_CURRENT_BINARY_DIR}/${_uf_rs})
+        add_test(NAME    test_user_functions_${_uf_rs}_clean
+                 COMMAND ${CMAKE_COMMAND} -E rm -rf ${_uf_rs_dir}_write/restart
+                         ${_uf_rs_dir}_write/results ${_uf_rs_dir}/restart ${_uf_rs_dir}/results)
+        set_tests_properties(test_user_functions_${_uf_rs}_clean PROPERTIES
+                             FIXTURES_SETUP user_functions_${_uf_rs}_clean)
+        blt_add_test(NAME              test_user_functions_${_uf_rs}_write
+                     COMMAND           $<TARGET_FILE:mechanics> -opt ${_uf_rs}_write.toml
+                     NUM_MPI_TASKS     1
+                     WORKING_DIRECTORY ${_uf_rs_dir}_write)
+        set_tests_properties(test_user_functions_${_uf_rs}_write PROPERTIES
+                             FIXTURES_REQUIRED user_functions_${_uf_rs}_clean
+                             FIXTURES_SETUP    user_functions_${_uf_rs}_write)
+        blt_add_test(NAME              test_user_functions_${_uf_rs}
+                     COMMAND           $<TARGET_FILE:mechanics> -opt ${_uf_rs}.toml
+                     NUM_MPI_TASKS     1
+                     WORKING_DIRECTORY ${_uf_rs_dir})
+        set_tests_properties(test_user_functions_${_uf_rs} PROPERTIES
+                             FIXTURES_REQUIRED user_functions_${_uf_rs}_write)
+    endforeach()
+endif()
 
 # ------------------------------------------------------------------------------------------------
 # The user-facing example (examples/user_functions) builds against the ExaConstit CMake package,
@@ -116,8 +213,29 @@ add_test(NAME test_user_functions_example_build
 # ExaCMech run (3 steps, 2 ranks) per visualization field location, then
 # check_postprocessing.py compares the outputs with exact answers (see postprocessing.toml.in).
 # ------------------------------------------------------------------------------------------------
-foreach(FIELD_LOCATION zone quadrature)
-    set(_uf_pp_dir ${CMAKE_CURRENT_BINARY_DIR}/postprocessing_${FIELD_LOCATION})
+# Each run twice: with the functions, and with the classes (factory tables, plus the
+# self-checking check_inputs entry).
+string(CONCAT _uf_pp_check_entry
+       "    [[PostProcessing.user_functions]]\n"
+       "        library_path = \"${_uf_class_library}\"\n"
+       "        function_name = { factory = \"MakeTestClasses\", variant = \"check_inputs\" }\n"
+       "        type = \"volume_average\"\n")
+foreach(_uf_pp_case zone quadrature zone_class quadrature_class)
+    string(REGEX REPLACE "_class$" "" FIELD_LOCATION "${_uf_pp_case}")
+    if(_uf_pp_case MATCHES "_class$")
+        set(PP_LIBRARY ${_uf_class_library})
+        _uf_toml_value(PP_UNIT_VALUE "class:unit_value")
+        _uf_toml_value(PP_STRESS_INVARIANTS "class:stress_invariants")
+        _uf_toml_value(PP_STRESS_TRIAXIALITY "class:stress_triaxiality")
+        set(PP_EXTRA_ENTRIES "${_uf_pp_check_entry}")
+    else()
+        set(PP_LIBRARY ${_uf_library})
+        _uf_toml_value(PP_UNIT_VALUE "UnitValue")
+        _uf_toml_value(PP_STRESS_INVARIANTS "StressInvariants")
+        _uf_toml_value(PP_STRESS_TRIAXIALITY "StressTriaxiality")
+        set(PP_EXTRA_ENTRIES "")
+    endif()
+    set(_uf_pp_dir ${CMAKE_CURRENT_BINARY_DIR}/postprocessing_${_uf_pp_case})
     file(MAKE_DIRECTORY ${_uf_pp_dir})
     configure_file(postprocessing.toml.in ${_uf_pp_dir}/postprocessing.toml.in @ONLY)
     file(GENERATE OUTPUT ${_uf_pp_dir}/postprocessing.toml
@@ -128,23 +246,23 @@ foreach(FIELD_LOCATION zone quadrature)
         set(_uf_pp_np 1)
     endif()
     # Volume average files are appended to, so every run starts from an empty results folder
-    add_test(NAME    test_user_functions_postprocessing_${FIELD_LOCATION}_clean
+    add_test(NAME    test_user_functions_postprocessing_${_uf_pp_case}_clean
              COMMAND ${CMAKE_COMMAND} -E rm -rf ${_uf_pp_dir}/results)
-    set_tests_properties(test_user_functions_postprocessing_${FIELD_LOCATION}_clean PROPERTIES
-                         FIXTURES_SETUP user_functions_postprocessing_${FIELD_LOCATION}_clean)
-    blt_add_test(NAME              test_user_functions_postprocessing_${FIELD_LOCATION}_run
+    set_tests_properties(test_user_functions_postprocessing_${_uf_pp_case}_clean PROPERTIES
+                         FIXTURES_SETUP user_functions_postprocessing_${_uf_pp_case}_clean)
+    blt_add_test(NAME              test_user_functions_postprocessing_${_uf_pp_case}_run
                  COMMAND           $<TARGET_FILE:mechanics> -opt postprocessing.toml
                  NUM_MPI_TASKS     ${_uf_pp_np}
                  WORKING_DIRECTORY ${_uf_pp_dir})
-    set_tests_properties(test_user_functions_postprocessing_${FIELD_LOCATION}_run PROPERTIES
-                         FIXTURES_REQUIRED user_functions_postprocessing_${FIELD_LOCATION}_clean
-                         FIXTURES_SETUP    user_functions_postprocessing_${FIELD_LOCATION})
-    add_test(NAME              test_user_functions_postprocessing_${FIELD_LOCATION}
+    set_tests_properties(test_user_functions_postprocessing_${_uf_pp_case}_run PROPERTIES
+                         FIXTURES_REQUIRED user_functions_postprocessing_${_uf_pp_case}_clean
+                         FIXTURES_SETUP    user_functions_postprocessing_${_uf_pp_case})
+    add_test(NAME              test_user_functions_postprocessing_${_uf_pp_case}
              COMMAND           ${PYTHON_EXECUTABLE}
                                ${CMAKE_CURRENT_SOURCE_DIR}/check_postprocessing.py
                                ${_uf_pp_dir}/results/postprocessing_${FIELD_LOCATION})
-    set_tests_properties(test_user_functions_postprocessing_${FIELD_LOCATION} PROPERTIES
-                         FIXTURES_REQUIRED user_functions_postprocessing_${FIELD_LOCATION})
+    set_tests_properties(test_user_functions_postprocessing_${_uf_pp_case} PROPERTIES
+                         FIXTURES_REQUIRED user_functions_postprocessing_${_uf_pp_case})
 endforeach()
 
 # ------------------------------------------------------------------------------------------------
