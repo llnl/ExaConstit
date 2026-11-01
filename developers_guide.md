@@ -234,6 +234,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - **`postprocessing_file_manager.hpp`**: File I/O and directory management
 - **`projection_class.hpp/cpp`**: Field projection operations
 - **`viz_point_map.hpp/cpp`**: Table pairing each visualization node with its source quadrature point (shared by zone and quadrature output)
+- **`volume_statistics.hpp/cpp`**: Volume-weighted statistics and histograms of a quantity per region, and their exact combination over regions
 - **`mechanics_lightup.hpp/cpp`**: Lattice strain calculations
 
 **Capabilities**:
