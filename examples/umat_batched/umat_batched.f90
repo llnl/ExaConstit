@@ -4,7 +4,8 @@
 ! get a last dimension NPTS and the per-point scalars become arrays of length NPTS, so point ip's
 ! data is STRESS(:,ip), DDSDDE(:,:,ip), DROT(:,:,ip), PNEWDT(ip), and so on. The loop over ip
 ! wraps the body of an ordinary UMAT. See umat_batched.cpp for the material (hypoelastic
-! isotropic solid) and ExaConstit's src/umats/userumat.h for the full description.
+! isotropic solid), ExaConstit's src/umats/userumat.h for the layout, and the UMAT section of
+! src/options.toml for what every argument holds.
 !
 ! With OpenMP (compile with -fopenmp) the points run in parallel; the body must then not write to
 ! SAVE or COMMON data. On GPU runs the arrays are GPU arrays and the loop must run on the GPU

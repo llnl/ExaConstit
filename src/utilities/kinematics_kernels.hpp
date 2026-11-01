@@ -3,7 +3,7 @@
 #include "mfem.hpp"
 #include "mfem/linalg/kernels.hpp"
 
-#include <cmath>
+#include <math.h> // sqrt in device code (plain C math library)
 #include <type_traits>
 
 /**

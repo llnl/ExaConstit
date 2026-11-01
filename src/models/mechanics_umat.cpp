@@ -8,7 +8,9 @@
 #include "mfem/general/forall.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <math.h> // cbrt in device code (plain C math library)
 #include <stdexcept>
 
 namespace {
@@ -41,7 +43,9 @@ AbaqusUmatModel::AbaqusUmatModel(const int region,
                                  const std::string umat_function_name_,
                                  const bool batched,
                                  const bool thread_safe,
-                                 const double temperature)
+                                 const double temperature,
+                                 const std::string& material_name,
+                                 const long long global_elem_offset)
     : ExaModel(region, n_state_vars, sim_state), umat_library_path(umat_library_path_),
       umat_function(nullptr), umat_batch_function(nullptr), load_strategy(load_strategy_),
       use_dynamic_loading(!umat_library_path_.empty()), umat_function_name(umat_function_name_),
@@ -96,18 +100,29 @@ AbaqusUmatModel::AbaqusUmatModel(const int region,
         }
     }
 
-    // NOEL / NPT: the point's region element and its index within the element (0-based, as
-    // the original implementation passed them)
+    // NOEL / NPT, 1-based as in Abaqus: NOEL is the element's global number in the parallel
+    // mesh (this rank's offset plus its rank-local index; unique over all ranks, but it depends
+    // on how the mesh is split among the ranks), NPT the point's number within its element
     m_noel.SetSize(npts, mfem::Device::GetMemoryType());
     m_npt.SetSize(npts, mfem::Device::GetMemoryType());
     {
-        int* noel = m_noel.HostWrite();
-        int* npt = m_npt.HostWrite();
-        for (int i = 0; i < npts; ++i) {
-            noel[i] = i / m_nqpts;
-            npt[i] = i % m_nqpts;
-        }
+        const int* l2g = qspace->IsFullSpace() ? nullptr : qspace->GetLocal2Global().Read();
+        const int nqpts = m_nqpts;
+        int* noel = m_noel.Write();
+        int* npt = m_npt.Write();
+        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i) {
+            const int e = i / nqpts;
+            const int rank_elem = l2g ? l2g[e] : e;
+            // NOEL is a default (32-bit) integer in the UMAT interface
+            noel[i] = static_cast<int>(global_elem_offset + rank_elem) + 1;
+            npt[i] = i % nqpts + 1;
+        });
     }
+
+    // CMNAME: the material name, blank-padded to 80 characters like a Fortran CHARACTER*80
+    m_cmname.fill(' ');
+    m_cmname[80] = '\0';
+    material_name.copy(m_cmname.data(), std::min<size_t>(material_name.size(), 80));
 
     // Load the UMAT now unless it is loaded at each setup
     if (use_dynamic_loading && load_strategy == exaconstit::LoadStrategy::PERSISTENT) {
@@ -333,6 +348,19 @@ void AbaqusUmatModel::PackUmatInputs(const mfem::Vector& jacobian, const int* lo
     });
 }
 
+void AbaqusUmatModel::IncrementInfo(double time[2], double& dtime, int& kstep, int& kinc) {
+    dtime = m_sim_state->GetDeltaTime();
+    // During the solve GetTime() is the time at the end of the increment; Abaqus passes the
+    // times at its beginning. ExaConstit runs one analysis step, so the step time TIME(1) and
+    // the total time TIME(2) are the same.
+    const double time_beg = m_sim_state->GetTime() - dtime;
+    time[0] = time_beg;
+    time[1] = time_beg;
+    kstep = 1;
+    // Increment number, 1-based: the time steps completed so far plus the current one
+    kinc = static_cast<int>(m_sim_state->GetSimulationCycle()) + 1;
+}
+
 void AbaqusUmatModel::CallUmatPerPoint() {
     MFEM_VERIFY_0(umat_function, "UMAT function not available");
     const int npts = m_nqpts * m_nelems;
@@ -367,10 +395,9 @@ void AbaqusUmatModel::CallUmatPerPoint() {
     int* npt = m_npt.HostReadWrite();
 
     // Scalars shared by all points
-    const double dt = m_sim_state->GetDeltaTime();
-    // Abaqus: time(1) step time, time(2) total time at the beginning of the increment (kept as
-    // in the original implementation)
-    const double time_beg[2] = {m_sim_state->GetTime() - dt, m_sim_state->GetTime()};
+    double time_beg[2], dt;
+    int kstep_c, kinc_c;
+    IncrementInfo(time_beg, dt, kstep_c, kinc_c);
     const int nstatv_c = num_state_vars;
     const int nprops_c = static_cast<int>(GetMaterialProperties().size());
     const bool parallel = m_thread_safe;
@@ -378,10 +405,10 @@ void AbaqusUmatModel::CallUmatPerPoint() {
     auto call_point = [&](const int i) {
         // Per-call copies: a UMAT receives every argument by reference and may overwrite them
         int ndi = 3, nshr = 3, ntens = 6, nstatv = nstatv_c, nprops = nprops_c;
-        int layer = 0, kspt = 0, kstep = 0, kinc = 0;
+        int layer = 0, kspt = 0, kstep = kstep_c, kinc = kinc_c;
         double time[2] = {time_beg[0], time_beg[1]};
         double dtime = dt;
-        char cmname[81] = "";
+        std::array<char, 81> cmname = m_cmname;
         umat_function(stress + 6 * i,
                       statev + static_cast<std::ptrdiff_t>(nstatv_c) * i,
                       ddsdde + 36 * i,
@@ -400,7 +427,7 @@ void AbaqusUmatModel::CallUmatPerPoint() {
                       dtemp + i,
                       predef + i,
                       dpred + i,
-                      cmname,
+                      cmname.data(),
                       &ndi,
                       &nshr,
                       &ntens,
@@ -441,9 +468,10 @@ void AbaqusUmatModel::CallUmatBatched() {
     int ndi = 3, nshr = 3, ntens = 6, nstatv = num_state_vars;
     int nprops = static_cast<int>(GetMaterialProperties().size());
     int layer = 0, kspt = 0, kstep = 0, kinc = 0;
-    double dtime = m_sim_state->GetDeltaTime();
-    double time[2] = {m_sim_state->GetTime() - dtime, m_sim_state->GetTime()};
-    char cmname[81] = "";
+    double dtime = 0.0;
+    double time[2];
+    IncrementInfo(time, dtime, kstep, kinc);
+    std::array<char, 81> cmname = m_cmname;
 
     umat_batch_function(&npts,
                         m_stress.ReadWrite(),
@@ -464,7 +492,7 @@ void AbaqusUmatModel::CallUmatBatched() {
                         m_dtemp.ReadWrite(),
                         m_predef.ReadWrite(),
                         m_dpred.ReadWrite(),
-                        cmname,
+                        cmname.data(),
                         &ndi,
                         &nshr,
                         &ntens,

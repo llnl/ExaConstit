@@ -19,6 +19,11 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 ### Changed
 - The UMAT model prepares the UMAT arguments and handles its results in device kernels (shared `GradCalc` and new `utilities/kinematics_kernels.hpp`), so GPU runs only copy data for standard (per-point) UMAT calls. `DFGRD0` / `DFGRD1` are computed exactly from the beginning-of-step and current nodes every step instead of from stored reference shape gradients, and the per-point reference shape gradient copy is gone.
 - UMAT inputs follow their definitions: `STRAN` is the Eulerian strain at the start of the increment (was at the end), `DSTRAN` the Eulerian strain 1/2 (I - B^-1) of the increment (was 1/2 (I - C^-1)), `CELENT` uses the reference element volume (unchanged for hexahedra, was too small for tetrahedra), and `TEMP` is the material's `temperature` (was 300 K). Results of UMATs that use `STRAN`, `DSTRAN` or `CELENT` change.
+- UMAT bookkeeping inputs follow Abaqus: `TIME(1)` and `TIME(2)` are the time at the start of the increment (`TIME(2)` was the end), `KSTEP` = 1 and `KINC` the time step number (both were 0), `NOEL` the 1-based global element number and `NPT` the 1-based point number (were 0-based region-local indices), and `CMNAME` the material's name (was empty).
+- The UMAT section of `src/options.toml` lists what every UMAT argument holds and which outputs ExaConstit uses.
+
+### Removed
+- The `thermal` UMAT option: it was read but had no effect. Input files that still set it get a warning.
 
 ### Fixed
 - `load_strategy = "lazy_load"` never loaded the UMAT library, so runs stopped with "UMAT function not available"; with `load_on_setup`, a point asking for a smaller time step left the library loaded.

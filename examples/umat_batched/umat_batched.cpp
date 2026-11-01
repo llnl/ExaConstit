@@ -8,7 +8,9 @@
 //     dstran + i * ntens        dfgrd1 + i * 9            drot + i * 9
 //     pnewdt + i                celent + i ...
 // Shared by all points: time, dtime, cmname, ndi, nshr, ntens, nstatv, props, nprops, layer,
-// kspt, kstep, kinc. The full description is in ExaConstit's src/umats/userumat.h.
+// kspt, kstep, kinc. The layout is described in ExaConstit's src/umats/userumat.h, and what
+// every argument holds (and which outputs ExaConstit uses) in the UMAT section of
+// src/options.toml.
 //
 // The material here is a hypoelastic isotropic solid: the old stress is rotated with DROT and
 // the elastic stiffness C (PROPS = Young's modulus, Poisson's ratio) times DSTRAN is added;

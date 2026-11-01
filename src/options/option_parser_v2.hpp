@@ -370,11 +370,6 @@ struct UmatOptions {
     std::string function_name = "umat_call";
 
     /**
-     * @brief Whether thermal effects are enabled
-     */
-    bool thermal = false;
-
-    /**
      * @brief Strategy for loading the library ("persistent", "load_on_setup", "lazy_load")
      */
     std::string load_strategy = "persistent";

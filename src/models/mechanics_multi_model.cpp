@@ -43,6 +43,7 @@ inline exaconstit::LoadStrategy stringToLoadStrategy(const std::string& strategy
  *
  * @param mat_config Material configuration options
  * @param sim_state Reference to simulation state
+ * @param global_elem_offset Global number of this rank's first element (for UMAT NOEL)
  * @return Unique pointer to created material model
  *
  * @details Factory function that creates the appropriate material model type (UMAT, ExaCMech, etc.)
@@ -50,7 +51,8 @@ inline exaconstit::LoadStrategy stringToLoadStrategy(const std::string& strategy
  * parameter setup for all model types.
  */
 std::unique_ptr<ExaModel> CreateMaterialModel(const MaterialOptions& mat_config,
-                                              std::shared_ptr<SimulationState> sim_state) {
+                                              std::shared_ptr<SimulationState> sim_state,
+                                              const long long global_elem_offset) {
     if (mat_config.mech_type == MechType::UMAT && mat_config.model.umat.has_value()) {
         const auto& umat_config = mat_config.model.umat.value();
         // Resolve library path using search paths
@@ -68,7 +70,9 @@ std::unique_ptr<ExaModel> CreateMaterialModel(const MaterialOptions& mat_config,
             umat_config.function_name,
             umat_config.is_batched(),
             umat_config.thread_safe,
-            mat_config.temperature);
+            mat_config.temperature,
+            mat_config.material_name,
+            global_elem_offset);
 
         return umat_model;
     }
@@ -104,6 +108,11 @@ void MultiExaModel::CreateChildModels(const ExaOptions& options) {
 
     m_child_models.reserve(options.materials.size());
 
+    // Global number of this rank's first element (UMAT NOEL). ParMesh computes it with an
+    // MPI_Scan, so it is done here, where every rank passes, and not in the models, which only
+    // ranks owning elements of their region construct.
+    const long long global_elem_offset = m_sim_state->GetMesh()->GetGlobalElementNum(0);
+
     for (size_t region_idx = 0; region_idx < options.materials.size(); ++region_idx) {
         const auto& material = options.materials[region_idx];
         const int region_id = static_cast<int>(region_idx);
@@ -120,7 +129,8 @@ void MultiExaModel::CreateChildModels(const ExaOptions& options) {
 
         if (material.mech_type == MechType::UMAT) {
             // Create UMAT model for this region
-            child_model = CreateMaterialModel(options.materials[region_idx], m_sim_state);
+            child_model = CreateMaterialModel(
+                options.materials[region_idx], m_sim_state, global_elem_offset);
         } else if (material.mech_type == MechType::EXACMECH) {
             // Create ExaCMech model for this region
 

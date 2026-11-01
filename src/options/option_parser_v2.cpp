@@ -1098,7 +1098,6 @@ void ExaOptions::print_material_options() const {
             std::cout << "    UMAT options:\n";
             std::cout << "      Library: " << umat.library_path << "\n";
             std::cout << "      Function: " << umat.function_name << "\n";
-            std::cout << "      Thermal: " << (umat.thermal ? "Enabled" : "Disabled") << "\n";
             std::cout << "      Dynamic loading: "
                       << (umat.enable_dynamic_loading ? "Enabled" : "Disabled") << "\n";
             std::cout << "      Load strategy: " << umat.load_strategy << "\n";

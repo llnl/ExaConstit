@@ -6,6 +6,7 @@
 
 #include "mfem.hpp"
 
+#include <array>
 #include <filesystem>
 
 /**
@@ -130,8 +131,9 @@ protected:
     mfem::Vector m_ddsdt;  ///< DDSDDT, 6 per point
     mfem::Vector m_drplde; ///< DRPLDE, 6 per point
     mfem::Vector m_props;  ///< PROPS, the region's material properties
-    mfem::Array<int> m_noel; ///< NOEL: the point's element (region element index, 0-based)
-    mfem::Array<int> m_npt;  ///< NPT: the point's index within its element (0-based)
+    mfem::Array<int> m_noel; ///< NOEL: the point's global element number (1-based)
+    mfem::Array<int> m_npt;  ///< NPT: the point's number within its element (1-based)
+    std::array<char, 81> m_cmname; ///< CMNAME: material name, blank-padded to 80 characters
 
 public:
     /**
@@ -146,6 +148,9 @@ public:
      * @param batched Use the batched interface (UmatBatchFunction) instead of the standard one
      * @param thread_safe Standard interface: run the per-point calls in an OpenMP loop
      * @param temperature Temperature passed to the UMAT (K)
+     * @param material_name Material name passed to the UMAT as CMNAME
+     * @param global_elem_offset Global number of this rank's first element, for NOEL
+     *        (ParMesh::GetGlobalElementNum(0); computed by the caller, since it is collective)
      */
     AbaqusUmatModel(
         const int region,
@@ -156,7 +161,9 @@ public:
         const std::string umat_function_name_ = "",
         const bool batched = false,
         const bool thread_safe = false,
-        const double temperature = 298.0);
+        const double temperature = 298.0,
+        const std::string& material_name = "",
+        const long long global_elem_offset = 0);
 
     /**
      * @brief Destructor - unloads the library if it is not persistent
@@ -285,6 +292,12 @@ protected:
      * @param local2global Region element -> rank element map (device pointer), or nullptr
      */
     void PackUmatInputs(const mfem::Vector& jacobian, const int* local2global);
+
+    /**
+     * @brief Shared UMAT scalars of the current increment: TIME (both entries at the start of
+     * the increment), DTIME, KSTEP (1) and KINC (1-based time step number)
+     */
+    void IncrementInfo(double time[2], double& dtime, int& kstep, int& kinc);
 
     /**
      * @brief Call the standard UMAT once per point on the host

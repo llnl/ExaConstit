@@ -115,6 +115,9 @@ using UmatFunction = void (*)(double* stress,
  *   time(2), dtime, cmname, ndi, nshr, ntens, nstatv, props(nprops), nprops, layer, kspt,
  *   kstep, kinc
  *
+ * What every argument holds, and which outputs ExaConstit uses, is listed in the UMAT section of
+ * src/options.toml (the same for both interfaces).
+ *
  * Each point reports its own PNEWDT (no reduction needed in user code); ExaConstit uses the
  * smallest value. A value below 1 fails the material update for the current Newton iteration,
  * as for standard UMATs: with automatic time stepping ([Time.Auto]) the step is retried with a

@@ -139,7 +139,10 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
     }
 
     if (toml_input.contains("thermal")) {
-        options.thermal = toml::find<bool>(toml_input, "thermal");
+        // Removed option: it was read but never had an effect (TEMP comes from the material's
+        // temperature option)
+        WARNING_0_OPT("Warning: the UMAT 'thermal' option was removed (it had no effect); "
+                      "ignoring it");
     }
 
     // New dynamic loading fields

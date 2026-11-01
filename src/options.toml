@@ -340,14 +340,52 @@ grain_file = "grains.txt"
             # ExaConstit built with OpenMP then calls the points in an OpenMP loop.
             thread_safe = false
 
-            # What ExaConstit passes to the UMAT: STRESS (Cauchy, Abaqus order 11, 22, 33, 12,
-            # 13, 23) at the start of the increment; DFGRD0 / DFGRD1 the deformation gradients
-            # at the start / end of the increment, computed exactly from the mesh nodes;
-            # STRAN the Eulerian strain of DFGRD0 and DSTRAN the Eulerian strain of the
-            # increment DFGRD1 DFGRD0^-1 (engineering shears); DROT the rotation of that
-            # increment; TEMP the material's temperature; COORDS the current point position;
-            # CELENT the cube root of the element volume near the point. With
-            # integ_model = "BBAR" the deformation gradients get the F-bar treatment.
+            # ----- What ExaConstit passes to the UMAT and what it uses back -----
+            # 3D only: NDI = 3, NSHR = 3, NTENS = 6. Vectors use the Abaqus order
+            # (11, 22, 33, 12, 13, 23); strains use engineering shears (2 e12, ...); 3x3
+            # matrices are stored column by column, as Fortran stores DFGRD1(3,3).
+            # Called for every material point at every Newton iteration of a time step, always
+            # from the converged state of the previous step.
+            #
+            # Inputs:
+            #   STRESS   Cauchy stress at the start of the increment (the converged stress of
+            #            the previous step, as the UMAT returned it; not rotated beforehand)
+            #   STATEV   state variables at the start of the increment
+            #   DFGRD0   deformation gradient at the start of the increment, computed exactly
+            #            from the reference and beginning-of-step mesh nodes
+            #   DFGRD1   deformation gradient at the end of the increment (current Newton
+            #            iterate), computed exactly from the reference and current nodes
+            #   STRAN    Eulerian strain 1/2 (I - B^-1) of DFGRD0
+            #   DSTRAN   Eulerian strain of the increment DFGRD1 DFGRD0^-1
+            #   DROT     rotation of the polar decomposition of DFGRD1 DFGRD0^-1
+            #   TIME     TIME(1) = TIME(2) = time at the start of the increment (one analysis
+            #            step); DTIME = time step
+            #   TEMP     the material's temperature option (constant); DTEMP = 0
+            #   PREDEF, DPRED   0 (no predefined fields)
+            #   PROPS, NPROPS   the material's [Materials.Properties] values
+            #   COORDS   current position of the point
+            #   CELENT   cube root of the element volume near the point (det J times the
+            #            reference element volume)
+            #   NOEL     1-based global element number in the parallel mesh (unique over all
+            #            ranks, but it depends on how the mesh is split among the ranks)
+            #   NPT      1-based number of the point within its element
+            #   CMNAME   the material's name, blank-padded to 80 characters
+            #   KSTEP = 1, KINC = time step number (1-based), LAYER = KSPT = 0
+            #   With integ_model = "BBAR" both deformation gradients get the F-bar treatment
+            #   (every point of an element gets the element's volume change), and the strains
+            #   and DROT follow from them.
+            #
+            # Outputs ExaConstit uses:
+            #   STRESS   Cauchy stress at the end of the increment
+            #   STATEV   state variables at the end of the increment (kept when the step
+            #            converges, written to restart files)
+            #   DDSDDE   material tangent d STRESS / d DSTRAN (required). ExaConstit reorders
+            #            it and multiplies it by DTIME for its rate-form tangent.
+            #   PNEWDT   start value 10; any point below 1 fails the iteration: with [Time.Auto]
+            #            the step is retried with a smaller time step, otherwise the run stops
+            #
+            # Outputs ignored (start at 0 for every call): SSE, SPD, SCD, RPL, DDSDDT, DRPLDE,
+            # DRPLDT.
 
 # =====================================
 # BOUNDARY CONDITIONS
