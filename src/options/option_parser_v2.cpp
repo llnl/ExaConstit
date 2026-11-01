@@ -1382,6 +1382,12 @@ void ExaOptions::print_post_processing_options() const {
                   << "\n";
     }
 
+    std::cout << "  Output format: "
+              << (post_processing.output_format == PostProcessingFormat::HDF5
+                      ? "HDF5 (post_processing.hdf5)"
+                      : "text")
+              << "\n";
+
     // Surface quantities
     const auto& surf = post_processing.surface_quantities;
     std::cout << "  Surface quantities: " << (surf.enabled ? "Enabled" : "Disabled") << "\n";

@@ -143,6 +143,16 @@ enum class UserFunctionType {
     NOTYPE           /**< Uninitialized or invalid type */
 };
 
+/**
+ * @brief Format of the post-processing output (volume averages, statistics, user function
+ *        averages / integrals, surface quantities)
+ */
+enum class PostProcessingFormat {
+    TEXT,  /**< One text file per quantity, region and statistic */
+    HDF5,  /**< One HDF5 file per run, written with Conduit (needs Axom) */
+    NOTYPE /**< Uninitialized or invalid format */
+};
+
 enum class LatticeType {
     CUBIC,
     HEXAGONAL,
@@ -1579,8 +1589,24 @@ struct PostProcessingOptions {
      */
     std::vector<UserFunctionOptions> user_functions;
 
+    /**
+     * @brief Output format ([PostProcessing] output_format = "text" or "hdf5")
+     *
+     * "hdf5" writes every volume average, statistic, histogram, user function average / integral
+     * and surface quantity to one file, <output_directory>/<basename>/post_processing.hdf5.
+     */
+    PostProcessingFormat output_format = PostProcessingFormat::TEXT;
+
     // Validation
     bool validate() const;
+
+    /**
+     * @brief Checks of the user function names for the HDF5 output (output_format = "hdf5"):
+     *        no built-in quantity or repeated name, no component name with '/', repeated or
+     *        used by the file itself (time, volume, statistics, histogram, bin_edges,
+     *        description)
+     */
+    bool validate_hdf5_names() const;
 
     // Conversion from toml
     static PostProcessingOptions from_toml(const toml::value& toml_input);
@@ -1976,3 +2002,10 @@ VizFieldLocation string_to_viz_field_location(const std::string& str);
  * @return Corresponding UserFunctionType enum value, or NOTYPE if invalid
  */
 UserFunctionType string_to_user_function_type(const std::string& str);
+
+/**
+ * @brief Convert string to PostProcessingFormat enum
+ * @param str "text" or "hdf5"
+ * @return Corresponding PostProcessingFormat enum value, or NOTYPE if invalid
+ */
+PostProcessingFormat string_to_post_processing_format(const std::string& str);

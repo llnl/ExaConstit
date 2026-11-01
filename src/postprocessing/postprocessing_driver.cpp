@@ -698,6 +698,13 @@ void PostProcessingDriver::Update(const int step, const double time) {
     if (m_light_up_instances.size() > 0) {
         UpdateLightUpAnalysis();
     }
+
+    // HDF5 output: gather this step's rows to rank 0 and append them to the file
+    m_file_manager->FinishOutputStep();
+}
+
+void PostProcessingDriver::ContinueAfterRestart(const double restart_time) {
+    m_file_manager->ContinueAfterRestart(restart_time);
 }
 
 PostProcessingDriver::~PostProcessingDriver() = default;
@@ -1660,8 +1667,9 @@ void PostProcessingDriver::SetupVolumeStatistics() {
                                  });
     }
 
-    // All statistics files go to the stats folder of the results directory
-    if (!m_statistics_outputs.empty()) {
+    // All statistics files go to the stats folder of the results directory (text output only;
+    // the HDF5 output keeps them in its one file)
+    if (!m_statistics_outputs.empty() && !m_file_manager->WritesHDF5()) {
         auto stats_directory = m_file_manager->GetOutputDirectory() / "stats";
         m_file_manager->EnsureDirectoryExists(stats_directory, MPI_COMM_WORLD);
     }
@@ -1701,6 +1709,7 @@ void PostProcessingDriver::RegisterStatisticsOutput(
             key, exaconstit::HistogramColumnNames(component_names, histogram.bins));
         m_file_manager->SetVolumeAverageHeaderComment(key,
                                                       exaconstit::HistogramEdgesComment(histogram));
+        m_file_manager->SetVolumeAverageBinEdges(key, exaconstit::HistogramEdges(histogram));
     }
 
     std::function<void(double)> global_output = nullptr;

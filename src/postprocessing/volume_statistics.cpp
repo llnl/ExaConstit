@@ -227,13 +227,23 @@ std::vector<std::string> HistogramColumnNames(const std::vector<std::string>& co
     return names;
 }
 
+std::vector<double> HistogramEdges(const HistogramOptions& histogram) {
+    // range_min + range * b / bins rather than range_min + b * width, so edges that should be
+    // round numbers (e.g. 0 in [-0.25, 0.25]) come out exact
+    std::vector<double> edges;
+    const double range = histogram.range_max - histogram.range_min;
+    for (int b = 0; b <= histogram.bins; b++) {
+        edges.push_back(histogram.range_min + range * b / histogram.bins);
+    }
+    return edges;
+}
+
 std::string HistogramEdgesComment(const HistogramOptions& histogram) {
     std::ostringstream comment;
     comment << "# Bin edges:";
     comment << std::scientific << std::setprecision(8);
-    const double bin_width = (histogram.range_max - histogram.range_min) / histogram.bins;
-    for (int b = 0; b <= histogram.bins; b++) {
-        comment << " " << histogram.range_min + b * bin_width;
+    for (const double edge : HistogramEdges(histogram)) {
+        comment << " " << edge;
     }
     return comment.str();
 }

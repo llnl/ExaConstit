@@ -719,6 +719,42 @@ grain_file = "grains.txt"
 # Analysis and data extraction from your simulation
 
 [PostProcessing]
+    # ===== Output Format =====
+    # "text" (default): one text file per quantity, material and statistic, as described in the
+    #   sections below.
+    # "hdf5": the volume averages, volume statistics and histograms, user function averages /
+    #   integrals and surface quantities go into ONE file per run,
+    #   [output_directory]/[basename]/post_processing.hdf5, written at the same steps. Needs
+    #   ExaConstit built with Axom (it provides Conduit and HDF5). Visualization files and the
+    #   light-up analysis files are not affected. The *_fname options are not used for it.
+    #   A new run replaces an existing post_processing.hdf5 (text files are appended to instead).
+    #   User function names must then differ from each other and from the built-in quantity
+    #   names below, and their component names must not contain '/', repeat, or be one of
+    #   time, volume, statistics, histogram, bin_edges, description.
+    #
+    # Layout of the HDF5 file: each text file becomes a group and each text column a dataset with
+    # the column's name, one value per output step (row k of every dataset in a group belongs to
+    # time[k] of that group):
+    #   /volume/[quantity]/[region]/time, volume, [columns]      e.g. /volume/stress/global/Szz
+    #       [quantity]: stress, def_grad, euler_strain, plastic_work, eq_pl_strain,
+    #                   elastic_strain, or a user function's name
+    #       [region]:   global, or [material name]_[material number] (e.g. material_A_1)
+    #   /volume/[quantity]/[region]/statistics/[statistic]/[columns]
+    #       e.g. /volume/stress/material_A_1/statistics/std/Szz (same time and volume as above)
+    #   /volume/[quantity]/[region]/histogram/[column]_below, [column]_bin_1 ..., [column]_above
+    #   /volume/[quantity]/[region]/histogram/bin_edges          (the bin edges, not per step)
+    #   /surface/surface_[id]/time, area, Disp_x, ..., Normal_z (Moment_x ... with moments)
+    #   /surface/surface_[id]/description                         (the text file's comment lines)
+    # Reading it in Python: scripts/postprocessing/read_post_processing.py (needs h5py), e.g.
+    #   import h5py; f = h5py.File("results/tensile_test/post_processing.hdf5")
+    #   szz = f["volume/stress/global/Szz"][:]; t = f["volume/stress/global/time"][:]
+    # After a restart, the rows written after the checkpoint (steps run before the stop) are
+    # removed when the run continues, so no step appears twice. Keep the post-processing
+    # settings of a restarted run as they were: a quantity, statistic or moment added on restart
+    # reads 0 for the steps before it, and changed histogram bins keep the old bin_edges (use a
+    # new basename for different outputs).
+    output_format = "text"
+
     # ===== Volume Averaging =====
     # Computes average quantities over the entire domain or by material
     # Useful for: stress-strain curves, homogenized properties
@@ -771,6 +807,8 @@ grain_file = "grains.txt"
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
         #   [output_directory]/[basename]/stats/             <- Volume statistics (if asked for)
+        #   [output_directory]/[basename]/post_processing.hdf5 <- All of the above, instead,
+        #                                                       with output_format = "hdf5"
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":

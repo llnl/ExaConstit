@@ -22,6 +22,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/surface_quantities.hpp
     postprocessing/viz_point_map.hpp
     postprocessing/volume_statistics.hpp
+    postprocessing/postprocessing_hdf5_file.hpp
     sim_state/simulation_state.hpp
     sim_state/exa_sidre_parmesh.hpp
     sim_state/restart_checkpoint.hpp
@@ -69,6 +70,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/surface_quantities.cpp
     postprocessing/viz_point_map.cpp
     postprocessing/volume_statistics.cpp
+    postprocessing/postprocessing_hdf5_file.cpp
     sim_state/simulation_state.cpp
     sim_state/exa_sidre_parmesh.cpp
     sim_state/restart_checkpoint.cpp
@@ -134,6 +136,11 @@ endif()
 
 if(ENABLE_AXOM)
     list(APPEND EXACONSTIT_DEPENDS axom)
+    # Conduit relay HDF5 / MPI for the HDF5 post-processing output (Axom already brings them
+    # with sidre; listed so the dependency is explicit)
+    if(TARGET conduit::conduit_mpi)
+        list(APPEND EXACONSTIT_DEPENDS conduit::conduit_mpi)
+    endif()
 endif()
 
 if(UNIX AND NOT APPLE AND TARGET Threads::Threads)

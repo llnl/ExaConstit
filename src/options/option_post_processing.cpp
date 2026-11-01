@@ -968,6 +968,10 @@ PostProcessingOptions PostProcessingOptions::from_toml(const toml::value& toml_i
     // Handle projections (existing code)
     if (toml_input.contains("PostProcessing")) {
         const auto post_proc = toml::find(toml_input, "PostProcessing");
+        if (post_proc.contains("output_format")) {
+            options.output_format = string_to_post_processing_format(
+                toml::find<std::string>(post_proc, "output_format"));
+        }
         if (post_proc.contains("projections")) {
             options.projections = ProjectionOptions::from_toml(
                 toml::find(post_proc, "projections"));
@@ -995,11 +999,77 @@ bool PostProcessingOptions::validate() const {
         return false;
     if (!surface_quantities.validate())
         return false;
+    if (output_format == PostProcessingFormat::NOTYPE) {
+        WARNING_0_OPT("Error: [PostProcessing] output_format must be \"text\" or \"hdf5\"");
+        return false;
+    }
+    if (output_format == PostProcessingFormat::HDF5 && !validate_hdf5_names()) {
+        return false;
+    }
+#if !defined(EXACONSTIT_USE_AXOM)
+    if (output_format == PostProcessingFormat::HDF5) {
+        WARNING_0_OPT("Error: [PostProcessing] output_format = \"hdf5\" needs ExaConstit built "
+                      "with Axom (ENABLE_AXOM), which provides Conduit and HDF5. Use \"text\" "
+                      "or rebuild with Axom.");
+        return false;
+    }
+#endif
 
     // Validate each light_up configuration
     for (const auto& light_config : light_up_configs) {
         if (!light_config.validate())
             return false;
+    }
+    return true;
+}
+
+bool PostProcessingOptions::validate_hdf5_names() const {
+    // In the HDF5 file a user function's averages are the group volume/<name>/<region> and its
+    // components the datasets of that group, next to time, volume and the statistics /
+    // histogram subgroups. Names that would land on one of those would overwrite it.
+    static const std::set<std::string> built_in_quantities = {
+        "stress", "def_grad", "euler_strain", "plastic_work", "eq_pl_strain", "elastic_strain"};
+    static const std::set<std::string> reserved_datasets = {
+        "time", "volume", "statistics", "histogram", "bin_edges", "description"};
+    for (const auto& function : user_functions) {
+        if (function.type == UserFunctionType::VISUALIZATION) {
+            continue;
+        }
+        const std::string where = "Error: [[PostProcessing.user_functions]] entry '" +
+                                  function.name + "' with output_format = \"hdf5\": ";
+        if (built_in_quantities.count(function.name) > 0) {
+            WARNING_0_OPT(where + "the name is that of a built-in volume average, whose group "
+                                  "it would share in the HDF5 file; choose another name");
+            return false;
+        }
+        std::set<std::string> seen;
+        for (const auto& component : function.component_names) {
+            if (component.empty() || component.find('/') != std::string::npos) {
+                WARNING_0_OPT(where + "component name '" + component +
+                              "' must be non-empty without '/' (it is a dataset name)");
+                return false;
+            }
+            if (reserved_datasets.count(component) > 0) {
+                WARNING_0_OPT(where + "component name '" + component +
+                              "' is used by the file itself (time, volume, statistics, "
+                              "histogram, bin_edges, description); choose another name");
+                return false;
+            }
+            if (!seen.insert(component).second) {
+                WARNING_0_OPT(where + "component name '" + component + "' appears twice");
+                return false;
+            }
+        }
+    }
+    // Two user functions with the same name would also share a group
+    std::set<std::string> names;
+    for (const auto& function : user_functions) {
+        if (function.type != UserFunctionType::VISUALIZATION &&
+            !names.insert(function.name).second) {
+            WARNING_0_OPT("Error: two [[PostProcessing.user_functions]] entries are named '" +
+                          function.name + "', which the HDF5 output cannot tell apart");
+            return false;
+        }
     }
     return true;
 }

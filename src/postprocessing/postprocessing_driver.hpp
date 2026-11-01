@@ -65,6 +65,17 @@ public:
     void Update(const int step, const double time);
 
     /**
+     * @brief Continue the post-processing output of a restarted run (collective)
+     *
+     * @param restart_time Simulation time of the checkpoint (end of its last completed step)
+     *
+     * With output_format = "hdf5", the rows written after the checkpoint by the run that stopped
+     * are removed from the file, so steps computed again are not written twice. Called once,
+     * right after the checkpoint is restored and before the first step.
+     */
+    void ContinueAfterRestart(const double restart_time);
+
+    /**
      * @brief Calculate and output volume-averaged quantities
      *
      * @param time Current simulation time

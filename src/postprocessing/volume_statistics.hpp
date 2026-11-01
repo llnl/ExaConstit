@@ -102,6 +102,9 @@ mfem::Vector HistogramRow(const mfem::Vector& packed,
 std::vector<std::string> HistogramColumnNames(const std::vector<std::string>& component_names,
                                               const int num_bins);
 
+/// Histogram bin edges e0 ... eN (bins + 1 values, evenly spaced over the range)
+std::vector<double> HistogramEdges(const HistogramOptions& histogram);
+
 /// Header comment line listing the histogram bin edges: "# Bin edges: e0 e1 ... eN"
 std::string HistogramEdgesComment(const HistogramOptions& histogram);
 

@@ -331,6 +331,8 @@ int main(int argc, char* argv[]) {
             // ExaCMechModel::InitStateVars(), is simply replaced.
             sim_state->RestoreFromCheckpoint();
             ti = static_cast<int>(sim_state->GetRestartDriverStep());
+            // Post-processing output written after the checkpoint is dropped (HDF5 output)
+            post_process.ContinueAfterRestart(sim_state->GetTrueCycleTime());
 
             // Bring the boundary conditions to the segment that was active after step ti.
             //

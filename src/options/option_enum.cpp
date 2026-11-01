@@ -186,3 +186,15 @@ UserFunctionType string_to_user_function_type(const std::string& str) {
 
     return string_to_enum(str, mapping, UserFunctionType::NOTYPE, "user function");
 }
+
+/**
+ * @brief Convert string to PostProcessingFormat enum
+ * @param str "text" or "hdf5"
+ * @return Corresponding PostProcessingFormat enum value
+ */
+PostProcessingFormat string_to_post_processing_format(const std::string& str) {
+    static const std::map<std::string, PostProcessingFormat> mapping = {
+        {"text", PostProcessingFormat::TEXT}, {"hdf5", PostProcessingFormat::HDF5}};
+
+    return string_to_enum(str, mapping, PostProcessingFormat::NOTYPE, "post-processing format");
+}

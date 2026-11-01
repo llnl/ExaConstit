@@ -58,6 +58,12 @@ from it prints a warning unless `t_final` has been increased.
 **Output files.** Volume-average output files are opened in append mode, so a continuation
 that keeps the same `basename` appends to the original run's files and they read as one
 uninterrupted run. Use a different `basename` to keep the continuation's output separate.
+If the original run went on past the checkpoint before it stopped, the text files keep those
+steps too, and the continuation writes them again. With `[PostProcessing] output_format =
+"hdf5"`, the continuation first removes the rows after the checkpoint time from
+`post_processing.hdf5`, so every step appears once. Keep the post-processing settings as they
+were in that case: an output added on restart reads 0 for the earlier steps in the file, and
+changed histogram bins keep the old `bin_edges`.
 
 ## What may change between runs
 
