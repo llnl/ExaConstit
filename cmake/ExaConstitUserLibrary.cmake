@@ -49,14 +49,26 @@ function(exaconstit_add_user_library)
     get_target_property(_exaconstit_hip ExaConstit::user_function EXACONSTIT_ENABLE_HIP)
     if(_exaconstit_cuda)
         get_target_property(_exaconstit_arch ExaConstit::user_function EXACONSTIT_CUDA_ARCHITECTURES)
-        enable_language(CUDA)
+        # enable_language() only works at file scope, so find_package(ExaConstit) (or the
+        # ExaConstit build itself) enables CUDA before this function is called
+        get_property(_exaconstit_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+        if(NOT CUDA IN_LIST _exaconstit_languages)
+            message(FATAL_ERROR "exaconstit_add_user_library: ExaConstit was built with "
+                                "CUDA, but CUDA is not enabled in this project")
+        endif()
         set_source_files_properties(${arg_SOURCES} PROPERTIES LANGUAGE CUDA)
         set_target_properties(${arg_NAME} PROPERTIES CUDA_ARCHITECTURES "${_exaconstit_arch}")
         target_compile_options(${arg_NAME} PRIVATE
                                $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
     elseif(_exaconstit_hip)
         get_target_property(_exaconstit_arch ExaConstit::user_function EXACONSTIT_HIP_ARCHITECTURES)
-        enable_language(HIP)
+        # enable_language() only works at file scope, so find_package(ExaConstit) (or the
+        # ExaConstit build itself) enables HIP before this function is called
+        get_property(_exaconstit_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+        if(NOT HIP IN_LIST _exaconstit_languages)
+            message(FATAL_ERROR "exaconstit_add_user_library: ExaConstit was built with "
+                                "HIP, but HIP is not enabled in this project")
+        endif()
         set_source_files_properties(${arg_SOURCES} PROPERTIES LANGUAGE HIP)
         set_target_properties(${arg_NAME} PROPERTIES HIP_ARCHITECTURES "${_exaconstit_arch}")
     endif()
