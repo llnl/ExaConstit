@@ -8,49 +8,13 @@
 #include "utilities/dynamic_function_loader.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
+#include "utilities/user_function_loader.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
-
-/**
- * @brief Resolve UMAT library paths with search path support
- *
- * @param library_path Relative or absolute path to UMAT library
- * @param search_paths List of directories to search for the library
- * @return Resolved absolute path to the library
- *
- * @details Resolves UMAT library paths by:
- * 1. Using absolute paths as-is
- * 2. Searching through provided search paths for relative paths
- * 3. Checking current directory as fallback
- * 4. Warning if library is not found
- */
-fs::path resolveUmatLibraryPath(const fs::path& library_path,
-                                const std::vector<fs::path>& search_paths) {
-    // If absolute path, use as-is
-    if (fs::path(library_path).is_absolute()) {
-        return library_path;
-    }
-
-    // Search in specified paths
-    for (const auto& search_path : search_paths) {
-        auto full_path = fs::path(search_path) / library_path;
-        if (fs::exists(full_path)) {
-            return full_path.string();
-        }
-    }
-
-    // Try current directory
-    if (fs::exists(library_path)) {
-        return fs::absolute(library_path);
-    }
-
-    MFEM_WARNING_0("UMAT library not found: " << library_path);
-    return library_path; // Return original path, let loader handle the error
-}
 
 /**
  * @brief Convert string-based load strategy to enum
@@ -90,8 +54,8 @@ std::unique_ptr<ExaModel> CreateMaterialModel(const MaterialOptions& mat_config,
     if (mat_config.mech_type == MechType::UMAT && mat_config.model.umat.has_value()) {
         const auto& umat_config = mat_config.model.umat.value();
         // Resolve library path using search paths
-        auto resolved_path = resolveUmatLibraryPath(umat_config.library_path,
-                                                    umat_config.search_paths);
+        auto resolved_path = exaconstit::ResolveLibraryPath(umat_config.library_path,
+                                                            umat_config.search_paths);
 
         const auto load_strategy = stringToLoadStrategy(umat_config.load_strategy);
         // Create enhanced UMAT model
@@ -187,6 +151,56 @@ void MultiExaModel::CreateChildModels(const ExaOptions& options) {
                                      std::to_string(region_idx));
         }
         m_child_models.push_back(std::move(child_model));
+    }
+
+    // The built-in models have now named their state variables and set their initial values,
+    // so the user functions run last: their names come after ExaCMech's (and cannot replace
+    // them), and their initial values are not overwritten by ExaCMech's initialization.
+    RunStateVariableUserFunctions(options);
+}
+
+void MultiExaModel::RunStateVariableUserFunctions(const ExaOptions& options) {
+    // Pass 1: names. Every rank calls every region's register_function, also for regions
+    // with no elements on this rank, so the lists of named state variables are the same on
+    // all ranks (as for the ExaCMech names registered above).
+    for (size_t region_idx = 0; region_idx < options.materials.size(); ++region_idx) {
+        const auto& state_vars = options.materials[region_idx].state_vars;
+        if (state_vars.register_function.empty()) {
+            continue;
+        }
+        const auto register_function =
+            exaconstit::LoadUserFunction<exaconstit::StateVariableFunction>(
+                state_vars.library_path,
+                state_vars.register_function,
+                exaconstit::StateVariableFunctionSignature(state_vars.register_function),
+                "register_function of material " +
+                    exaconstit::MaterialLabel(options.materials[region_idx]));
+        register_function(m_sim_state, static_cast<int>(region_idx));
+    }
+
+    // Pass 2: initial values. Only ranks that own elements of the region have its state
+    // variables. The user function writes the beginning-of-step values ("state_var_beg"); the
+    // end-of-step values start out as a copy, exactly as after ExaCMech's own initialization.
+    for (size_t region_idx = 0; region_idx < options.materials.size(); ++region_idx) {
+        const int region = static_cast<int>(region_idx);
+        const auto& state_vars = options.materials[region_idx].state_vars;
+        if (state_vars.initialize_function.empty() || !m_sim_state->IsRegionActive(region)) {
+            continue;
+        }
+        const auto initialize_function =
+            exaconstit::LoadUserFunction<exaconstit::StateVariableFunction>(
+                state_vars.library_path,
+                state_vars.initialize_function,
+                exaconstit::StateVariableFunctionSignature(state_vars.initialize_function),
+                "initialize_function of material " +
+                    exaconstit::MaterialLabel(options.materials[region_idx]));
+        initialize_function(m_sim_state, region);
+
+        // Data-only copy between two functions on the same points (the copy runs on the
+        // device when the values live there, on the host otherwise).
+        auto state_var_beg = m_sim_state->GetQuadratureFunction("state_var_beg", region);
+        auto state_var_end = m_sim_state->GetQuadratureFunction("state_var_end", region);
+        *state_var_end = *state_var_beg;
     }
 }
 
