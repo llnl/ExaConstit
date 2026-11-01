@@ -100,6 +100,25 @@ public:
     virtual std::string GetDisplayName() const = 0;
 };
 
+/**
+ * @brief Copy per-point values onto the visualization nodes of one region
+ *
+ * @param source Region quadrature function (element averages for zone output, end-of-step point
+ *               values for quadrature output; see VizPointMap)
+ * @param first_component First component of `source` to copy
+ * @param num_components Number of components to copy (output components 0 .. num_components-1)
+ * @param output Region grid function to fill
+ * @param points Region's table of (source quadrature point, output node) pairs
+ *
+ * The kernel shared by the projections that write values unchanged (state variables, user
+ * function quantities): output(j, dest(k)) = source(first_component + j, source_point(k)).
+ */
+void CopyPointValues(const mfem::expt::PartialQuadratureFunction& source,
+                     const int first_component,
+                     const int num_components,
+                     mfem::ParGridFunction& output,
+                     const VizPointMap& points);
+
 //=============================================================================
 // GEOMETRY PROJECTIONS
 //=============================================================================
@@ -830,4 +849,70 @@ public:
     virtual bool CanAggregateGlobally() const override {
         return false;
     }
+};
+//=============================================================================
+// USER FUNCTION PROJECTIONS
+//=============================================================================
+
+/**
+ * @brief Writes the values of a post-processing user function as a visualization field
+ *
+ * A [[PostProcessing.user_functions]] entry of type "visualization" fills, for each selected
+ * region, a quadrature function with its quantity at every integration point (see
+ * PostProcessingDriver). This projection copies those values onto the region's visualization
+ * nodes through the same VizPointMap as every other projection: in zone output it reads the
+ * element averages of the values (filled by the driver), in quadrature output the point values
+ * themselves.
+ *
+ * The quadrature functions belong to the driver and are given at construction, unlike the other
+ * projections, which look their input up in SimulationState by name. One instance is created per
+ * region; regions the quantity is not computed for get an instance without data and are skipped.
+ *
+ * @ingroup ExaConstit_projections
+ */
+class QuadratureFunctionProjection final : public ProjectionBase {
+public:
+    /**
+     * @param display_name Field name in the visualization files
+     * @param num_components Values per point
+     * @param values Point values of the region (null if the region is not computed here)
+     * @param averages Element averages of the values (null if the region is not computed here)
+     * @param global Whether the field is also combined over the regions into the global output
+     */
+    QuadratureFunctionProjection(const std::string& display_name,
+                                 const int num_components,
+                                 std::shared_ptr<mfem::expt::PartialQuadratureFunction> values,
+                                 std::shared_ptr<mfem::expt::PartialQuadratureFunction> averages,
+                                 const bool global)
+        : m_display_name(display_name), m_num_components(num_components),
+          m_values(std::move(values)), m_averages(std::move(averages)), m_global(global) {}
+
+    void Execute(std::shared_ptr<SimulationState> sim_state,
+                 std::shared_ptr<mfem::ParGridFunction> grid_function,
+                 const VizPointMap& points,
+                 int region) override;
+
+    int GetVectorDimension() const override {
+        return m_num_components;
+    }
+
+    bool CanAggregateGlobally() const override {
+        return m_global;
+    }
+
+    std::string GetDisplayName() const override {
+        return m_display_name;
+    }
+
+private:
+    /// Field name in the visualization files
+    std::string m_display_name;
+    /// Values per point
+    int m_num_components;
+    /// Point values of the region, filled by the user function
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction> m_values;
+    /// Element averages of m_values (zone output)
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction> m_averages;
+    /// Combined into the global output
+    bool m_global;
 };

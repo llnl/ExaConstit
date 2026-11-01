@@ -116,6 +116,11 @@ public:
         return mfem::Reshape(m_elem_offsets.Read(), m_elem_offsets.Size());
     }
 
+    /// Zone (element averages) or quadrature (nearest quadrature point) output
+    VizFieldLocation GetLocation() const {
+        return m_location;
+    }
+
     /// The tables themselves, for checks on the host
     const mfem::Array<int>& GetSource() const {
         return m_source;

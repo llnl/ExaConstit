@@ -521,6 +521,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
 
     // Register default projections and volume calculations
     RegisterDefaultVolumeCalculations();
+    SetupUserFunctions();
 
     // Initialize grid functions and data collections
     if (m_enable_visualization) {
@@ -614,8 +615,7 @@ PostProcessingDriver::GetParFiniteElementSpace(const int region, const int vdim)
     return m_map_pfes[region][vdim];
 }
 
-void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
-                                        [[maybe_unused]] const double time) {
+void PostProcessingDriver::UpdateFields(const int step, [[maybe_unused]] const double time) {
     // Zone output reads element averages, so refresh them. Quadrature output reads the
     // end-of-step quadrature values directly and needs no averaging.
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
@@ -628,6 +628,12 @@ void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
         auto cauchy_qf_avg = m_sim_state->GetQuadratureFunction("cauchy_stress_avg", region);
         auto cauchy_qf_end = m_sim_state->GetQuadratureFunction("cauchy_stress_end", region);
         CalcElementAvg(cauchy_qf_avg.get(), cauchy_qf_end.get());
+    }
+
+    // Post-processing user functions written as fields compute their values only at
+    // visualization output steps (their fields are only written then)
+    if (m_enable_visualization && ShouldOutputVisualizationAtStep(step)) {
+        UpdateUserFunctionFields();
     }
 
     // Execute projections based on aggregation mode
@@ -1002,6 +1008,9 @@ PostProcessingDriver::GetOrCalculateVolumeAverage(CalcType calc_type, int region
 void PostProcessingDriver::ClearVolumeAverageCache() {
     // Clear all cached data at the beginning of each time step
     m_region_cache.clear();
+    for (auto& entry : m_user_function_outputs) {
+        entry.results.clear();
+    }
 }
 
 void PostProcessingDriver::VolumeAverage(const std::string& calc_type_str,
@@ -1071,23 +1080,56 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
         break;
     }
 
-    // Initialize accumulators for volume-weighted averaging
-    mfem::Vector global_avg_data(data_size);
-    global_avg_data = 0.0;
+    // Gather every region's result on rank 0 and combine them over the whole sample
+    // (volume-weighted average, or plain sum for the integrated plastic work)
+    const bool average = (calc_type != CalcType::PLASTIC_WORK);
+    const auto global = CombineRegionVolumeResults(
+        [this, calc_type](const int region) {
+            return GetOrCalculateVolumeAverage(calc_type, region);
+        },
+        data_size,
+        average);
+    if (!global.is_valid) {
+        // No valid regions found - issue warning
+        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
+        return;
+    }
+
+    // Write global output (region = -1 indicates global file)
+    if (data_size == 1) {
+        // Scalar quantity
+        m_file_manager->WriteVolumeAverage(
+            calc_type_str, -1, "", time, global.volume, global.data[0]);
+    } else {
+        // Vector/tensor quantity
+        m_file_manager->WriteVolumeAverage(calc_type_str, -1, "", time, global.volume, global.data);
+    }
+}
+
+PostProcessingDriver::VolumeAverageData PostProcessingDriver::CombineRegionVolumeResults(
+    const std::function<VolumeAverageData(int)>& region_result,
+    const int data_size,
+    const bool average) {
+    mfem::Vector global_data(data_size);
+    global_data = 0.0;
     double global_volume = 0.0;
 
-    // Accumulate contributions from all regions
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
-        // Use cached data if available, calculate if not
-        auto region_data = GetOrCalculateVolumeAverage(calc_type, region);
-        // Now gather all region data to rank 0
+        // Collective on the region's communicator; ranks without the region get invalid data
+        auto region_data = region_result(region);
+        // An invalid result still takes part in the exchange below: send data_size zeros with
+        // zero volume so it is skipped
+        if (!region_data.is_valid || region_data.data.Size() != data_size) {
+            region_data.data.SetSize(data_size);
+            region_data.data = 0.0;
+            region_data.volume = 0.0;
+        }
+
+        // Gather all region data to rank 0
         if (m_mpi_rank == 0) {
             // Rank 0 receives from all region roots
             const int root_rank = m_sim_state->GetRegionRootRank(region);
             if (root_rank > m_mpi_rank) {
-                region_data.data.SetSize(data_size);
-                region_data.is_valid = true;
-                // Receive from the region root
                 MPI_Recv(region_data.data.HostWrite(),
                          data_size,
                          MPI_DOUBLE,
@@ -1103,54 +1145,35 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
                          MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE);
             }
-        } else {
+        } else if (m_sim_state->IsRegionIORoot(region)) {
             // Other ranks send their region data if they're region roots
-            if (m_sim_state->IsRegionIORoot(region)) {
-                MPI_Send(
-                    region_data.data.HostRead(), data_size, MPI_DOUBLE, 0, region, MPI_COMM_WORLD);
-                MPI_Send(&region_data.volume,
-                         1,
-                         MPI_DOUBLE,
-                         0,
-                         static_cast<int>(m_num_regions) * 2 + region,
-                         MPI_COMM_WORLD);
-            }
+            MPI_Send(region_data.data.HostRead(), data_size, MPI_DOUBLE, 0, region, MPI_COMM_WORLD);
+            MPI_Send(&region_data.volume,
+                     1,
+                     MPI_DOUBLE,
+                     0,
+                     static_cast<int>(m_num_regions) * 2 + region,
+                     MPI_COMM_WORLD);
         }
 
-        if (region_data.is_valid && region_data.volume > 0.0) {
-            // Add volume-weighted contribution to global average
+        if (region_data.volume > 0.0) {
+            // Volume-weighted contribution (averages) or plain sum (integrals)
+            region_data.data.HostRead();
             for (int i = 0; i < data_size; ++i) {
-                if (calc_type != CalcType::PLASTIC_WORK) {
-                    global_avg_data[i] += region_data.data[i] * region_data.volume;
-                } else {
-                    global_avg_data[i] += region_data.data[i];
-                }
+                const double value = region_data.data[i];
+                global_data[i] += average ? value * region_data.volume : value;
             }
             global_volume += region_data.volume;
         }
     }
 
-    // Normalize by total volume to get the true global average
-    if (global_volume > 0.0) {
-        if (calc_type != CalcType::PLASTIC_WORK) {
-            global_avg_data /= global_volume;
-        }
-    } else {
-        // No valid regions found - issue warning
-        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
-        return;
+    if (global_volume <= 0.0) {
+        return VolumeAverageData();
     }
-
-    // Write global output (region = -1 indicates global file)
-    if (data_size == 1) {
-        // Scalar quantity
-        m_file_manager->WriteVolumeAverage(
-            calc_type_str, -1, "", time, global_volume, global_avg_data[0]);
-    } else {
-        // Vector/tensor quantity
-        m_file_manager->WriteVolumeAverage(
-            calc_type_str, -1, "", time, global_volume, global_avg_data);
+    if (average) {
+        global_data /= global_volume;
     }
+    return VolumeAverageData(global_volume, global_data);
 }
 
 bool PostProcessingDriver::ShouldOutputAtStep(int step) const {
@@ -1239,6 +1262,9 @@ void PostProcessingDriver::RegisterDefaultProjections() {
     // State variable fields requested per region (region_<N> entries and visualize_state_vars)
     // are added in every case, also when auto_enable_compatible picked the built-in list
     RegisterStateVariableProjections();
+
+    // Fields from "visualization" post-processing user functions
+    RegisterUserFunctionFields();
 }
 
 void PostProcessingDriver::RegisterStateVariableProjections() {
@@ -1313,6 +1339,240 @@ void PostProcessingDriver::RegisterStateVariableProjections() {
                  false});
         }
     }
+}
+
+void PostProcessingDriver::SetupUserFunctions() {
+    const auto& entries = m_sim_state->GetOptions().post_processing.user_functions;
+    m_user_function_outputs.reserve(entries.size());
+
+    for (size_t index = 0; index < entries.size(); index++) {
+        UserFunctionOutput entry;
+        entry.options = entries[index];
+        const auto& options = entry.options;
+
+        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
+        entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
+            options.library_path,
+            options.function_name,
+            exaconstit::PostProcessingFunctionSignature(options.function_name),
+            "post-processing user function of entry '" + options.name + "'");
+
+        // Selected regions (options use material numbers starting at 1); all when none given
+        if (options.regions.empty()) {
+            for (int region = 0; region < static_cast<int>(m_num_regions); region++) {
+                entry.regions.push_back(region);
+            }
+        } else {
+            for (const int material : options.regions) {
+                entry.regions.push_back(material - 1);
+            }
+        }
+
+        // Point values on each selected region this rank owns elements of, on the region's
+        // quadrature points; for zone visualization also their element averages (one point per
+        // element, the space of the "_avg" functions)
+        const bool zone_fields = (options.type == UserFunctionType::VISUALIZATION &&
+                                  m_viz_location == VizFieldLocation::ZONE);
+        for (const int region : entry.regions) {
+            if (!m_sim_state->IsRegionActive(region)) {
+                continue;
+            }
+            const auto point_space = m_sim_state->GetQuadratureFunction("cauchy_stress_end", region)
+                                         ->GetPartialSpaceShared();
+            entry.values[region] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                point_space, options.num_components, 0.0);
+            if (zone_fields) {
+                const auto element_space = m_sim_state
+                                               ->GetQuadratureFunction("cauchy_stress_avg", region)
+                                               ->GetPartialSpaceShared();
+                entry.averages[region] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                    element_space, options.num_components, 0.0);
+            }
+        }
+        m_user_function_outputs.push_back(std::move(entry));
+    }
+
+    // Volume outputs: one registration per entry, run only on its regions
+    for (size_t index = 0; index < m_user_function_outputs.size(); index++) {
+        const auto& entry = m_user_function_outputs[index];
+        const auto& options = entry.options;
+        if (options.type == UserFunctionType::VISUALIZATION) {
+            if (!m_enable_visualization) {
+                MFEM_WARNING_0("Post-processing user function entry '"
+                               << options.name
+                               << "' is of type visualization but no visualization format is "
+                                  "enabled in [Visualizations]; it is not written");
+            }
+            continue;
+        }
+
+        // The output name picks the file names; it must not be one of the built-in averages
+        static const std::vector<std::string> built_in = {"stress",
+                                                          "def_grad",
+                                                          "plastic_work",
+                                                          "pl_work",
+                                                          "eq_pl_strain",
+                                                          "eps",
+                                                          "euler_strain",
+                                                          "elastic_strain",
+                                                          "estrain"};
+        MFEM_VERIFY_0(std::find(built_in.begin(), built_in.end(), options.name) == built_in.end(),
+                      "Post-processing user function entry name '"
+                          << options.name
+                          << "' is the name of a built-in volume average; choose another name");
+        m_file_manager->SetVolumeAverageColumnNames(options.name, options.component_names);
+
+        std::function<void(double)> global_output = nullptr;
+        if (options.global) {
+            global_output = [this, index](const double time) {
+                GlobalUserFunctionVolumeOutput(index, time);
+            };
+        }
+        RegisterVolumeAverageFunction(
+            options.name,
+            options.name,
+            [this, index](const int region, const double time) {
+                UserFunctionVolumeOutput(index, region, time);
+            },
+            global_output,
+            true);
+        // Only the entry's regions produce a region file
+        auto& region_enabled = m_registered_volume_calcs.back().region_enabled;
+        std::fill(region_enabled.begin(), region_enabled.end(), false);
+        for (const int region : entry.regions) {
+            region_enabled[static_cast<size_t>(region)] = true;
+        }
+    }
+}
+
+void PostProcessingDriver::RegisterUserFunctionFields() {
+    using PTMC = ProjectionTraits::ModelCompatibility;
+    for (const auto& entry : m_user_function_outputs) {
+        const auto& options = entry.options;
+        if (options.type != UserFunctionType::VISUALIZATION) {
+            continue;
+        }
+        // A field name already used would share that field's grid function
+        const bool name_taken = std::any_of(m_registered_projections.begin(),
+                                            m_registered_projections.end(),
+                                            [&options](const ProjectionRegistration& reg) {
+                                                return reg.display_name == options.name;
+                                            });
+        MFEM_VERIFY_0(!name_taken,
+                      "Post-processing user function entry name '"
+                          << options.name
+                          << "' is already the name of another visualization field; choose "
+                             "another name");
+
+        // One projection per region holding that region's buffers (none where the region is
+        // not selected or has no elements on this rank). The field exists, with the same size,
+        // on every rank, as the data collections require.
+        std::vector<std::shared_ptr<ProjectionBase>> projection_class;
+        std::vector<bool> region_enabled(m_num_regions, false);
+        std::vector<int> region_length(m_num_regions, options.num_components);
+        for (size_t region = 0; region < m_num_regions; region++) {
+            const int region_int = static_cast<int>(region);
+            const auto values = entry.values.find(region_int);
+            const auto averages = entry.averages.find(region_int);
+            projection_class.push_back(std::make_shared<QuadratureFunctionProjection>(
+                options.name,
+                options.num_components,
+                (values != entry.values.end()) ? values->second : nullptr,
+                (averages != entry.averages.end()) ? averages->second : nullptr,
+                options.global));
+            region_enabled[region] = std::find(entry.regions.begin(),
+                                               entry.regions.end(),
+                                               region_int) != entry.regions.end();
+        }
+
+        m_registered_projections.push_back({"user_function_" + options.name,
+                                            options.name,
+                                            PTMC::ALL_MODELS,
+                                            region_enabled,
+                                            projection_class,
+                                            region_length,
+                                            options.global});
+    }
+}
+
+void PostProcessingDriver::UpdateUserFunctionFields() {
+    for (auto& entry : m_user_function_outputs) {
+        if (entry.options.type != UserFunctionType::VISUALIZATION) {
+            continue;
+        }
+        for (auto& [region, values] : entry.values) {
+            entry.function(m_sim_state, region, values);
+            // Zone output shows the element average of the values
+            const auto averages = entry.averages.find(region);
+            if (averages != entry.averages.end()) {
+                CalcElementAvg(averages->second.get(), values.get());
+            }
+        }
+    }
+}
+
+PostProcessingDriver::VolumeAverageData
+PostProcessingDriver::UserFunctionVolumeResult(const size_t index, const int region) {
+    auto& entry = m_user_function_outputs[index];
+    const auto values = entry.values.find(region);
+    if (values == entry.values.end()) {
+        return VolumeAverageData(); // Region not selected, or no elements on this rank
+    }
+    // Computed once per output step (the cache is cleared with the built-in one)
+    const auto cached = entry.results.find(region);
+    if (cached != entry.results.end()) {
+        return cached->second;
+    }
+
+    // The user's quantity at every point of the region, then its volume average or integral
+    // (collective on the region's communicator)
+    entry.function(m_sim_state, region, values->second);
+    const int num_components = entry.options.num_components;
+    mfem::Vector result(num_components);
+    const auto rtmodel = m_sim_state->GetOptions().solvers.rtmodel;
+    const auto region_comm = m_sim_state->GetRegionCommunicator(region);
+    const double volume =
+        (entry.options.type == UserFunctionType::VOLUME_AVERAGE)
+            ? exaconstit::kernel::ComputeVolAvgTensorFromPartial<true>(
+                  values->second.get(), result, num_components, rtmodel, region_comm)
+            : exaconstit::kernel::ComputeVolAvgTensorFromPartial<false>(
+                  values->second.get(), result, num_components, rtmodel, region_comm);
+    entry.results[region] = VolumeAverageData(volume, result);
+    return entry.results[region];
+}
+
+void PostProcessingDriver::UserFunctionVolumeOutput(const size_t index,
+                                                    const int region,
+                                                    const double time) {
+    const auto result = UserFunctionVolumeResult(index, region);
+    if (!result.is_valid) {
+        return;
+    }
+    const auto& options = m_user_function_outputs[index].options;
+    m_file_manager->WriteVolumeAverage(options.name,
+                                       region,
+                                       m_sim_state->GetRegionName(region),
+                                       time,
+                                       result.volume,
+                                       result.data,
+                                       options.num_components,
+                                       m_sim_state->GetRegionCommunicator(region));
+}
+
+void PostProcessingDriver::GlobalUserFunctionVolumeOutput(const size_t index, const double time) {
+    const auto& entry = m_user_function_outputs[index];
+    const bool average = (entry.options.type == UserFunctionType::VOLUME_AVERAGE);
+    const auto global = CombineRegionVolumeResults(
+        [this, index](const int region) {
+            return UserFunctionVolumeResult(index, region);
+        },
+        entry.options.num_components,
+        average);
+    if (!global.is_valid) {
+        return; // No selected region had any volume
+    }
+    m_file_manager->WriteVolumeAverage(
+        entry.options.name, -1, "", time, global.volume, global.data, entry.options.num_components);
 }
 
 void PostProcessingDriver::RegisterDefaultVolumeCalculations() {

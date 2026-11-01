@@ -5,10 +5,17 @@
 #include "sim_state/simulation_state.hpp"
 #include "utilities/cuda_access.hpp"
 #include "utilities/mechanics_kernels.hpp"
+#include "utilities/user_function_loader.hpp"
 
 #include "mfem.hpp"
 
 #include "ECMech_const.h"
+
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 // Forward declaration to avoid circular includes
 class PostProcessingFileManager;
@@ -538,6 +545,25 @@ private:
     void GlobalVolumeAverage(const std::string& calc_type_str, double time);
 
     /**
+     * @brief Combine per-region volume results over the whole sample on rank 0
+     *
+     * @param region_result Gives the result of one region (collective on that region's
+     *                      communicator; ranks without the region return invalid data)
+     * @param data_size Number of values per result
+     * @param average True: volume-weighted average of the region averages. False: plain sum of
+     *                the region values (volume integrals).
+     * @return The combined result with the total volume, valid on rank 0 only (invalid if no
+     *         region had any volume)
+     *
+     * Every region's I/O root sends its result to rank 0, which combines them. Shared by the
+     * built-in global volume averages and the post-processing user functions.
+     */
+    VolumeAverageData
+    CombineRegionVolumeResults(const std::function<VolumeAverageData(int)>& region_result,
+                               const int data_size,
+                               const bool average);
+
+    /**
      * @brief Calculate and output volume-averaged stress for a specific region
      *
      * @param region Region index for calculation
@@ -820,6 +846,70 @@ private:
     void RegisterStateVariableProjections();
 
     /**
+     * @brief Load the post-processing user functions and prepare their outputs
+     *
+     * For each [[PostProcessing.user_functions]] entry: loads the function (already checked at
+     * startup), allocates on every selected region active on this rank a quadrature function
+     * with the entry's number of components per point (plus its element averages for zone
+     * visualization), and for volume averages / integrals registers the region and global
+     * outputs with RegisterVolumeAverageFunction(). Visualization entries become fields in
+     * RegisterUserFunctionFields(). Called from the constructor.
+     */
+    void SetupUserFunctions();
+
+    /**
+     * @brief Register one visualization field per "visualization" user function entry
+     *
+     * Each field (QuadratureFunctionProjection) is on in the entry's regions only, and combined
+     * into the global output when the entry's `global` is set. Called by
+     * RegisterDefaultProjections() only when visualization is enabled.
+     */
+    void RegisterUserFunctionFields();
+
+    /**
+     * @brief Run the "visualization" user functions (and the zone element averages)
+     *
+     * Called by UpdateFields() at visualization output steps, before the projections copy the
+     * values into the fields.
+     */
+    void UpdateUserFunctionFields();
+
+    /**
+     * @brief Region output of a "volume_average" / "volume_integral" user function entry
+     *
+     * @param index Entry index in m_user_function_outputs
+     * @param region Region index
+     * @param time Current simulation time
+     *
+     * Writes UserFunctionVolumeResult() to avg_<name>_region_<region name>.txt.
+     */
+    void UserFunctionVolumeOutput(const size_t index, const int region, const double time);
+
+    /**
+     * @brief Result of a "volume_average" / "volume_integral" user function entry on a region
+     *
+     * @param index Entry index in m_user_function_outputs
+     * @param region Region index
+     * @return Volume and averaged / integrated values; invalid if the region is not selected or
+     *         has no elements on this rank
+     *
+     * Runs the function on the region and volume-averages or integrates its values with
+     * exaconstit::kernel::ComputeVolAvgTensorFromPartial (collective on the region's
+     * communicator). The result is kept until ClearVolumeAverageCache(), so the region and
+     * global outputs of one step share it, as the built-in averages share theirs.
+     */
+    VolumeAverageData UserFunctionVolumeResult(const size_t index, const int region);
+
+    /**
+     * @brief Global output of a "volume_average" / "volume_integral" user function entry
+     *
+     * Combines the region results of this output step (UserFunctionVolumeResult, computed here
+     * if the region output did not already) with CombineRegionVolumeResults and writes
+     * avg_<name>_global.txt.
+     */
+    void GlobalUserFunctionVolumeOutput(const size_t index, const double time);
+
+    /**
      * @brief Register default volume average calculations
      *
      * Sets up standard volume averaging operations including:
@@ -1025,6 +1115,36 @@ private:
      * per-region and global aggregated calculations.
      */
     std::vector<VolumeAverageRegistration> m_registered_volume_calcs;
+
+    /**
+     * @brief One [[PostProcessing.user_functions]] entry and its data
+     *
+     * The per-point quantity lives in `values` (one quadrature function per selected region
+     * active on this rank, with options.num_components per point). For zone visualization the
+     * element averages go to `averages`; volume outputs keep this output step's region results
+     * in `results` for the global combination. These buffers are recomputed at every output
+     * step and are not part of the checkpoint.
+     */
+    struct UserFunctionOutput {
+        /// The entry's options (name, type, components, regions, global)
+        UserFunctionOptions options;
+        /// The user's function
+        exaconstit::PostProcessingFunction function = nullptr;
+        /// Selected regions (0-based)
+        std::vector<int> regions;
+        /// Point values per region index
+        std::map<int, std::shared_ptr<mfem::expt::PartialQuadratureFunction>> values;
+        /// Element averages of `values` per region index (zone visualization only)
+        std::map<int, std::shared_ptr<mfem::expt::PartialQuadratureFunction>> averages;
+        /// This output step's volume results per region index (volume outputs only; cleared by
+        /// ClearVolumeAverageCache())
+        std::map<int, VolumeAverageData> results;
+    };
+
+    /**
+     * @brief Post-processing user function entries, in options order
+     */
+    std::vector<UserFunctionOutput> m_user_function_outputs;
 
     /**
      * @brief Visualization enablement flag

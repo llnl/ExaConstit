@@ -129,6 +129,23 @@ mfem::DeviceTensor<2, double> ReadWriteNodeView(mfem::ParGridFunction& gf) {
 }
 } // namespace
 
+void CopyPointValues(const mfem::expt::PartialQuadratureFunction& source,
+                     const int first_component,
+                     const int num_components,
+                     mfem::ParGridFunction& output,
+                     const VizPointMap& points) {
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto values = ReadPointView(source);
+    auto values_out = ReadWriteNodeView(output);
+
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        for (int j = 0; j < num_components; j++) {
+            values_out(j, dst(k)) = values(j + first_component, src(k));
+        }
+    });
+}
+
 void CauchyStressProjection::ProjectStress(
     const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
     std::shared_ptr<mfem::ParGridFunction> stress_gf,
@@ -211,19 +228,8 @@ void StateVariableProjection::Execute(std::shared_ptr<SimulationState> sim_state
                   "StateVariableProjection provided length is greater than the gridfunction "
                   "vector length");
 
-    const auto src = points.ReadSource();
-    const auto dst = points.ReadDest();
-    const auto state = ReadPointView(*state_qf);
-    auto state_out = ReadWriteNodeView(*state_gf);
-
     // Copy the requested slice of the state variables from each source point to its node
-    const auto component_length = m_component_length;
-    const auto component_index = m_component_index;
-    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
-        for (int j = 0; j < component_length; j++) {
-            state_out(j, dst(k)) = state(j + component_index, src(k));
-        }
-    });
+    CopyPointValues(*state_qf, m_component_index, m_component_length, *state_gf, points);
 
     // Apply any post-processing
     PostProcessStateVariable(state_gf, points);
@@ -356,4 +362,21 @@ void ElasticStrainProjection::Execute(std::shared_ptr<SimulationState> sim_state
         strain(4, d) = strain_samp(2, 0); // 13
         strain(5, d) = strain_samp(1, 0); // 12
     });
+}
+
+//=============================================================================
+// USER FUNCTION PROJECTIONS
+//=============================================================================
+
+void QuadratureFunctionProjection::Execute(
+    [[maybe_unused]] std::shared_ptr<SimulationState> sim_state,
+    std::shared_ptr<mfem::ParGridFunction> grid_function,
+    const VizPointMap& points,
+    [[maybe_unused]] int region) {
+    // Zone output reads the element averages, quadrature output the point values
+    const auto& source = (points.GetLocation() == VizFieldLocation::ZONE) ? m_averages : m_values;
+    if (!source) {
+        return; // Region not selected for this quantity, or no elements on this rank
+    }
+    CopyPointValues(*source, 0, m_num_components, *grid_function, points);
 }

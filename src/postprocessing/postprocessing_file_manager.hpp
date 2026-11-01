@@ -118,6 +118,20 @@ public:
     std::string GetVolumeAverageHeader(const std::string& calc_type) const;
 
     /**
+     * @brief Set the column names of a volume average file (written after Time and Volume)
+     *
+     * @param calc_type Calculation name, as passed to WriteVolumeAverage()
+     * @param column_names One name per value
+     *
+     * Used for quantities the file manager does not know (post-processing user functions);
+     * the built-in quantities have fixed column names.
+     */
+    void SetVolumeAverageColumnNames(const std::string& calc_type,
+                                     const std::vector<std::string>& column_names) {
+        m_column_names[calc_type] = column_names;
+    }
+
+    /**
      * @brief Check if output should occur at the current step
      *
      * @param step Current time step number
@@ -422,6 +436,12 @@ private:
      * Improves performance for frequent output operations to the same files.
      */
     mutable std::map<std::string, std::weak_ptr<std::ofstream>> m_file_cache;
+
+    /**
+     * @brief Column names of volume average files of quantities set by
+     * SetVolumeAverageColumnNames(), by calculation name
+     */
+    std::map<std::string, std::vector<std::string>> m_column_names;
 };
 
 // Implementation
@@ -666,7 +686,12 @@ PostProcessingFileManager::GetVolumeAverageHeader(const std::string& calc_type) 
     header << CenterText("# Time", COLUMN_WIDTH);
     header << CenterText("Volume", COLUMN_WIDTH);
 
-    if (calc_type == "stress") {
+    const auto custom = m_column_names.find(calc_type);
+    if (custom != m_column_names.end()) {
+        for (const auto& column : custom->second) {
+            header << CenterText(column, COLUMN_WIDTH);
+        }
+    } else if (calc_type == "stress") {
         header << CenterText("Sxx", COLUMN_WIDTH);
         header << CenterText("Syy", COLUMN_WIDTH);
         header << CenterText("Szz", COLUMN_WIDTH);
