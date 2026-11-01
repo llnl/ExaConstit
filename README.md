@@ -50,7 +50,7 @@ ExaConstit is a cutting-edge, **velocity-based finite element code** designed fo
 
 ### **Material Model Flexibility**
 - **ExaCMech Library** - State-of-the-art crystal plasticity models
-- **UMAT Interface** - Abaqus-compatible user material subroutines
+- **UMAT Interface** - Abaqus-compatible user material subroutines, plus an opt-in batched form that hands a UMAT all of its points at once (on the GPU for GPU runs)
 - **Custom Models** - Extensible architecture for new constitutive laws
 - **Multi-Model Regions** - Different materials in different regions
 

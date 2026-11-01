@@ -93,3 +93,11 @@ endforeach()
 add_test(NAME    test_umat_interface
          COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_umat.py ${_umat_results})
 set_tests_properties(test_umat_interface PROPERTIES FIXTURES_REQUIRED umat_interface_runs)
+
+# The user-facing batched UMAT example (examples/umat_batched) builds on its own, as documented
+add_test(NAME test_umat_batched_example_build
+         COMMAND ${CMAKE_CTEST_COMMAND}
+                 --build-and-test ${CMAKE_SOURCE_DIR}/examples/umat_batched
+                                  ${CMAKE_CURRENT_BINARY_DIR}/example_build
+                 --build-generator ${CMAKE_GENERATOR}
+                 --build-options -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})

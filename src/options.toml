@@ -319,6 +319,36 @@ grain_file = "grains.txt"
             # Searched in order if library_path is just a filename
             search_paths = ["./", "./umats/", "/shared/umat_libs/"]
 
+            # How the UMAT is called:
+            # - "standard" = the usual Abaqus UMAT interface, one call per material point
+            #   (default). Runs on the CPU; on GPU runs the point data is copied to the CPU
+            #   for the calls and back afterwards.
+            # - "batched" = one call with all of the material's points on this MPI rank.
+            #   The arguments are the UMAT arguments in the same order with NPTS added first;
+            #   arrays get a last dimension NPTS (STRESS(NTENS,NPTS), DFGRD1(3,3,NPTS), ...)
+            #   and per-point scalars become arrays (PNEWDT(NPTS), CELENT(NPTS), ...). The
+            #   arrays live where the run's data lives: GPU memory on GPU runs, so a GPU-capable
+            #   UMAT can work on them directly, and CPU memory otherwise (where the UMAT may
+            #   use OpenMP over the points). The sizes (NPTS, NTENS, NSTATV, ...) are always
+            #   in CPU memory. Needs library_path and function_name (the batched function's
+            #   name, not one of the standard UMAT names). Full description in
+            #   src/umats/userumat.h (UmatBatchFunction); example in examples/umat_batched.
+            interface = "standard"
+
+            # Standard interface only: set true if the UMAT can be called for several points
+            # at the same time (no Fortran SAVE / COMMON or other shared data it writes to).
+            # ExaConstit built with OpenMP then calls the points in an OpenMP loop.
+            thread_safe = false
+
+            # What ExaConstit passes to the UMAT: STRESS (Cauchy, Abaqus order 11, 22, 33, 12,
+            # 13, 23) at the start of the increment; DFGRD0 / DFGRD1 the deformation gradients
+            # at the start / end of the increment, computed exactly from the mesh nodes;
+            # STRAN the Eulerian strain of DFGRD0 and DSTRAN the Eulerian strain of the
+            # increment DFGRD1 DFGRD0^-1 (engineering shears); DROT the rotation of that
+            # increment; TEMP the material's temperature; COORDS the current point position;
+            # CELENT the cube root of the element volume near the point. With
+            # integ_model = "BBAR" the deformation gradients get the F-bar treatment.
+
 # =====================================
 # BOUNDARY CONDITIONS
 # =====================================
