@@ -178,6 +178,17 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
                  COMMAND       test_volume_statistics
                  NUM_MPI_TASKS 1)
 
+    # Per-point kinematics of the UMAT model (utilities/kinematics_kernels.hpp) against the host
+    # strain measures, and exact deformation gradients from ElementJacobians + GradCalc on a
+    # curved element
+    blt_add_executable(NAME       test_kinematics_kernels
+                       SOURCES    test_kinematics_kernels.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+    blt_add_test(NAME          test_kinematics_kernels
+                 COMMAND       test_kinematics_kernels
+                 NUM_MPI_TASKS 1)
+
     # User functions from shared libraries: [Materials.State_Vars] register_function and
     # initialize_function (success and failure cases); see test/user_functions/CMakeLists.txt.
     add_subdirectory(user_functions)

@@ -29,6 +29,7 @@ set(EXACONSTIT_HEADERS
     solvers/mechanics_solver.hpp
     solvers/trust_region_solver.hpp
     utilities/dynamic_function_loader.hpp
+    utilities/kinematics_kernels.hpp
     utilities/mechanics_kernels.hpp
     utilities/mechanics_log.hpp
     utilities/assembly_ops.hpp
