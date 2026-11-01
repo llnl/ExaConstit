@@ -147,6 +147,18 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
         }
     }
 
+    if (toml_input.contains("interface")) {
+        options.interface = toml::find<std::string>(toml_input, "interface");
+        std::transform(options.interface.begin(),
+                       options.interface.end(),
+                       options.interface.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
+    if (toml_input.contains("thread_safe")) {
+        options.thread_safe = toml::find<bool>(toml_input, "thread_safe");
+    }
+
     return options;
 }
 
@@ -407,6 +419,33 @@ bool UmatOptions::validate() const {
             << "'. Must be 'persistent', 'load_on_setup', or 'lazy_load'";
         WARNING_0_OPT(err.str());
         return false;
+    }
+
+    if (interface != "standard" && interface != "batched") {
+        std::ostringstream err;
+        err << "Error: Invalid UMAT interface '" << interface
+            << "'. Must be 'standard' or 'batched'";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
+
+    if (is_batched()) {
+        // The batched function has its own signature, so it can't be the built-in UMAT or be
+        // found under the standard UMAT names (umat_call is the default function_name)
+        if (!enable_dynamic_loading) {
+            WARNING_0_OPT("Error: UMAT interface = 'batched' needs a library "
+                          "(enable_dynamic_loading = true and library_path)");
+            return false;
+        }
+        if (function_name.empty() || function_name == "umat_call" || function_name == "auto") {
+            WARNING_0_OPT("Error: UMAT interface = 'batched' needs function_name set to the "
+                          "name of the batched function in the library");
+            return false;
+        }
+        if (thread_safe) {
+            WARNING_0_OPT("Warning: UMAT thread_safe only applies to interface = 'standard'; "
+                          "a batched UMAT handles its own parallelism");
+        }
     }
 
     return true;

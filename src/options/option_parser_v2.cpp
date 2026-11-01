@@ -1102,6 +1102,10 @@ void ExaOptions::print_material_options() const {
             std::cout << "      Dynamic loading: "
                       << (umat.enable_dynamic_loading ? "Enabled" : "Disabled") << "\n";
             std::cout << "      Load strategy: " << umat.load_strategy << "\n";
+            std::cout << "      Interface: " << umat.interface << "\n";
+            if (!umat.is_batched()) {
+                std::cout << "      Thread safe: " << (umat.thread_safe ? "Yes" : "No") << "\n";
+            }
             if (!umat.search_paths.empty()) {
                 std::cout << "      Search paths: ";
                 for (size_t j = 0; j < umat.search_paths.size(); ++j) {

@@ -390,6 +390,32 @@ struct UmatOptions {
     std::vector<std::filesystem::path> search_paths;
 
     /**
+     * @brief How the UMAT is called: "standard" or "batched"
+     *
+     * - "standard" (default): the Abaqus UMAT interface, one call per material point, on the
+     *   CPU (the points are copied from the GPU on GPU runs).
+     * - "batched": one call per region with all of its points on this rank (UmatBatchFunction
+     *   in umats/userumat.h): the UMAT arguments with NPTS first and a last NPTS dimension on the
+     *   arrays. The arrays are in the run's memory space (GPU arrays on GPU runs). Requires a
+     *   library and function_name.
+     */
+    std::string interface = "standard";
+
+    /**
+     * @brief Standard interface only: the UMAT can be called for several points at the same
+     * time (no Fortran SAVE / COMMON or other shared data it writes to). When true and
+     * ExaConstit is built with OpenMP, the per-point calls run in an OpenMP parallel loop.
+     */
+    bool thread_safe = false;
+
+    /**
+     * @brief Whether the batched interface is selected
+     */
+    bool is_batched() const {
+        return interface == "batched";
+    }
+
+    /**
      * @brief Validates if the load strategy is one of the accepted values
      * @return true if load_strategy is valid, false otherwise
      */
