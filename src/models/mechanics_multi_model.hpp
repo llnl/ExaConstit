@@ -131,13 +131,14 @@ private:
      *    names are added after the ExaCMech names; a name that already exists is not replaced,
      *    and a slice that overlaps another or does not fit stops the run
      *    (SimulationState::AddQuadratureFunctionStatePair()).
-     * 2. initialize_function (if set) for the regions with elements on this rank. It writes the
-     *    region's "state_var_beg" values, which are then copied into "state_var_end" so the
-     *    first step starts from the user's values.
+     * 2. initialize_function (if set) for the regions with elements on this rank, on a fresh
+     *    run only (a restart takes the state variables from the checkpoint, as for the
+     *    built-in initialization). It writes the region's "state_var_beg" values, which are
+     *    then copied into "state_var_end" so the first step starts from the user's values.
      *
      * Region i is material i of the options (0-based), the region number passed to the user
-     * functions. On a restart the checkpoint later replaces the state variables set here, as it
-     * does for the built-in initialization.
+     * functions. Either key can name a user class from a factory instead (exaconstit_user.hpp,
+     * utilities/user_classes.hpp).
      */
     void RunStateVariableUserFunctions(const ExaOptions& options);
 

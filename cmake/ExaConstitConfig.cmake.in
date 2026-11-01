@@ -68,6 +68,27 @@ if(CMAKE_CXX_COMPILER AND NOT CMAKE_CXX_COMPILER STREQUAL EXACONSTIT_CXX_COMPILE
                     "with -DCMAKE_CXX_COMPILER=${EXACONSTIT_CXX_COMPILER} if the two differ.")
 endif()
 
+# GPU builds: user libraries are compiled for the same device (see exaconstit_add_user_library).
+# enable_language() must be called at file scope, not inside that function, so the language is
+# enabled here, by default with the compiler and architectures ExaConstit was built with.
+if("@ENABLE_CUDA@")
+    if(NOT CMAKE_CUDA_COMPILER)
+        set(CMAKE_CUDA_COMPILER "@CMAKE_CUDA_COMPILER@")
+    endif()
+    if(NOT CMAKE_CUDA_HOST_COMPILER AND NOT "@CMAKE_CUDA_HOST_COMPILER@" STREQUAL "")
+        set(CMAKE_CUDA_HOST_COMPILER "@CMAKE_CUDA_HOST_COMPILER@")
+    endif()
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES "@CMAKE_CUDA_ARCHITECTURES@")
+    endif()
+    enable_language(CUDA)
+elseif("@ENABLE_HIP@")
+    if(NOT CMAKE_HIP_ARCHITECTURES)
+        set(CMAKE_HIP_ARCHITECTURES "@CMAKE_HIP_ARCHITECTURES@")
+    endif()
+    enable_language(HIP)
+endif()
+
 include("@EXACONSTIT_CONFIG_USER_LIBRARY_MODULE@")
 
 set(ExaConstit_FOUND TRUE)

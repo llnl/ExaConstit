@@ -305,6 +305,46 @@ struct MaterialProperties {
 };
 
 /**
+ * @brief A user class made by a factory of a user library (table form of a user function key)
+ *
+ * In the options file: key = { factory = "MakeMyClasses", variant = "my_class" }. The factory is
+ * a C++ function in the user library that returns a new object for the variant string; the
+ * classes derive from the base classes in exaconstit_user.hpp.
+ */
+struct UserFactoryOptions {
+    /** @brief Factory function name in the library (empty: the key is not a table) */
+    std::string factory;
+
+    /** @brief Variant string handed to the factory ("" when not given) */
+    std::string variant;
+
+    bool empty() const {
+        return factory.empty();
+    }
+
+    /** @brief Readable form for messages: factory 'MakeMyClasses', variant 'my_class' */
+    std::string label() const {
+        return "factory '" + factory + "', variant '" + variant + "'";
+    }
+};
+
+/**
+ * @brief Read a user function key that is either a function name or a factory table
+ *
+ * @param toml_input Table holding the key
+ * @param key Key name (register_function, initialize_function, function_name)
+ * @param function_name Set to the string when the key is a string
+ * @param factory Set when the key is a table { factory = "...", variant = "..." }
+ *
+ * Throws std::runtime_error for a table without factory or with keys other than factory and
+ * variant.
+ */
+void read_user_function_key(const toml::value& toml_input,
+                            const std::string& key,
+                            std::string& function_name,
+                            UserFactoryOptions& factory);
+
+/**
  * @brief State variables configuration
  */
 struct StateVariables {
@@ -340,12 +380,23 @@ struct StateVariables {
     std::string register_function;
 
     /**
+     * @brief register_function given as a factory table: a user::RegisterFunction class
+     */
+    UserFactoryOptions register_factory;
+
+    /**
      * @brief User function setting this material's initial history variables (optional)
      *
      * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It writes the
      * region's "state_var_beg" quadrature function; ExaConstit copies it to "state_var_end".
+     * Not called on a restart (the checkpoint has the state).
      */
     std::string initialize_function;
+
+    /**
+     * @brief initialize_function given as a factory table: a user::InitializeFunction class
+     */
+    UserFactoryOptions initialize_factory;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist)
@@ -1515,13 +1566,17 @@ struct UserFunctionOptions {
     /** @brief Shared library holding the function (empty: search the executable) */
     std::filesystem::path library_path;
 
-    /** @brief Function name (required) */
+    /** @brief Function name (this or factory is required) */
     std::string function_name;
+
+    /** @brief function_name given as a factory table: a user::PostProcessingFunction class */
+    UserFactoryOptions factory;
 
     /** @brief What to do with the values (required) */
     UserFunctionType type = UserFunctionType::NOTYPE;
 
-    /** @brief Output name: field name or file name stem (default: function_name) */
+    /** @brief Output name: field name or file name stem (default: function_name, or the
+     * factory's variant) */
     std::string name;
 
     /** @brief Values per point (default: number of component_names, else 1) */

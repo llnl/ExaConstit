@@ -23,6 +23,9 @@
  * CheckUserFunctions() loads every function listed in the options right after the options are
  * read, on every rank, and stops the run with the required signature if one is missing or
  * different. Later calls to LoadUserFunction() for the same function come from the loader's cache.
+ *
+ * Each of these keys can instead name a factory of user classes (see exaconstit_user.hpp and
+ * user_classes.hpp): key = { factory = "...", variant = "..." }.
  */
 
 #include "mfem_expt/partial_qfunc.hpp"
@@ -30,6 +33,7 @@
 #include "options/option_util.hpp"
 #include "utilities/dynamic_function_loader.hpp"
 #include "utilities/unified_logger.hpp"
+#include "utilities/user_classes.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -212,12 +216,17 @@ inline void CheckUserFunctions(const ExaOptions& options) {
         }
     }
     for (const auto& user_function : options.post_processing.user_functions) {
+        if (user_function.function_name.empty()) {
+            continue; // Factory table, checked below
+        }
         LoadUserFunction<PostProcessingFunction>(
             user_function.library_path,
             user_function.function_name,
             PostProcessingFunctionSignature(user_function.function_name),
             "post-processing user function of entry '" + user_function.name + "'");
     }
+    // Factory tables: create every object now, checking variant and class
+    CheckUserObjects(options);
 }
 
 } // namespace exaconstit

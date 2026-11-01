@@ -11,6 +11,9 @@
 # - region 2 (0-based region 1): the built-in UMAT with 10 state variables. Its
 #   state variable functions change from case to case (correct ones, or ones that must stop
 #   the run).
+# T_FINAL and RESTART_TABLE change only for the restart test.
+# The *_FUNCTION fields are TOML values: a quoted function name, or a factory table
+# { factory = "MakeTestClasses", variant = "..." } of libtest_user_classes.
 Version = "0.10.1"
 basename = "user_functions_@CASE_NAME@"
 grain_file = "@EXACONSTIT_TEST_DATA_DIR@/grains.txt"
@@ -26,8 +29,8 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
     [Materials.State_Vars]
         floc = "@EXACONSTIT_TEST_DATA_DIR@/state_cp_voce.txt"
         num_vars = 24
-        library_path = "@USER_FUNCTION_LIBRARY@"
-        register_function = "RegisterExaCMechStateVariables"
+        library_path = "@CRYSTAL_STATE_VAR_LIBRARY@"
+        register_function = @CRYSTAL_REGISTER_FUNCTION@
     [Materials.Grain]
         ori_state_var_loc = 9
         ori_stride = 4
@@ -50,8 +53,8 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
         num_vars = 10
         values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         library_path = "@UMAT_STATE_VAR_LIBRARY@"
-        register_function = "@UMAT_REGISTER_FUNCTION@"
-        initialize_function = "InitializeUmatStateVariables"
+        register_function = @UMAT_REGISTER_FUNCTION@
+        initialize_function = @UMAT_INITIALIZE_FUNCTION@
     [Materials.Model]
         crystal_plasticity = false
         [Materials.Model.UMAT]
@@ -78,7 +81,7 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
 [Time]
     [Time.Fixed]
         dt = 0.1
-        t_final = 0.1
+        t_final = @T_FINAL@
 
 [Visualizations]
     steps = 1
@@ -111,3 +114,4 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
     [Mesh.Auto]
         mxyz = [1.0, 1.0, 1.0]
         nxyz = [5, 5, 5]
+@RESTART_TABLE@

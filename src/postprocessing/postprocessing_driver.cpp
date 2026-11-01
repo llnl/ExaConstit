@@ -773,12 +773,12 @@ PostProcessingDriver::PrepareVolumePoints(CalcType calc_type, int region, int& d
     switch (calc_type) {
     case CalcType::STRESS:
         qf_name = "cauchy_stress_end";
-        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Sxy, Sxz, Syz
+        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Syz, Sxz, Sxy
         break;
 
     case CalcType::DEF_GRAD:
         qf_name = "kinetic_grads";
-        data_size = 9; // Full 3x3 tensor: F11, F12, F13, F21, F22, F23, F31, F32, F33
+        data_size = 9; // Full 3x3 tensor, column-major: F11, F21, F31, F12, ..., F33
         break;
 
     case CalcType::PLASTIC_WORK:
@@ -1385,13 +1385,6 @@ void PostProcessingDriver::SetupUserFunctions() {
         entry.options = entries[index];
         const auto& options = entry.options;
 
-        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
-        entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
-            options.library_path,
-            options.function_name,
-            exaconstit::PostProcessingFunctionSignature(options.function_name),
-            "post-processing user function of entry '" + options.name + "'");
-
         // Selected regions (options use material numbers starting at 1); all when none given
         if (options.regions.empty()) {
             for (int region = 0; region < static_cast<int>(m_num_regions); region++) {
@@ -1401,6 +1394,18 @@ void PostProcessingDriver::SetupUserFunctions() {
             for (const int material : options.regions) {
                 entry.regions.push_back(material - 1);
             }
+        }
+
+        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
+        if (options.factory.empty()) {
+            entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
+                options.library_path,
+                options.function_name,
+                exaconstit::PostProcessingFunctionSignature(options.function_name),
+                "post-processing user function of entry '" + options.name + "'");
+        } else {
+            entry.function = exaconstit::MakeUserPostProcessingCall(
+                m_sim_state, index, options, entry.regions);
         }
 
         // Point values on each selected region this rank owns elements of, on the region's

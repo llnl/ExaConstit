@@ -43,6 +43,25 @@ def read_text_file(path):
     return comments[:-1], columns, data
 
 
+def same_text(a_lines, b_lines, rtol=1e-7, atol=1e-12):
+    """Same lines word for word; numbers only to the tolerances (the reference text was written
+    by another run, so e.g. a reference normal component that is round-off may differ)"""
+    if len(a_lines) != len(b_lines):
+        return False
+    for a_line, b_line in zip(a_lines, b_lines):
+        a_words, b_words = a_line.split(), b_line.split()
+        if len(a_words) != len(b_words):
+            return False
+        for a, b in zip(a_words, b_words):
+            try:
+                if abs(float(a) - float(b)) > atol + rtol * abs(float(a)):
+                    return False
+            except ValueError:
+                if a != b:
+                    return False
+    return True
+
+
 def split_suffix(stem):
     """'<base>_global' or '<base>_region_<region>' -> (base, region)"""
     if stem.endswith("_global"):
@@ -129,7 +148,7 @@ def main(hdf5_path, reference_dir, results_dir, scripts_dir):
                           f"{group}: {name} fractions do not sum to 1")
             if kind == "surface":
                 description = reader.read_text(h5file, group + "/description")
-                check(description.splitlines() == comments,
+                check(same_text(description.splitlines(), comments),
                       f"{group}: description is not the text file's comment lines")
 
         extra = sorted(g for g in groups if g not in matched)

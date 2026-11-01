@@ -1,0 +1,241 @@
+#pragma once
+/**
+ * @file exaconstit_user.hpp
+ * @brief The one header a user library needs to give ExaConstit its own C++ classes
+ *
+ * ExaConstit was built with: @CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@
+ * Build your library with that same compiler (C++17 or newer), for example:
+ *     @EXACONSTIT_USER_CXX@ -std=c++17 -O2 -fPIC -shared my_lib.cpp -o libmy_lib.so
+ *         -I@CMAKE_INSTALL_PREFIX@/include
+ *
+ * 1. Derive from the base class of the options key you fill in:
+ *      register_function   ([Materials.State_Vars])             -> RegisterFunction
+ *      initialize_function ([Materials.State_Vars])             -> InitializeFunction
+ *      function_name       ([[PostProcessing.user_functions]])  -> PostProcessingFunction
+ * 2. Write a factory: a normal C++ function at global scope (not extern "C", not in a namespace)
+ *    returning a new object for the variant string, or nullptr for a variant it does not know:
+ *      std::unique_ptr<exaconstit::user::Function> MyFactory(const exaconstit::user::FactoryArgs&);
+ * 3. In the options file:  library_path = "libmy_lib.so"  and, where the function name would go,
+ *      key = { factory = "MyFactory", variant = "..." }
+ *    ExaConstit creates every object right after reading the options, on every MPI rank.
+ *
+ * DATA. Your code runs on the CPU. A call covers one material (region) on one MPI rank: its
+ * elements there, point by point. Ask for inputs by name in inputs(); they arrive as Fields in
+ * Inputs: views of ExaConstit's own memory plus their shape, with no copies. Write your results
+ * into the OutputField; they go straight into ExaConstit's array (moved to the GPU on GPU runs),
+ * and ExaConstit does the rest: visualization, volume averages / integrals, statistics,
+ * histograms. In initialize, inputs that are state variables view the same memory as state_vars.
+ *
+ * INPUT NAMES, all at the material's quadrature points (Context::available lists what a material
+ * has; an unknown name stops the run and prints that list):
+ *   cauchy_stress     voigt   [6]    11 22 33 23 13 12
+ *   def_grad          matrix  [3,3]  deformation gradient, column-major 11 21 31 12 22 32 13 23 33
+ *   state_vars        list    [num_state_vars]  all state variables of the material
+ *   a named state variable of the material: ExaCMech's eq_pl_strain, plastic_work, quats
+ *     (quaternion [4], scalar part first), shear_rate, hardness, ..., or your RegisterFunction's
+ *     names: scalar [1] for one slot, else list [length]
+ *   reference_coords, coords (current), displacement, velocity
+ *                     vector  [3]    x y z
+ *   grains            scalar  [1]    grain ID of the element
+ *   any other quadrature data of the material, under its ExaConstit name, as list [vdim]
+ * In post-processing the values are those of the last converged step. In initialize the stress
+ * is zero, the coordinates are the reference ones and the state variables hold the values set so
+ * far (values / floc, then the model's own initialization).
+ *
+ * ERRORS. Throw any std::exception; ExaConstit stops the run and prints what() with the options
+ * entry, material and rank.
+ *
+ * COMPATIBILITY. ExaConstit grows this header only by adding input names, base classes and Layout
+ * values. Changing an existing class or struct moves everything to inline namespace v2; a library
+ * built against v1 then stops at startup with "rebuild against exaconstit_user.hpp".
+ */
+#include <cstddef>
+#include <functional>
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace exaconstit::user {
+inline namespace v1 { // part of the factory's symbol: a v1 library only loads into a v1 ExaConstit
+
+/// How the components of one point are stored
+enum class Layout {
+    scalar,     ///< 1 component
+    vector,     ///< x, y, z
+    voigt,      ///< symmetric 3x3 tensor as 11, 22, 33, 23, 13, 12
+    matrix,     ///< tensor of shape [rows, cols], column-major: (i, j) at i + rows * j
+    quaternion, ///< q0 (scalar part), q1, q2, q3
+    list        ///< no tensor meaning (state variable slots, your outputs)
+};
+
+/// Name and shape of a data set (Context::available lists these)
+struct FieldInfo {
+    std::string name;       ///< As you ask for it, e.g. "cauchy_stress"
+    Layout layout = Layout::list;
+    std::vector<int> shape; ///< Shape of one point: {1}, {3}, {4}, {6}, {3, 3}, {n}
+    int vdim = 0;           ///< Components per point (product of shape)
+};
+
+/**
+ * @brief One data set at the quadrature points of a material on this rank (no copy)
+ *
+ * data points straight into ExaConstit's own memory: nothing is copied, and what you write into
+ * an output lands where ExaConstit keeps it. Read and write through the accessors (f(p),
+ * f(p, c), f(e, q, c), tensor()), which handle the layout for you. Valid only during the call.
+ *
+ * Point p = element * qpts_per_element + q (elements in the material's order on this rank).
+ * Component c of point p is data[p * stride + c]; stride is vdim, except for a named state
+ * variable, which is a window into all of the material's state variables (stride =
+ * num_state_vars).
+ */
+template <typename T>
+struct BasicField : FieldInfo {
+    int num_elements = 0;     ///< Elements of the material on this rank
+    int qpts_per_element = 0; ///< Quadrature points per element (one rule per run)
+    T* data = nullptr;        ///< ExaConstit's memory; prefer the accessors
+    int stride = 0;           ///< Distance between two points in data
+
+    int num_points() const { return num_elements * qpts_per_element; }
+
+    /// Component c (default 0) of point p
+    T& operator()(int p, int c = 0) const { return data[std::size_t(p) * stride + c]; }
+    /// Component c at quadrature point q of element e
+    T& operator()(int e, int q, int c) const { return (*this)(e * qpts_per_element + q, c); }
+
+    /// Entry (i, j), 0-based, of a voigt or matrix tensor at point p, whatever the storage:
+    /// stress.tensor(p, 1, 2) is s23, def_grad.tensor(p, 0, 1) is F12
+    double tensor(int p, int i, int j) const {
+        static const int voigt_index[3][3] = {{0, 5, 4}, {5, 1, 3}, {4, 3, 2}};
+        if (layout == Layout::voigt) {
+            return (*this)(p, voigt_index[i][j]);
+        }
+        if (layout == Layout::matrix && shape.size() == 2) {
+            return (*this)(p, i + shape[0] * j);
+        }
+        throw std::logic_error("tensor(): '" + name + "' is not a voigt or matrix tensor");
+    }
+
+    /// Throws std::invalid_argument unless the field has this shape, e.g. require({3, 3})
+    void require(const std::vector<int>& expected) const {
+        if (shape == expected) {
+            return;
+        }
+        auto str = [](const std::vector<int>& s) {
+            std::string out = "[";
+            for (std::size_t i = 0; i < s.size(); i++) {
+                out += (i ? "," : "") + std::to_string(s[i]);
+            }
+            return out + "]";
+        };
+        throw std::invalid_argument("'" + name + "' has shape " + str(shape) + ", expected " +
+                                    str(expected));
+    }
+};
+
+/// An input: read-only view of ExaConstit's data
+using Field = BasicField<const double>;
+/// An output: writable view of the array ExaConstit uses (zero-filled for post-processing)
+using OutputField = BasicField<double>;
+
+/// The inputs a function asked for, under the names it used in inputs()
+struct Inputs {
+    std::map<std::string, Field, std::less<>> fields;
+
+    const Field& operator[](std::string_view name) const {
+        const auto it = fields.find(name);
+        if (it != fields.end()) {
+            return it->second;
+        }
+        std::string asked;
+        for (const auto& field : fields) {
+            asked += " " + field.first;
+        }
+        throw std::out_of_range("input '" + std::string(name) +
+                                "' was not asked for in inputs(); asked for:" + asked);
+    }
+};
+
+/// One named slice of a material's state variables
+struct StateVariableName {
+    std::string name;
+    int offset = 0;   ///< First slot, from 0
+    int length = 1;   ///< Number of slots
+    bool plot = true; ///< Written when all state variables are visualized (false: counters...)
+};
+
+/// Where a call runs. Built by ExaConstit for every call.
+struct Context {
+    int region = 0;            ///< 0-based: material number in the options file - 1
+    std::string material_name; ///< The [[Materials]] entry's name
+    std::string variant;       ///< The variant of the options entry
+    int num_elements = 0;      ///< Elements of the material on this rank (0 in names())
+    int qpts_per_element = 0;  ///< Quadrature points per element (0 in names())
+    int num_state_vars = 0;    ///< The material's num_vars
+    std::vector<StateVariableName> state_variables; ///< Names registered so far, in order
+    /// Input names of this material, with their shapes (empty in names())
+    std::vector<FieldInfo> available;
+    double time = 0.0;         ///< Time of the converged step (start time in initialize)
+    double delta_time = 0.0;   ///< Its time step (0 in initialize)
+
+    int num_points() const { return num_elements * qpts_per_element; }
+
+    /// Slice of a named state variable; throws if the material has none of that name
+    const StateVariableName& state_variable(std::string_view name) const {
+        for (const auto& v : state_variables) {
+            if (v.name == name) {
+                return v;
+            }
+        }
+        throw std::out_of_range("material " + material_name + " has no state variable '" +
+                                std::string(name) + "'");
+    }
+};
+
+/// Base of every class a factory returns; ExaConstit owns and deletes the object
+class Function {
+public:
+    virtual ~Function() = default;
+};
+
+/// register_function: names slices of a material's state variables. names() runs once per
+/// material on every rank (also without elements there), after the model's own (ExaCMech) names;
+/// return the same list on every rank. Slices must fit in num_state_vars, must not overlap and
+/// must not reuse a name the material already has.
+class RegisterFunction : public Function {
+public:
+    virtual std::vector<StateVariableName> names(const Context& context) = 0;
+};
+
+/// initialize_function: sets initial state variables. Runs once per material on ranks owning
+/// elements of it, after values / floc and the model's own initialization; not on restarts.
+/// state_vars holds the current values (list [num_state_vars]); change what you need.
+/// It is the material's own array: what you write is the starting state.
+class InitializeFunction : public Function {
+public:
+    virtual std::vector<std::string> inputs(const Context& /*context*/) { return {}; }
+    virtual void initialize(const Context& context, const Inputs& inputs,
+                            OutputField& state_vars) = 0;
+};
+
+/// Post-processing user function: a quantity per quadrature point. inputs() runs at startup
+/// once per material on ranks owning elements of it; compute() at each output step of the entry.
+/// output is zero on entry, with the entry's num_components as vdim.
+class PostProcessingFunction : public Function {
+public:
+    virtual std::vector<std::string> inputs(const Context& context) = 0;
+    virtual void compute(const Context& context, const Inputs& inputs, OutputField& output) = 0;
+};
+
+/// What ExaConstit passes to a factory
+struct FactoryArgs {
+    std::string variant; ///< The options' variant ("" if not given)
+};
+
+/// The factory signature ExaConstit looks up in the library
+using Factory = std::unique_ptr<Function> (*)(const FactoryArgs& args);
+
+} // namespace v1
+} // namespace exaconstit::user

@@ -617,7 +617,7 @@ private:
      * specified region using element-averaged stress values. The calculation
      * performs true volume weighting by integrating stress over element volumes.
      *
-     * Output format: Time, Total_Volume, Sxx, Syy, Szz, Sxy, Sxz, Syz
+     * Output format: Time, Total_Volume, Sxx, Syy, Szz, Syz, Sxz, Sxy
      *
      * Files are written only by MPI rank 0 to region-specific output files
      * managed by PostProcessingFileManager. Headers are added automatically
@@ -645,7 +645,8 @@ private:
      * the specified region. The deformation gradient captures finite strain
      * deformation including rotation and stretch components.
      *
-     * Output format: Time, Total_Volume, F11, F12, F13, F21, F22, F23, F31, F32, F33
+     * Output format: Time, Total_Volume, F11, F21, F31, F12, F22, F32, F13, F23, F33 (column by
+     * column)
      *
      * Essential for finite strain analysis and strain path tracking in
      * large deformation simulations.
@@ -986,6 +987,7 @@ private:
         const bool global,
         std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values);
 
+EXACONSTIT_CUDA_PRIVATE:
     /**
      * @brief Per-point values of a built-in quantity for its statistics
      *
@@ -995,6 +997,7 @@ private:
      */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction>
     BuiltInStatisticsPoints(const CalcType calc_type, const int region);
+private:
 
     /**
      * @brief Statistics of an output on a region for this output step (computed once, cached
@@ -1227,8 +1230,8 @@ private:
     struct UserFunctionOutput {
         /// The entry's options (name, type, components, regions, global)
         UserFunctionOptions options;
-        /// The user's function
-        exaconstit::PostProcessingFunction function = nullptr;
+        /// The user's function, or the call of the user's class (factory table)
+        exaconstit::PostProcessingCall function;
         /// Selected regions (0-based)
         std::vector<int> regions;
         /// Point values per region index

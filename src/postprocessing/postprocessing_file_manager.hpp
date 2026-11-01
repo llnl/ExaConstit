@@ -882,9 +882,11 @@ PostProcessingFileManager::GetVolumeAverageColumnNames(const std::string& calc_t
         return custom->second;
     }
     if (calc_type == "stress") {
-        return {"Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"};
+        // Voigt order of the stress quadrature function: 11, 22, 33, 23, 13, 12
+        return {"Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"};
     } else if (calc_type == "def_grad") {
-        return {"F11", "F12", "F13", "F21", "F22", "F23", "F31", "F32", "F33"};
+        // The deformation gradient is stored column by column (column-major 3x3)
+        return {"F11", "F21", "F31", "F12", "F22", "F32", "F13", "F23", "F33"};
     } else if (calc_type == "euler_strain") {
         return {"E11", "E22", "E33", "E23", "E13", "E12"};
     } else if (calc_type == "plastic_work" || calc_type == "pl_work") {

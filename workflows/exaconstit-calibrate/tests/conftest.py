@@ -138,13 +138,13 @@ FAKE_BINARY_SRC = textwrap.dedent(
     stress_header = (
         "      # Time            Volume             "
         "Sxx               Syy               Szz               "
-        "Sxy               Sxz               Syz"
+        "Syz               Sxz               Sxy"
     )
     defgrad_header = (
         "      # Time            Volume             "
-        "F11               F12               F13               "
-        "F21               F22               F23               "
-        "F31               F32               F33"
+        "F11               F21               F31               "
+        "F12               F22               F32               "
+        "F13               F23               F33"
     )
 
     rows_stress = [stress_header]

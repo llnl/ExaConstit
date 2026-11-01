@@ -1036,19 +1036,24 @@ void ExaOptions::print_material_options() const {
         // State variables
         std::cout << "    State variables file: " << mat.state_vars.state_file << "\n";
         std::cout << "    Number of state variables: " << mat.state_vars.num_vars << "\n";
-        if (!mat.state_vars.register_function.empty() ||
-            !mat.state_vars.initialize_function.empty()) {
+        const auto& vars = mat.state_vars;
+        if (!vars.register_function.empty() || !vars.initialize_function.empty() ||
+            !vars.register_factory.empty() || !vars.initialize_factory.empty()) {
             std::cout << "    State variable functions library: "
-                      << (mat.state_vars.library_path.empty()
-                              ? std::string("(executable)")
-                              : mat.state_vars.library_path.string())
+                      << (vars.library_path.empty() ? std::string("(executable)")
+                                                    : vars.library_path.string())
                       << "\n";
-            if (!mat.state_vars.register_function.empty()) {
-                std::cout << "      register_function: " << mat.state_vars.register_function
-                          << "\n";
+            if (!vars.register_function.empty()) {
+                std::cout << "      register_function: " << vars.register_function << "\n";
             }
-            if (!mat.state_vars.initialize_function.empty()) {
-                std::cout << "      initialize_function: " << mat.state_vars.initialize_function
+            if (!vars.initialize_function.empty()) {
+                std::cout << "      initialize_function: " << vars.initialize_function << "\n";
+            }
+            if (!vars.register_factory.empty()) {
+                std::cout << "      register_function: " << vars.register_factory.label() << "\n";
+            }
+            if (!vars.initialize_factory.empty()) {
+                std::cout << "      initialize_function: " << vars.initialize_factory.label()
                           << "\n";
             }
         }
@@ -1426,7 +1431,8 @@ void ExaOptions::print_post_processing_options() const {
             const char* type = (uf.type == UserFunctionType::VISUALIZATION)    ? "visualization"
                                : (uf.type == UserFunctionType::VOLUME_AVERAGE) ? "volume_average"
                                                                                : "volume_integral";
-            std::cout << "    - " << uf.name << " (" << type << "): " << uf.function_name << " in "
+            const std::string function = uf.factory.empty() ? uf.function_name : uf.factory.label();
+            std::cout << "    - " << uf.name << " (" << type << "): " << function << " in "
                       << (uf.library_path.empty() ? std::string("(executable)")
                                                   : uf.library_path.string())
                       << ", " << uf.num_components << " component(s), regions ";

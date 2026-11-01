@@ -140,10 +140,10 @@ def _build_problem(
     )
     reader = TextTableReader({
         "avg_stress": TextTableSpec(
-            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
         ),
         "avg_def_grad": TextTableSpec(
-            columns=["Time", "Volume", "F11", "F12", "F13", "F21", "F22", "F23", "F31", "F32", "F33"],
+            columns=["Time", "Volume", "F11", "F21", "F31", "F12", "F22", "F32", "F13", "F23", "F33"],
             required=False,
         ),
     })

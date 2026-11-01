@@ -1,9 +1,10 @@
 # Input deck template for the volume statistics test (test/user_functions).
 #
 # Material 2 is a 2x2x2 corner block of the 5x5x5 auto mesh (grains_corner.txt written by
-# CMake), so with 4 ranks some ranks, rank 0 included, own none of its elements; the same deck also runs on 1 rank
-# and check_statistics.py compares the two. Two ExaCMech materials, 3 small steps of uniaxial
-# tension along z.
+# CMake). The 2-rank run reads a decomposition of that mesh in which rank 0 owns none of its
+# elements (written by write_statistics_mesh, so it does not depend on the partitioner); the
+# 1-rank run uses the auto mesh itself, and check_statistics.py compares the two. Two ExaCMech
+# materials, 3 small steps of uniaxial tension along z.
 #
 # Statistics asked for:
 # - built-in stress and equivalent plastic strain: statistics = "all", and a histogram of the
@@ -125,7 +126,4 @@ region_mapping_file = "@STATS_REGION_MAP@"
     ref_ser = 0
     ref_par = 0
     p_refinement = 1
-    type = "auto"
-    [Mesh.Auto]
-        mxyz = [1.0, 1.0, 1.0]
-        nxyz = [5, 5, 5]
+@STATS_MESH_TABLE@

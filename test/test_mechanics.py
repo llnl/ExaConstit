@@ -124,7 +124,39 @@ def load_data_file(file_path: str) -> np.ndarray:
         except Exception as e2:
             raise ValueError(f"Could not load {file_path}: {e}, {e2}")
 
-def compare_files(baseline_file: str, result_file: str, rel_tolerance: float = 1e-8, 
+def read_header_lines(file_path: str) -> List[List[str]]:
+    """Tokens of each comment line ('#' first) at the top of a file, up to the first data line"""
+    header = []
+    with open(file_path) as f:
+        for line in f:
+            tokens = line.split()
+            if not tokens or tokens[0] != '#':
+                break
+            header.append(tokens)
+    return header
+
+
+def headers_match(baseline: List[List[str]], result: List[List[str]], rel_tolerance: float,
+                  abs_tolerance: float) -> bool:
+    """Same comment lines: words equal, numbers equal to the tolerances"""
+    if len(baseline) != len(result):
+        return False
+    for baseline_tokens, result_tokens in zip(baseline, result):
+        if len(baseline_tokens) != len(result_tokens):
+            return False
+        for b, r in zip(baseline_tokens, result_tokens):
+            try:
+                b_value, r_value = float(b), float(r)
+            except ValueError:
+                if b != r:
+                    return False
+                continue
+            if abs(b_value - r_value) > max(abs_tolerance, rel_tolerance * abs(b_value)):
+                return False
+    return True
+
+
+def compare_files(baseline_file: str, result_file: str, rel_tolerance: float = 1e-8,
                   abs_tolerance: float = 1e-10) -> List[str]:
     """
     Compare two data files with specified relative and absolute tolerances
@@ -147,6 +179,15 @@ def compare_files(baseline_file: str, result_file: str, rel_tolerance: float = 1
         rel_tolerance = max(rel_tolerance, 1e-5)
 
     try:
+        # The column labels must match too: load_data_file drops the header, so a mislabeled
+        # column (e.g. the stress shear order) would otherwise pass unnoticed. Every comment line
+        # at the top is compared (histogram files start with their bin edges); numbers in them
+        # only to the tolerance, since e.g. a bin edge at zero carries round-off
+        baseline_header = read_header_lines(baseline_file)
+        result_header = read_header_lines(result_file)
+        if not headers_match(baseline_header, result_header, rel_tolerance, abs_tolerance):
+            differences.append(f"Header mismatch: baseline {baseline_header} vs result {result_header}")
+
         baseline_data = load_data_file(baseline_file)
         result_data = load_data_file(result_file)
         

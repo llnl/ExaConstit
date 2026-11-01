@@ -79,6 +79,20 @@ grain_file = "grains.txt"
 # Checks: right after reading this file, ExaConstit loads every function listed here. A
 # missing library, a missing function or a function with different arguments stops the
 # run immediately with a message that shows the exact signature required.
+#
+# C++ classes instead of functions (for example with one shared ExaConstit installation on
+# an HPC machine): each of the three keys can name a factory in your library instead of a
+# function:
+#   register_function = { factory = "MakeMyClasses", variant = "my_names" }
+# Your library then includes only the header exaconstit_user.hpp from the ExaConstit
+# installation (no other ExaConstit or MFEM headers, no CMake package) and is built with
+# one compiler command, written at the top of that header. Your classes ask for the data
+# they need by name (cauchy_stress, def_grad, state_vars, a named state variable, coords,
+# ...) and get it as plain arrays; the header lists every name, and an unknown name stops
+# the run with the list of names the material has. variant (optional, default "") is
+# handed to the factory, so one factory can make several classes. Two beginner examples,
+# with build and options instructions, are in examples/user_classes. A post-processing
+# entry given as a table takes its name from the variant when name is not given.
 
 # =====================================
 # MATERIAL DEFINITIONS
@@ -153,14 +167,18 @@ grain_file = "grains.txt"
         # materials the built-in names come first and cannot be changed; you can only
         # name the slots ExaCMech leaves unnamed.
         # register_function = "RegisterMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # register_function = { factory = "MakeMyStateVariables", variant = "names" }
         #
         # Function that sets the starting values of this material's state variables,
         # point by point (for example an initial damage field). It writes the values at
         # the beginning of the step ("state_var_beg"); ExaConstit copies them to the end
         # of the step. It runs after the values above (values / floc) and, for ExaCMech,
-        # after ExaCMech's own initialization have been applied. When restarting from a
-        # checkpoint the saved state is used instead.
+        # after ExaCMech's own initialization have been applied. It is not called when
+        # restarting from a checkpoint: the saved state is used instead.
         # initialize_function = "InitializeMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # initialize_function = { factory = "MakeMyStateVariables", variant = "starting_damage" }
 
     # ===== Visualized state variables (optional) =====
     # State variables of this material to write to the visualization files (needs a
@@ -859,7 +877,7 @@ grain_file = "grains.txt"
         # (Your own averaged or integrated quantities: see [[PostProcessing.user_functions]]
         # near the end of this section.)
         
-        # Stress tensor (6 components: σxx, σyy, σzz, σxy, σyz, σxz)
+        # Stress tensor (6 components: σxx, σyy, σzz, σyz, σxz, σxy)
         stress = true
         
         # Deformation gradient tensor F (9 components)
@@ -946,17 +964,17 @@ grain_file = "grains.txt"
         # Actual filenames will have _global or _region_[name]_[id] appended
         
         # Stress components file
-        # Columns: time, volume, σxx, σyy, σzz, σxy, σyz, σxz
+        # Columns: time, volume, σxx, σyy, σzz, σyz, σxz, σxy
         # Creates: avg_stress_global.txt, avg_stress_region_*.txt
         avg_stress_fname = "avg_stress.txt"
         
         # Deformation gradient file  
-        # Columns: time, volume, F11, F12, F13, F21, F22, F23, F31, F32, F33
+        # Columns: time, volume, F11, F21, F31, F12, F22, F32, F13, F23, F33 (column by column)
         # Creates: avg_def_grad_global.txt, avg_def_grad_region_*.txt
         avg_def_grad_fname = "avg_def_grad.txt"
         
         # Euler strain file
-        # Columns: time, volume, εxx, εyy, εzz, εxy, εyz, εxz
+        # Columns: time, volume, εxx, εyy, εzz, εyz, εxz, εxy
         # Creates: avg_euler_strain_global.txt, avg_euler_strain_region_*.txt
         avg_euler_strain_fname = "avg_euler_strain.txt"
         
@@ -971,7 +989,7 @@ grain_file = "grains.txt"
         avg_eq_pl_strain_fname = "avg_eq_pl_strain.txt"
         
         # Elastic strain file (ExaCMech only)
-        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
+        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_yz, εe_xz, εe_xy
         # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
         avg_elastic_strain_fname = "avg_elastic_strain.txt"
 
@@ -1016,6 +1034,9 @@ grain_file = "grains.txt"
         # [component]_bin_1 ... [component]_bin_N, [component]_above.
         # A bin includes its lower edge; the upper edge of the range belongs to the last bin.
         # NaN values are counted in no slot, so the fractions then add up to less than 1.
+        # Note: with rtmodel = "GPU" histograms are not bitwise reproducible: the bin sums
+        # are added in a different order on each run, so the fractions can differ in the
+        # last digits (round-off) between runs, including a restarted run.
         # [PostProcessing.volume_averages.histograms]
         #     eq_pl_strain = { bins = 20, range = [0.0, 0.05] }
         #     stress = { bins = 40, range = [-0.2, 0.2] }
@@ -1225,7 +1246,9 @@ grain_file = "grains.txt"
     # Keys of an entry:
     #   library_path    Shared library with the function (leave out if the function is
     #                   compiled into the ExaConstit executable)
-    #   function_name   Name of the function (required)
+    #   function_name   Name of the function (required), or a class from a factory:
+    #                   { factory = "MakeMyOutput", variant = "..." } (see USER
+    #                   FUNCTIONS at the top of this file)
     #   type            What to do with the values (required):
     #                     "visualization"   write a field to the visualization files
     #                                       (follows [Visualizations] field_location and
@@ -1236,7 +1259,8 @@ grain_file = "grains.txt"
     #                   Text files are written at the [PostProcessing.volume_averages]
     #                   output frequency, next to the built-in volume averages.
     #   name            Field name, or the name used in the text file names
-    #                   (default: function_name). Two visualization entries must have
+    #                   (default: function_name, or the variant of a factory table).
+    #                   Two visualization entries must have
     #                   different names, and so must two volume entries (average or
     #                   integral), since both write avg_<name>_*.txt files.
     #   num_components  Number of values the function computes per point, e.g. 1 for
@@ -1252,7 +1276,8 @@ grain_file = "grains.txt"
     #                   stats/<name>_<statistic>_*.txt (one file per statistic)
     #   histogram       volume_average entries only: a fixed-bin histogram of volume
     #                   fractions, e.g. { bins = 30, range = [-1.0, 2.0] }, written to
-    #                   stats/<name>_hist_*.txt
+    #                   stats/<name>_hist_*.txt (on the GPU not bitwise reproducible,
+    #                   see the histogram note in [PostProcessing.volume_averages])
     #   global          Also output the result combined over those materials: a field
     #                   in the global visualization output and an "_global" text file
     #                   (default: true). With a single material, visualization has only

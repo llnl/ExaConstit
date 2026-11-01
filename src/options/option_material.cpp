@@ -86,6 +86,37 @@ MaterialProperties MaterialProperties::from_toml(const toml::value& toml_input) 
     return props;
 }
 
+void read_user_function_key(const toml::value& toml_input,
+                            const std::string& key,
+                            std::string& function_name,
+                            UserFactoryOptions& factory) {
+    if (!toml_input.contains(key)) {
+        return;
+    }
+    const auto& value = toml::find(toml_input, key);
+    if (!value.is_table()) {
+        function_name = toml::get<std::string>(value);
+        return;
+    }
+    for (const auto& [table_key, table_value] : value.as_table()) {
+        (void)table_value;
+        if (table_key != "factory" && table_key != "variant") {
+            throw std::runtime_error(key + " table has an unknown key '" + table_key +
+                                     "'; it takes factory and variant");
+        }
+    }
+    if (!value.contains("factory")) {
+        throw std::runtime_error(key + " table needs factory = \"<factory function name>\"");
+    }
+    factory.factory = toml::find<std::string>(value, "factory");
+    if (factory.factory.empty()) {
+        throw std::runtime_error(key + " table has an empty factory name");
+    }
+    if (value.contains("variant")) {
+        factory.variant = toml::find<std::string>(value, "variant");
+    }
+}
+
 StateVariables StateVariables::from_toml(const toml::value& toml_input) {
     StateVariables vars;
 
@@ -103,13 +134,10 @@ StateVariables StateVariables::from_toml(const toml::value& toml_input) {
         vars.library_path = toml::find<std::string>(toml_input, "library_path");
     }
 
-    if (toml_input.contains("register_function")) {
-        vars.register_function = toml::find<std::string>(toml_input, "register_function");
-    }
-
-    if (toml_input.contains("initialize_function")) {
-        vars.initialize_function = toml::find<std::string>(toml_input, "initialize_function");
-    }
+    read_user_function_key(
+        toml_input, "register_function", vars.register_function, vars.register_factory);
+    read_user_function_key(
+        toml_input, "initialize_function", vars.initialize_function, vars.initialize_factory);
 
     if (toml_input.contains("values")) {
         vars.initial_values = toml::find<std::vector<double>>(toml_input, "values");
@@ -418,7 +446,8 @@ bool StateVariables::validate(bool check_input_files) const {
         WARNING_0_OPT("Error: StateVariables num_vars != initial_values.size()");
         return false;
     }
-    if (!library_path.empty() && register_function.empty() && initialize_function.empty()) {
+    if (!library_path.empty() && register_function.empty() && initialize_function.empty() &&
+        register_factory.empty() && initialize_factory.empty()) {
         WARNING_0_OPT("Warning: State_Vars library_path is set but neither register_function nor "
                       "initialize_function is given, so the library is not used");
     }

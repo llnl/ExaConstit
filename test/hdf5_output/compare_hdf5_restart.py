@@ -9,7 +9,9 @@ the same file after a restart from an earlier checkpoint continued in the same r
 The file held every step of the reference before the restart, so the steps after the checkpoint
 must have been removed and written again once: the two files must have the same groups and
 datasets with identical values (a same-rank restart is bitwise identical), and every group's
-times must increase strictly.
+times must increase strictly. Histograms are the exception: on a GPU each point adds its volume
+to its bin with an atomic add, whose order changes from run to run, so their fractions only
+agree to round-off (HISTOGRAM_TOLERANCE).
 Exits with status 1 and a message for every failed check.
 """
 
@@ -17,6 +19,9 @@ import sys
 
 import h5py
 import numpy as np
+
+# Histogram fractions (between 0 and 1) of a restarted GPU run: round-off of the atomic sums
+HISTOGRAM_TOLERANCE = 1e-12
 
 
 def main(reference_path, restarted_path, scripts_dir):
@@ -38,7 +43,11 @@ def main(reference_path, restarted_path, scripts_dir):
             if "time" in b and not np.all(np.diff(b["time"]) > 0):
                 failures.append(f"{group}: times do not increase (a step was written twice)")
             for name in a:
-                if not np.array_equal(a[name], b[name]):
+                if "/histogram" in group and len(a[name]) == len(b[name]):
+                    same = np.allclose(a[name], b[name], rtol=0.0, atol=HISTOGRAM_TOLERANCE)
+                else:
+                    same = np.array_equal(a[name], b[name])
+                if not same:
                     failures.append(f"{group}/{name}: {len(b[name])} values, reference "
                                     f"{len(a[name])}, or the values differ")
         for path in ("volume/stress/global/histogram/bin_edges", "surface/surface_1/description"):

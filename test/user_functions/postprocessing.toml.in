@@ -12,6 +12,10 @@
 #   global output
 # - StressTriaxiality, volume_average, material 1 only, no global file
 # check_postprocessing.py checks all of this.
+#
+# Each deck is written twice: with the functions of test_user_functions.cpp (FORM = function)
+# and with the classes of test_user_classes.cpp (FORM = class: function_name is a factory table,
+# and one more entry, check_inputs, stops the run if an input does not hold what it should).
 Version = "0.10.1"
 basename = "postprocessing_@FIELD_LOCATION@"
 grain_file = "@EXACONSTIT_TEST_DATA_DIR@/grains.txt"
@@ -96,32 +100,33 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
         enabled_projections = ["cauchy", "von_mises"]
 
     [[PostProcessing.user_functions]]
-        library_path = "@USER_FUNCTION_LIBRARY@"
-        function_name = "UnitValue"
+        library_path = "@PP_LIBRARY@"
+        function_name = @PP_UNIT_VALUE@
         type = "volume_integral"
         name = "unit_volume"
 
     [[PostProcessing.user_functions]]
-        library_path = "@USER_FUNCTION_LIBRARY@"
-        function_name = "StressInvariants"
+        library_path = "@PP_LIBRARY@"
+        function_name = @PP_STRESS_INVARIANTS@
         type = "volume_average"
         name = "stress_invariants"
         component_names = ["mean", "von_mises"]
 
     [[PostProcessing.user_functions]]
-        library_path = "@USER_FUNCTION_LIBRARY@"
-        function_name = "StressTriaxiality"
+        library_path = "@PP_LIBRARY@"
+        function_name = @PP_STRESS_TRIAXIALITY@
         type = "visualization"
         name = "Stress Triaxiality"
         regions = [2]
 
     [[PostProcessing.user_functions]]
-        library_path = "@USER_FUNCTION_LIBRARY@"
-        function_name = "StressTriaxiality"
+        library_path = "@PP_LIBRARY@"
+        function_name = @PP_STRESS_TRIAXIALITY@
         type = "volume_average"
         name = "triaxiality"
         regions = [1]
         global = false
+@PP_EXTRA_ENTRIES@
 
 [Solvers]
     assembly = "FULL"

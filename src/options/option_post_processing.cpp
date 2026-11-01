@@ -803,9 +803,7 @@ UserFunctionOptions UserFunctionOptions::from_toml(const toml::value& toml_input
     if (toml_input.contains("library_path")) {
         options.library_path = toml::find<std::string>(toml_input, "library_path");
     }
-    if (toml_input.contains("function_name")) {
-        options.function_name = toml::find<std::string>(toml_input, "function_name");
-    }
+    read_user_function_key(toml_input, "function_name", options.function_name, options.factory);
     if (toml_input.contains("type")) {
         options.type = string_to_user_function_type(toml::find<std::string>(toml_input, "type"));
     }
@@ -825,9 +823,12 @@ UserFunctionOptions UserFunctionOptions::from_toml(const toml::value& toml_input
         options.histogram = HistogramOptions::from_toml(toml::find(toml_input, "histogram"));
     }
 
-    // Defaults: name from the function, component count from the labels, labels from the name
+    // Defaults: name from the function (or the factory's variant), component count from the
+    // labels, labels from the name
+    const std::string default_name = options.factory.empty() ? options.function_name
+                                                             : options.factory.variant;
     options.name = toml_input.contains("name") ? toml::find<std::string>(toml_input, "name")
-                                               : options.function_name;
+                                               : default_name;
     if (toml_input.contains("num_components")) {
         options.num_components = toml::find<int>(toml_input, "num_components");
     } else if (!options.component_names.empty()) {
@@ -850,13 +851,19 @@ bool UserFunctionOptions::validate(size_t num_materials) const {
     const auto fail = [this](const std::string& problem) {
         std::ostringstream err;
         err << "Error: [[PostProcessing.user_functions]] entry '"
-            << (name.empty() ? function_name : name) << "' " << problem;
+            << (!name.empty()            ? name
+                : !function_name.empty() ? function_name
+                                         : factory.factory)
+            << "' " << problem;
         WARNING_0_OPT(err.str());
         return false;
     };
 
-    if (function_name.empty()) {
+    if (function_name.empty() && factory.empty()) {
         return fail("needs a function_name");
+    }
+    if (name.empty()) {
+        return fail("needs a name (or a variant to take it from)");
     }
     if (type == UserFunctionType::NOTYPE) {
         return fail("needs type = \"visualization\", \"volume_average\" or \"volume_integral\"");
