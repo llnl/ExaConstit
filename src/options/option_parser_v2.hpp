@@ -344,6 +344,7 @@ struct StateVariables {
      *
      * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It writes the
      * region's "state_var_beg" quadrature function; ExaConstit copies it to "state_var_end".
+     * Not called on a restart (the checkpoint has the state).
      */
     std::string initialize_function;
 

@@ -178,6 +178,13 @@ void MultiExaModel::RunStateVariableUserFunctions(const ExaOptions& options) {
         register_function(m_sim_state, static_cast<int>(region_idx));
     }
 
+    // Restart step: skip the initial values, as SimulationState skips the built-in state
+    // variable initialization. RestoreFromCheckpoint() overwrites all state variables with the
+    // checkpointed values anyway.
+    if (m_sim_state->IsRestartRun()) {
+        return;
+    }
+
     // Pass 2: initial values. Only ranks that own elements of the region have its state
     // variables. The user function writes the beginning-of-step values ("state_var_beg"); the
     // end-of-step values start out as a copy, exactly as after ExaCMech's own initialization.

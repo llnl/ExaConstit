@@ -158,8 +158,8 @@ grain_file = "grains.txt"
         # point by point (for example an initial damage field). It writes the values at
         # the beginning of the step ("state_var_beg"); ExaConstit copies them to the end
         # of the step. It runs after the values above (values / floc) and, for ExaCMech,
-        # after ExaCMech's own initialization have been applied. When restarting from a
-        # checkpoint the saved state is used instead.
+        # after ExaCMech's own initialization have been applied. It is not called when
+        # restarting from a checkpoint: the saved state is used instead.
         # initialize_function = "InitializeMyStateVariables"
 
     # ===== Visualized state variables (optional) =====
