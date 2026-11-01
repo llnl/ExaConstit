@@ -150,15 +150,15 @@ endforeach()
 # ------------------------------------------------------------------------------------------------
 # Volume statistics ([PostProcessing.volume_averages] statistics / histograms, and the
 # statistics / histogram keys of user function entries). Material 2 is a 2x2x2 corner block of
-# the 5x5x5 auto mesh, so on 4 ranks some ranks own none of its elements; the same deck runs on
-# 4 ranks and on 1 rank, then check_statistics.py checks exact values and compares the runs
-# (see statistics.toml.in).
+# the 5x5x5 auto mesh. The deck runs on 2 ranks, reading a decomposition in which rank 0 owns no
+# element of material 2 (written by write_statistics_mesh with an explicit partition, so it is
+# the same on every machine), and on 1 rank with the auto mesh; check_statistics.py then checks
+# exact values and compares the runs (see statistics.toml.in).
 # ------------------------------------------------------------------------------------------------
-if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+if(NOT 2 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
     # Grain per element of the auto mesh (lexicographic order: x fastest, then y, then z):
-    # grain 2 for the corner block of the last 2 elements in x, y and z (the corner far from
-    # the first elements, which the partitioner gives to rank 0, so rank 0 owns no element of
-    # material 2), grain 1 elsewhere; grain g -> material g
+    # grain 2 for the corner block of the last 2 elements in x, y and z, grain 1 elsewhere;
+    # grain g -> material g
     set(STATS_GRAIN_FILE ${CMAKE_CURRENT_BINARY_DIR}/grains_corner.txt)
     set(STATS_REGION_MAP ${CMAKE_CURRENT_BINARY_DIR}/region_mapping_corner.txt)
     set(_uf_grains "")
@@ -176,8 +176,34 @@ if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
     file(WRITE ${STATS_GRAIN_FILE} "${_uf_grains}")
     file(WRITE ${STATS_REGION_MAP} "1 1\n2 2\n")
 
+    # The 2-part decomposition of the same mesh: part 0 holds the elements numbered before the
+    # first element of material 2, part 1 the rest
+    blt_add_executable(NAME       write_statistics_mesh
+                       SOURCES    write_statistics_mesh.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS})
+    set(_uf_st_mesh_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_mesh)
+    file(MAKE_DIRECTORY ${_uf_st_mesh_dir})
+    set(_uf_st_mesh_prefix ${_uf_st_mesh_dir}/corner_np2.mesh.)
+    blt_add_test(NAME          test_user_functions_statistics_mesh
+                 COMMAND       write_statistics_mesh ${STATS_GRAIN_FILE} 5 5 5
+                               ${_uf_st_mesh_prefix} 2
+                 NUM_MPI_TASKS 1)
+    set_tests_properties(test_user_functions_statistics_mesh PROPERTIES
+                         FIXTURES_SETUP user_functions_statistics_mesh)
+
+    # [Mesh] table lines of the two meshes (@STATS_MESH_TABLE@ in statistics.toml.in)
+    string(CONCAT _uf_st_auto_mesh "    type = \"auto\"\n    [Mesh.Auto]\n"
+                                   "        mxyz = [1.0, 1.0, 1.0]\n        nxyz = [5, 5, 5]")
+    set(_uf_st_parallel_mesh "    type = \"parallel\"\n    floc = \"${_uf_st_mesh_prefix}\"")
+
     set(STATS_OUTPUT_FORMAT "text")
-    foreach(NUM_RANKS 4 1)
+    foreach(NUM_RANKS 2 1)
+        if(NUM_RANKS EQUAL 1)
+            set(STATS_MESH_TABLE "${_uf_st_auto_mesh}")
+        else()
+            set(STATS_MESH_TABLE "${_uf_st_parallel_mesh}")
+        endif()
         set(_uf_st_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_np${NUM_RANKS})
         file(MAKE_DIRECTORY ${_uf_st_dir})
         configure_file(statistics.toml.in ${_uf_st_dir}/statistics.toml.in @ONLY)
@@ -185,38 +211,38 @@ if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
                       INPUT  ${_uf_st_dir}/statistics.toml.in)
 
         # Start from an empty folder (files are appended to; marker files are per run)
+        set(_uf_st_clean user_functions_statistics_np${NUM_RANKS}_clean)
         add_test(NAME    test_user_functions_statistics_np${NUM_RANKS}_clean
                  COMMAND ${CMAKE_COMMAND} -E rm -rf ${_uf_st_dir}/results
                          ${_uf_st_dir}/active_rank_0_region_1 ${_uf_st_dir}/active_rank_0_region_2
-                         ${_uf_st_dir}/active_rank_1_region_1 ${_uf_st_dir}/active_rank_1_region_2
-                         ${_uf_st_dir}/active_rank_2_region_1 ${_uf_st_dir}/active_rank_2_region_2
-                         ${_uf_st_dir}/active_rank_3_region_1 ${_uf_st_dir}/active_rank_3_region_2)
+                         ${_uf_st_dir}/active_rank_1_region_1 ${_uf_st_dir}/active_rank_1_region_2)
         set_tests_properties(test_user_functions_statistics_np${NUM_RANKS}_clean PROPERTIES
-                             FIXTURES_SETUP user_functions_statistics_np${NUM_RANKS}_clean)
+                             FIXTURES_SETUP ${_uf_st_clean})
         blt_add_test(NAME              test_user_functions_statistics_np${NUM_RANKS}_run
                      COMMAND           $<TARGET_FILE:mechanics> -opt statistics.toml
                      NUM_MPI_TASKS     ${NUM_RANKS}
                      WORKING_DIRECTORY ${_uf_st_dir})
         set_tests_properties(test_user_functions_statistics_np${NUM_RANKS}_run PROPERTIES
-                             FIXTURES_REQUIRED user_functions_statistics_np${NUM_RANKS}_clean
+                             FIXTURES_REQUIRED "${_uf_st_clean};user_functions_statistics_mesh"
                              FIXTURES_SETUP    user_functions_statistics_runs)
     endforeach()
 
     add_test(NAME    test_user_functions_statistics
              COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_statistics.py
-                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4/results/statistics_np4
+                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np2/results/statistics_np2
                      ${CMAKE_CURRENT_BINARY_DIR}/statistics_np1/results/statistics_np1
-                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4)
+                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np2 2)
     set_tests_properties(test_user_functions_statistics PROPERTIES
                          FIXTURES_REQUIRED user_functions_statistics_runs)
 
-    # The same 4-rank run with output_format = "hdf5" (needs Axom): material 2 is only on
-    # ranks other than 0, so its rows reach rank 0's file only through the gather of
-    # FinishOutputStep(). check_hdf5_output.py compares the file with the text run above.
+    # The same 2-rank run with output_format = "hdf5" (needs Axom): material 2 is only on
+    # rank 1, so its rows reach rank 0's file only through the gather of FinishOutputStep().
+    # check_hdf5_output.py compares the file with the text run above.
     if(ENABLE_AXOM)
         set(STATS_OUTPUT_FORMAT "hdf5")
-        set(NUM_RANKS 4)
-        set(_uf_h5_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_hdf5_np4)
+        set(NUM_RANKS 2)
+        set(STATS_MESH_TABLE "${_uf_st_parallel_mesh}")
+        set(_uf_h5_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_hdf5_np2)
         file(MAKE_DIRECTORY ${_uf_h5_dir})
         configure_file(statistics.toml.in ${_uf_h5_dir}/statistics.toml.in @ONLY)
         file(GENERATE OUTPUT ${_uf_h5_dir}/statistics.toml
@@ -227,17 +253,18 @@ if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
                              FIXTURES_SETUP user_functions_statistics_hdf5_clean)
         blt_add_test(NAME              test_user_functions_statistics_hdf5_run
                      COMMAND           $<TARGET_FILE:mechanics> -opt statistics.toml
-                     NUM_MPI_TASKS     4
+                     NUM_MPI_TASKS     2
                      WORKING_DIRECTORY ${_uf_h5_dir})
         set_tests_properties(test_user_functions_statistics_hdf5_run PROPERTIES
-                             FIXTURES_REQUIRED user_functions_statistics_hdf5_clean
+                             FIXTURES_REQUIRED
+                             "user_functions_statistics_hdf5_clean;user_functions_statistics_mesh"
                              FIXTURES_SETUP    user_functions_statistics_hdf5_run)
         add_test(NAME    test_user_functions_statistics_hdf5
                  COMMAND ${PYTHON_EXECUTABLE}
                          ${CMAKE_SOURCE_DIR}/test/hdf5_output/check_hdf5_output.py
-                         ${_uf_h5_dir}/results/statistics_np4/post_processing.hdf5
-                         ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4/results/statistics_np4
-                         ${_uf_h5_dir}/results/statistics_np4
+                         ${_uf_h5_dir}/results/statistics_np2/post_processing.hdf5
+                         ${CMAKE_CURRENT_BINARY_DIR}/statistics_np2/results/statistics_np2
+                         ${_uf_h5_dir}/results/statistics_np2
                          ${CMAKE_SOURCE_DIR}/scripts/postprocessing)
         set_tests_properties(test_user_functions_statistics_hdf5 PROPERTIES
                              FIXTURES_REQUIRED
