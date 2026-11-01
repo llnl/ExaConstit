@@ -8,8 +8,8 @@
 # driver runs one deck per case, then check_umat.py compares the runs:
 #   standard_full / batched_full   one region, default integrator, 1 rank
 #   standard_bbar / batched_bbar   one region, B-bar integrator, 1 rank
-#   two_regions                    two regions of the same material, region 1 batched, 2 ranks
-#   two_regions_standard           the same with both regions standard, 1 rank
+#   two_regions_full / _bbar       two regions of the same material (region 1 batched, region 2
+#                                  standard), 2 ranks: must equal the one-region runs
 #     ctest -R umat_interface --output-on-failure
 
 # A plain shared library: a UMAT needs nothing from ExaConstit or MFEM. Part of the default
@@ -56,22 +56,20 @@ foreach(_umat_case ${_umat_cases})
     list(APPEND _umat_run_tests test_umat_interface_${CASE_NAME})
 endforeach()
 
-# Two regions of the same material: region 1 batched on 2 ranks, and both regions standard on
-# 1 rank (the reference)
-#   <case>|<region 1 interface>|<region 1 function>|<ranks>
+# Two regions of the same material, region 1 batched and region 2 standard, on 2 ranks; they
+# must equal the one-region runs with the same integrator
+#   <case>|<integrator>
 set(_umat_np 2)
 if(_umat_np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
     set(_umat_np 1)
 endif()
 set(_umat_region_cases
-    "two_regions|batched|test_umat_elastic_batch|${_umat_np}"
-    "two_regions_standard|standard|test_umat_elastic|1")
+    "two_regions_full|FULL"
+    "two_regions_bbar|BBAR")
 foreach(_umat_case ${_umat_region_cases})
     string(REPLACE "|" ";" _umat_fields "${_umat_case}")
     list(GET _umat_fields 0 CASE_NAME)
-    list(GET _umat_fields 1 REGION1_INTERFACE)
-    list(GET _umat_fields 2 REGION1_FUNCTION)
-    list(GET _umat_fields 3 _umat_case_np)
+    list(GET _umat_fields 1 INTEG_MODEL)
     set(_umat_case_dir ${CMAKE_CURRENT_BINARY_DIR}/${CASE_NAME})
     file(MAKE_DIRECTORY ${_umat_case_dir})
     configure_file(umat_two_regions.toml.in ${_umat_case_dir}/${CASE_NAME}.toml.in @ONLY)
@@ -79,7 +77,7 @@ foreach(_umat_case ${_umat_region_cases})
                   INPUT  ${_umat_case_dir}/${CASE_NAME}.toml.in)
     blt_add_test(NAME              test_umat_interface_${CASE_NAME}
                  COMMAND           $<TARGET_FILE:mechanics> -opt ${CASE_NAME}.toml
-                 NUM_MPI_TASKS     ${_umat_case_np}
+                 NUM_MPI_TASKS     ${_umat_np}
                  WORKING_DIRECTORY ${_umat_case_dir})
     list(APPEND _umat_run_tests test_umat_interface_${CASE_NAME})
 endforeach()

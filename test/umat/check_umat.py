@@ -7,9 +7,9 @@ Usage: check_umat.py <results directory of the tests>
 The same hypoelastic material (test_umat_functions.cpp) is run through both UMAT interfaces.
 Checks, on the global volume averages of the stress and the deformation gradient:
 - standard and batched runs agree, with the default and with the B-bar integrator;
-- the two-region run (region 1 batched, region 2 standard, 2 ranks) agrees with the two-region
-  run with both regions standard on 1 rank, so the batched partial-region path and the rank
-  split give the same answer;
+- the two-region runs (region 1 batched, region 2 standard, 2 ranks) agree with the one-region
+  runs with the same integrator, so the partial-region paths and the rank split give the same
+  answer;
 - the stress is physical: the axial stress grows every step (the top face is pulled up).
 Exits with status 1 and a message for every failed check.
 """
@@ -25,7 +25,8 @@ SZZ_COLUMN = 4  # time, volume, Sxx, Syy, Szz, ...
 PAIRS = [
     ("standard_full", "batched_full"),
     ("standard_bbar", "batched_bbar"),
-    ("two_regions_standard", "two_regions"),
+    ("standard_full", "two_regions_full"),
+    ("standard_bbar", "two_regions_bbar"),
 ]
 FILES = ["avg_stress_global.txt", "avg_def_grad_global.txt"]
 

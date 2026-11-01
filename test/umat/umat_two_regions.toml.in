@@ -1,11 +1,10 @@
 # Two-region input deck for the UMAT interface tests (test/umat/CMakeLists.txt).
 #
 # The deck of umat.toml.in split into two materials with the same properties (grains.txt +
-# region_mapping.txt from test/data: 63 and 62 elements of the 5x5x5 auto mesh). Region 2 uses
-# the standard interface; region 1 uses @REGION1_INTERFACE@. Each region's points are then a
-# partial quadrature space (scattered elements, element index maps), and on 2 ranks each rank
-# owns parts of both. The run with a batched region 1 on 2 ranks must equal the all-standard run
-# on 1 rank (check_umat.py).
+# region_mapping.txt from test/data: 63 and 62 elements of the 5x5x5 auto mesh). Region 1 uses
+# the batched interface, region 2 the standard one. Each region's points are then a partial
+# quadrature space (scattered elements, element index maps), and on 2 ranks each rank owns parts
+# of both. The results must equal the one-region run with the same integrator (check_umat.py).
 Version = "0.10.1"
 basename = "umat_@CASE_NAME@"
 grain_file = "@EXACONSTIT_TEST_DATA_DIR@/grains.txt"
@@ -25,8 +24,8 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
         crystal_plasticity = false
         [Materials.Model.UMAT]
             library_path = "@UMAT_TEST_LIBRARY@"
-            function_name = "@REGION1_FUNCTION@"
-            interface = "@REGION1_INTERFACE@"
+            function_name = "test_umat_elastic_batch"
+            interface = "batched"
 
 [[Materials]]
     name = "elastic_standard"
