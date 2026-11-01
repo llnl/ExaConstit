@@ -193,6 +193,10 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
     # initialize_function (success and failure cases); see test/user_functions/CMakeLists.txt.
     add_subdirectory(user_functions)
 
+    # UMAT interfaces: the standard and batched UMAT calls of the same material give the same
+    # results, also split over two regions on 2 ranks; see test/umat/CMakeLists.txt
+    add_subdirectory(umat)
+
     # One HDF5 file of post-processing output (Conduit, so only with Axom); see
     # test/hdf5_output/CMakeLists.txt
     if(ENABLE_AXOM)
