@@ -27,7 +27,7 @@ import numpy as np
 
 REGIONS = ["material_A_1", "material_B_2"]
 STATS = ["mean", "variance", "std", "skewness", "kurtosis", "min", "max"]  # statistics = "all"
-STRESS = ["Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"]
+STRESS = ["Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"]
 EPS = ["Equiv_Plastic_Strain"]
 NUM_STEPS = 3
 FILE_RTOL = 1e-7  # the files carry 8 significant digits

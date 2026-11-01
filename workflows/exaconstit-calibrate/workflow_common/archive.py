@@ -367,38 +367,47 @@ class ArchiveDB:
         if self._conn is not None:
             return self._conn
 
-        if self._readonly:
-            # URI form is the only way to force read-only in sqlite3.
-            uri = f"file:{self.path.as_posix()}?mode=ro"
-            self._conn = sqlite3.connect(uri, uri=True)
-        else:
-            # Create parent dir once, at the first open. If the user
-            # passed a nested path that doesn't exist yet, this DTRT.
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(self.path)
-            # WAL mode lets readers coexist with the single writer.
-            # Must be set on a writable connection before any writes.
-            self._conn.execute("PRAGMA journal_mode=WAL;")
-            self._conn.execute("PRAGMA foreign_keys=ON;")
-            self._conn.executescript(_SCHEMA_SQL)
-            # Schema migrations for archives written by older
-            # versions of this code that pre-date column additions.
-            # Each migration here is idempotent and safe on a fresh
-            # DB (it'll be a no-op because the column already exists
-            # from the executescript above).
-            self._migrate_add_missing_columns()
-            # Stamp the schema version the first time we touch this
-            # file. INSERT OR IGNORE so reopens don't overwrite.
-            self._conn.execute(
-                "INSERT OR IGNORE INTO schema_meta(key, value) VALUES (?, ?)",
-                ("schema_version", str(SCHEMA_VERSION)),
-            )
-            self._conn.commit()
+        try:
+            if self._readonly:
+                # URI form is the only way to force read-only in sqlite3.
+                uri = f"file:{self.path.as_posix()}?mode=ro"
+                self._conn = sqlite3.connect(uri, uri=True)
+            else:
+                # Create parent dir once, at the first open. If the user
+                # passed a nested path that doesn't exist yet, this DTRT.
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._conn = sqlite3.connect(self.path)
+                # WAL mode lets readers coexist with the single writer.
+                # Must be set on a writable connection before any writes.
+                self._conn.execute("PRAGMA journal_mode=WAL;")
+                self._conn.execute("PRAGMA foreign_keys=ON;")
+                self._conn.executescript(_SCHEMA_SQL)
+                # Schema migrations for archives written by older
+                # versions of this code that pre-date column additions.
+                # Each migration here is idempotent and safe on a fresh
+                # DB (it'll be a no-op because the column already exists
+                # from the executescript above).
+                self._migrate_add_missing_columns()
+                # Stamp the schema version the first time we touch this
+                # file. INSERT OR IGNORE so reopens don't overwrite.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO schema_meta(key, value) VALUES (?, ?)",
+                    ("schema_version", str(SCHEMA_VERSION)),
+                )
+                self._conn.commit()
 
-        self._check_schema_version()
-        # Row access by name is more readable than by index, and
-        # doesn't cost anything meaningful for our query volumes.
-        self._conn.row_factory = sqlite3.Row
+            self._check_schema_version()
+            # Row access by name is more readable than by index, and
+            # doesn't cost anything meaningful for our query volumes.
+            self._conn.row_factory = sqlite3.Row
+        except BaseException:
+            # A failed open (e.g. an archive from a newer schema version)
+            # must not leave the connection for the garbage collector to
+            # close: close it here, so a retry starts from scratch.
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+            raise
         return self._conn
 
     def close(self) -> None:

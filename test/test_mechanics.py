@@ -147,6 +147,15 @@ def compare_files(baseline_file: str, result_file: str, rel_tolerance: float = 1
         rel_tolerance = max(rel_tolerance, 1e-5)
 
     try:
+        # The column labels must match too: load_data_file drops the header, so a mislabeled
+        # column (e.g. the stress shear order) would otherwise pass unnoticed
+        with open(baseline_file) as f:
+            baseline_header = f.readline().split()
+        with open(result_file) as f:
+            result_header = f.readline().split()
+        if baseline_header[:1] == ['#'] and baseline_header != result_header:
+            differences.append(f"Header mismatch: baseline {baseline_header} vs result {result_header}")
+
         baseline_data = load_data_file(baseline_file)
         result_data = load_data_file(result_file)
         

@@ -21,6 +21,7 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 - The rank-0 gather of global volume averages sent more values than it held from a region root whose region had no valid result.
 - The built-in UMAT (`enable_dynamic_loading = false`) could not be found: it was only in the static library, which nothing referenced it from, so it was not linked into `mechanics` and runs stopped with "No built-in UMAT available". It is now compiled into the executable.
 - Volume average file headers truncated column names of 18 characters or more and ran them together (e.g. `Equiv_Plastic_Strain`); long names are now written whole.
+- Volume-average output headers mislabeled columns (values were correct): stress is `Sxx Syy Szz Syz Sxz Sxy`, and the deformation gradient is column-major `F11 F21 F31 F12 F22 F32 F13 F23 F33`.
 
 ## [v0.10.1] - 2026-10-21
 

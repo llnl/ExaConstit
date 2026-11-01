@@ -773,12 +773,12 @@ PostProcessingDriver::PrepareVolumePoints(CalcType calc_type, int region, int& d
     switch (calc_type) {
     case CalcType::STRESS:
         qf_name = "cauchy_stress_end";
-        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Sxy, Sxz, Syz
+        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Syz, Sxz, Sxy
         break;
 
     case CalcType::DEF_GRAD:
         qf_name = "kinetic_grads";
-        data_size = 9; // Full 3x3 tensor: F11, F12, F13, F21, F22, F23, F31, F32, F33
+        data_size = 9; // Full 3x3 tensor, column-major: F11, F21, F31, F12, ..., F33
         break;
 
     case CalcType::PLASTIC_WORK:

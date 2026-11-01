@@ -378,7 +378,7 @@ def test_load_case_results_reads_real_dir(tmp_path):
     case_dir.mkdir(parents=True)
     stress_file = case_dir / "avg_stress.txt"
     stress_file.write_text(
-        # Time Volume Sxx Syy Szz Sxy Sxz Syz — Szz (col 5) carries
+        # Time Volume Sxx Syy Szz Syz Sxz Sxy — Szz (col 5) carries
         # the sequence asserted below.
         "0.0 1.0 0 0 1.0 0 0 0\n"
         "0.5 1.0 0 0 2.0 0 0 0\n"
@@ -394,7 +394,7 @@ def test_load_case_results_reads_real_dir(tmp_path):
     )
     reader = TextTableReader({
         "avg_stress": TextTableSpec(
-            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
         ),
     })
     result = GeneResult(
@@ -426,7 +426,7 @@ def test_load_case_results_handles_reader_error(tmp_path):
     )
     reader = TextTableReader({
         "avg_stress": TextTableSpec(
-            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"],
+            columns=["Time", "Volume", "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"],
         ),
     })
     result = GeneResult(
