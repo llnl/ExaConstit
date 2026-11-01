@@ -176,6 +176,7 @@ if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
     file(WRITE ${STATS_GRAIN_FILE} "${_uf_grains}")
     file(WRITE ${STATS_REGION_MAP} "1 1\n2 2\n")
 
+    set(STATS_OUTPUT_FORMAT "text")
     foreach(NUM_RANKS 4 1)
         set(_uf_st_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_np${NUM_RANKS})
         file(MAKE_DIRECTORY ${_uf_st_dir})
@@ -208,4 +209,38 @@ if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
                      ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4)
     set_tests_properties(test_user_functions_statistics PROPERTIES
                          FIXTURES_REQUIRED user_functions_statistics_runs)
+
+    # The same 4-rank run with output_format = "hdf5" (needs Axom): material 2 is only on
+    # ranks other than 0, so its rows reach rank 0's file only through the gather of
+    # FinishOutputStep(). check_hdf5_output.py compares the file with the text run above.
+    if(ENABLE_AXOM)
+        set(STATS_OUTPUT_FORMAT "hdf5")
+        set(NUM_RANKS 4)
+        set(_uf_h5_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_hdf5_np4)
+        file(MAKE_DIRECTORY ${_uf_h5_dir})
+        configure_file(statistics.toml.in ${_uf_h5_dir}/statistics.toml.in @ONLY)
+        file(GENERATE OUTPUT ${_uf_h5_dir}/statistics.toml
+                      INPUT  ${_uf_h5_dir}/statistics.toml.in)
+        add_test(NAME    test_user_functions_statistics_hdf5_clean
+                 COMMAND ${CMAKE_COMMAND} -E rm -rf ${_uf_h5_dir}/results)
+        set_tests_properties(test_user_functions_statistics_hdf5_clean PROPERTIES
+                             FIXTURES_SETUP user_functions_statistics_hdf5_clean)
+        blt_add_test(NAME              test_user_functions_statistics_hdf5_run
+                     COMMAND           $<TARGET_FILE:mechanics> -opt statistics.toml
+                     NUM_MPI_TASKS     4
+                     WORKING_DIRECTORY ${_uf_h5_dir})
+        set_tests_properties(test_user_functions_statistics_hdf5_run PROPERTIES
+                             FIXTURES_REQUIRED user_functions_statistics_hdf5_clean
+                             FIXTURES_SETUP    user_functions_statistics_hdf5_run)
+        add_test(NAME    test_user_functions_statistics_hdf5
+                 COMMAND ${PYTHON_EXECUTABLE}
+                         ${CMAKE_SOURCE_DIR}/test/hdf5_output/check_hdf5_output.py
+                         ${_uf_h5_dir}/results/statistics_np4/post_processing.hdf5
+                         ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4/results/statistics_np4
+                         ${_uf_h5_dir}/results/statistics_np4
+                         ${CMAKE_SOURCE_DIR}/scripts/postprocessing)
+        set_tests_properties(test_user_functions_statistics_hdf5 PROPERTIES
+                             FIXTURES_REQUIRED
+                             "user_functions_statistics_hdf5_run;user_functions_statistics_runs")
+    endif()
 endif()

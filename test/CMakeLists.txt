@@ -181,6 +181,12 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
     # User functions from shared libraries: [Materials.State_Vars] register_function and
     # initialize_function (success and failure cases); see test/user_functions/CMakeLists.txt.
     add_subdirectory(user_functions)
+
+    # One HDF5 file of post-processing output (Conduit, so only with Axom); see
+    # test/hdf5_output/CMakeLists.txt
+    if(ENABLE_AXOM)
+        add_subdirectory(hdf5_output)
+    endif()
 endif()
 
 ####################################

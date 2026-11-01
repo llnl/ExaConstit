@@ -83,6 +83,7 @@ region_mapping_file = "@STATS_REGION_MAP@"
     paraview = false
 
 [PostProcessing]
+    output_format = "@STATS_OUTPUT_FORMAT@"
     [PostProcessing.volume_averages]
         enabled = true
         stress = true
