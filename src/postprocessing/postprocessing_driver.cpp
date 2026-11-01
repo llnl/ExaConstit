@@ -12,7 +12,9 @@
 #include "ECMech_const.h"
 #include "SNLS_linalg.h"
 
+#include <algorithm>
 #include <filesystem>
+#include <sstream>
 namespace fs = std::filesystem;
 
 namespace {
@@ -300,6 +302,88 @@ RegisterShearRateProjection(const std::shared_ptr<SimulationState> sim_state,
     std::string display_name = "Shearing Rate";
     return RegisterECMech<ShearingRateProjection>(sim_state, region_model_types, key, display_name);
 }
+
+/**
+ * @brief List the state variables of one region to write as visualization fields
+ *
+ * @param sim_state Simulation state (state variable names and the material options)
+ * @param region Region index (material index, 0-based)
+ * @param selection Names to write, or the single entry "all"
+ * @return One entry per field: (field name, (first slot, number of slots)) in the region's
+ *         state variable vector, in output order
+ *
+ * With "all": every named state variable of the region whose plot flag is set (see
+ * SimulationState::AddQuadratureFunctionStatePair) in the order it was registered. Slots of
+ * names registered with plot = false are not written. For models other than ExaCMech this is
+ * followed by one scalar field "State Var <k>" for each slot k (0-based) that no name covers, so
+ * the whole state variable vector is written: ExaConstit cannot tell which of those slots are worth
+ * plotting. ExaCMech names every quantity worth plotting itself, so its unnamed slots (for example
+ * the count of function evaluations) are not written. With a list: the listed names in the list's
+ * order (a name listed twice is written once). An unknown name stops the run with a message listing
+ * the names the region has.
+ *
+ * Only the registered names and the material's state variable count are used, both of which
+ * are the same on every rank, so all ranks get the same list even for regions that have no
+ * elements on them.
+ */
+std::vector<std::pair<std::string, std::pair<int, int>>> StateVariableFieldList(
+    const SimulationState& sim_state, const int region, const std::vector<std::string>& selection) {
+    const auto named = sim_state.GetQuadratureFunctionStatePairs(region);
+    std::vector<std::pair<std::string, std::pair<int, int>>> fields;
+
+    if (selection.size() == 1 && selection[0] == "all") {
+        // Every named state variable first, marking the slots each one uses
+        const int num_vars =
+            sim_state.GetOptions().materials[static_cast<size_t>(region)].state_vars.num_vars;
+        std::vector<bool> covered(static_cast<size_t>(std::max(num_vars, 0)), false);
+        for (const auto& entry : named) {
+            if (sim_state.GetQuadratureFunctionStatePlot(entry.first, region)) {
+                fields.push_back(entry);
+            }
+            const int offset = entry.second.first;
+            const int length = entry.second.second;
+            for (int k = std::max(offset, 0); k < std::min(offset + length, num_vars); k++) {
+                covered[static_cast<size_t>(k)] = true;
+            }
+        }
+        // Then one scalar field per slot without a name, except for ExaCMech, whose names
+        // already cover everything worth plotting
+        if (sim_state.GetRegionModelType(static_cast<size_t>(region)) == MechType::EXACMECH) {
+            return fields;
+        }
+        for (int k = 0; k < num_vars; k++) {
+            if (!covered[static_cast<size_t>(k)]) {
+                fields.push_back({"State Var " + std::to_string(k), {k, 1}});
+            }
+        }
+        return fields;
+    }
+
+    for (const auto& name : selection) {
+        // Skip a name the user listed more than once
+        const auto is_name = [&name](const auto& entry) {
+            return entry.first == name;
+        };
+        if (std::find_if(fields.begin(), fields.end(), is_name) != fields.end()) {
+            continue;
+        }
+        const auto match = std::find_if(named.begin(), named.end(), is_name);
+        if (match == named.end()) {
+            std::ostringstream available;
+            for (const auto& entry : named) {
+                available << " \"" << entry.first << "\"";
+            }
+            const std::string available_names = named.empty() ? std::string(" (none)")
+                                                              : available.str();
+            MFEM_ABORT_0("visualize_state_vars of material " << region + 1 << " lists \"" << name
+                                                             << "\", which is not a state variable "
+                                                                "name of this material. Available:"
+                                                             << available_names);
+        }
+        fields.push_back(*match);
+    }
+    return fields;
+}
 } // namespace
 
 void PostProcessingDriver::RegisterProjection(const std::string& field) {
@@ -330,6 +414,14 @@ void PostProcessingDriver::RegisterProjection(const std::string& field) {
     } else if (field == "shear_rate") {
         projection_class = RegisterShearRateProjection(m_sim_state, m_region_model_types);
     } else {
+        // region_<N> entries are handled by RegisterStateVariableProjections()
+        if (ProjectionOptions::region_number(field) < 0) {
+            MFEM_WARNING_0("[PostProcessing.projections] enabled_projections entry '"
+                           << field
+                           << "' is not a known projection and is ignored. Known: region_<N>, "
+                              "centroid, volume, cauchy, von_mises, hydro, all_state, dpeff, eps, "
+                              "xtal_ori, elastic_strain, hardness, shear_rate");
+        }
         return;
     }
 
@@ -1138,8 +1230,88 @@ void PostProcessingDriver::RegisterDefaultProjections() {
         fields = projection_opts.enabled_projections;
     }
 
+    // region_<N> entries are not built-in names; RegisterProjection skips them and they are
+    // handled below
     for (const auto& field : fields) {
         RegisterProjection(field);
+    }
+
+    // State variable fields requested per region (region_<N> entries and visualize_state_vars)
+    // are added in every case, also when auto_enable_compatible picked the built-in list
+    RegisterStateVariableProjections();
+}
+
+void PostProcessingDriver::RegisterStateVariableProjections() {
+    const auto& options = m_sim_state->GetOptions();
+
+    // What each region asks for: nothing (empty), {"all"}, or a list of names.
+    // A region_<N> entry asks for everything of material N.
+    std::vector<std::vector<std::string>> selection(m_num_regions);
+    for (const auto& entry : options.post_processing.projections.enabled_projections) {
+        const int number = ProjectionOptions::region_number(entry);
+        if (number >= 1 && number <= static_cast<int>(m_num_regions)) {
+            selection[static_cast<size_t>(number - 1)] = {"all"};
+        }
+    }
+    // The material's own list is used unless region_<N> already asked for everything (which
+    // includes every listed name, so nothing is created twice)
+    for (size_t region = 0; region < m_num_regions && region < options.materials.size(); region++) {
+        const auto& requested = options.materials[region].visualize_state_vars;
+        const bool already_all = (selection[region].size() == 1 && selection[region][0] == "all");
+        if (!requested.empty() && !already_all) {
+            selection[region] = requested;
+        }
+    }
+
+    using PTMC = ProjectionTraits::ModelCompatibility;
+    for (size_t region = 0; region < m_num_regions; region++) {
+        if (selection[region].empty()) {
+            continue;
+        }
+        const int region_int = static_cast<int>(region);
+        const auto fields = StateVariableFieldList(*m_sim_state, region_int, selection[region]);
+        for (const auto& field : fields) {
+            const std::string name = field.first;
+            const int offset = field.second.first;
+            const int length = field.second.second;
+
+            // A field of the same name already written for this region (for example a user
+            // state variable called "Hardness") would share its grid function; keep the first
+            const bool name_taken = std::any_of(m_registered_projections.begin(),
+                                                m_registered_projections.end(),
+                                                [&name, region](const ProjectionRegistration& reg) {
+                                                    return reg.display_name == name &&
+                                                           reg.region_enabled[region];
+                                                });
+            if (name_taken) {
+                MFEM_WARNING_0("State variable field \""
+                               << name << "\" of material " << region + 1
+                               << " has the same name as another visualization field of that "
+                                  "region and is not written");
+                continue;
+            }
+
+            // Copy slots [offset, offset + length) of the state variables unchanged. The
+            // field is turned on for this region only and never combined into the global
+            // output; the other regions' entries are placeholders that are never used.
+            auto projection = std::make_shared<StateVariableProjection>(
+                name, offset, length, name, PTMC::ALL_MODELS);
+            std::vector<std::shared_ptr<ProjectionBase>> projection_class(m_num_regions,
+                                                                          projection);
+            std::vector<bool> region_enabled(m_num_regions, false);
+            std::vector<int> region_length(m_num_regions, 0);
+            region_enabled[region] = true;
+            region_length[region] = length;
+
+            m_registered_projections.push_back(
+                {"state_var_region_" + std::to_string(region + 1) + "_" + name,
+                 name,
+                 PTMC::ALL_MODELS,
+                 region_enabled,
+                 projection_class,
+                 region_length,
+                 false});
+        }
     }
 }
 

@@ -781,8 +781,43 @@ private:
      *
      * Registration is conditional on material model compatibility and
      * availability of required quadrature data in each region.
+     *
+     * The built-in list comes from `auto_enable_compatible` (all defaults) or, when that is
+     * false, from `enabled_projections`. On top of it, RegisterStateVariableProjections() is
+     * always called, so `region_<N>` entries of `enabled_projections` and the materials'
+     * `visualize_state_vars` are honored in both cases.
      */
     void RegisterDefaultProjections();
+
+    /**
+     * @brief Register one visualization field per requested state variable of a region
+     *
+     * A region's state variables are requested in two ways:
+     * - a `region_<N>` entry in [PostProcessing.projections] enabled_projections, which asks
+     *   for everything of material N (same as `visualize_state_vars = "all"`);
+     * - the material's `visualize_state_vars` list (or "all").
+     *
+     * "Everything" means one field per named state variable registered with the plot flag set
+     * (the names registered in SimulationState, e.g. "eq_pl_strain" or "quats", in
+     * registration order; see SimulationState::AddQuadratureFunctionStatePair) plus one scalar
+     * field "State Var <k>" for every slot k (0-based) that no name covers, except for ExaCMech
+     * regions, whose names already cover every quantity worth plotting. An explicit list
+     * gives only the listed names, in the list's order; an unknown name stops the run with
+     * the region's available names. When a region is requested both ways, "everything" wins,
+     * so no field is created twice.
+     *
+     * Each field copies its slice of the state variables unchanged (StateVariableProjection)
+     * and exists only in its own region: the state variable layout differs from one material
+     * to the next, so the fields are never combined into the global output. In a
+     * multi-region run they appear only in that region's data collection.
+     *
+     * The field list is built from the state variable names and the materials' state variable
+     * counts only, which are the same on every rank, so every rank creates the same grid
+     * functions even for regions that have no elements on it (data collections need that).
+     *
+     * @note Called by RegisterDefaultProjections() only when visualization is enabled.
+     */
+    void RegisterStateVariableProjections();
 
     /**
      * @brief Register default volume average calculations
