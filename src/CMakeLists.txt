@@ -76,11 +76,16 @@ set(EXACONSTIT_SOURCES
     utilities/unified_logger.cpp
     )
 
+# Built-in UMAT (used when a UMAT material sets enable_dynamic_loading = false). It is an
+# object library added directly to the executables below rather than part of
+# exaconstit_static: nothing in ExaConstit calls it by name (it is found by symbol lookup at
+# run time), so from a static library the linker would leave it out.
 if (ENABLE_FORTRAN)
-    list(APPEND EXACONSTIT_SOURCES ./umats/umat.f)
+    add_library(exaconstit_builtin_umat OBJECT umats/umat.f)
 else()
-    list(APPEND EXACONSTIT_SOURCES ./umats/umat.cxx)
+    add_library(exaconstit_builtin_umat OBJECT umats/umat.cxx)
 endif()
+set_target_properties(exaconstit_builtin_umat PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 set(DYNAMIC_LOADING_LIBS)
@@ -198,9 +203,11 @@ blt_add_executable(NAME       mechanics
                    SOURCES    mechanics_driver.cpp
                    OUTPUT_DIR ${BINARY_DIR}
                    DEPENDS_ON exaconstit_static ${EXACONSTIT_DRIVER})
+target_sources(mechanics PRIVATE $<TARGET_OBJECTS:exaconstit_builtin_umat>)
 # User functions loaded from shared libraries (UMATs, [Materials.State_Vars] and
 # [[PostProcessing.user_functions]] functions) call back into ExaConstit, e.g.
 # SimulationState::GetQuadratureFunction, so the executable exports its symbols (-rdynamic).
+# This also lets the built-in UMAT be found by its symbol name.
 set_target_properties(mechanics PROPERTIES ENABLE_EXPORTS ON)
 
 #------------------------------------------------------------------------------

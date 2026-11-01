@@ -8,7 +8,7 @@
 # between them):
 # - region 1 (0-based region 0): ExaCMech evptn_FCC_A. Its register_function adds one user
 #   name after ExaCMech's own names.
-# - region 2 (0-based region 1): a do-nothing UMAT (TestUmat) with 10 state variables. Its
+# - region 2 (0-based region 1): the built-in UMAT with 10 state variables. Its
 #   state variable functions change from case to case (correct ones, or ones that must stop
 #   the run).
 Version = "0.10.1"
@@ -55,9 +55,9 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
     [Materials.Model]
         crystal_plasticity = false
         [Materials.Model.UMAT]
-            # A UMAT that does nothing (no step is solved in these tests)
-            library_path = "@USER_FUNCTION_LIBRARY@"
-            function_name = "TestUmat"
+            # The built-in UMAT (src/umats/umat.cxx), compiled into the executables; loading it
+            # also checks that it is linked in (no step is solved in these tests)
+            enable_dynamic_loading = false
 
 [BCs]
     [[BCs.velocity_bcs]]

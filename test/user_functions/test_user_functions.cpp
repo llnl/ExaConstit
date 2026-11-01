@@ -10,8 +10,6 @@
  * executable) when it is loaded.
  *
  * Contents, grouped by what they test:
- * - TestUmat: a UMAT that does nothing, so the UMAT region of the test decks has a material
- *   model to load (the tests never solve a step with it).
  * - State variable functions ([Materials.State_Vars] register_function / initialize_function),
  *   signature void f(std::shared_ptr<SimulationState> sim_state, int region):
  *   - correct functions, used by the success test (test_state_variable_functions.cpp);
@@ -22,11 +20,10 @@
  *
  * The test material layouts these functions assume are in user_functions.toml.in:
  * - region 0: ExaCMech "evptn_FCC_A" (24 state variables + 4 quaternion components);
- * - region 1: UMAT with 10 state variables.
+ * - region 1: built-in UMAT with 10 state variables.
  *
  * The user functions are normal C++ functions at global scope (not extern "C", not in a
- * namespace), as ExaConstit requires, except the one that tests the extern "C" mistake. The UMAT
- * is extern "C", as UMATs are.
+ * namespace), as ExaConstit requires, except the one that tests the extern "C" mistake.
  */
 
 #include "sim_state/simulation_state.hpp"
@@ -35,55 +32,6 @@
 
 #include <cmath>
 #include <memory>
-
-// =================================================================================================
-// UMAT
-// =================================================================================================
-
-/**
- * @brief UMAT with the standard Abaqus arguments that does nothing
- *
- * The test decks load it with [Materials.Model.UMAT] library_path / function_name = "TestUmat".
- * The tests only build the material models and stop before the first step, so it is never
- * called; it exists so the UMAT region can be created.
- */
-extern "C" void TestUmat(double* /* stress */,
-                         double* /* statev */,
-                         double* /* ddsdde */,
-                         double* /* sse */,
-                         double* /* spd */,
-                         double* /* scd */,
-                         double* /* rpl */,
-                         double* /* ddsdt */,
-                         double* /* drplde */,
-                         double* /* drpldt */,
-                         double* /* stran */,
-                         double* /* dstran */,
-                         double* /* time */,
-                         double* /* deltaTime */,
-                         double* /* tempk */,
-                         double* /* dtemp */,
-                         double* /* predef */,
-                         double* /* dpred */,
-                         char* /* cmname */,
-                         int* /* ndi */,
-                         int* /* nshr */,
-                         int* /* ntens */,
-                         int* /* nstatv */,
-                         double* /* props */,
-                         int* /* nprops */,
-                         double* /* coords */,
-                         double* /* drot */,
-                         double* /* pnewdt */,
-                         double* /* celent */,
-                         double* /* dfgrd0 */,
-                         double* /* dfgrd1 */,
-                         int* /* noel */,
-                         int* /* npt */,
-                         int* /* layer */,
-                         int* /* kspt */,
-                         int* /* kstep */,
-                         int* /* kinc */) {}
 
 // =================================================================================================
 // State variable functions: correct ones

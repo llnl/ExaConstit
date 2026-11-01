@@ -16,7 +16,8 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 - The `Crystal Orientations` visualization field divided the quaternions by their squared length instead of their length, so they were not unit quaternions.
 - Enabling the `all_state` projection crashed (its vector size was unknown when the visualization fields were created).
 - Installed headers kept no directory structure, so headers including e.g. `sim_state/simulation_state.hpp` could not be used from an install.
-- The rank-0 gather of global volume averages sent too few values from a region root whose region had no valid result.
+- The rank-0 gather of global volume averages sent more values than it held from a region root whose region had no valid result.
+- The built-in UMAT (`enable_dynamic_loading = false`) could not be found: it was only in the static library, which nothing referenced it from, so it was not linked into `mechanics` and runs stopped with "No built-in UMAT available". It is now compiled into the executable.
 
 ## [v0.10.1] - 2026-10-21
 

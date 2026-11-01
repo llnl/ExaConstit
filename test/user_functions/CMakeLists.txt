@@ -54,7 +54,10 @@ blt_add_executable(NAME       test_state_variable_functions
                    SOURCES    test_state_variable_functions.cpp
                    OUTPUT_DIR ${TEST_OUTPUT_DIR}
                    DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
-# The user library calls back into this executable, as it does into mechanics
+# The user library calls back into this executable, as it does into mechanics, and the decks'
+# UMAT region uses the built-in UMAT, which is found by symbol name, so it is added here as in
+# mechanics
+target_sources(test_state_variable_functions PRIVATE $<TARGET_OBJECTS:exaconstit_builtin_umat>)
 set_target_properties(test_state_variable_functions PROPERTIES ENABLE_EXPORTS ON)
 add_dependencies(test_state_variable_functions test_user_functions)
 foreach(_np 1 2)
