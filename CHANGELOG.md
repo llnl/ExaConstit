@@ -12,6 +12,7 @@ Entries for releases before v0.10.0 were reconstructed from the release tag note
 - `find_package(ExaConstit)` CMake package and `exaconstit_add_user_library()` for building user function libraries against an installed ExaConstit, with an example in `examples/user_functions`.
 - `SimulationState::AddQuadratureFunctionStatePair` stops the run for a slice outside the state variables or overlapping another one.
 - Volume statistics: `statistics` (mean, variance, std, skewness, excess kurtosis, min, max, or `"all"`) and fixed-bin `histograms` for the built-in volume averages in `[PostProcessing.volume_averages]`, and `statistics` / `histogram` keys for `volume_average` user function entries. Volume-weighted, per material and for the whole sample (combined exactly from the material statistics), written to a new `stats/` folder of the results directory, one file per statistic and one histogram file per quantity.
+- `[PostProcessing] output_format = "hdf5"`: all volume averages, volume statistics and histograms, user function averages / integrals and surface quantities of a run in one file, `post_processing.hdf5`, written with Conduit (needs Axom). Each text file is a group and each text column a dataset; a restarted run removes the rows written after its checkpoint, so no step is repeated. `scripts/postprocessing/read_post_processing.py` reads it (h5py).
 
 ### Fixed
 - The `Crystal Orientations` visualization field divided the quaternions by their squared length instead of their length, so they were not unit quaternions.

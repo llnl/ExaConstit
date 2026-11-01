@@ -235,6 +235,7 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - **`projection_class.hpp/cpp`**: Field projection operations
 - **`viz_point_map.hpp/cpp`**: Table pairing each visualization node with its source quadrature point (shared by zone and quadrature output)
 - **`volume_statistics.hpp/cpp`**: Volume-weighted statistics and histograms of a quantity per region, and their exact combination over regions
+- **`postprocessing_hdf5_file.hpp/cpp`**: The single HDF5 file of `output_format = "hdf5"` (Conduit relay): rows queued on every rank, gathered to rank 0 and appended at the end of each update; cut back to the checkpoint on restart. `PostProcessingFileManager::WriteVolumeAverage()` / `WriteSurfaceQuantity()` route rows there, so new outputs written through them appear in the file with no extra code
 - **`mechanics_lightup.hpp/cpp`**: Lattice strain calculations
 
 **Capabilities**:
