@@ -924,6 +924,9 @@ grain_file = "grains.txt"
         # [component]_bin_1 ... [component]_bin_N, [component]_above.
         # A bin includes its lower edge; the upper edge of the range belongs to the last bin.
         # NaN values are counted in no slot, so the fractions then add up to less than 1.
+        # Note: with rtmodel = "GPU" histograms are not bitwise reproducible: the bin sums
+        # are added in a different order on each run, so the fractions can differ in the
+        # last digits (round-off) between runs, including a restarted run.
         # [PostProcessing.volume_averages.histograms]
         #     eq_pl_strain = { bins = 20, range = [0.0, 0.05] }
         #     stress = { bins = 40, range = [-0.2, 0.2] }
@@ -1160,7 +1163,8 @@ grain_file = "grains.txt"
     #                   stats/<name>_<statistic>_*.txt (one file per statistic)
     #   histogram       volume_average entries only: a fixed-bin histogram of volume
     #                   fractions, e.g. { bins = 30, range = [-1.0, 2.0] }, written to
-    #                   stats/<name>_hist_*.txt
+    #                   stats/<name>_hist_*.txt (on the GPU not bitwise reproducible,
+    #                   see the histogram note in [PostProcessing.volume_averages])
     #   global          Also output the result combined over those materials: a field
     #                   in the global visualization output and an "_global" text file
     #                   (default: true). With a single material, visualization has only
