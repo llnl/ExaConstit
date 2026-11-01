@@ -167,6 +167,10 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
                          NUM_MPI_TASKS ${_np})
         endif()
     endforeach()
+
+    # User functions from shared libraries: [Materials.State_Vars] register_function and
+    # initialize_function (success and failure cases); see test/user_functions/CMakeLists.txt.
+    add_subdirectory(user_functions)
 endif()
 
 ####################################

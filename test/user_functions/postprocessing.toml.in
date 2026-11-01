@@ -1,0 +1,146 @@
+# Input deck template for the post-processing user function test (test/user_functions).
+#
+# CMake writes one deck per visualization field location (zone, quadrature) into the build
+# tree. Two ExaCMech materials (evptn_FCC_A, the grains of the 5x5x5 auto mesh split between
+# them by region_mapping.txt), 3 small steps of uniaxial tension along z, 2 ranks.
+#
+# User function entries (functions in test_user_functions.cpp):
+# - UnitValue, volume_integral, all materials + global: must equal the volume column
+# - StressInvariants, volume_average, all materials + global: its mean stress must equal one
+#   third of the trace of the built-in volume-averaged stress
+# - StressTriaxiality, visualization, material 2 + global: field only in material 2's and the
+#   global output
+# - StressTriaxiality, volume_average, material 1 only, no global file
+# check_postprocessing.py checks all of this.
+Version = "0.10.1"
+basename = "postprocessing_@FIELD_LOCATION@"
+grain_file = "@EXACONSTIT_TEST_DATA_DIR@/grains.txt"
+region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
+
+[[Materials]]
+    name = "material_A"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA_DIR@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    name = "material_B"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA_DIR@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.3
+
+[Visualizations]
+    steps = 1
+    paraview = true
+    field_location = "@FIELD_LOCATION@"
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        output_frequency = 1
+        output_directory = "./results"
+    [PostProcessing.projections]
+        auto_enable_compatible = false
+        enabled_projections = ["cauchy", "von_mises"]
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "UnitValue"
+        type = "volume_integral"
+        name = "unit_volume"
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "StressInvariants"
+        type = "volume_average"
+        name = "stress_invariants"
+        component_names = ["mean", "von_mises"]
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "StressTriaxiality"
+        type = "visualization"
+        name = "Stress Triaxiality"
+        regions = [2]
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "StressTriaxiality"
+        type = "volume_average"
+        name = "triaxiality"
+        regions = [1]
+        global = false
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    type = "auto"
+    [Mesh.Auto]
+        mxyz = [1.0, 1.0, 1.0]
+        nxyz = [5, 5, 5]
