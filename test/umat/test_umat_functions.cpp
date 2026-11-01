@@ -15,6 +15,12 @@
  * rotate_stress = false), so both ways must give the same results. STATEV(1..6) accumulate
  * DSTRAN and STATEV(7) holds det(DFGRD1), so the state variable path is exercised as well.
  *
+ * Accumulated energies: SSE grows by 1/2 (sigma_old + sigma) : DSTRAN, SPD by 1e-3 DTIME and SCD
+ * by 2e-3 DTIME every increment. With 10 or more state variables the UMAT also keeps its own copy
+ * of the three in STATEV(8..10) and checks, at the start of every call, that the SSE, SPD, SCD
+ * ExaConstit passes equal that copy (they must be carried from the previous converged step, not
+ * reset). On a mismatch it sets PNEWDT = 0.25, which stops the test runs (fixed time steps).
+ *
  * Like a user's UMAT library, it is built on its own, without ExaConstit or MFEM.
  */
 #include <cmath>
@@ -30,7 +36,23 @@ void ElasticPoint(double* stress,
                   const int nprops,
                   const int nstatv,
                   const double* drot,
-                  const double* dfgrd1) {
+                  const double* dfgrd1,
+                  double* sse,
+                  double* spd,
+                  double* scd,
+                  double* pnewdt,
+                  const double dtime) {
+    // The energies passed in must be the converged ones of the previous step
+    if (nstatv >= 10) {
+        const double* kept = statev + 7;
+        const double given[3] = {*sse, *spd, *scd};
+        for (int k = 0; k < 3; ++k) {
+            if (std::fabs(given[k] - kept[k]) > 1e-12 * (1.0 + std::fabs(kept[k]))) {
+                *pnewdt = 0.25;
+            }
+        }
+    }
+
     const double young = props[0];
     const double nu = props[1];
     const double lambda = young * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
@@ -80,6 +102,20 @@ void ElasticPoint(double* stress,
         ddsdde[i] = c[i];
     }
 
+    // Energies: trapezoidal elastic work of the increment, fixed dissipation rates
+    double dw = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        dw += 0.5 * (s_rot[i] + stress[i]) * dstran[i];
+    }
+    *sse += dw;
+    *spd += 1.0e-3 * dtime;
+    *scd += 2.0e-3 * dtime;
+    if (nstatv >= 10) {
+        statev[7] = *sse;
+        statev[8] = *spd;
+        statev[9] = *scd;
+    }
+
     if (nstatv >= 7) {
         for (int i = 0; i < 6; ++i) {
             statev[i] += dstran[i];
@@ -95,34 +131,36 @@ void ElasticPoint(double* stress,
 extern "C" {
 
 /// Standard UMAT interface: one point per call
-void test_umat_elastic(double* stress, double* statev, double* ddsdde, double* /*sse*/,
-                       double* /*spd*/, double* /*scd*/, double* /*rpl*/, double* /*ddsdt*/,
+void test_umat_elastic(double* stress, double* statev, double* ddsdde, double* sse,
+                       double* spd, double* scd, double* /*rpl*/, double* /*ddsdt*/,
                        double* /*drplde*/, double* /*drpldt*/, double* /*stran*/, double* dstran,
-                       double* /*time*/, double* /*dtime*/, double* /*temp*/, double* /*dtemp*/,
+                       double* /*time*/, double* dtime, double* /*temp*/, double* /*dtemp*/,
                        double* /*predef*/, double* /*dpred*/, char* /*cmname*/, int* /*ndi*/,
                        int* /*nshr*/, int* /*ntens*/, int* nstatv, double* props,
-                       int* nprops, double* /*coords*/, double* drot, double* /*pnewdt*/,
+                       int* nprops, double* /*coords*/, double* drot, double* pnewdt,
                        double* /*celent*/, double* /*dfgrd0*/, double* dfgrd1, int* /*noel*/,
                        int* /*npt*/, int* /*layer*/, int* /*kspt*/, int* /*kstep*/,
                        int* /*kinc*/) {
-    ElasticPoint(stress, statev, ddsdde, dstran, props, *nprops, *nstatv, drot, dfgrd1);
+    ElasticPoint(stress, statev, ddsdde, dstran, props, *nprops, *nstatv, drot, dfgrd1, sse, spd,
+                 scd, pnewdt, *dtime);
 }
 
 /// Batched UMAT interface: NPTS points per call, point i's data at i * (size per point)
 void test_umat_elastic_batch(int* npts, double* stress, double* statev, double* ddsdde,
-                             double* /*sse*/, double* /*spd*/, double* /*scd*/, double* /*rpl*/,
+                             double* sse, double* spd, double* scd, double* /*rpl*/,
                              double* /*ddsdt*/, double* /*drplde*/, double* /*drpldt*/,
                              double* /*stran*/, double* dstran, double* /*time*/,
-                             double* /*dtime*/, double* /*temp*/, double* /*dtemp*/,
+                             double* dtime, double* /*temp*/, double* /*dtemp*/,
                              double* /*predef*/, double* /*dpred*/, char* /*cmname*/,
                              int* /*ndi*/, int* /*nshr*/, int* ntens, int* nstatv, double* props,
                              int* nprops, double* /*coords*/, double* drot,
-                             double* /*pnewdt*/, double* /*celent*/, double* /*dfgrd0*/,
+                             double* pnewdt, double* /*celent*/, double* /*dfgrd0*/,
                              double* dfgrd1, int* /*noel*/, int* /*npt*/, int* /*layer*/,
                              int* /*kspt*/, int* /*kstep*/, int* /*kinc*/) {
     const int n = *npts;
     const int nt = *ntens;
     const int ns = *nstatv;
+    const double dt = *dtime;
 #if defined(_OPENMP)
 #pragma omp parallel for
 #endif
@@ -135,7 +173,12 @@ void test_umat_elastic_batch(int* npts, double* stress, double* statev, double* 
                      *nprops,
                      ns,
                      drot + 9 * i,
-                     dfgrd1 + 9 * i);
+                     dfgrd1 + 9 * i,
+                     sse + i,
+                     spd + i,
+                     scd + i,
+                     pnewdt + i,
+                     dt);
     }
 }
 

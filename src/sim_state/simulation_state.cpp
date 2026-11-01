@@ -1046,6 +1046,24 @@ SimulationState::SimulationState(ExaOptions& options)
                 m_map_qfs[def_grad_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
                     m_map_qs[qspace_name], 9, 0.0);
                 ::initializeDeformationGradientToIdentity(*m_map_qfs[def_grad_name]);
+
+                // The UMAT's accumulated energies per unit volume (Abaqus SSE, SPD, SCD: elastic
+                // strain energy, plastic and creep dissipation), one value per point. UMATs
+                // receive the converged values and add the increment's share, so they are kept
+                // from step to step like the stress (and so written to restart files).
+                for (const char* energy : {"umat_sse", "umat_spd", "umat_scd"}) {
+                    const auto beg_name = GetQuadratureFunctionMapName(
+                        std::string(energy) + "_beg", region_id);
+                    const auto end_name = GetQuadratureFunctionMapName(
+                        std::string(energy) + "_end", region_id);
+                    m_map_qfs[beg_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                        m_map_qs[qspace_name], 1, 0.0);
+                    m_map_qfs[end_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                        m_map_qs[qspace_name], 1, 0.0);
+                    m_map_qfs[beg_name]->operator=(0.0);
+                    m_map_qfs[end_name]->operator=(0.0);
+                    m_model_update_qf_pairs.push_back(std::make_pair(beg_name, end_name));
+                }
             }
 
             m_model_update_qf_pairs.push_back(

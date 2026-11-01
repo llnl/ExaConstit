@@ -85,9 +85,6 @@ AbaqusUmatModel::AbaqusUmatModel(const int region,
     MakeDeviceVector(m_dtemp, npts);
     MakeDeviceVector(m_predef, npts);
     MakeDeviceVector(m_dpred, npts);
-    MakeDeviceVector(m_sse, npts);
-    MakeDeviceVector(m_spd, npts);
-    MakeDeviceVector(m_scd, npts);
     MakeDeviceVector(m_rpl, npts);
     MakeDeviceVector(m_drpldt, npts);
     MakeDeviceVector(m_ddsdt, 6 * npts);
@@ -295,9 +292,6 @@ void AbaqusUmatModel::PackUmatInputs(const mfem::Vector& jacobian, const int* lo
     double* dtemp = m_dtemp.Write();
     double* predef = m_predef.Write();
     double* dpred = m_dpred.Write();
-    double* sse = m_sse.Write();
-    double* spd = m_spd.Write();
-    double* scd = m_scd.Write();
     double* rpl = m_rpl.Write();
     double* drpldt = m_drpldt.Write();
     double* ddsdt = m_ddsdt.Write();
@@ -356,9 +350,6 @@ void AbaqusUmatModel::PackUmatInputs(const mfem::Vector& jacobian, const int* lo
         dtemp[i] = 0.0;
         predef[i] = 0.0;
         dpred[i] = 0.0;
-        sse[i] = 0.0;
-        spd[i] = 0.0;
-        scd[i] = 0.0;
         rpl[i] = 0.0;
         drpldt[i] = 0.0;
         for (int k = 0; k < 6; ++k) {
@@ -393,9 +384,9 @@ void AbaqusUmatModel::CallUmatPerPoint() {
     double* stress = m_stress.HostReadWrite();
     double* statev = state_end->HostReadWrite();
     double* ddsdde = tangent->HostReadWrite();
-    double* sse = m_sse.HostReadWrite();
-    double* spd = m_spd.HostReadWrite();
-    double* scd = m_scd.HostReadWrite();
+    double* sse = m_sim_state->GetQuadratureFunction("umat_sse_end", m_region)->HostReadWrite();
+    double* spd = m_sim_state->GetQuadratureFunction("umat_spd_end", m_region)->HostReadWrite();
+    double* scd = m_sim_state->GetQuadratureFunction("umat_scd_end", m_region)->HostReadWrite();
     double* rpl = m_rpl.HostReadWrite();
     double* ddsdt = m_ddsdt.HostReadWrite();
     double* drplde = m_drplde.HostReadWrite();
@@ -499,9 +490,9 @@ void AbaqusUmatModel::CallUmatBatched() {
                         m_stress.ReadWrite(),
                         state_end->ReadWrite(),
                         tangent->ReadWrite(),
-                        m_sse.ReadWrite(),
-                        m_spd.ReadWrite(),
-                        m_scd.ReadWrite(),
+                        m_sim_state->GetQuadratureFunction("umat_sse_end", m_region)->ReadWrite(),
+                        m_sim_state->GetQuadratureFunction("umat_spd_end", m_region)->ReadWrite(),
+                        m_sim_state->GetQuadratureFunction("umat_scd_end", m_region)->ReadWrite(),
                         m_rpl.ReadWrite(),
                         m_ddsdt.ReadWrite(),
                         m_drplde.ReadWrite(),
@@ -615,13 +606,17 @@ void AbaqusUmatModel::ModelSetup(const int nqpts,
     ComputeDefGrad(*m_sim_state->GetCurrentCoords(), loc_grad, m_def_grad_end);
     CALI_MARK_END("umat_kinematics");
 
-    // 2. UMAT inputs. STATEV starts from the beginning-of-step values and is updated in place;
-    // DDSDDE starts from zero.
+    // 2. UMAT inputs. DDSDDE starts from zero.
     CALI_MARK_BEGIN("umat_setup");
     PackUmatInputs(jacobian, local2global);
     {
-        mfem::Vector& state_end = *m_sim_state->GetQuadratureFunction("state_var_end", m_region);
-        state_end = *m_sim_state->GetQuadratureFunction("state_var_beg", m_region);
+        // STATEV and the accumulated energies SSE, SPD, SCD start from the converged values of
+        // the previous step and are updated in place by the UMAT
+        for (const char* name : {"state_var", "umat_sse", "umat_spd", "umat_scd"}) {
+            mfem::Vector& end = *m_sim_state->GetQuadratureFunction(std::string(name) + "_end",
+                                                                    m_region);
+            end = *m_sim_state->GetQuadratureFunction(std::string(name) + "_beg", m_region);
+        }
         mfem::Vector& tangent = *m_sim_state->GetQuadratureFunction("tangent_stiffness", m_region);
         tangent = 0.0;
     }

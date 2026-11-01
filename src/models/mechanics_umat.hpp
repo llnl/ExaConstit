@@ -116,7 +116,8 @@ protected:
 
     // ---------------------------------------------------------------------------------------
     // UMAT arguments, point-major (point i's values start at i * size), Abaqus conventions.
-    // STATEV and DDSDDE use the region's state_var_end and tangent_stiffness directly, and
+    // STATEV, SSE, SPD, SCD and DDSDDE use the region's state_var_end, umat_sse_end,
+    // umat_spd_end, umat_scd_end and tangent_stiffness directly, and
     // DFGRD0 / DFGRD1 are m_def_grad_beg / m_def_grad_end.
     // ---------------------------------------------------------------------------------------
 
@@ -131,9 +132,6 @@ protected:
     mfem::Vector m_dtemp;  ///< DTEMP, 1 per point
     mfem::Vector m_predef; ///< PREDEF, 1 per point (no predefined fields)
     mfem::Vector m_dpred;  ///< DPRED, 1 per point
-    mfem::Vector m_sse;    ///< SSE, 1 per point
-    mfem::Vector m_spd;    ///< SPD, 1 per point
-    mfem::Vector m_scd;    ///< SCD, 1 per point
     mfem::Vector m_rpl;    ///< RPL, 1 per point
     mfem::Vector m_drpldt; ///< DRPLDT, 1 per point
     mfem::Vector m_ddsdt;  ///< DDSDDT, 6 per point

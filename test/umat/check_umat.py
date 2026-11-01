@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Check the UMAT interface tests (umat.toml.in, umat_two_regions.toml.in).
 
-Usage: check_umat.py <results directory of the tests>
-       (holds umat_<case>/ for every case run by test/umat/CMakeLists.txt)
+Usage: check_umat.py <results directory of the tests> [--restart]
+       (holds umat_<case>/ for every case run by test/umat/CMakeLists.txt; --restart when the
+       restart case ran, i.e. ExaConstit has Axom)
 
 The same hypoelastic material (test_umat_functions.cpp) is run through both UMAT interfaces.
 Checks, on the global volume averages of the stress and the deformation gradient:
@@ -12,6 +13,9 @@ Checks, on the global volume averages of the stress and the deformation gradient
 - the two-region runs (region 1 batched, region 2 standard, 2 ranks) agree with the one-region
   runs with the same integrator, so the partial-region paths and the rank split give the same
   answer;
+- with --restart: standard_full run in two parts through a checkpoint agrees with the
+  uninterrupted run (the UMAT itself stops the second part if its accumulated energies were not
+  restored);
 - the stress is physical: the axial stress grows every step (the top face is pulled up).
 Exits with status 1 and a message for every failed check.
 """
@@ -42,14 +46,15 @@ def load(results, case, name):
     return data
 
 
-def main(results):
+def main(results, restart):
     failures = []
+    pairs = PAIRS + ([("standard_full", "restart")] if restart else [])
 
     def check(condition, message):
         if not condition:
             failures.append(message)
 
-    for reference, other in PAIRS:
+    for reference, other in pairs:
         for name in FILES:
             a = load(results, reference, name)
             b = load(results, other, name)
@@ -71,6 +76,6 @@ def main(results):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--restart"):
         raise SystemExit(__doc__)
-    main(sys.argv[1])
+    main(sys.argv[1], len(sys.argv) == 3)

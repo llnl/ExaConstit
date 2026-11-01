@@ -18,8 +18,8 @@ basename = "umat_@CASE_NAME@"
         num_props = @NUM_PROPS@
         values = [@PROPS@]
     [Materials.State_Vars]
-        num_vars = 7
-        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
     [Materials.Model]
         crystal_plasticity = false
         [Materials.Model.UMAT]
@@ -48,7 +48,7 @@ basename = "umat_@CASE_NAME@"
 [Time]
     [Time.Fixed]
         dt = 0.1
-        t_final = 0.5
+        t_final = @T_FINAL@
 
 [Visualizations]
     steps = 1
@@ -87,3 +87,4 @@ basename = "umat_@CASE_NAME@"
     [Mesh.Auto]
         mxyz = [1.0, 1.0, 1.0]
         nxyz = [5, 5, 5]
+@RESTART_BLOCK@

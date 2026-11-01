@@ -18,8 +18,8 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
         num_props = 2
         values = [3000.0, 0.3]
     [Materials.State_Vars]
-        num_vars = 7
-        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
     [Materials.Model]
         crystal_plasticity = false
         [Materials.Model.UMAT]
@@ -35,8 +35,8 @@ region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
         num_props = 2
         values = [3000.0, 0.3]
     [Materials.State_Vars]
-        num_vars = 7
-        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
     [Materials.Model]
         crystal_plasticity = false
         [Materials.Model.UMAT]

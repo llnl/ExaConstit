@@ -365,6 +365,9 @@ grain_file = "grains.txt"
             #   STRESS   Cauchy stress at the start of the increment (the converged stress of
             #            the previous step), rotated by DROT when rotate_stress = true
             #   STATEV   state variables at the start of the increment (never rotated)
+            #   SSE, SPD, SCD   accumulated specific elastic strain energy, plastic dissipation
+            #            and creep dissipation at the start of the increment (0 at the start of
+            #            the run); the UMAT adds the increment's share
             #   DFGRD0   deformation gradient at the start of the increment, computed exactly
             #            from the reference and beginning-of-step mesh nodes
             #   DFGRD1   deformation gradient at the end of the increment (current Newton
@@ -395,13 +398,18 @@ grain_file = "grains.txt"
             #   STRESS   Cauchy stress at the end of the increment
             #   STATEV   state variables at the end of the increment (kept when the step
             #            converges, written to restart files)
+            #   SSE, SPD, SCD   accumulated energies at the end of the increment, kept and
+            #            written to restart files like STATEV (in their own quadrature
+            #            functions umat_sse / umat_spd / umat_scd, not in STATEV); ExaConstit
+            #            itself does not use them
             #   DDSDDE   material tangent d STRESS / d DSTRAN (required). ExaConstit reorders
             #            it and multiplies it by DTIME for its rate-form tangent.
             #   PNEWDT   start value 10; any point below 1 fails the iteration: with [Time.Auto]
-            #            the step is retried with a smaller time step, otherwise the run stops
+            #            the step is retried with ExaConstit's own smaller time step (the value
+            #            does not set the new step), otherwise the run stops; values above 1 are
+            #            ignored
             #
-            # Outputs ignored (start at 0 for every call): SSE, SPD, SCD, RPL, DDSDDT, DRPLDE,
-            # DRPLDT.
+            # Outputs ignored (start at 0 for every call): RPL, DDSDDT, DRPLDE, DRPLDT.
 
 # =====================================
 # BOUNDARY CONDITIONS
