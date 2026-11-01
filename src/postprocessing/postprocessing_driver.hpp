@@ -987,6 +987,7 @@ private:
         const bool global,
         std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values);
 
+EXACONSTIT_CUDA_PRIVATE:
     /**
      * @brief Per-point values of a built-in quantity for its statistics
      *
@@ -996,6 +997,7 @@ private:
      */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction>
     BuiltInStatisticsPoints(const CalcType calc_type, const int region);
+private:
 
     /**
      * @brief Statistics of an output on a region for this output step (computed once, cached
