@@ -100,7 +100,8 @@ void AbaqusUmatModel::InitLocSFGrads(std::shared_ptr<mfem::ParFiniteElementSpace
     double* data = loc0_sf_grad->HostReadWrite();
     loc0_wdetj = std::make_shared<mfem::expt::PartialQuadratureFunction>(qspace, 1);
     double* wdetj_data = loc0_wdetj->HostReadWrite();
-    auto l2g = qspace->GetLocal2Global();
+    // Host loop: read the map on the host (on a GPU run it may only be valid on the device)
+    const int* l2g = qspace->GetLocal2Global().HostRead();
 
     // loop over elements
     for (int i = 0; i < NE; ++i) {
@@ -221,7 +222,8 @@ void AbaqusUmatModel::CalcIncrEndDefGrad(const mfem::ParGridFunction& x0) {
     // The below are constant but will change between steps
     mfem::Array<int> vdofs(vdim2);
     mfem::Vector el_x(PMatI.Data(), vdim2);
-    auto l2g = qspace->GetLocal2Global();
+    // Host loop: read the map on the host (on a GPU run it may only be valid on the device)
+    const int* l2g = qspace->GetLocal2Global().HostRead();
     // loop over elements
     for (int i = 0; i < ne; ++i) {
         const int ge = l2g[i];
@@ -384,6 +386,7 @@ void AbaqusUmatModel::ModelSetup(const int nqpts,
 
     if (!qspace->IsFullSpace()) {
         const auto& local2global = qspace->GetLocal2Global();
+        local2global.HostRead(); // indexed on the host below
         local2global_ptr = &local2global;
         local_nelems = local2global.Size();
     }
@@ -482,7 +485,7 @@ void AbaqusUmatModel::ModelSetup(const int nqpts,
     auto geom = m_sim_state->GetMesh()->GetGeometricFactors(qspace->GetIntRule(0),
                                                             mfem::GeometricFactors::COORDINATES);
 
-    const auto x = mfem::Reshape(geom->X.Read(), nqpts, 3, nelems);
+    const auto x = mfem::Reshape(geom->X.HostRead(), nqpts, 3, nelems);
 
     // Update the element/IP loops to use proper indexing:
     for (int local_elemID = 0; local_elemID < local_nelems; local_elemID++) {
