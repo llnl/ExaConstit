@@ -146,3 +146,66 @@ foreach(FIELD_LOCATION zone quadrature)
     set_tests_properties(test_user_functions_postprocessing_${FIELD_LOCATION} PROPERTIES
                          FIXTURES_REQUIRED user_functions_postprocessing_${FIELD_LOCATION})
 endforeach()
+
+# ------------------------------------------------------------------------------------------------
+# Volume statistics ([PostProcessing.volume_averages] statistics / histograms, and the
+# statistics / histogram keys of user function entries). Material 2 is a 2x2x2 corner block of
+# the 5x5x5 auto mesh, so on 4 ranks some ranks own none of its elements; the same deck runs on
+# 4 ranks and on 1 rank, then check_statistics.py checks exact values and compares the runs
+# (see statistics.toml.in).
+# ------------------------------------------------------------------------------------------------
+if(NOT 4 GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+    # Grain per element of the auto mesh (lexicographic order: x fastest, then y, then z):
+    # grain 2 for the corner block of the last 2 elements in x, y and z (the corner far from
+    # the first elements, which the partitioner gives to rank 0, so rank 0 owns no element of
+    # material 2), grain 1 elsewhere; grain g -> material g
+    set(STATS_GRAIN_FILE ${CMAKE_CURRENT_BINARY_DIR}/grains_corner.txt)
+    set(STATS_REGION_MAP ${CMAKE_CURRENT_BINARY_DIR}/region_mapping_corner.txt)
+    set(_uf_grains "")
+    foreach(_iz RANGE 4)
+        foreach(_iy RANGE 4)
+            foreach(_ix RANGE 4)
+                if(_ix GREATER 2 AND _iy GREATER 2 AND _iz GREATER 2)
+                    string(APPEND _uf_grains "2\n")
+                else()
+                    string(APPEND _uf_grains "1\n")
+                endif()
+            endforeach()
+        endforeach()
+    endforeach()
+    file(WRITE ${STATS_GRAIN_FILE} "${_uf_grains}")
+    file(WRITE ${STATS_REGION_MAP} "1 1\n2 2\n")
+
+    foreach(NUM_RANKS 4 1)
+        set(_uf_st_dir ${CMAKE_CURRENT_BINARY_DIR}/statistics_np${NUM_RANKS})
+        file(MAKE_DIRECTORY ${_uf_st_dir})
+        configure_file(statistics.toml.in ${_uf_st_dir}/statistics.toml.in @ONLY)
+        file(GENERATE OUTPUT ${_uf_st_dir}/statistics.toml
+                      INPUT  ${_uf_st_dir}/statistics.toml.in)
+
+        # Start from an empty folder (files are appended to; marker files are per run)
+        add_test(NAME    test_user_functions_statistics_np${NUM_RANKS}_clean
+                 COMMAND ${CMAKE_COMMAND} -E rm -rf ${_uf_st_dir}/results
+                         ${_uf_st_dir}/active_rank_0_region_1 ${_uf_st_dir}/active_rank_0_region_2
+                         ${_uf_st_dir}/active_rank_1_region_1 ${_uf_st_dir}/active_rank_1_region_2
+                         ${_uf_st_dir}/active_rank_2_region_1 ${_uf_st_dir}/active_rank_2_region_2
+                         ${_uf_st_dir}/active_rank_3_region_1 ${_uf_st_dir}/active_rank_3_region_2)
+        set_tests_properties(test_user_functions_statistics_np${NUM_RANKS}_clean PROPERTIES
+                             FIXTURES_SETUP user_functions_statistics_np${NUM_RANKS}_clean)
+        blt_add_test(NAME              test_user_functions_statistics_np${NUM_RANKS}_run
+                     COMMAND           $<TARGET_FILE:mechanics> -opt statistics.toml
+                     NUM_MPI_TASKS     ${NUM_RANKS}
+                     WORKING_DIRECTORY ${_uf_st_dir})
+        set_tests_properties(test_user_functions_statistics_np${NUM_RANKS}_run PROPERTIES
+                             FIXTURES_REQUIRED user_functions_statistics_np${NUM_RANKS}_clean
+                             FIXTURES_SETUP    user_functions_statistics_runs)
+    endforeach()
+
+    add_test(NAME    test_user_functions_statistics
+             COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_statistics.py
+                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4/results/statistics_np4
+                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np1/results/statistics_np1
+                     ${CMAKE_CURRENT_BINARY_DIR}/statistics_np4)
+    set_tests_properties(test_user_functions_statistics PROPERTIES
+                         FIXTURES_REQUIRED user_functions_statistics_runs)
+endif()

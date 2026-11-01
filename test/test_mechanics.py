@@ -139,7 +139,13 @@ def compare_files(baseline_file: str, result_file: str, rel_tolerance: float = 1
         List of difference descriptions (empty if files match)
     """
     differences = []
-    
+
+    # Skewness and kurtosis divide by powers of the spread, so components with a tiny spread
+    # (e.g. the off-diagonal deformation gradient on the first step) magnify solver round-off
+    # differences between 1 and 2 ranks
+    if any(s in os.path.basename(baseline_file) for s in ("_skewness_", "_kurtosis_")):
+        rel_tolerance = max(rel_tolerance, 1e-5)
+
     try:
         baseline_data = load_data_file(baseline_file)
         result_data = load_data_file(result_file)

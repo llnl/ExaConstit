@@ -168,6 +168,16 @@ if(EXACONSTIT_ENABLE_EXTENSIVE_TESTS)
         endif()
     endforeach()
 
+    # Volume statistics: the exact combination of region statistics (CombineStatistics) and
+    # the statistics / histogram rows, against a direct computation on random weighted samples
+    blt_add_executable(NAME       test_volume_statistics
+                       SOURCES    test_volume_statistics.cpp
+                       OUTPUT_DIR ${TEST_OUTPUT_DIR}
+                       DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
+    blt_add_test(NAME          test_volume_statistics
+                 COMMAND       test_volume_statistics
+                 NUM_MPI_TASKS 1)
+
     # User functions from shared libraries: [Materials.State_Vars] register_function and
     # initialize_function (success and failure cases); see test/user_functions/CMakeLists.txt.
     add_subdirectory(user_functions)

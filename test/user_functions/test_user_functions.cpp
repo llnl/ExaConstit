@@ -16,7 +16,8 @@
  *   - deliberately wrong ones, used by the failure tests that run mechanics and check the
  *     error message (wrong argument types, extern "C", overlapping or too long slices).
  * - Post-processing user functions ([[PostProcessing.user_functions]]): a constant 1, the mean
- *   and von Mises stress, and the stress triaxiality, used by the post-processing test.
+ *   and von Mises stress, and the stress triaxiality, used by the post-processing test; a
+ *   two-value quantity and a rank marker, used by the volume statistics test.
  *
  * The test material layouts these functions assume are in user_functions.toml.in:
  * - region 0: ExaCMech "evptn_FCC_A" (24 state variables + 4 quaternion components);
@@ -31,7 +32,9 @@
 #include "mfem.hpp"
 
 #include <cmath>
+#include <fstream>
 #include <memory>
+#include <string>
 
 // =================================================================================================
 // State variable functions: correct ones
@@ -185,4 +188,37 @@ void StressTriaxiality(std::shared_ptr<SimulationState> sim_state,
         const double von_mises = sqrt(0.5 * (d11 * d11 + d22 * d22 + d33 * d33) + 3.0 * shear);
         triaxiality(0, ip) = (von_mises > 0.0) ? mean / von_mises : 0.0;
     });
+}
+
+/**
+ * @brief 1 on material 1 and 3 on material 2 (region index 0 and 1)
+ *
+ * A two-value distribution whose volume statistics are known exactly from the material
+ * volumes (p = volume fraction of material 2): mean 1 + 2p, variance 4p(1 - p), skewness
+ * (1 - 2p) / sqrt(p(1 - p)), excess kurtosis (1 - 6p(1 - p)) / (p(1 - p)); and per material a
+ * constant (mean 1 or 3, zero variance). No quadrature error is involved, so the statistics test
+ * checks the per-material values and their global combination exactly.
+ */
+void MaterialIndicator(std::shared_ptr<SimulationState> /* sim_state */,
+                       int region,
+                       std::shared_ptr<mfem::expt::PartialQuadratureFunction> values) {
+    *values = (region == 0) ? 1.0 : 3.0;
+}
+
+/**
+ * @brief Records which MPI ranks own elements of the region; the values are 0
+ *
+ * ExaConstit calls post-processing user functions only on the ranks that own elements of the
+ * region, so each call leaves a marker file active_rank_<rank>_region_<material number> in the
+ * working directory. The statistics test uses the markers to make sure some rank really had no
+ * elements of a material.
+ */
+void RecordActiveRanks(std::shared_ptr<SimulationState> /* sim_state */,
+                       int region,
+                       std::shared_ptr<mfem::expt::PartialQuadratureFunction> values) {
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::ofstream marker("active_rank_" + std::to_string(rank) + "_region_" +
+                         std::to_string(region + 1));
+    *values = 0.0;
 }

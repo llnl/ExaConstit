@@ -182,6 +182,13 @@ grain_file = "grains.txt"
         elastic_strain = true
         output_frequency = 1
         output_directory = "./results"
+        # Volume statistics of every average above, in results/multi_material_test/stats/
+        # (one file per statistic, region and global). The reference files in
+        # test_results/multi_material_test/stats/ show what each output file looks like.
+        statistics = "all"
+        [PostProcessing.volume_averages.histograms]
+            stress = { bins = 10, range = [-0.25, 0.25] }
+            plastic_work = { bins = 6, range = [0.0, 1.2e-3] }
     [PostProcessing.surface_quantities]
         enabled = true
         # All six faces of the auto-generated mesh:

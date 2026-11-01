@@ -1,0 +1,130 @@
+# Input deck template for the volume statistics test (test/user_functions).
+#
+# Material 2 is a 2x2x2 corner block of the 5x5x5 auto mesh (grains_corner.txt written by
+# CMake), so with 4 ranks some ranks, rank 0 included, own none of its elements; the same deck also runs on 1 rank
+# and check_statistics.py compares the two. Two ExaCMech materials, 3 small steps of uniaxial
+# tension along z.
+#
+# Statistics asked for:
+# - built-in stress and equivalent plastic strain: statistics = "all", and a histogram of the
+#   equivalent plastic strain;
+# - MaterialIndicator (1 on material 1, 3 on material 2): statistics = "all" and a 4-bin
+#   histogram on [0, 4], whose values are known exactly from the material volumes;
+# - RecordActiveRanks (volume_integral): marker files of the ranks owning each material.
+Version = "0.10.1"
+basename = "statistics_np@NUM_RANKS@"
+grain_file = "@STATS_GRAIN_FILE@"
+region_mapping_file = "@STATS_REGION_MAP@"
+
+[[Materials]]
+    name = "material_A"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA_DIR@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[[Materials]]
+    name = "material_B"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA_DIR@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA_DIR@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.3
+
+[Visualizations]
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        eq_pl_strain = true
+        output_frequency = 1
+        output_directory = "./results"
+        statistics = "all"
+        [PostProcessing.volume_averages.histograms]
+            eq_pl_strain = { bins = 5, range = [0.0, 1.0e-4] }
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "MaterialIndicator"
+        type = "volume_average"
+        name = "two_value"
+        statistics = "all"
+        histogram = { bins = 4, range = [0.0, 4.0] }
+
+    [[PostProcessing.user_functions]]
+        library_path = "@USER_FUNCTION_LIBRARY@"
+        function_name = "RecordActiveRanks"
+        type = "volume_integral"
+        name = "rank_marker"
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    type = "auto"
+    [Mesh.Auto]
+        mxyz = [1.0, 1.0, 1.0]
+        nxyz = [5, 5, 5]
