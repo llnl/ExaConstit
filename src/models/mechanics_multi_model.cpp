@@ -65,7 +65,10 @@ std::unique_ptr<ExaModel> CreateMaterialModel(const MaterialOptions& mat_config,
             sim_state,
             umat_config.enable_dynamic_loading ? resolved_path : "",
             load_strategy,
-            umat_config.function_name);
+            umat_config.function_name,
+            umat_config.is_batched(),
+            umat_config.thread_safe,
+            mat_config.temperature);
 
         return umat_model;
     }
