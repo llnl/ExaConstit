@@ -370,13 +370,16 @@ private:
      * @param width Total column width
      * @return Centered string with padding
      *
-     * Centers text within the specified width using spaces for padding.
-     * If the text is longer than the width, it will be truncated.
+     * Centers text within the specified width using spaces for padding. Text that does not fit
+     * is written whole with a space on each side (never truncated).
      */
     std::string CenterText(const std::string& text, int width) const {
         const size_t width_z = static_cast<size_t>(width);
         if (text.length() >= width_z) {
-            return text.substr(0, width_z); // Truncate if too long
+            // Too long for the column: keep the whole name, separated by spaces, so every header
+            // name stays readable and splits into one word per column (the header is then wider
+            // than the data columns)
+            return " " + text + " ";
         }
 
         const size_t padding = width_z - text.length();
