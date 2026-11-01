@@ -1,0 +1,73 @@
+#------------------------------------------------------------------------------
+# ExaConstit CMake package
+#
+#   find_package(ExaConstit REQUIRED)
+#   exaconstit_add_user_library(NAME my_functions SOURCES my_functions.cpp)
+#
+# Point CMake at the install with -DExaConstit_DIR=<prefix>/lib/cmake/exaconstit (or add
+# <prefix> to CMAKE_PREFIX_PATH). Everything else (the include directories and compile
+# definitions of ExaConstit and of MFEM, RAJA, ExaCMech, SNLS, Axom, ... as ExaConstit was
+# built) comes with the package, so a user library needs no further CMake settings.
+#
+# Provides:
+#   ExaConstit::user_function     interface target with those settings
+#   exaconstit_add_user_library() builds a user function library with them
+#   EXACONSTIT_VERSION, EXACONSTIT_CXX_COMPILER
+#------------------------------------------------------------------------------
+
+get_filename_component(_exaconstit_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+set(EXACONSTIT_VERSION "@EXACONSTIT_PACKAGE_VERSION@")
+set(EXACONSTIT_CXX_COMPILER "@CMAKE_CXX_COMPILER@")
+
+# Include directories, definitions and flags of the ExaConstit build
+include("@EXACONSTIT_CONFIG_FLAGS_FILE@")
+
+if(NOT TARGET ExaConstit::user_function)
+    # ExaConstit's own headers (build tree or install tree), then those of its libraries
+    set(_exaconstit_include_dirs "@EXACONSTIT_CONFIG_HEADER_DIRS@")
+    set(_exaconstit_build_tree_dirs "@EXACONSTIT_BUILD_TREE_HEADER_DIRS@")
+    foreach(_dir ${EXACONSTIT_BUILD_INCLUDE_DIRS})
+        string(REGEX REPLACE "/+$" "" _dir "${_dir}")
+        if(NOT _dir IN_LIST _exaconstit_build_tree_dirs AND NOT _dir IN_LIST _exaconstit_include_dirs)
+            list(APPEND _exaconstit_include_dirs "${_dir}")
+        endif()
+    endforeach()
+
+    # ExaConstit's C++ flags (CMAKE_CXX_FLAGS of its build), for C++ sources only
+    separate_arguments(_exaconstit_flag_list NATIVE_COMMAND "${EXACONSTIT_BUILD_CXX_FLAGS}")
+    set(_exaconstit_cxx_flags)
+    foreach(_flag ${_exaconstit_flag_list})
+        list(APPEND _exaconstit_cxx_flags "$<$<COMPILE_LANGUAGE:CXX>:${_flag}>")
+    endforeach()
+
+    add_library(ExaConstit::user_function INTERFACE IMPORTED)
+    set_target_properties(ExaConstit::user_function PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_exaconstit_include_dirs}"
+        INTERFACE_COMPILE_DEFINITIONS "${EXACONSTIT_BUILD_COMPILE_DEFINITIONS}"
+        INTERFACE_COMPILE_OPTIONS "${_exaconstit_cxx_flags}"
+        INTERFACE_COMPILE_FEATURES cxx_std_17
+        EXACONSTIT_ENABLE_CUDA "@ENABLE_CUDA@"
+        EXACONSTIT_ENABLE_HIP "@ENABLE_HIP@"
+        EXACONSTIT_CUDA_ARCHITECTURES "@CMAKE_CUDA_ARCHITECTURES@"
+        EXACONSTIT_HIP_ARCHITECTURES "@CMAKE_HIP_ARCHITECTURES@")
+    if(APPLE)
+        # The library's ExaConstit symbols are resolved from the mechanics executable at load
+        # time; Linux allows that by default, the macOS linker must be told
+        set_property(TARGET ExaConstit::user_function APPEND PROPERTY
+                     INTERFACE_LINK_OPTIONS "LINKER:-undefined,dynamic_lookup")
+    endif()
+endif()
+
+# The library must be built with the same C++ compiler (and standard library) as ExaConstit,
+# since it shares C++ objects (std::shared_ptr<SimulationState>, ...) with the executable
+if(CMAKE_CXX_COMPILER AND NOT CMAKE_CXX_COMPILER STREQUAL EXACONSTIT_CXX_COMPILER)
+    message(WARNING "ExaConstit was built with the C++ compiler\n  ${EXACONSTIT_CXX_COMPILER}\n"
+                    "but this project uses\n  ${CMAKE_CXX_COMPILER}\n"
+                    "User function libraries must be built with the same compiler; configure "
+                    "with -DCMAKE_CXX_COMPILER=${EXACONSTIT_CXX_COMPILER} if the two differ.")
+endif()
+
+include("@EXACONSTIT_CONFIG_USER_LIBRARY_MODULE@")
+
+set(ExaConstit_FOUND TRUE)

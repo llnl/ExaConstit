@@ -82,6 +82,7 @@
 #include "system_driver.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
+#include "utilities/user_function_loader.hpp"
 
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
@@ -179,6 +180,11 @@ int main(int argc, char* argv[]) {
         umpire::util::initialize_io(false);
 #endif
         toml_opt.print_options();
+
+        // Load every user function named in the options (state variable and post-processing
+        // functions) now, so a missing library or a wrong signature stops the run before any
+        // mesh or material setup, with the required signature in the message.
+        exaconstit::CheckUserFunctions(toml_opt);
 
         /**
          * **PHASE 3: DEVICE CONFIGURATION AND MEMORY MANAGEMENT**
