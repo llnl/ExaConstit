@@ -2,11 +2,7 @@
 # Sources
 #------------------------------------------------------------------------------
 # The header of user classes (exaconstit_user.hpp) names the compiler ExaConstit was built with
-# (in CUDA builds the C++ compiler may be nvcc; user libraries need only its host compiler)
-set(EXACONSTIT_USER_CXX "${CMAKE_CXX_COMPILER}")
-if(ENABLE_CUDA AND CMAKE_CUDA_HOST_COMPILER)
-    set(EXACONSTIT_USER_CXX "${CMAKE_CUDA_HOST_COMPILER}")
-endif()
+# (EXACONSTIT_USER_CXX, set in the top-level CMakeLists.txt)
 configure_file(${PROJECT_SOURCE_DIR}/src/exaconstit_user.hpp.in
                ${HEADER_INCLUDE_DIR}/exaconstit_user.hpp @ONLY)
 

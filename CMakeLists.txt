@@ -68,6 +68,13 @@ include(cmake/CMakeBasics.cmake)
 ################################
 # Add source subdirectories
 ################################
+# C++ compiler for user libraries that use no ExaConstit code (user classes, UMATs): in CUDA
+# builds the C++ compiler may be nvcc, and those libraries need only its host compiler
+set(EXACONSTIT_USER_CXX "${CMAKE_CXX_COMPILER}")
+if(ENABLE_CUDA AND CMAKE_CUDA_HOST_COMPILER)
+    set(EXACONSTIT_USER_CXX "${CMAKE_CUDA_HOST_COMPILER}")
+endif()
+
 add_subdirectory(src/)
 
 if(ENABLE_TESTS)

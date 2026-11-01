@@ -161,4 +161,4 @@ add_test(NAME test_umat_batched_example_build
                  --build-and-test ${CMAKE_SOURCE_DIR}/examples/umat_batched
                                   ${CMAKE_CURRENT_BINARY_DIR}/example_build
                  --build-generator ${CMAKE_GENERATOR}
-                 --build-options -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+                 --build-options -DCMAKE_CXX_COMPILER=${EXACONSTIT_USER_CXX})
