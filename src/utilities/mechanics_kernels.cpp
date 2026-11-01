@@ -159,36 +159,5 @@ void ApplyBBarVelocityGradient(const int nqpts,
         }
     });
 }
-
-void ElementJacobians(const int nqpts,
-                      const int nelems,
-                      const int nnodes,
-                      const double* loc_grad_data,
-                      const double* coords_data,
-                      double* jacobian_data,
-                      const int* const local2global) {
-    const int elem_stride = 3 * nnodes;
-    const int dshape_qpt_stride = 3 * nnodes;
-    const std::ptrdiff_t jac_elem_stride = 9 * static_cast<std::ptrdiff_t>(nqpts);
-    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i_local) {
-        const int i_input = local2global ? local2global[i_local] : i_local;
-        // x(a, i): coordinate i of node a; dshape(a, s): dN_a / dxi_s (both column-major)
-        const double* x = coords_data + static_cast<std::ptrdiff_t>(i_input) * elem_stride;
-        double* jac_elem = jacobian_data + i_local * jac_elem_stride;
-        for (int q = 0; q < nqpts; ++q) {
-            const double* dshape = loc_grad_data + q * dshape_qpt_stride;
-            double* jac = jac_elem + 9 * q;
-            for (int s = 0; s < 3; ++s) {
-                for (int i = 0; i < 3; ++i) {
-                    double sum = 0.0;
-                    for (int a = 0; a < nnodes; ++a) {
-                        sum += x[a + nnodes * i] * dshape[a + nnodes * s];
-                    }
-                    jac[i + 3 * s] = sum;
-                }
-            }
-        }
-    });
-}
 } // end namespace kernel
 } // end namespace exaconstit

@@ -116,15 +116,18 @@ using UmatFunction = void (*)(double* stress,
  *   kstep, kinc
  *
  * Each point reports its own PNEWDT (no reduction needed in user code); ExaConstit uses the
- * smallest value, and a value below 1 makes it retry the step with a smaller time step.
+ * smallest value. A value below 1 fails the material update for the current Newton iteration,
+ * as for standard UMATs: with automatic time stepping ([Time.Auto]) the step is retried with a
+ * smaller time step, otherwise the step is reported as not converged.
  *
- * Memory: every pointer is in ExaConstit's memory space for the run. On a GPU run
- * (`rtmodel = "GPU"`) all arrays are device arrays, so the function must do its work on the
- * GPU (CUDA, HIP, OpenMP target with is_device_ptr, ...); ExaConstit waits for the device
- * after the call returns. On CPU and OpenMP runs they are ordinary host arrays and the function
- * may use OpenMP over the points. Scalars that are not arrays in the list above (ndi, nshr,
- * ntens, nstatv, nprops, layer, kspt, kstep, kinc, dtime, time, cmname) and the shared props
- * array live in the same memory space as the other arguments.
+ * Memory: the arrays (every argument with an NPTS dimension, and PROPS) are in ExaConstit's
+ * memory space for the run. On a GPU run (`rtmodel = "GPU"`) they are device arrays, so the
+ * function must do its work on the GPU (CUDA, HIP, OpenMP target with is_device_ptr, ...);
+ * ExaConstit waits for the device after the call returns. On CPU and OpenMP runs they are
+ * ordinary host arrays and the function may use OpenMP over the points. The remaining
+ * arguments (npts, ndi, nshr, ntens, nstatv, nprops, layer, kspt, kstep, kinc, dtime, time,
+ * cmname) are always in host memory, so the code that launches the GPU work can read the
+ * sizes directly.
  */
 using UmatBatchFunction = void (*)(int* npts,
                                    double* stress,

@@ -5,8 +5,19 @@
 #include "ECMech_const.h"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
+
+namespace {
+/// Lower-case copy of an option string, so keyword values are case-insensitive
+std::string ToLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+} // namespace
 
 GrainInfo GrainInfo::from_toml(const toml::value& toml_input) {
     GrainInfo info;
@@ -133,7 +144,7 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
 
     // New dynamic loading fields
     if (toml_input.contains("load_strategy")) {
-        options.load_strategy = toml::find<std::string>(toml_input, "load_strategy");
+        options.load_strategy = ToLower(toml::find<std::string>(toml_input, "load_strategy"));
     }
 
     if (toml_input.contains("enable_dynamic_loading")) {
@@ -148,11 +159,7 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
     }
 
     if (toml_input.contains("interface")) {
-        options.interface = toml::find<std::string>(toml_input, "interface");
-        std::transform(options.interface.begin(),
-                       options.interface.end(),
-                       options.interface.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        options.interface = ToLower(toml::find<std::string>(toml_input, "interface"));
     }
 
     if (toml_input.contains("thread_safe")) {
@@ -430,16 +437,20 @@ bool UmatOptions::validate() const {
     }
 
     if (is_batched()) {
-        // The batched function has its own signature, so it can't be the built-in UMAT or be
-        // found under the standard UMAT names (umat_call is the default function_name)
+        // The batched function has its own signature, so it can't be the built-in UMAT or a
+        // function with one of the standard UMAT names (umat_call is the default
+        // function_name): calling a standard UMAT as a batched one shifts every argument
         if (!enable_dynamic_loading) {
             WARNING_0_OPT("Error: UMAT interface = 'batched' needs a library "
                           "(enable_dynamic_loading = true and library_path)");
             return false;
         }
-        if (function_name.empty() || function_name == "umat_call" || function_name == "auto") {
+        const std::string name = ToLower(function_name);
+        if (name.empty() || name == "auto" || name == "umat_call" || name == "umat" ||
+            name == "userumat") {
             WARNING_0_OPT("Error: UMAT interface = 'batched' needs function_name set to the "
-                          "name of the batched function in the library");
+                          "name of the batched function in the library (not a standard UMAT "
+                          "name such as umat, userumat or umat_call)");
             return false;
         }
         if (thread_safe) {

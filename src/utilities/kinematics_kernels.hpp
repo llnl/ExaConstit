@@ -4,6 +4,7 @@
 #include "mfem/linalg/kernels.hpp"
 
 #include <cmath>
+#include <type_traits>
 
 /**
  * @file kinematics_kernels.hpp
@@ -11,7 +12,9 @@
  * CPU or the GPU.
  *
  * Every routine works on one material point and on plain arrays, so it can be called inside an
- * mfem::forall loop on any device. Conventions used throughout:
+ * mfem::forall loop on any device. Plain 3x3 algebra (determinant, inverse, product) comes from
+ * MFEM's device kernels in mfem/linalg/kernels.hpp (mfem::kernels::Det<3>, CalcInverse<3>,
+ * Mult). Conventions used throughout:
  * - 3x3 tensors are stored column by column (column-major), the same layout MFEM's DenseMatrix,
  *   GradCalc and the Abaqus UMAT arrays (DFGRD0, DFGRD1, DROT) use: entry (i, j) is at
  *   index i + 3 j.
@@ -26,50 +29,9 @@
 namespace exaconstit {
 namespace kernel {
 
-/**
- * @brief Determinant of a 3x3 tensor.
- * @param a tensor, column-major
- * @return det(a)
- */
-MFEM_HOST_DEVICE inline double Det3(const double* a) {
-    return a[0] * (a[4] * a[8] - a[5] * a[7]) - a[3] * (a[1] * a[8] - a[2] * a[7]) +
-           a[6] * (a[1] * a[5] - a[2] * a[4]);
-}
-
-/**
- * @brief Inverse of a 3x3 tensor.
- * @param a tensor, column-major (must be invertible; deformation gradients have det > 0)
- * @param[out] inv a^-1, column-major (must not alias a)
- * @return det(a)
- */
-MFEM_HOST_DEVICE inline double Inverse3(const double* a, double* inv) {
-    const double det = Det3(a);
-    const double c = 1.0 / det;
-    inv[0] = c * (a[4] * a[8] - a[7] * a[5]);
-    inv[1] = c * (a[7] * a[2] - a[1] * a[8]);
-    inv[2] = c * (a[1] * a[5] - a[4] * a[2]);
-    inv[3] = c * (a[6] * a[5] - a[3] * a[8]);
-    inv[4] = c * (a[0] * a[8] - a[6] * a[2]);
-    inv[5] = c * (a[3] * a[2] - a[0] * a[5]);
-    inv[6] = c * (a[3] * a[7] - a[6] * a[4]);
-    inv[7] = c * (a[6] * a[1] - a[0] * a[7]);
-    inv[8] = c * (a[0] * a[4] - a[3] * a[1]);
-    return det;
-}
-
-/**
- * @brief Product of two 3x3 tensors, c = a b.
- * @param a left tensor, column-major
- * @param b right tensor, column-major
- * @param[out] c a b, column-major (must not alias a or b)
- */
-MFEM_HOST_DEVICE inline void Mult3(const double* a, const double* b, double* c) {
-    for (int j = 0; j < 3; ++j) {
-        for (int i = 0; i < 3; ++i) {
-            c[i + 3 * j] = a[i] * b[3 * j] + a[i + 3] * b[1 + 3 * j] + a[i + 6] * b[2 + 3 * j];
-        }
-    }
-}
+// The routines below hand double arrays to MFEM's 3x3 kernels, which take mfem::real_t
+static_assert(std::is_same<mfem::real_t, double>::value,
+              "kinematics_kernels.hpp needs MFEM built with double precision (real_t = double)");
 
 /**
  * @brief Incremental deformation gradient over a time step, F_incr = F_end F_beg^-1.
@@ -84,8 +46,8 @@ MFEM_HOST_DEVICE inline void Mult3(const double* a, const double* b, double* c) 
 MFEM_HOST_DEVICE inline void
 IncrementalDefGrad(const double* f_beg, const double* f_end, double* f_incr) {
     double f_beg_inv[9];
-    Inverse3(f_beg, f_beg_inv);
-    Mult3(f_end, f_beg_inv, f_incr);
+    mfem::kernels::CalcInverse<3>(f_beg, f_beg_inv);
+    mfem::kernels::Mult(3, 3, 3, f_end, f_beg_inv, f_incr);
 }
 
 /**
@@ -124,7 +86,7 @@ MFEM_HOST_DEVICE inline void PolarRotation(const double* f, double* r) {
             }
         }
     }
-    Mult3(f, u_inv, r);
+    mfem::kernels::Mult(3, 3, 3, f, u_inv, r);
 }
 
 /**
@@ -139,7 +101,7 @@ MFEM_HOST_DEVICE inline void PolarRotation(const double* f, double* r) {
  */
 MFEM_HOST_DEVICE inline void EulerianStrain(const double* f, double* e) {
     double f_inv[9];
-    Inverse3(f, f_inv);
+    mfem::kernels::CalcInverse<3>(f, f_inv);
     for (int j = 0; j < 3; ++j) {
         for (int i = 0; i < 3; ++i) {
             // (F^-T F^-1)(i, j) = sum_k F^-1(k, i) F^-1(k, j)

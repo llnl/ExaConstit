@@ -7,7 +7,8 @@
  *   Eulerian strain, inverse, incremental deformation gradient) against the host DenseMatrix
  *   routines of utilities/strain_measures.hpp on time-step-sized deformation gradients.
  * - The way AbaqusUmatModel gets its deformation gradients: reference Jacobians from the
- *   reference nodes (ElementJacobians), then GradCalc of the deformed nodes. On a curved
+ *   reference nodes (MFEM's QuadratureInterpolator, NATIVE dof order), then GradCalc of the
+ *   deformed nodes with the operator's shape derivatives. On a curved
  *   second-order hexahedron moved by an affine motion x = A X + b, F must equal A at every
  *   quadrature point (to round-off), and the reference Jacobians must match MFEM's element
  *   transformation.
@@ -38,7 +39,7 @@ void RandomDefGrad(std::mt19937& gen, double stretch, double max_angle, double* 
     const double c = std::cos(theta), s = std::sin(theta);
     const double r[9] = {c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0};
     double rf[9];
-    exaconstit::kernel::Mult3(r, f, rf);
+    mfem::kernels::Mult(3, 3, 3, r, f, rf);
     for (int i = 0; i < 9; ++i) {
         f[i] = rf[i];
     }
@@ -51,7 +52,7 @@ TEST(KinematicsKernels, PolarRotationIsPolarDecomposition) {
     for (int trial = 0; trial < 500; ++trial) {
         double f[9], r[9];
         RandomDefGrad(gen, 0.3, 3.0, f);
-        ASSERT_GT(exaconstit::kernel::Det3(f), 0.0);
+        ASSERT_GT(mfem::kernels::Det<3>(f), 0.0);
         exaconstit::kernel::PolarRotation(f, r);
         double rt[9], rtr[9], u_sym[9];
         for (int i = 0; i < 3; ++i) {
@@ -59,15 +60,15 @@ TEST(KinematicsKernels, PolarRotationIsPolarDecomposition) {
                 rt[i + 3 * j] = r[j + 3 * i];
             }
         }
-        exaconstit::kernel::Mult3(rt, r, rtr);
-        exaconstit::kernel::Mult3(rt, f, u_sym);
+        mfem::kernels::Mult(3, 3, 3, rt, r, rtr);
+        mfem::kernels::Mult(3, 3, 3, rt, f, u_sym);
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
                 EXPECT_NEAR(rtr[i + 3 * j], (i == j) ? 1.0 : 0.0, 1e-12);
                 EXPECT_NEAR(u_sym[i + 3 * j], u_sym[j + 3 * i], 1e-12);
             }
         }
-        EXPECT_NEAR(exaconstit::kernel::Det3(r), 1.0, 1e-12);
+        EXPECT_NEAR(mfem::kernels::Det<3>(r), 1.0, 1e-12);
         // U positive definite: its trace is the sum of the principal stretches
         EXPECT_GT(u_sym[0] + u_sym[4] + u_sym[8], 0.0);
     }
@@ -90,7 +91,7 @@ TEST(KinematicsKernels, PolarRotationOfKnownDecomposition) {
     }
     const double u0[9] = {1.10, 0.05, -0.02, 0.05, 0.95, 0.03, -0.02, 0.03, 1.02};
     double f[9], r[9];
-    exaconstit::kernel::Mult3(r0, u0, f);
+    mfem::kernels::Mult(3, 3, 3, r0, u0, f);
     exaconstit::kernel::PolarRotation(f, r);
     for (int i = 0; i < 9; ++i) {
         EXPECT_NEAR(r[i], r0[i], 1e-12) << "entry " << i;
@@ -104,7 +105,7 @@ TEST(KinematicsKernels, MatchHostStrainMeasures) {
     for (int trial = 0; trial < 200; ++trial) {
         double f[9];
         RandomDefGrad(gen, 0.05, 0.2, f);
-        ASSERT_GT(exaconstit::kernel::Det3(f), 0.0);
+        ASSERT_GT(mfem::kernels::Det<3>(f), 0.0);
 
         // Rotation: the original UMAT code passed DROT = CalcPolarDecompDefGrad of a transposed
         // copy of F_incr (DenseMatrix(F, 3) is MFEM's transpose-copy constructor). That host
@@ -135,7 +136,7 @@ TEST(KinematicsKernels, MatchHostStrainMeasures) {
         double f_end[9], f_incr[9], back[9];
         RandomDefGrad(gen, 0.3, 3.0, f_end);
         exaconstit::kernel::IncrementalDefGrad(f, f_end, f_incr);
-        exaconstit::kernel::Mult3(f_incr, f, back);
+        mfem::kernels::Mult(3, 3, 3, f_incr, f, back);
         for (int i = 0; i < 9; ++i) {
             EXPECT_NEAR(back[i], f_end[i], 1e-13);
         }
@@ -208,10 +209,14 @@ TEST(KinematicsKernels, ExactDeformationGradientOnCurvedElement) {
     mfem::Vector x_ref_el(restriction->Height());
     restriction->Mult(*nodes, x_ref_el);
 
-    // Reference Jacobians vs MFEM's element transformation
+    // Reference Jacobians d X / d xi from MFEM's QuadratureInterpolator (layout byVDIM:
+    // (3, 3, nqpts, nelems) column-major, the layout GradCalc reads), vs the element
+    // transformation
+    const mfem::QuadratureInterpolator* qi = fes->GetQuadratureInterpolator(ir);
+    qi->SetOutputLayout(mfem::QVectorLayout::byVDIM);
+    qi->DisableTensorProducts();
     mfem::Vector jac_ref(9 * nqpts);
-    exaconstit::kernel::ElementJacobians(
-        nqpts, 1, nnodes, dshape.Read(), x_ref_el.Read(), jac_ref.Write());
+    qi->Derivatives(x_ref_el, jac_ref);
     jac_ref.HostRead();
     mfem::ElementTransformation* trans = mesh.GetElementTransformation(0);
     for (int q = 0; q < nqpts; ++q) {

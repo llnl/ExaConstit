@@ -1117,35 +1117,6 @@ void ApplyBBarVelocityGradient(const int nqpts,
 /** @} */
 
 /**
- * @brief Element Jacobians d x / d xi at every quadrature point, from the element's nodal
- * coordinates.
- *
- * @param nqpts quadrature points per element
- * @param nelems number of elements to process (local count when local2global is given)
- * @param nnodes nodes per element
- * @param loc_grad_data reference shape derivatives, layout (nnodes, 3, nqpts):
- *        point q at q * 3 * nnodes (the layout GradCalc reads)
- * @param coords_data element nodal coordinates of any configuration, layout (nnodes, 3, input
- *        elements): element e at e * 3 * nnodes (the element-vector layout of the velocity)
- * @param[out] jacobian_data Jacobians, layout (3, 3, nqpts, nelems), column-major: element e,
- *        point q at e * 9 * nqpts + 9 * q (the layout GradCalc reads)
- * @param local2global optional map from processed (local) element index to the input element
- *        index used for coords_data; nullptr: identity
- *
- * @details J(i, s) = sum_a x_a,i dN_a / dxi_s. With reference coordinates it gives the reference
- * Jacobians that GradCalc needs to turn nodal positions into deformation gradients
- * F = d x / d X (used by AbaqusUmatModel). Works for any element order, curved elements
- * included, since only the nodes and shape functions enter.
- */
-void ElementJacobians(const int nqpts,
-                      const int nelems,
-                      const int nnodes,
-                      const double* loc_grad_data,
-                      const double* coords_data,
-                      double* jacobian_data,
-                      const int* const local2global = nullptr);
-
-/**
  * @brief Smallest and largest value of each component of a partial quadrature function
  *
  * @param pqf Region quadrature function (all of its points belong to the region)
