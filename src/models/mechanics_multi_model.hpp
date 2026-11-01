@@ -137,7 +137,8 @@ private:
      *    then copied into "state_var_end" so the first step starts from the user's values.
      *
      * Region i is material i of the options (0-based), the region number passed to the user
-     * functions.
+     * functions. Either key can name a user class from a factory instead (exaconstit_user.hpp,
+     * utilities/user_classes.hpp).
      */
     void RunStateVariableUserFunctions(const ExaOptions& options);
 

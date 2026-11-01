@@ -165,6 +165,14 @@ void MultiExaModel::RunStateVariableUserFunctions(const ExaOptions& options) {
     // all ranks (as for the ExaCMech names registered above).
     for (size_t region_idx = 0; region_idx < options.materials.size(); ++region_idx) {
         const auto& state_vars = options.materials[region_idx].state_vars;
+        if (!state_vars.register_factory.empty()) {
+            exaconstit::RunUserRegisterObject(
+                m_sim_state,
+                static_cast<int>(region_idx),
+                state_vars,
+                exaconstit::MaterialLabel(options.materials[region_idx]));
+            continue;
+        }
         if (state_vars.register_function.empty()) {
             continue;
         }
@@ -191,17 +199,27 @@ void MultiExaModel::RunStateVariableUserFunctions(const ExaOptions& options) {
     for (size_t region_idx = 0; region_idx < options.materials.size(); ++region_idx) {
         const int region = static_cast<int>(region_idx);
         const auto& state_vars = options.materials[region_idx].state_vars;
-        if (state_vars.initialize_function.empty() || !m_sim_state->IsRegionActive(region)) {
+        if (!m_sim_state->IsRegionActive(region)) {
             continue;
         }
-        const auto initialize_function =
-            exaconstit::LoadUserFunction<exaconstit::StateVariableFunction>(
-                state_vars.library_path,
-                state_vars.initialize_function,
-                exaconstit::StateVariableFunctionSignature(state_vars.initialize_function),
-                "initialize_function of material " +
-                    exaconstit::MaterialLabel(options.materials[region_idx]));
-        initialize_function(m_sim_state, region);
+        if (!state_vars.initialize_factory.empty()) {
+            exaconstit::RunUserInitializeObject(
+                m_sim_state,
+                region,
+                state_vars,
+                exaconstit::MaterialLabel(options.materials[region_idx]));
+        } else if (!state_vars.initialize_function.empty()) {
+            const auto initialize_function =
+                exaconstit::LoadUserFunction<exaconstit::StateVariableFunction>(
+                    state_vars.library_path,
+                    state_vars.initialize_function,
+                    exaconstit::StateVariableFunctionSignature(state_vars.initialize_function),
+                    "initialize_function of material " +
+                        exaconstit::MaterialLabel(options.materials[region_idx]));
+            initialize_function(m_sim_state, region);
+        } else {
+            continue;
+        }
 
         // Data-only copy between two functions on the same points (the copy runs on the
         // device when the values live there, on the host otherwise).

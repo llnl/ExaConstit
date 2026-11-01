@@ -79,6 +79,20 @@ grain_file = "grains.txt"
 # Checks: right after reading this file, ExaConstit loads every function listed here. A
 # missing library, a missing function or a function with different arguments stops the
 # run immediately with a message that shows the exact signature required.
+#
+# C++ classes instead of functions (for example with one shared ExaConstit installation on
+# an HPC machine): each of the three keys can name a factory in your library instead of a
+# function:
+#   register_function = { factory = "MakeMyClasses", variant = "my_names" }
+# Your library then includes only the header exaconstit_user.hpp from the ExaConstit
+# installation (no other ExaConstit or MFEM headers, no CMake package) and is built with
+# one compiler command, written at the top of that header. Your classes ask for the data
+# they need by name (cauchy_stress, def_grad, state_vars, a named state variable, coords,
+# ...) and get it as plain arrays; the header lists every name, and an unknown name stops
+# the run with the list of names the material has. variant (optional, default "") is
+# handed to the factory, so one factory can make several classes. Two beginner examples,
+# with build and options instructions, are in examples/user_classes. A post-processing
+# entry given as a table takes its name from the variant when name is not given.
 
 # =====================================
 # MATERIAL DEFINITIONS
@@ -153,6 +167,8 @@ grain_file = "grains.txt"
         # materials the built-in names come first and cannot be changed; you can only
         # name the slots ExaCMech leaves unnamed.
         # register_function = "RegisterMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # register_function = { factory = "MakeMyStateVariables", variant = "names" }
         #
         # Function that sets the starting values of this material's state variables,
         # point by point (for example an initial damage field). It writes the values at
@@ -161,6 +177,8 @@ grain_file = "grains.txt"
         # after ExaCMech's own initialization have been applied. It is not called when
         # restarting from a checkpoint: the saved state is used instead.
         # initialize_function = "InitializeMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # initialize_function = { factory = "MakeMyStateVariables", variant = "starting_damage" }
 
     # ===== Visualized state variables (optional) =====
     # State variables of this material to write to the visualization files (needs a
@@ -1136,7 +1154,9 @@ grain_file = "grains.txt"
     # Keys of an entry:
     #   library_path    Shared library with the function (leave out if the function is
     #                   compiled into the ExaConstit executable)
-    #   function_name   Name of the function (required)
+    #   function_name   Name of the function (required), or a class from a factory:
+    #                   { factory = "MakeMyOutput", variant = "..." } (see USER
+    #                   FUNCTIONS at the top of this file)
     #   type            What to do with the values (required):
     #                     "visualization"   write a field to the visualization files
     #                                       (follows [Visualizations] field_location and
@@ -1147,7 +1167,8 @@ grain_file = "grains.txt"
     #                   Text files are written at the [PostProcessing.volume_averages]
     #                   output frequency, next to the built-in volume averages.
     #   name            Field name, or the name used in the text file names
-    #                   (default: function_name). Two visualization entries must have
+    #                   (default: function_name, or the variant of a factory table).
+    #                   Two visualization entries must have
     #                   different names, and so must two volume entries (average or
     #                   integral), since both write avg_<name>_*.txt files.
     #   num_components  Number of values the function computes per point, e.g. 1 for

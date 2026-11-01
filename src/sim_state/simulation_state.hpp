@@ -664,6 +664,28 @@ public:
     }
 
     /**
+     * @brief Base names of the quadrature functions registered for a region
+     *
+     * @param region Region index (0-based)
+     * @return Names as passed to GetQuadratureFunction(name, region), e.g. "state_var_beg"
+     *
+     * @details Matches registry names ending in the region's name, so a name can show up that
+     * belongs to a region whose name ends the same way; callers check the function's space.
+     */
+    std::vector<std::string> GetQuadratureFunctionNames(const int region) const {
+        const std::string suffix = "_" + GetRegionName(region);
+        std::vector<std::string> names;
+        for (const auto& entry : m_map_qfs) {
+            const auto& key = entry.first;
+            if (key.size() > suffix.size() &&
+                key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                names.push_back(key.substr(0, key.size() - suffix.size()));
+            }
+        }
+        return names;
+    }
+
+    /**
      * @brief Add a new quadrature function for a specific region
      *
      * @param qf_name Base quadrature function name

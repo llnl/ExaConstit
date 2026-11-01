@@ -1230,8 +1230,8 @@ private:
     struct UserFunctionOutput {
         /// The entry's options (name, type, components, regions, global)
         UserFunctionOptions options;
-        /// The user's function
-        exaconstit::PostProcessingFunction function = nullptr;
+        /// The user's function, or the call of the user's class (factory table)
+        exaconstit::PostProcessingCall function;
         /// Selected regions (0-based)
         std::vector<int> regions;
         /// Point values per region index

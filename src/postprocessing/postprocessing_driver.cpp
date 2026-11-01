@@ -1385,13 +1385,6 @@ void PostProcessingDriver::SetupUserFunctions() {
         entry.options = entries[index];
         const auto& options = entry.options;
 
-        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
-        entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
-            options.library_path,
-            options.function_name,
-            exaconstit::PostProcessingFunctionSignature(options.function_name),
-            "post-processing user function of entry '" + options.name + "'");
-
         // Selected regions (options use material numbers starting at 1); all when none given
         if (options.regions.empty()) {
             for (int region = 0; region < static_cast<int>(m_num_regions); region++) {
@@ -1401,6 +1394,18 @@ void PostProcessingDriver::SetupUserFunctions() {
             for (const int material : options.regions) {
                 entry.regions.push_back(material - 1);
             }
+        }
+
+        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
+        if (options.factory.empty()) {
+            entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
+                options.library_path,
+                options.function_name,
+                exaconstit::PostProcessingFunctionSignature(options.function_name),
+                "post-processing user function of entry '" + options.name + "'");
+        } else {
+            entry.function = exaconstit::MakeUserPostProcessingCall(
+                m_sim_state, index, options, entry.regions);
         }
 
         // Point values on each selected region this rank owns elements of, on the region's

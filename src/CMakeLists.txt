@@ -1,8 +1,18 @@
 #------------------------------------------------------------------------------
 # Sources
 #------------------------------------------------------------------------------
+# The header of user classes (exaconstit_user.hpp) names the compiler ExaConstit was built with
+# (in CUDA builds the C++ compiler may be nvcc; user libraries need only its host compiler)
+set(EXACONSTIT_USER_CXX "${CMAKE_CXX_COMPILER}")
+if(ENABLE_CUDA AND CMAKE_CUDA_HOST_COMPILER)
+    set(EXACONSTIT_USER_CXX "${CMAKE_CUDA_HOST_COMPILER}")
+endif()
+configure_file(${PROJECT_SOURCE_DIR}/src/exaconstit_user.hpp.in
+               ${HEADER_INCLUDE_DIR}/exaconstit_user.hpp @ONLY)
+
 set(EXACONSTIT_HEADERS
     ${HEADER_INCLUDE_DIR}/ExaConstit_Version.h
+    ${HEADER_INCLUDE_DIR}/exaconstit_user.hpp
     system_driver.hpp
     boundary_conditions/BCData.hpp
     boundary_conditions/BCManager.hpp
@@ -36,6 +46,7 @@ set(EXACONSTIT_HEADERS
     utilities/rotations.hpp
     utilities/strain_measures.hpp
     utilities/unified_logger.hpp
+    utilities/user_classes.hpp
     utilities/user_function_loader.hpp
     umats/userumat.h
     umats/unified_umat_loader.hpp
@@ -78,6 +89,7 @@ set(EXACONSTIT_SOURCES
     solvers/trust_region_solver.cpp
     utilities/mechanics_kernels.cpp
     utilities/unified_logger.cpp
+    utilities/user_classes.cpp
     )
 
 # Built-in UMAT (used when a UMAT material sets enable_dynamic_loading = false). It is an
@@ -290,7 +302,9 @@ configure_file(${PROJECT_SOURCE_DIR}/cmake/ExaConstitConfig.cmake.in
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/src/
         DESTINATION include
         FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
-install(FILES ${HEADER_INCLUDE_DIR}/ExaConstit_Version.h DESTINATION include)
+install(FILES ${HEADER_INCLUDE_DIR}/ExaConstit_Version.h
+              ${HEADER_INCLUDE_DIR}/exaconstit_user.hpp
+        DESTINATION include)
 install(TARGETS exaconstit_static DESTINATION lib)
 install(TARGETS mechanics DESTINATION bin)
 install(FILES ${PROJECT_BINARY_DIR}/install_config/ExaConstitConfig.cmake
