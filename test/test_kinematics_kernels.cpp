@@ -98,6 +98,110 @@ TEST(KinematicsKernels, PolarRotationOfKnownDecomposition) {
     }
 }
 
+TEST(KinematicsKernels, LogStrainAndRotation) {
+    // F = R0 U0 with a known rotation and a symmetric stretch U0 = Q diag(s) Q^T: the left
+    // stretch is V = R0 U0 R0^T, so ln V = R0 Q diag(ln s) Q^T R0^T
+    const double angle = 0.7;
+    const double n[3] = {2.0 / 3.0, -1.0 / 3.0, 2.0 / 3.0};
+    const double c = std::cos(angle), s = std::sin(angle);
+    double r0[9];
+    for (int j = 0; j < 3; ++j) {
+        for (int i = 0; i < 3; ++i) {
+            const double cross[3][3] = {
+                {0.0, -n[2], n[1]}, {n[2], 0.0, -n[0]}, {-n[1], n[0], 0.0}};
+            r0[i + 3 * j] = ((i == j) ? c : 0.0) + s * cross[i][j] + (1.0 - c) * n[i] * n[j];
+        }
+    }
+    // Q: rotation of 0.4 rad about z; principal stretches 1.3, 0.8, 1.1
+    const double cq = std::cos(0.4), sq = std::sin(0.4);
+    const double q[9] = {cq, sq, 0.0, -sq, cq, 0.0, 0.0, 0.0, 1.0};
+    const double stretch[3] = {1.3, 0.8, 1.1};
+    double u0[9] = {0.0}, ln_u0[9] = {0.0};
+    for (int k = 0; k < 3; ++k) {
+        for (int j = 0; j < 3; ++j) {
+            for (int i = 0; i < 3; ++i) {
+                u0[i + 3 * j] += stretch[k] * q[i + 3 * k] * q[j + 3 * k];
+                ln_u0[i + 3 * j] += std::log(stretch[k]) * q[i + 3 * k] * q[j + 3 * k];
+            }
+        }
+    }
+    double f[9], tmp[9], ln_v_expected[9], ln_v[9];
+    mfem::kernels::Mult(3, 3, 3, r0, u0, f);
+    mfem::kernels::Mult(3, 3, 3, r0, ln_u0, tmp);
+    mfem::kernels::MultABt(3, 3, 3, tmp, r0, ln_v_expected);
+    exaconstit::kernel::LogStrain(f, ln_v);
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_NEAR(ln_v[i], ln_v_expected[i], 1e-12) << "entry " << i;
+    }
+
+    // Against the host routine
+    mfem::DenseMatrix f_host(3), e_host(3);
+    for (int i = 0; i < 9; ++i) {
+        f_host.Data()[i] = f[i];
+    }
+    CalcLogStrain(e_host, f_host);
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_NEAR(ln_v[i], e_host.Data()[i], 1e-12);
+    }
+
+    // Rotating ln U0 by R0 in Abaqus Voigt form gives ln V (strain: engineering shears);
+    // rotating a stress uses tensor shears
+    double v_strain[6], v_stress[6], expected[6];
+    exaconstit::kernel::StrainToAbaqusVoigt(ln_u0, v_strain);
+    exaconstit::kernel::RotateAbaqusVoigt(r0, v_strain, 2.0);
+    exaconstit::kernel::StrainToAbaqusVoigt(ln_v_expected, expected);
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_NEAR(v_strain[i], expected[i], 1e-12) << "strain " << i;
+    }
+    const double sig[6] = {100.0, -20.0, 35.0, 12.0, -7.0, 4.0}; // Abaqus order
+    for (int i = 0; i < 6; ++i) {
+        v_stress[i] = sig[i];
+    }
+    exaconstit::kernel::RotateAbaqusVoigt(r0, v_stress, 1.0);
+    const double t[9] = {sig[0], sig[3], sig[4], sig[3], sig[1], sig[5], sig[4], sig[5], sig[2]};
+    double rt_full[9];
+    mfem::kernels::Mult(3, 3, 3, r0, t, tmp);
+    mfem::kernels::MultABt(3, 3, 3, tmp, r0, rt_full);
+    const double stress_expected[6] = {
+        rt_full[0], rt_full[4], rt_full[8], rt_full[3], rt_full[6], rt_full[7]};
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_NEAR(v_stress[i], stress_expected[i], 1e-11) << "stress " << i;
+    }
+}
+
+TEST(KinematicsKernels, LogStrainOfSmallIncrement) {
+    // Time-step-sized increments (strains ~1e-7) must keep their relative precision (the strain
+    // increment multiplies the elastic stiffness every step), up to the ~1e-10 limit of storing
+    // F = I + O(1e-7) in double precision. F = R0 Q exp(a) Q^T with known
+    // principal log strains a, so ln V = R0 Q diag(a) Q^T R0^T exactly.
+    const double a[3] = {3.0e-7, -1.2e-7, 0.5e-7};
+    const double c0 = std::cos(2.0e-7), s0 = std::sin(2.0e-7); // small rotation about x
+    const double r0[9] = {1.0, 0.0, 0.0, 0.0, c0, s0, 0.0, -s0, c0};
+    const double cq = std::cos(0.9), sq = std::sin(0.9);
+    const double q[9] = {cq, 0.0, -sq, 0.0, 1.0, 0.0, sq, 0.0, cq}; // rotation about y
+    double u[9] = {0.0}, ln_u[9] = {0.0};
+    for (int k = 0; k < 3; ++k) {
+        for (int j = 0; j < 3; ++j) {
+            for (int i = 0; i < 3; ++i) {
+                u[i + 3 * j] += std::exp(a[k]) * q[i + 3 * k] * q[j + 3 * k];
+                ln_u[i + 3 * j] += a[k] * q[i + 3 * k] * q[j + 3 * k];
+            }
+        }
+    }
+    double f[9], tmp[9], expected[9], ln_v[9];
+    mfem::kernels::Mult(3, 3, 3, r0, u, f);
+    mfem::kernels::Mult(3, 3, 3, r0, ln_u, tmp);
+    mfem::kernels::MultABt(3, 3, 3, tmp, r0, expected);
+    exaconstit::kernel::LogStrain(f, ln_v);
+    double scale = 0.0;
+    for (int i = 0; i < 9; ++i) {
+        scale = std::max(scale, std::abs(expected[i]));
+    }
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_NEAR(ln_v[i], expected[i], 1e-9 * scale) << "entry " << i;
+    }
+}
+
 TEST(KinematicsKernels, MatchHostStrainMeasures) {
     // Time-step-sized deformation gradients (what a UMAT receives as F_incr), where the host
     // iterative polar decomposition the original UMAT code used is accurate

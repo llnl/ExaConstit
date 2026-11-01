@@ -12,10 +12,12 @@
 // every argument holds (and which outputs ExaConstit uses) in the UMAT section of
 // src/options.toml.
 //
-// The material here is a hypoelastic isotropic solid: the old stress is rotated with DROT and
-// the elastic stiffness C (PROPS = Young's modulus, Poisson's ratio) times DSTRAN is added;
-// DDSDDE = C. Writing the update for one point in a function and looping over the points is
-// all it takes to turn an existing UMAT into a batched one.
+// The material here is a hypoelastic isotropic solid: the elastic stiffness C (PROPS = Young's
+// modulus, Poisson's ratio) times DSTRAN is added to the old stress; DDSDDE = C. As in Abaqus,
+// ExaConstit has already rotated the old STRESS (and STRAN) by DROT (rotate_stress = true, the
+// default), so the UMAT does no rotation itself; an anisotropic UMAT that handles rotations
+// itself sets rotate_stress = false. Writing the update for one point in a function and looping
+// over the points is all it takes to turn an existing UMAT into a batched one.
 //
 // CPU and OpenMP runs: the arrays are ordinary CPU arrays, and the loop below runs over the
 // points with OpenMP when the library is compiled with OpenMP.
@@ -32,16 +34,13 @@
 // or with OpenMP offload: #pragma omp target teams distribute parallel for is_device_ptr(...).
 // ExaConstit waits for the GPU after the call returns.
 
-#include <cmath>
-
 namespace {
 
 /// Update of one material point (Abaqus conventions: stress order 11, 22, 33, 12, 13, 23,
-/// engineering shear strains, DROT stored column by column)
+/// engineering shear strains)
 void ElasticPoint(double* stress,
                   double* ddsdde,
                   const double* dstran,
-                  const double* drot,
                   const double* props,
                   double* pnewdt) {
     const double young = props[0];
@@ -61,29 +60,13 @@ void ElasticPoint(double* stress,
         ddsdde[(i + 3) + 6 * (i + 3)] = shear;
     }
 
-    // Rotate the old stress with the rotation increment: sigma <- R sigma R^T
-    const double s[3][3] = {{stress[0], stress[3], stress[4]},
-                            {stress[3], stress[1], stress[5]},
-                            {stress[4], stress[5], stress[2]}};
-    double rs[3][3] = {{0.0}};
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            for (int k = 0; k < 3; ++k) {
-                for (int l = 0; l < 3; ++l) {
-                    rs[i][j] += drot[i + 3 * k] * s[k][l] * drot[j + 3 * l];
-                }
-            }
-        }
-    }
-    const double s_rot[6] = {rs[0][0], rs[1][1], rs[2][2], rs[0][1], rs[0][2], rs[1][2]};
-
     // Add C : DSTRAN
     for (int i = 0; i < 6; ++i) {
         double ds = 0.0;
         for (int j = 0; j < 6; ++j) {
             ds += ddsdde[i + 6 * j] * dstran[j];
         }
-        stress[i] = s_rot[i] + ds;
+        stress[i] += ds;
     }
 
     // An elastic update never needs a smaller time step; a UMAT that does sets PNEWDT < 1
@@ -100,7 +83,7 @@ extern "C" void umat_batched(int* npts, double* stress, double* /*statev*/, doub
                              double* /*dtime*/, double* /*temp*/, double* /*dtemp*/,
                              double* /*predef*/, double* /*dpred*/, char* /*cmname*/,
                              int* /*ndi*/, int* /*nshr*/, int* ntens, int* /*nstatv*/,
-                             double* props, int* /*nprops*/, double* /*coords*/, double* drot,
+                             double* props, int* /*nprops*/, double* /*coords*/, double* /*drot*/,
                              double* pnewdt, double* /*celent*/, double* /*dfgrd0*/,
                              double* /*dfgrd1*/, int* /*noel*/, int* /*npt*/, int* /*layer*/,
                              int* /*kspt*/, int* /*kstep*/, int* /*kinc*/) {
@@ -113,7 +96,6 @@ extern "C" void umat_batched(int* npts, double* stress, double* /*statev*/, doub
         ElasticPoint(stress + nt * i,
                      ddsdde + nt * nt * i,
                      dstran + nt * i,
-                     drot + 9 * i,
                      props,
                      pnewdt + i);
     }

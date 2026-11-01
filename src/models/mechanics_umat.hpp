@@ -21,9 +21,11 @@
  *    accumulated from step to step. With the B-bar integrator both get the F-bar treatment
  *    (exaconstit::kernel::FBarElement).
  * 2. Packing: the UMAT arguments are filled for every point in the Abaqus conventions: stress
- *    in (11, 22, 33, 12, 13, 23) order, STRAN = Eulerian strain of F_beg, DSTRAN = Eulerian
- *    strain of F_incr = F_end F_beg^-1, DROT = rotation of F_incr, DFGRD0 = F_beg,
- *    DFGRD1 = F_end, COORDS = current point positions, CELENT = cube root of det(J).
+ *    in (11, 22, 33, 12, 13, 23) order, DROT = exact rotation of F_incr = F_end F_beg^-1
+ *    (polar decomposition), STRAN / DSTRAN = logarithmic (ln V, default) or Eulerian strain of
+ *    F_beg / F_incr, STRESS and STRAN rotated by DROT unless rotate_stress = false,
+ *    DFGRD0 = F_beg, DFGRD1 = F_end, COORDS = current point positions, CELENT = cube root of
+ *    the element volume near the point; see the UMAT section of src/options.toml.
  * 3. The UMAT call, in one of two forms ([Materials.Model.UMAT] interface):
  *    - "standard": the Abaqus interface (UmatFunction), once per point, on the host (arrays are
  *      copied from the GPU on GPU runs). With thread_safe = true and an OpenMP build the points
@@ -68,6 +70,12 @@ protected:
 
     /** @brief Temperature passed to the UMAT (TEMP), from the material's temperature option */
     const double m_temperature;
+
+    /** @brief STRAN / DSTRAN as logarithmic strains (true) or Eulerian strains (false) */
+    const bool m_log_strain;
+
+    /** @brief Rotate STRESS and STRAN by DROT before the call */
+    const bool m_rotate_stress;
 
     // ---------------------------------------------------------------------------------------
     // Kinematics (region-sized, in the run's memory space)
@@ -151,6 +159,8 @@ public:
      * @param material_name Material name passed to the UMAT as CMNAME
      * @param global_elem_offset Global number of this rank's first element, for NOEL
      *        (ParMesh::GetGlobalElementNum(0); computed by the caller, since it is collective)
+     * @param log_strain STRAN / DSTRAN as logarithmic (true) or Eulerian (false) strains
+     * @param rotate_stress Rotate STRESS and STRAN by DROT before the call
      */
     AbaqusUmatModel(
         const int region,
@@ -163,7 +173,9 @@ public:
         const bool thread_safe = false,
         const double temperature = 298.0,
         const std::string& material_name = "",
-        const long long global_elem_offset = 0);
+        const long long global_elem_offset = 0,
+        const bool log_strain = true,
+        const bool rotate_stress = true);
 
     /**
      * @brief Destructor - unloads the library if it is not persistent

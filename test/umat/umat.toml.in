@@ -1,11 +1,12 @@
 # Input deck template for the UMAT interface tests (test/umat/CMakeLists.txt).
 #
-# CMake fills in the @...@ fields once per case (configure_file), then the library path
+# CMake fills in the fields marked with at signs once per case (configure_file), then the library path
 # (file(GENERATE)). One UMAT material on the 5x5x5 auto mesh; the bottom face is held and the top
 # face follows a velocity gradient with tension and shear, so the points see finite rotations.
 # The same deck runs with interface = "standard" and "batched" (test_umat_elastic /
 # test_umat_elastic_batch in test_umat_functions.cpp, the same material model), with the default
-# and the B-bar integrator; check_umat.py compares the runs.
+# and the B-bar integrator, with ExaConstit or the UMAT rotating the stress (rotate_stress, third
+# property), and with both strain measures; check_umat.py compares the runs.
 Version = "0.10.1"
 basename = "umat_@CASE_NAME@"
 
@@ -14,8 +15,8 @@ basename = "umat_@CASE_NAME@"
     mech_type = "umat"
     temperature = 298.0
     [Materials.Properties]
-        num_props = 2
-        values = [3000.0, 0.3]
+        num_props = @NUM_PROPS@
+        values = [@PROPS@]
     [Materials.State_Vars]
         num_vars = 7
         values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
@@ -25,6 +26,8 @@ basename = "umat_@CASE_NAME@"
             library_path = "@UMAT_TEST_LIBRARY@"
             function_name = "@UMAT_FUNCTION@"
             interface = "@UMAT_INTERFACE@"
+            rotate_stress = @ROTATE_STRESS@
+            strain_measure = "@STRAIN_MEASURE@"
 
 [BCs]
     [[BCs.velocity_bcs]]

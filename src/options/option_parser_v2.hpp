@@ -404,6 +404,32 @@ struct UmatOptions {
     bool thread_safe = false;
 
     /**
+     * @brief Strain measure of STRAN and DSTRAN: "logarithmic" (default) or "eulerian"
+     *
+     * - "logarithmic": STRAN = ln V of DFGRD0, DSTRAN = ln V of the increment
+     *   DFGRD1 DFGRD0^-1 (exact Hencky strains in the current configuration).
+     * - "eulerian": the Eulerian (Almansi) strain 1/2 (I - B^-1) of the same tensors.
+     */
+    std::string strain_measure = "logarithmic";
+
+    /**
+     * @brief Rotate STRESS and STRAN by DROT before calling the UMAT (default true)
+     *
+     * DROT is the exact rotation of the increment (polar decomposition of DFGRD1 DFGRD0^-1).
+     * true suits UMATs written for unrotated input (isotropic models, as Abaqus pre-rotates);
+     * false passes the beginning-of-increment values as they are, for UMATs that handle
+     * rotations themselves (anisotropic models).
+     */
+    bool rotate_stress = true;
+
+    /**
+     * @brief Whether the logarithmic strain measure is selected
+     */
+    bool uses_log_strain() const {
+        return strain_measure == "logarithmic";
+    }
+
+    /**
      * @brief Whether the batched interface is selected
      */
     bool is_batched() const {

@@ -340,6 +340,20 @@ grain_file = "grains.txt"
             # ExaConstit built with OpenMP then calls the points in an OpenMP loop.
             thread_safe = false
 
+            # Strain measure of STRAN and DSTRAN:
+            # - "logarithmic" (default) = exact logarithmic (Hencky) strains ln V in the current
+            #   configuration: STRAN = ln V of DFGRD0, DSTRAN = ln V of the increment
+            #   DFGRD1 DFGRD0^-1 (no midpoint or rate approximation)
+            # - "eulerian" = the Eulerian (Almansi) strain 1/2 (I - B^-1) of the same tensors
+            strain_measure = "logarithmic"
+
+            # Rotate STRESS and STRAN by DROT (R T R^T) before calling the UMAT, as Abaqus does.
+            # DROT is the exact rotation of the increment, so the old stress is carried along
+            # with the rigid rotation of the material. Keep true (default) for UMATs written for
+            # unrotated input (isotropic models); set false for UMATs that handle rotations
+            # themselves (anisotropic models): they then get the old values as they are.
+            rotate_stress = true
+
             # ----- What ExaConstit passes to the UMAT and what it uses back -----
             # 3D only: NDI = 3, NSHR = 3, NTENS = 6. Vectors use the Abaqus order
             # (11, 22, 33, 12, 13, 23); strains use engineering shears (2 e12, ...); 3x3
@@ -349,15 +363,17 @@ grain_file = "grains.txt"
             #
             # Inputs:
             #   STRESS   Cauchy stress at the start of the increment (the converged stress of
-            #            the previous step, as the UMAT returned it; not rotated beforehand)
-            #   STATEV   state variables at the start of the increment
+            #            the previous step), rotated by DROT when rotate_stress = true
+            #   STATEV   state variables at the start of the increment (never rotated)
             #   DFGRD0   deformation gradient at the start of the increment, computed exactly
             #            from the reference and beginning-of-step mesh nodes
             #   DFGRD1   deformation gradient at the end of the increment (current Newton
             #            iterate), computed exactly from the reference and current nodes
-            #   STRAN    Eulerian strain 1/2 (I - B^-1) of DFGRD0
-            #   DSTRAN   Eulerian strain of the increment DFGRD1 DFGRD0^-1
-            #   DROT     rotation of the polar decomposition of DFGRD1 DFGRD0^-1
+            #   STRAN    strain of DFGRD0 in the chosen strain_measure, rotated by DROT when
+            #            rotate_stress = true
+            #   DSTRAN   strain of the increment DFGRD1 DFGRD0^-1 in the chosen strain_measure
+            #   DROT     exact rotation of the increment: R of the polar decomposition
+            #            DFGRD1 DFGRD0^-1 = R U
             #   TIME     TIME(1) = TIME(2) = time at the start of the increment (one analysis
             #            step); DTIME = time step
             #   TEMP     the material's temperature option (constant); DTEMP = 0

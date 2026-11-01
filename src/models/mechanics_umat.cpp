@@ -45,11 +45,14 @@ AbaqusUmatModel::AbaqusUmatModel(const int region,
                                  const bool thread_safe,
                                  const double temperature,
                                  const std::string& material_name,
-                                 const long long global_elem_offset)
+                                 const long long global_elem_offset,
+                                 const bool log_strain,
+                                 const bool rotate_stress)
     : ExaModel(region, n_state_vars, sim_state), umat_library_path(umat_library_path_),
       umat_function(nullptr), umat_batch_function(nullptr), load_strategy(load_strategy_),
       use_dynamic_loading(!umat_library_path_.empty()), umat_function_name(umat_function_name_),
-      m_batched(batched), m_thread_safe(thread_safe), m_temperature(temperature), m_nqpts(0),
+      m_batched(batched), m_thread_safe(thread_safe), m_temperature(temperature),
+      m_log_strain(log_strain), m_rotate_stress(rotate_stress), m_nqpts(0),
       m_nnodes(0), m_nelems(0), m_reference_ready(false) {
     MFEM_VERIFY_0(!m_batched || use_dynamic_loading,
                   "The batched UMAT interface needs a UMAT library (there is no built-in "
@@ -262,6 +265,8 @@ void AbaqusUmatModel::PackUmatInputs(const mfem::Vector& jacobian, const int* lo
     const int npts = m_nqpts * m_nelems;
     const int nelems_rank = m_sim_state->GetMeshParFiniteElementSpace()->GetNE();
     const double temperature = m_temperature;
+    const bool log_strain = m_log_strain;
+    const bool rotate = m_rotate_stress;
     // Volume of the reference element (1 for the unit cube, 1/6 for the unit tetrahedron), so
     // that det(J) times it is the element volume near the point
     const double ref_volume = mfem::Geometry::Volume[
@@ -306,18 +311,35 @@ void AbaqusUmatModel::PackUmatInputs(const mfem::Vector& jacobian, const int* lo
         // Stress at the beginning of the step, Abaqus order
         exaconstit::kernel::StressToAbaqusVoigt(stress_beg + 6 * i, stress + 6 * i);
 
-        // Strains: STRAN at the beginning of the increment (Eulerian strain of F_beg), DSTRAN
-        // over the increment (Eulerian strain of F_incr = F_end F_beg^-1)
+        // Increment F_incr = F_end F_beg^-1 and its exact rotation (polar decomposition)
         const double* fb = f_beg + 9 * i;
         double f_incr[9], e_tens[9];
+        double* r_incr = drot + 9 * i;
         exaconstit::kernel::IncrementalDefGrad(fb, f_end + 9 * i, f_incr);
-        exaconstit::kernel::EulerianStrain(fb, e_tens);
+        exaconstit::kernel::PolarRotation(f_incr, r_incr);
+
+        // Strains, in the chosen measure (logarithmic ln V or Eulerian 1/2 (I - B^-1)): STRAN
+        // at the beginning of the increment from F_beg, DSTRAN over the increment from F_incr
+        if (log_strain) {
+            exaconstit::kernel::LogStrain(fb, e_tens);
+        } else {
+            exaconstit::kernel::EulerianStrain(fb, e_tens);
+        }
         exaconstit::kernel::StrainToAbaqusVoigt(e_tens, stran + 6 * i);
-        exaconstit::kernel::EulerianStrain(f_incr, e_tens);
+        if (log_strain) {
+            exaconstit::kernel::LogStrain(f_incr, e_tens);
+        } else {
+            exaconstit::kernel::EulerianStrain(f_incr, e_tens);
+        }
         exaconstit::kernel::StrainToAbaqusVoigt(e_tens, dstran + 6 * i);
 
-        // Rotation increment of the polar decomposition of F_incr
-        exaconstit::kernel::PolarRotation(f_incr, drot + 9 * i);
+        // rotate_stress: carry the beginning-of-increment stress and strain along with the
+        // rigid rotation of the increment (R T R^T with the exact DROT), so a UMAT written for
+        // unrotated input (isotropic models) sees them in the current orientation
+        if (rotate) {
+            exaconstit::kernel::RotateAbaqusVoigt(r_incr, stress + 6 * i, 1.0);
+            exaconstit::kernel::RotateAbaqusVoigt(r_incr, stran + 6 * i, 2.0);
+        }
 
         // Point position, and characteristic length: cube root of the local element volume,
         // det(J) times the reference element's volume (the same as the original cbrt(det J) for

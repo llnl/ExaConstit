@@ -3,7 +3,7 @@
 #include "mfem.hpp"
 #include "mfem/linalg/kernels.hpp"
 
-#include <math.h> // sqrt in device code (plain C math library)
+#include <math.h> // sqrt, log in device code (plain C math library)
 #include <type_traits>
 
 /**
@@ -95,9 +95,8 @@ MFEM_HOST_DEVICE inline void PolarRotation(const double* f, double* r) {
  * @param f deformation gradient (det > 0), column-major
  * @param[out] e symmetric strain tensor, column-major
  *
- * @details Same measure as CalcEulerianStrain in strain_measures.hpp. It is the strain the UMAT
- * model passes to UMATs (STRAN from F_beg, DSTRAN from F_incr), as the original
- * implementation did.
+ * @details Same measure as CalcEulerianStrain in strain_measures.hpp. The UMAT model passes it
+ * with strain_measure = "eulerian" (STRAN from F_beg, DSTRAN from F_incr).
  */
 MFEM_HOST_DEVICE inline void EulerianStrain(const double* f, double* e) {
     double f_inv[9];
@@ -110,6 +109,75 @@ MFEM_HOST_DEVICE inline void EulerianStrain(const double* f, double* e) {
             e[i + 3 * j] = ((i == j) ? 0.5 : 0.0) - 0.5 * b_inv;
         }
     }
+}
+
+/**
+ * @brief Logarithmic (Hencky) strain in the current configuration, e = ln V = 1/2 ln(F F^T).
+ *
+ * @param f deformation gradient (det > 0), column-major
+ * @param[out] e symmetric strain tensor, column-major
+ *
+ * @details With the eigenvalues lambda_k (squared principal stretches) and unit eigenvectors n_k
+ * of the left Cauchy-Green tensor B = F F^T, e = sum_k 1/2 ln(lambda_k) n_k (x) n_k. Exact for
+ * any deformation: no midpoint or rate approximation. Same measure as CalcLogStrain in
+ * strain_measures.hpp. The UMAT model passes it with strain_measure = "logarithmic" (STRAN from
+ * F_beg, DSTRAN from F_incr, the exact logarithmic strain of the increment).
+ *
+ * For time-step-sized increments (strains ~1e-7) the result is accurate to about 1e-10
+ * relative, the limit set by storing F = I + O(1e-7) in double precision.
+ */
+MFEM_HOST_DEVICE inline void LogStrain(const double* f, double* e) {
+    // Left Cauchy-Green tensor B = F F^T (symmetric)
+    double b[9];
+    for (int j = 0; j < 3; ++j) {
+        for (int i = 0; i < 3; ++i) {
+            b[i + 3 * j] = f[i] * f[j] + f[i + 3] * f[j + 3] + f[i + 6] * f[j + 6];
+        }
+    }
+    double lambda[3];
+    double vec[9]; // eigenvector k in vec[3 k .. 3 k + 2]
+    mfem::kernels::CalcEigenvalues<3>(b, lambda, vec);
+    for (int k = 0; k < 9; ++k) {
+        e[k] = 0.0;
+    }
+    for (int k = 0; k < 3; ++k) {
+        const double s = 0.5 * log(lambda[k]);
+        const double* n = vec + 3 * k;
+        for (int j = 0; j < 3; ++j) {
+            for (int i = 0; i < 3; ++i) {
+                e[i + 3 * j] += s * n[i] * n[j];
+            }
+        }
+    }
+}
+
+/**
+ * @brief Rotate a symmetric tensor stored as an Abaqus 6-vector: T <- R T R^T.
+ *
+ * @param r rotation, column-major
+ * @param[in,out] v tensor in Abaqus order (11, 22, 33, 12, 13, 23)
+ * @param shear_factor 1 for stresses, 2 for strains with engineering shears (v(4) = 2 e12, ...)
+ *
+ * @details Used for the pre-rotation of STRESS and STRAN by DROT (rotate_stress = true): the
+ * beginning-of-increment values are carried along with the rigid rotation of the increment, so
+ * a UMAT written for unrotated input (isotropic models) works in the current orientation.
+ */
+MFEM_HOST_DEVICE inline void
+RotateAbaqusVoigt(const double* r, double* v, const double shear_factor) {
+    const double inv = 1.0 / shear_factor;
+    // Full tensor, column-major
+    const double t[9] = {v[0], v[3] * inv, v[4] * inv,
+                         v[3] * inv, v[1], v[5] * inv,
+                         v[4] * inv, v[5] * inv, v[2]};
+    double rt[9], rtrt[9];
+    mfem::kernels::Mult(3, 3, 3, r, t, rt);
+    mfem::kernels::MultABt(3, 3, 3, rt, r, rtrt);
+    v[0] = rtrt[0];
+    v[1] = rtrt[4];
+    v[2] = rtrt[8];
+    v[3] = shear_factor * rtrt[3];
+    v[4] = shear_factor * rtrt[6];
+    v[5] = shear_factor * rtrt[7];
 }
 
 /**

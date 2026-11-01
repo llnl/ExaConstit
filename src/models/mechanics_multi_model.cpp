@@ -72,7 +72,9 @@ std::unique_ptr<ExaModel> CreateMaterialModel(const MaterialOptions& mat_config,
             umat_config.thread_safe,
             mat_config.temperature,
             mat_config.material_name,
-            global_elem_offset);
+            global_elem_offset,
+            umat_config.uses_log_strain(),
+            umat_config.rotate_stress);
 
         return umat_model;
     }

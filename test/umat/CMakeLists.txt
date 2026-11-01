@@ -8,6 +8,9 @@
 # driver runs one deck per case, then check_umat.py compares the runs:
 #   standard_full / batched_full   one region, default integrator, 1 rank
 #   standard_bbar / batched_bbar   one region, B-bar integrator, 1 rank
+#   standard_full_selfrot          rotate_stress = false, the UMAT rotates the stress itself:
+#                                  must equal standard_full (ExaConstit rotates)
+#   standard_full_eulerian         strain_measure = "eulerian" (sanity checks only)
 #   two_regions_full / _bbar       two regions of the same material (region 1 batched, region 2
 #                                  standard), 2 ranks: must equal the one-region runs
 #     ctest -R umat_interface --output-on-failure
@@ -21,12 +24,15 @@ set(UMAT_TEST_LIBRARY "$<TARGET_FILE:test_umat>")
 set(EXACONSTIT_TEST_DATA_DIR ${CMAKE_SOURCE_DIR}/test/data)
 set(_umat_results ${CMAKE_CURRENT_BINARY_DIR}/results)
 
-#   <case>|<interface>|<function>|<integrator>
+#   <case>|<interface>|<function>|<integrator>|<rotate_stress>|<strain_measure>|<number of
+#   properties>|<properties> (a third property of 1 makes the UMAT rotate the stress itself)
 set(_umat_cases
-    "standard_full|standard|test_umat_elastic|FULL"
-    "batched_full|batched|test_umat_elastic_batch|FULL"
-    "standard_bbar|standard|test_umat_elastic|BBAR"
-    "batched_bbar|batched|test_umat_elastic_batch|BBAR")
+    "standard_full|standard|test_umat_elastic|FULL|true|logarithmic|2|3000.0, 0.3"
+    "batched_full|batched|test_umat_elastic_batch|FULL|true|logarithmic|2|3000.0, 0.3"
+    "standard_bbar|standard|test_umat_elastic|BBAR|true|logarithmic|2|3000.0, 0.3"
+    "batched_bbar|batched|test_umat_elastic_batch|BBAR|true|logarithmic|2|3000.0, 0.3"
+    "standard_full_selfrot|standard|test_umat_elastic|FULL|false|logarithmic|3|3000.0, 0.3, 1.0"
+    "standard_full_eulerian|standard|test_umat_elastic|FULL|true|eulerian|2|3000.0, 0.3")
 
 # Volume average files are appended to, so every run starts from an empty results folder
 add_test(NAME    test_umat_interface_clean
@@ -40,6 +46,10 @@ foreach(_umat_case ${_umat_cases})
     list(GET _umat_fields 1 UMAT_INTERFACE)
     list(GET _umat_fields 2 UMAT_FUNCTION)
     list(GET _umat_fields 3 INTEG_MODEL)
+    list(GET _umat_fields 4 ROTATE_STRESS)
+    list(GET _umat_fields 5 STRAIN_MEASURE)
+    list(GET _umat_fields 6 NUM_PROPS)
+    list(GET _umat_fields 7 PROPS)
     # configure_file fills the @...@ fields; file(GENERATE) then replaces the library generator
     # expression with the library's path
     set(_umat_case_dir ${CMAKE_CURRENT_BINARY_DIR}/${CASE_NAME})

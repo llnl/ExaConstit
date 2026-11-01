@@ -11,6 +11,10 @@
 ! SAVE or COMMON data. On GPU runs the arrays are GPU arrays and the loop must run on the GPU
 ! (OpenMP target, CUDA Fortran, OpenACC, ...); the sizes (NPTS, NTENS, ...) are CPU memory.
 !
+! As in Abaqus, ExaConstit has already rotated the old STRESS (and STRAN) by DROT
+! (rotate_stress = true, the default), so the UMAT does no rotation itself; an anisotropic UMAT
+! that handles rotations itself sets rotate_stress = false.
+!
 ! In the options: function_name = "umat_batched_f" (ExaConstit also finds the trailing
 ! underscore most Fortran compilers add).
 !
@@ -36,14 +40,14 @@ subroutine umat_batched_f(npts, stress, statev, ddsdde, sse, spd, scd, rpl, ddsd
     real(8) :: time(2), dtime, props(nprops)
 
     integer :: i, j, ip
-    real(8) :: young, nu, lambda, shear, s(3, 3), rs(3, 3), srot(6)
+    real(8) :: young, nu, lambda, shear, ds
 
     young = props(1)
     nu = props(2)
     lambda = young * nu / ((1.d0 + nu) * (1.d0 - 2.d0 * nu))
     shear = young / (2.d0 * (1.d0 + nu))
 
-    !$omp parallel do private(i, j, s, rs, srot)
+    !$omp parallel do private(i, j, ds)
     do ip = 1, npts
         ! Elastic stiffness
         ddsdde(:, :, ip) = 0.d0
@@ -53,19 +57,13 @@ subroutine umat_batched_f(npts, stress, statev, ddsdde, sse, spd, scd, rpl, ddsd
             ddsdde(i + 3, i + 3, ip) = shear
         end do
 
-        ! Rotate the old stress (order 11, 22, 33, 12, 13, 23): S <- R S R^T
-        s(1, :) = (/ stress(1, ip), stress(4, ip), stress(5, ip) /)
-        s(2, :) = (/ stress(4, ip), stress(2, ip), stress(6, ip) /)
-        s(3, :) = (/ stress(5, ip), stress(6, ip), stress(3, ip) /)
-        rs = matmul(drot(:, :, ip), matmul(s, transpose(drot(:, :, ip))))
-        srot = (/ rs(1, 1), rs(2, 2), rs(3, 3), rs(1, 2), rs(1, 3), rs(2, 3) /)
-
         ! Add C : DSTRAN
         do i = 1, ntens
-            stress(i, ip) = srot(i)
+            ds = 0.d0
             do j = 1, ntens
-                stress(i, ip) = stress(i, ip) + ddsdde(i, j, ip) * dstran(j, ip)
+                ds = ds + ddsdde(i, j, ip) * dstran(j, ip)
             end do
+            stress(i, ip) = stress(i, ip) + ds
         end do
     end do
     !$omp end parallel do

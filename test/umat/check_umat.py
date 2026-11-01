@@ -7,6 +7,8 @@ Usage: check_umat.py <results directory of the tests>
 The same hypoelastic material (test_umat_functions.cpp) is run through both UMAT interfaces.
 Checks, on the global volume averages of the stress and the deformation gradient:
 - standard and batched runs agree, with the default and with the B-bar integrator;
+- ExaConstit rotating STRESS / STRAN by DROT (rotate_stress = true) gives the same results as the
+  UMAT rotating the stress itself (rotate_stress = false);
 - the two-region runs (region 1 batched, region 2 standard, 2 ranks) agree with the one-region
   runs with the same integrator, so the partial-region paths and the rank split give the same
   answer;
@@ -25,6 +27,7 @@ SZZ_COLUMN = 4  # time, volume, Sxx, Syy, Szz, ...
 PAIRS = [
     ("standard_full", "batched_full"),
     ("standard_bbar", "batched_bbar"),
+    ("standard_full", "standard_full_selfrot"),
     ("standard_full", "two_regions_full"),
     ("standard_bbar", "two_regions_bbar"),
 ]
@@ -55,7 +58,7 @@ def main(results):
             check(diff <= FILE_RTOL * scale,
                   f"{other} differs from {reference} in {name}: max diff {diff:.3e}")
 
-    for case in ["standard_full", "standard_bbar"]:
+    for case in ["standard_full", "standard_bbar", "standard_full_eulerian"]:
         szz = load(results, case, FILES[0])[:, SZZ_COLUMN]
         check(np.all(np.diff(szz) > 0.0) and szz[0] > 0.0,
               f"{case}: axial stress does not grow every step: {szz}")

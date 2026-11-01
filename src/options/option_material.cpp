@@ -169,6 +169,14 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
         options.thread_safe = toml::find<bool>(toml_input, "thread_safe");
     }
 
+    if (toml_input.contains("strain_measure")) {
+        options.strain_measure = ToLower(toml::find<std::string>(toml_input, "strain_measure"));
+    }
+
+    if (toml_input.contains("rotate_stress")) {
+        options.rotate_stress = toml::find<bool>(toml_input, "rotate_stress");
+    }
+
     return options;
 }
 
@@ -427,6 +435,14 @@ bool UmatOptions::validate() const {
         std::ostringstream err;
         err << "Error: Invalid load_strategy '" << load_strategy
             << "'. Must be 'persistent', 'load_on_setup', or 'lazy_load'";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
+
+    if (strain_measure != "logarithmic" && strain_measure != "eulerian") {
+        std::ostringstream err;
+        err << "Error: Invalid UMAT strain_measure '" << strain_measure
+            << "'. Must be 'logarithmic' or 'eulerian'";
         WARNING_0_OPT(err.str());
         return false;
     }
