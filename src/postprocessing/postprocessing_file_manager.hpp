@@ -132,6 +132,39 @@ public:
     }
 
     /**
+     * @brief Put a calculation's files under another name and in a subfolder
+     *
+     * @param calc_type Calculation name, as passed to WriteVolumeAverage()
+     * @param file_stem File name stem used instead of avg_<calc_type> (region / global suffix
+     *                  and .txt are added as usual)
+     * @param subdirectory Folder inside the output directory (created by the caller with
+     *                     EnsureDirectoryExists(), which is collective)
+     *
+     * Used for the volume statistics (stats/<name>_<statistic>_*.txt, stats/<name>_hist_*.txt).
+     */
+    void SetVolumeAverageFileLocation(const std::string& calc_type,
+                                      const std::string& file_stem,
+                                      const fs::path& subdirectory) {
+        m_file_locations[calc_type] = {file_stem, subdirectory};
+    }
+
+    /**
+     * @brief Comment line written above a calculation's column header (e.g. histogram edges)
+     */
+    void SetVolumeAverageHeaderComment(const std::string& calc_type, const std::string& comment) {
+        m_header_comments[calc_type] = comment;
+    }
+
+    /**
+     * @brief Column names (after Time and Volume) of a volume average file
+     *
+     * @param calc_type Calculation name
+     * @return The names set with SetVolumeAverageColumnNames(), or the built-in names of the
+     *         built-in quantities (e.g. Sxx ... for stress), or {calc_type} for anything else
+     */
+    std::vector<std::string> GetVolumeAverageColumnNames(const std::string& calc_type) const;
+
+    /**
      * @brief Check if output should occur at the current step
      *
      * @param step Current time step number
@@ -445,6 +478,12 @@ private:
      * SetVolumeAverageColumnNames(), by calculation name
      */
     std::map<std::string, std::vector<std::string>> m_column_names;
+
+    /// File name stem and subfolder of calculations set by SetVolumeAverageFileLocation()
+    std::map<std::string, std::pair<std::string, fs::path>> m_file_locations;
+
+    /// Comment lines set by SetVolumeAverageHeaderComment()
+    std::map<std::string, std::string> m_header_comments;
 };
 
 // Implementation
@@ -479,8 +518,12 @@ inline PostProcessingFileManager::PostProcessingFileManager(const ExaOptions& op
 
 inline std::string PostProcessingFileManager::GetVolumeAverageFilePath(
     const std::string& calc_type, int region, const std::string& region_name) const {
-    // Get base filename with extension for this calculation type
-    fs::path specific_filename = GetSpecificFilename(calc_type);
+    // Get base filename with extension for this calculation type (or the stem and subfolder set
+    // by SetVolumeAverageFileLocation)
+    const auto location = m_file_locations.find(calc_type);
+    const bool relocated = (location != m_file_locations.end());
+    fs::path specific_filename = relocated ? fs::path(location->second.first + ".txt")
+                                           : fs::path(GetSpecificFilename(calc_type));
 
     // Split into base and extension
     fs::path extension = specific_filename.extension();
@@ -501,7 +544,8 @@ inline std::string PostProcessingFileManager::GetVolumeAverageFilePath(
             base_name.string(), extension.string(), region, region_name);
     }
 
-    return m_output_directory / filename;
+    return relocated ? m_output_directory / location->second.second / filename
+                     : m_output_directory / filename;
 }
 
 inline std::string
@@ -680,57 +724,43 @@ inline std::string PostProcessingFileManager::GetSurfaceQuantityHeader(bool mome
     return header.str();
 }
 
+inline std::vector<std::string>
+PostProcessingFileManager::GetVolumeAverageColumnNames(const std::string& calc_type) const {
+    const auto custom = m_column_names.find(calc_type);
+    if (custom != m_column_names.end()) {
+        return custom->second;
+    }
+    if (calc_type == "stress") {
+        return {"Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz"};
+    } else if (calc_type == "def_grad") {
+        return {"F11", "F12", "F13", "F21", "F22", "F23", "F31", "F32", "F33"};
+    } else if (calc_type == "euler_strain") {
+        return {"E11", "E22", "E33", "E23", "E13", "E12"};
+    } else if (calc_type == "plastic_work" || calc_type == "pl_work") {
+        return {"Plastic_Work"};
+    } else if (calc_type == "elastic_strain") {
+        return {"Ee11", "Ee22", "Ee33", "Ee23", "Ee13", "Ee12"};
+    } else if (calc_type == "eps" || calc_type == "eq_pl_strain") {
+        return {"Equiv_Plastic_Strain"}; // Shortened to fit better
+    }
+    return {calc_type};
+}
+
 // Updated GetVolumeAverageHeader method with proper alignment:
 inline std::string
 PostProcessingFileManager::GetVolumeAverageHeader(const std::string& calc_type) const {
     std::ostringstream header;
 
+    const auto comment = m_header_comments.find(calc_type);
+    if (comment != m_header_comments.end()) {
+        header << comment->second << "\n";
+    }
+
     // Set formatting for header to match data columns
     header << CenterText("# Time", COLUMN_WIDTH);
     header << CenterText("Volume", COLUMN_WIDTH);
-
-    const auto custom = m_column_names.find(calc_type);
-    if (custom != m_column_names.end()) {
-        for (const auto& column : custom->second) {
-            header << CenterText(column, COLUMN_WIDTH);
-        }
-    } else if (calc_type == "stress") {
-        header << CenterText("Sxx", COLUMN_WIDTH);
-        header << CenterText("Syy", COLUMN_WIDTH);
-        header << CenterText("Szz", COLUMN_WIDTH);
-        header << CenterText("Sxy", COLUMN_WIDTH);
-        header << CenterText("Sxz", COLUMN_WIDTH);
-        header << CenterText("Syz", COLUMN_WIDTH);
-    } else if (calc_type == "def_grad") {
-        header << CenterText("F11", COLUMN_WIDTH);
-        header << CenterText("F12", COLUMN_WIDTH);
-        header << CenterText("F13", COLUMN_WIDTH);
-        header << CenterText("F21", COLUMN_WIDTH);
-        header << CenterText("F22", COLUMN_WIDTH);
-        header << CenterText("F23", COLUMN_WIDTH);
-        header << CenterText("F31", COLUMN_WIDTH);
-        header << CenterText("F32", COLUMN_WIDTH);
-        header << CenterText("F33", COLUMN_WIDTH);
-    } else if (calc_type == "euler_strain") {
-        header << CenterText("E11", COLUMN_WIDTH);
-        header << CenterText("E22", COLUMN_WIDTH);
-        header << CenterText("E33", COLUMN_WIDTH);
-        header << CenterText("E23", COLUMN_WIDTH);
-        header << CenterText("E13", COLUMN_WIDTH);
-        header << CenterText("E12", COLUMN_WIDTH);
-    } else if (calc_type == "plastic_work" || calc_type == "pl_work") {
-        header << CenterText("Plastic_Work", COLUMN_WIDTH);
-    } else if (calc_type == "elastic_strain") {
-        header << CenterText("Ee11", COLUMN_WIDTH);
-        header << CenterText("Ee22", COLUMN_WIDTH);
-        header << CenterText("Ee33", COLUMN_WIDTH);
-        header << CenterText("Ee23", COLUMN_WIDTH);
-        header << CenterText("Ee13", COLUMN_WIDTH);
-        header << CenterText("Ee12", COLUMN_WIDTH);
-    } else if (calc_type == "eps" || calc_type == "eq_pl_strain") {
-        header << CenterText("Equiv_Plastic_Strain", COLUMN_WIDTH); // Shortened to fit better
-    } else {
-        header << CenterText(calc_type, COLUMN_WIDTH);
+    for (const auto& column : GetVolumeAverageColumnNames(calc_type)) {
+        header << CenterText(column, COLUMN_WIDTH);
     }
 
     header << "\n";

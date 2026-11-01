@@ -593,6 +593,21 @@ VolumeAverageOptions VolumeAverageOptions::from_toml(const toml::value& toml_inp
                                                                    "avg_elastic_strain_fname");
     }
 
+    options.statistics_valid = parse_volume_statistics(
+        toml_input, "[PostProcessing.volume_averages]", options.statistics);
+    if (toml_input.contains("histograms")) {
+        for (const auto& [quantity, table] : toml::find<toml::table>(toml_input, "histograms")) {
+            options.histograms[quantity] = HistogramOptions::from_toml(table);
+        }
+    }
+    const bool any_average = options.stress || options.def_grad || options.euler_strain ||
+                             options.plastic_work || options.eq_pl_strain || options.elastic_strain;
+    if ((!options.statistics.empty() || !options.histograms.empty()) &&
+        (!options.enabled || !any_average)) {
+        WARNING_0_OPT("Warning: [PostProcessing.volume_averages] statistics / histograms are "
+                      "given but no volume average is enabled, so none are written");
+    }
+
     return options;
 }
 
@@ -636,6 +651,110 @@ bool VolumeAverageOptions::validate() const {
         WARNING_0_OPT("Error: VolumeAverage table did not provide a valid output frequency valid "
                       "as it was less than 1");
         return false;
+    }
+    if (!statistics_valid) {
+        return false;
+    }
+    // Histograms are of enabled built-in averages, by the same names as their switches
+    const std::map<std::string, bool> enabled_quantities = {{"stress", stress},
+                                                            {"def_grad", def_grad},
+                                                            {"euler_strain", euler_strain},
+                                                            {"plastic_work", plastic_work},
+                                                            {"eq_pl_strain", eq_pl_strain},
+                                                            {"elastic_strain", elastic_strain}};
+    for (const auto& [quantity, histogram] : histograms) {
+        const auto known = enabled_quantities.find(quantity);
+        if (known == enabled_quantities.end() || !known->second) {
+            std::ostringstream err;
+            err << "Error: [PostProcessing.volume_averages.histograms] entry '" << quantity
+                << "' is not an enabled volume average (stress, def_grad, euler_strain, "
+                   "plastic_work, eq_pl_strain, elastic_strain)";
+            WARNING_0_OPT(err.str());
+            return false;
+        }
+        if (!histogram.validate("[PostProcessing.volume_averages.histograms] " + quantity)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+HistogramOptions HistogramOptions::from_toml(const toml::value& toml_input) {
+    HistogramOptions options;
+    options.requested = true;
+    // Expected: { bins = N, range = [lower, upper] }; anything else is reported by validate()
+    if (!toml_input.is_table() || !toml_input.contains("bins") || !toml_input.contains("range")) {
+        options.well_formed = false;
+        return options;
+    }
+    options.bins = toml::find<int>(toml_input, "bins");
+    const auto range = toml::find<std::vector<double>>(toml_input, "range");
+    if (range.size() == 2) {
+        options.range_min = range[0];
+        options.range_max = range[1];
+    } else {
+        options.well_formed = false;
+    }
+    return options;
+}
+
+bool HistogramOptions::validate(const std::string& where) const {
+    std::ostringstream err;
+    if (!well_formed || bins < 1) {
+        err << "Error: " << where
+            << " histogram needs bins >= 1 and range = [lower, upper] (two values)";
+    } else if (!(range_min < range_max)) {
+        err << "Error: " << where << " histogram range must be [lower, upper] with lower < upper";
+    } else {
+        return true;
+    }
+    WARNING_0_OPT(err.str());
+    return false;
+}
+
+const std::vector<std::string>& volume_statistic_names() {
+    static const std::vector<std::string> names = {
+        "mean", "variance", "std", "skewness", "kurtosis", "min", "max"};
+    return names;
+}
+
+bool parse_volume_statistics(const toml::value& toml_input,
+                             const std::string& where,
+                             std::vector<std::string>& statistics) {
+    statistics.clear();
+    if (!toml_input.contains("statistics")) {
+        return true;
+    }
+    std::vector<std::string> requested;
+    if (toml_input.at("statistics").is_string()) {
+        requested = {toml::find<std::string>(toml_input, "statistics")};
+    } else {
+        requested = toml::find<std::vector<std::string>>(toml_input, "statistics");
+    }
+    const auto& known = volume_statistic_names();
+    for (const auto& name : requested) {
+        if (name == "all") {
+            if (requested.size() > 1) {
+                WARNING_0_OPT("Error: " + where +
+                              " statistics = \"all\" cannot be combined with other names");
+                return false;
+            }
+            statistics = known;
+            return true;
+        }
+        if (std::find(known.begin(), known.end(), name) == known.end()) {
+            std::ostringstream err;
+            err << "Error: " << where << " statistics entry '" << name
+                << "' is not a statistic. Known: all";
+            for (const auto& k : known) {
+                err << ", " << k;
+            }
+            WARNING_0_OPT(err.str());
+            return false;
+        }
+        if (std::find(statistics.begin(), statistics.end(), name) == statistics.end()) {
+            statistics.push_back(name);
+        }
     }
     return true;
 }
@@ -700,6 +819,11 @@ UserFunctionOptions UserFunctionOptions::from_toml(const toml::value& toml_input
     if (toml_input.contains("global")) {
         options.global = toml::find<bool>(toml_input, "global");
     }
+    options.statistics_valid = parse_volume_statistics(
+        toml_input, "[[PostProcessing.user_functions]]", options.statistics);
+    if (toml_input.contains("histogram")) {
+        options.histogram = HistogramOptions::from_toml(toml::find(toml_input, "histogram"));
+    }
 
     // Defaults: name from the function, component count from the labels, labels from the name
     options.name = toml_input.contains("name") ? toml::find<std::string>(toml_input, "name")
@@ -743,6 +867,22 @@ bool UserFunctionOptions::validate(size_t num_materials) const {
     if (static_cast<int>(component_names.size()) != num_components) {
         return fail("has " + std::to_string(component_names.size()) +
                     " component_names but num_components = " + std::to_string(num_components));
+    }
+    if (!statistics_valid) {
+        return false;
+    }
+    const bool wants_distribution = !statistics.empty() || histogram.requested;
+    if (wants_distribution && type != UserFunctionType::VOLUME_AVERAGE) {
+        return fail("asks for statistics or a histogram, which only type = \"volume_average\" "
+                    "entries have");
+    }
+    if (histogram.requested &&
+        !histogram.validate("[[PostProcessing.user_functions]] entry '" + name + "'")) {
+        return false;
+    }
+    // The name becomes part of file names
+    if (name.find_first_of(":/\\") != std::string::npos) {
+        return fail("name must not contain ':', '/' or '\\' (it is used in file names)");
     }
     std::set<int> seen_regions;
     for (const int region : regions) {

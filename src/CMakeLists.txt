@@ -21,6 +21,7 @@ set(EXACONSTIT_HEADERS
     postprocessing/mechanics_lightup.hpp
     postprocessing/surface_quantities.hpp
     postprocessing/viz_point_map.hpp
+    postprocessing/volume_statistics.hpp
     sim_state/simulation_state.hpp
     sim_state/exa_sidre_parmesh.hpp
     sim_state/restart_checkpoint.hpp
@@ -67,6 +68,7 @@ set(EXACONSTIT_SOURCES
     postprocessing/mechanics_lightup.cpp
     postprocessing/surface_quantities.cpp
     postprocessing/viz_point_map.cpp
+    postprocessing/volume_statistics.cpp
     sim_state/simulation_state.cpp
     sim_state/exa_sidre_parmesh.cpp
     sim_state/restart_checkpoint.cpp

@@ -1256,6 +1256,50 @@ struct VisualizationOptions {
 };
 
 /**
+ * @brief Fixed-bin histogram of a volume quantity (volume fraction in each bin)
+ *
+ * TOML inline table `{ bins = 20, range = [0.0, 0.05] }` (both keys required). bins = 0
+ * means no histogram.
+ */
+struct HistogramOptions {
+    /** @brief Number of bins between range_min and range_max (0: no histogram) */
+    int bins = 0;
+    /** @brief Lower edge of the first bin */
+    double range_min = 0.0;
+    /** @brief Upper edge of the last bin */
+    double range_max = 1.0;
+    /** @brief Whether a histogram was asked for (a histogram table was given) */
+    bool requested = false;
+    /** @brief Whether the table had the form { bins = N, range = [lower, upper] } */
+    bool well_formed = true;
+
+    // Validation (where: the table it comes from, for messages)
+    bool validate(const std::string& where) const;
+
+    // Conversion from toml (an inline table)
+    static HistogramOptions from_toml(const toml::value& toml_input);
+};
+
+/**
+ * @brief Volume statistic names accepted by `statistics` keys, in the order "all" expands to
+ *
+ * "mean", "variance", "std", "skewness", "kurtosis" (excess), "min", "max".
+ */
+const std::vector<std::string>& volume_statistic_names();
+
+/**
+ * @brief Read a `statistics` key: a name, a list of names, or "all" (expanded)
+ *
+ * @param toml_input Table holding the key
+ * @param where Table name for messages
+ * @param statistics Output: statistic names in output order
+ * @return false (with a message) for an unknown name or "all" combined with other names
+ */
+bool parse_volume_statistics(const toml::value& toml_input,
+                             const std::string& where,
+                             std::vector<std::string>& statistics);
+
+/**
  * @brief Volume average calculation options
  */
 struct VolumeAverageOptions {
@@ -1338,6 +1382,22 @@ struct VolumeAverageOptions {
      * @brief Frequency of volume average output (every N time steps)
      */
     int output_frequency = 1;
+
+    /**
+     * @brief Statistics of every enabled built-in average (TOML `statistics`: a name, a list or
+     * "all"), written to stats/<name>_<statistic>_*.txt. Empty: no statistics.
+     */
+    std::vector<std::string> statistics;
+
+    /**
+     * @brief Histograms of built-in averages by quantity name (TOML table `histograms`, e.g.
+     * eq_pl_strain = { bins = 20, range = [0.0, 0.05] }), written to
+     * stats/<name>_hist_*.txt
+     */
+    std::map<std::string, HistogramOptions> histograms;
+
+    /// Set when statistics or histograms could not be read (reported by validate())
+    bool statistics_valid = true;
 
     // Validation
     bool validate() const;
@@ -1428,6 +1488,19 @@ struct UserFunctionOptions {
      * built-in volume averages.
      */
     bool global = true;
+
+    /**
+     * @brief Statistics of a "volume_average" entry (TOML `statistics`: a name, a list or
+     * "all"), written to stats/<name>_<statistic>_*.txt. Empty: no statistics.
+     */
+    std::vector<std::string> statistics;
+
+    /** @brief Histogram of a "volume_average" entry (TOML `histogram`), written to
+     * stats/<name>_hist_*.txt */
+    HistogramOptions histogram;
+
+    /// Set when statistics or histogram could not be read (reported by validate())
+    bool statistics_valid = true;
 
     // Validation (num_materials: number of [[Materials]] entries, for the region numbers)
     bool validate(size_t num_materials) const;

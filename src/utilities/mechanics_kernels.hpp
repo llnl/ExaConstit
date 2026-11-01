@@ -10,6 +10,7 @@
 #include "RAJA/RAJA.hpp"
 
 #include <cmath>
+#include <limits>
 
 /**
  * @brief ExaConstit computational kernels for finite element operations.
@@ -1114,6 +1115,176 @@ void ApplyBBarVelocityGradient(const int nqpts,
                                double* vel_grad_data,
                                const int* const local2global = nullptr);
 /** @} */
+
+/**
+ * @brief Smallest and largest value of each component of a partial quadrature function
+ *
+ * @param pqf Region quadrature function (all of its points belong to the region)
+ * @param min_values Output: per component, the smallest value over the region's points on all
+ *                   ranks of region_comm
+ * @param max_values Output: per component, the largest value
+ * @param size Number of components (must equal the function's vector dimension)
+ * @param class_device Execution model (CPU, OpenMP or GPU), as for the volume averages
+ * @param region_comm Communicator of the ranks that own elements of the region
+ *
+ * Companion of ComputeVolAvgTensorFromPartial for the volume statistics: same execution
+ * policies, with RAJA min / max reductions over the points, then MPI_Allreduce over the region.
+ * Collective on region_comm. A rank without points would contribute +/- the largest double
+ * (region communicators only hold ranks with points).
+ *
+ * @ingroup ExaConstit_utilities_kernels
+ */
+inline void ComputeMinMaxFromPartial(const mfem::expt::PartialQuadratureFunction* pqf,
+                                     mfem::Vector& min_values,
+                                     mfem::Vector& max_values,
+                                     const int size,
+                                     const RTModel& class_device,
+                                     MPI_Comm region_comm = MPI_COMM_WORLD) {
+    const int npts = pqf->Size() / size;
+    RAJA::RangeSegment point_range(0, npts);
+    constexpr double big = std::numeric_limits<double>::max();
+    mfem::Vector local_min(size), local_max(size);
+
+    for (int j = 0; j < size; j++) {
+        if (class_device == RTModel::CPU) {
+            const auto values = mfem::Reshape(pqf->HostRead(), size, npts);
+            RAJA::ReduceMin<RAJA::seq_reduce, double> value_min(big);
+            RAJA::ReduceMax<RAJA::seq_reduce, double> value_max(-big);
+            RAJA::forall<RAJA::seq_exec>(point_range, [=](int ip) {
+                value_min.min(values(j, ip));
+                value_max.max(values(j, ip));
+            });
+            local_min[j] = value_min.get();
+            local_max[j] = value_max.get();
+        }
+#if defined(RAJA_ENABLE_OPENMP)
+        if (class_device == RTModel::OPENMP) {
+            const auto values = mfem::Reshape(pqf->HostRead(), size, npts);
+            RAJA::ReduceMin<RAJA::omp_reduce_ordered, double> value_min(big);
+            RAJA::ReduceMax<RAJA::omp_reduce_ordered, double> value_max(-big);
+            RAJA::forall<RAJA::omp_parallel_for_exec>(point_range, [=](int ip) {
+                value_min.min(values(j, ip));
+                value_max.max(values(j, ip));
+            });
+            local_min[j] = value_min.get();
+            local_max[j] = value_max.get();
+        }
+#endif
+#if defined(RAJA_ENABLE_CUDA) || defined(RAJA_ENABLE_HIP)
+        if (class_device == RTModel::GPU) {
+#if defined(RAJA_ENABLE_CUDA)
+            using gpu_reduce = RAJA::cuda_reduce;
+            using gpu_policy = RAJA::cuda_exec<1024>;
+#else
+            using gpu_reduce = RAJA::hip_reduce;
+            using gpu_policy = RAJA::hip_exec<1024>;
+#endif
+            const auto values = mfem::Reshape(pqf->Read(), size, npts);
+            RAJA::ReduceMin<gpu_reduce, double> value_min(big);
+            RAJA::ReduceMax<gpu_reduce, double> value_max(-big);
+            RAJA::forall<gpu_policy>(point_range, [=] RAJA_DEVICE(int ip) {
+                value_min.min(values(j, ip));
+                value_max.max(values(j, ip));
+            });
+            local_min[j] = value_min.get();
+            local_max[j] = value_max.get();
+        }
+#endif
+    }
+
+    min_values.SetSize(size);
+    max_values.SetSize(size);
+    MPI_Allreduce(
+        local_min.HostRead(), min_values.HostWrite(), size, MPI_DOUBLE, MPI_MIN, region_comm);
+    MPI_Allreduce(
+        local_max.HostRead(), max_values.HostWrite(), size, MPI_DOUBLE, MPI_MAX, region_comm);
+}
+
+/**
+ * @brief Volume of a region's points per histogram bin, for each component
+ *
+ * @param pqf Region quadrature function (all of its points belong to the region)
+ * @param num_bins Number of equal bins between lower and upper
+ * @param lower Lower edge of the first bin
+ * @param upper Upper edge of the last bin
+ * @param volumes Output: volumes(slot, component) with slot 0 = below lower, 1 .. num_bins =
+ *                the bins ([edge_i, edge_i+1), the upper edge in the last bin), num_bins + 1 =
+ *                above upper; summed over the ranks of region_comm. Points whose value is NaN
+ *                are counted nowhere.
+ * @param region_comm Communicator of the ranks that own elements of the region
+ *
+ * Companion of ComputeVolAvgTensorFromPartial for the volume statistics. Each point adds its
+ * volume (detJ times integration weight) to its slot with an atomic add, in one pass over the
+ * region's points, so no per-point buffer is needed whatever the number of bins. Runs where
+ * mfem::forall runs (host or device). Collective on region_comm.
+ *
+ * @ingroup ExaConstit_utilities_kernels
+ */
+inline void ComputeHistogramFromPartial(const mfem::expt::PartialQuadratureFunction* pqf,
+                                        const int num_bins,
+                                        const double lower,
+                                        const double upper,
+                                        mfem::Vector& volumes,
+                                        MPI_Comm region_comm = MPI_COMM_WORLD) {
+    auto pqs = pqf->GetPartialSpaceShared();
+    auto mesh = pqs->GetMeshShared();
+    const mfem::IntegrationRule& ir = mfem::IntRules.Get(mesh->GetTypicalElementGeometry(),
+                                                         pqs->GetOrder());
+    const mfem::GeometricFactors* geom = mesh->GetGeometricFactors(
+        ir, mfem::GeometricFactors::DETERMINANTS);
+
+    const int size = pqf->GetVDim();
+    const int num_slots = num_bins + 2;
+    const int local_nelems = pqs->GetNE();
+    const auto& loc_offsets_array = pqs->Offsets(mfem::QSpaceOffsetStorage::COMPRESSED);
+    const auto& global_offsets_array = (pqs->GetGlobalOffset().Size() > 1) ? pqs->GetGlobalOffset()
+                                                                           : loc_offsets_array;
+
+    const auto l2g = mfem::Reshape(pqs->GetLocal2Global().Read(), local_nelems);
+    const auto loc_offsets = mfem::Reshape(loc_offsets_array.Read(), local_nelems + 1);
+    const auto global_offsets = mfem::Reshape(global_offsets_array.Read(),
+                                              global_offsets_array.Size());
+    const auto weights = mfem::Reshape(ir.GetWeights().Read(), ir.GetNPoints());
+    const auto det_j = mfem::Reshape(geom->detJ.Read(), geom->detJ.Size());
+    const auto values = mfem::Reshape(pqf->Read(), size, pqf->Size() / size);
+
+    mfem::Vector local_volumes(num_slots * size);
+    local_volumes.UseDevice(true);
+    local_volumes = 0.0;
+    auto slot_volume = mfem::Reshape(local_volumes.ReadWrite(), num_slots, size);
+    const double bin_width = (upper - lower) / num_bins;
+
+    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
+        const int local_offset = loc_offsets(ie);
+        const int global_offset = global_offsets(l2g(ie));
+        const int npts_elem = loc_offsets(ie + 1) - local_offset;
+        for (int k = 0; k < npts_elem; k++) {
+            const double w = det_j(global_offset + k) * weights(k);
+            for (int c = 0; c < size; c++) {
+                const double value = values(c, local_offset + k);
+                if (value != value) {
+                    continue; // NaN: in no slot
+                }
+                int slot = 0; // below the range
+                if (value > upper) {
+                    slot = num_slots - 1; // above the range
+                } else if (value >= lower) {
+                    const int bin = static_cast<int>((value - lower) / bin_width);
+                    slot = 1 + ((bin < num_bins) ? bin : num_bins - 1);
+                }
+                AtomicAdd(slot_volume(slot, c), w);
+            }
+        }
+    });
+
+    volumes.SetSize(num_slots * size);
+    MPI_Allreduce(local_volumes.HostRead(),
+                  volumes.HostWrite(),
+                  num_slots * size,
+                  MPI_DOUBLE,
+                  MPI_SUM,
+                  region_comm);
+}
 
 } // namespace kernel
 } // namespace exaconstit

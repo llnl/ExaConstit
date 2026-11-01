@@ -241,6 +241,24 @@ private:
      * a uniform interface for all volume averaging operations.
      */
 EXACONSTIT_CUDA_PRIVATE:
+    /**
+     * @brief Fill the per-point values of a built-in volume quantity on a region
+     *
+     * @param calc_type Built-in quantity
+     * @param region Region index
+     * @param data_size Set to the number of values per point stored in the returned function
+     *                  (9 for the 3x3 tensors, 6 for Voigt tensors, 1 for scalars)
+     * @return The region quadrature function holding the values (the region's stress, or the
+     *         scratch "scalar" / "kinetic_grads" functions filled from the state variables or the
+     *         deformation gradient); null if the region has no elements on this rank or the
+     *         quantity does not exist for its material model
+     *
+     * The per-type preparation shared by the volume averages (CalculateVolumeAverage) and the
+     * volume statistics. Elastic strain fills the first 6 of 9 values per point.
+     */
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+    PrepareVolumePoints(CalcType calc_type, int region, int& data_size);
+
     VolumeAverageData CalculateVolumeAverage(CalcType calc_type, int region);
 private:
 
@@ -562,6 +580,21 @@ private:
     CombineRegionVolumeResults(const std::function<VolumeAverageData(int)>& region_result,
                                const int data_size,
                                const bool average);
+
+    /**
+     * @brief Gather every region's result on rank 0
+     *
+     * @param region_result Gives the result of one region (collective on that region's
+     *                      communicator; ranks without the region return invalid data)
+     * @param data_size Number of values per result
+     * @return One result per region, complete on rank 0 (a region without volume is invalid)
+     *
+     * Every region's I/O root sends its result to rank 0. Used by CombineRegionVolumeResults()
+     * and by the volume statistics, which combine the region results differently.
+     */
+    std::vector<VolumeAverageData>
+    GatherRegionVolumeResults(const std::function<VolumeAverageData(int)>& region_result,
+                              const int data_size);
 
     /**
      * @brief Calculate and output volume-averaged stress for a specific region
@@ -910,6 +943,61 @@ private:
     void GlobalUserFunctionVolumeOutput(const size_t index, const double time);
 
     /**
+     * @brief Register the volume statistics and histograms asked for in the options
+     *
+     * Built-in averages: [PostProcessing.volume_averages] statistics (for every enabled average)
+     * and histograms (per quantity). "volume_average" user functions: their statistics and
+     * histogram keys. Creates the stats folder of the results directory when any is asked for.
+     * Called from the constructor after SetupUserFunctions().
+     */
+    void SetupVolumeStatistics();
+
+    /**
+     * @brief Register one statistics output (region and global files)
+     *
+     * @param name Quantity name (files stats/<name>_<statistic>_*.txt and
+     *             stats/<name>_hist_*.txt)
+     * @param component_names Names of the components (columns of the statistic and histogram
+     *                        files)
+     * @param statistics Statistics to write (may be empty when only a histogram is asked for)
+     * @param histogram Histogram bins and range (bins = 0: none)
+     * @param regions Regions with region files (0-based; empty: all)
+     * @param global Also write the global files (combination over the regions)
+     * @param point_values Gives the quantity's per-point values on a region for this output step
+     *                     (null where the region has none)
+     */
+    void RegisterStatisticsOutput(
+        const std::string& name,
+        const std::vector<std::string>& component_names,
+        const std::vector<std::string>& statistics,
+        const HistogramOptions& histogram,
+        const std::vector<int>& regions,
+        const bool global,
+        std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values);
+
+    /**
+     * @brief Per-point values of a built-in quantity for its statistics
+     *
+     * The values the volume average uses (PrepareVolumePoints), except: elastic strain keeps its
+     * 6 Voigt components, and Euler strain is computed at every point from its deformation
+     * gradient (the euler_strain volume average converts the averaged deformation gradient).
+     */
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+    BuiltInStatisticsPoints(const CalcType calc_type, const int region);
+
+    /**
+     * @brief Statistics of an output on a region for this output step (computed once, cached
+     *        until ClearVolumeAverageCache(); collective on the region's communicator)
+     */
+    VolumeAverageData StatisticsResult(const size_t index, const int region);
+
+    /// Region files of a statistics output
+    void StatisticsRegionOutput(const size_t index, const int region, const double time);
+
+    /// Global files of a statistics output (exact combination of the region statistics)
+    void StatisticsGlobalOutput(const size_t index, const double time);
+
+    /**
      * @brief Register default volume average calculations
      *
      * Sets up standard volume averaging operations including:
@@ -1145,6 +1233,43 @@ private:
      * @brief Post-processing user function entries, in options order
      */
     std::vector<UserFunctionOutput> m_user_function_outputs;
+
+    /**
+     * @brief One quantity whose volume statistics / histogram are written
+     *
+     * `point_values` gives the quantity's per-point values on a region; `results` keeps this
+     * output step's packed region statistics (see volume_statistics.hpp) for the global files.
+     */
+    struct StatisticsOutput {
+        /// Quantity name (file names)
+        std::string name;
+        /// Components per point
+        int num_components = 1;
+        /// Component names (columns of the statistic and histogram files)
+        std::vector<std::string> component_names;
+        /// Statistics to write, in order (empty: histogram only)
+        std::vector<std::string> statistics;
+        /// Histogram bins and range (bins = 0: none)
+        HistogramOptions histogram;
+        /// Per-point values of a region (null where the region has none)
+        std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values;
+        /// This output step's packed statistics per region index (cleared by
+        /// ClearVolumeAverageCache())
+        std::map<int, VolumeAverageData> results;
+    };
+
+    /**
+     * @brief Quantities with volume statistics or histograms
+     */
+    std::vector<StatisticsOutput> m_statistics_outputs;
+
+    /// Write the statistics and histogram rows of a result (region or global, -1)
+    void WriteStatisticsRows(const StatisticsOutput& output,
+                             const VolumeAverageData& result,
+                             const int region,
+                             const std::string& region_name,
+                             const double time,
+                             MPI_Comm comm);
 
     /**
      * @brief Visualization enablement flag

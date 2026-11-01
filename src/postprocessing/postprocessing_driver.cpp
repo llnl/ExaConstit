@@ -4,10 +4,13 @@
 #include "postprocessing/postprocessing_file_manager.hpp"
 #include "postprocessing/projection_class.hpp"
 #include "postprocessing/surface_quantities.hpp"
+#include "postprocessing/volume_statistics.hpp"
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/rotations.hpp"
 #include "utilities/unified_logger.hpp"
+
+#include "mfem/linalg/kernels.hpp"
 
 #include "ECMech_const.h"
 #include "SNLS_linalg.h"
@@ -522,6 +525,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
     // Register default projections and volume calculations
     RegisterDefaultVolumeCalculations();
     SetupUserFunctions();
+    SetupVolumeStatistics();
 
     // Initialize grid functions and data collections
     if (m_enable_visualization) {
@@ -747,14 +751,14 @@ PostProcessingDriver::CalcType PostProcessingDriver::GetCalcType(const std::stri
     }
 }
 
-PostProcessingDriver::VolumeAverageData
-PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
+std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+PostProcessingDriver::PrepareVolumePoints(CalcType calc_type, int region, int& data_size) {
+    data_size = 0;
     if (!m_sim_state->IsRegionActive(region)) {
-        return VolumeAverageData();
+        return nullptr;
     }
 
     std::shared_ptr<mfem::expt::PartialQuadratureFunction> qf;
-    int data_size;
     std::string qf_name;
     const size_t reg_idx = static_cast<size_t>(region);
 
@@ -773,7 +777,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     case CalcType::PLASTIC_WORK:
     case CalcType::EQ_PL_STRAIN:
         if (m_region_model_types[reg_idx] == MechType::UMAT) {
-            return VolumeAverageData();
+            return nullptr;
         }
         qf_name = "scalar";
         data_size = 1; // Scalar quantities
@@ -786,7 +790,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
 
     case CalcType::ELASTIC_STRAIN:
         if (m_region_model_types[reg_idx] == MechType::UMAT) {
-            return VolumeAverageData();
+            return nullptr;
         }
         qf_name = "kinetic_grads"; // Adjust this to your actual QF name for elastic strain
         data_size = 9;             // Voigt notation: Ee11, Ee22, Ee33, Ee23, Ee13, Ee12
@@ -795,14 +799,14 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     default:
         // This should never happen due to enum type safety, but defensive programming
         MFEM_ABORT_0("Unhandled calculation type in CalculateVolumeAverage");
-        return VolumeAverageData();
+        return nullptr;
     }
 
     // Get the quadrature function for this region
     qf = m_sim_state->GetQuadratureFunction(qf_name, region);
     if (!qf) {
         // Region doesn't have this quadrature function - return invalid data
-        return VolumeAverageData();
+        return nullptr;
     }
 
     // Handle calculation-specific preprocessing
@@ -921,6 +925,17 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
         // The quadrature function already contains the correct data
         break;
     }
+    return qf;
+}
+
+PostProcessingDriver::VolumeAverageData
+PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
+    // Per-point values of the quantity on the region (null if it has none on this rank)
+    int data_size = 0;
+    const auto qf = PrepareVolumePoints(calc_type, region, data_size);
+    if (!qf) {
+        return VolumeAverageData();
+    }
 
     // Perform the volume integration to compute average
     mfem::Vector avg_data(data_size);
@@ -1010,6 +1025,9 @@ void PostProcessingDriver::ClearVolumeAverageCache() {
     m_region_cache.clear();
     for (auto& entry : m_user_function_outputs) {
         entry.results.clear();
+    }
+    for (auto& output : m_statistics_outputs) {
+        output.results.clear();
     }
 }
 
@@ -1106,14 +1124,10 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
     }
 }
 
-PostProcessingDriver::VolumeAverageData PostProcessingDriver::CombineRegionVolumeResults(
-    const std::function<VolumeAverageData(int)>& region_result,
-    const int data_size,
-    const bool average) {
-    mfem::Vector global_data(data_size);
-    global_data = 0.0;
-    double global_volume = 0.0;
-
+std::vector<PostProcessingDriver::VolumeAverageData>
+PostProcessingDriver::GatherRegionVolumeResults(
+    const std::function<VolumeAverageData(int)>& region_result, const int data_size) {
+    std::vector<VolumeAverageData> results(m_num_regions);
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
         // Collective on the region's communicator; ranks without the region get invalid data
         auto region_data = region_result(region);
@@ -1155,7 +1169,21 @@ PostProcessingDriver::VolumeAverageData PostProcessingDriver::CombineRegionVolum
                      static_cast<int>(m_num_regions) * 2 + region,
                      MPI_COMM_WORLD);
         }
+        region_data.is_valid = (region_data.volume > 0.0);
+        results[static_cast<size_t>(region)] = region_data;
+    }
+    return results;
+}
 
+PostProcessingDriver::VolumeAverageData PostProcessingDriver::CombineRegionVolumeResults(
+    const std::function<VolumeAverageData(int)>& region_result,
+    const int data_size,
+    const bool average) {
+    mfem::Vector global_data(data_size);
+    global_data = 0.0;
+    double global_volume = 0.0;
+
+    for (auto& region_data : GatherRegionVolumeResults(region_result, data_size)) {
         if (region_data.volume > 0.0) {
             // Volume-weighted contribution (averages) or plain sum (integrals)
             region_data.data.HostRead();
@@ -1573,6 +1601,288 @@ void PostProcessingDriver::GlobalUserFunctionVolumeOutput(const size_t index, co
     }
     m_file_manager->WriteVolumeAverage(
         entry.options.name, -1, "", time, global.volume, global.data, entry.options.num_components);
+}
+
+void PostProcessingDriver::SetupVolumeStatistics() {
+    const auto& vol_opts = m_sim_state->GetOptions().post_processing.volume_averages;
+
+    // Built-in averages: statistics (one list for all) and per-quantity histograms of every
+    // enabled average, by the names of their switches
+    if (vol_opts.enabled) {
+        const std::vector<std::pair<std::string, bool>> built_in = {
+            {"stress", vol_opts.stress},
+            {"def_grad", vol_opts.def_grad},
+            {"euler_strain", vol_opts.euler_strain},
+            {"plastic_work", vol_opts.plastic_work},
+            {"eq_pl_strain", vol_opts.eq_pl_strain},
+            {"elastic_strain", vol_opts.elastic_strain}};
+        for (const auto& [name, enabled] : built_in) {
+            const auto histogram = vol_opts.histograms.find(name);
+            const HistogramOptions histogram_options = (histogram != vol_opts.histograms.end())
+                                                           ? histogram->second
+                                                           : HistogramOptions();
+            if (!enabled || (vol_opts.statistics.empty() && histogram_options.bins == 0)) {
+                continue;
+            }
+            const CalcType calc_type = GetCalcType(name);
+            RegisterStatisticsOutput(name,
+                                     m_file_manager->GetVolumeAverageColumnNames(name),
+                                     vol_opts.statistics,
+                                     histogram_options,
+                                     std::vector<int>(),
+                                     true,
+                                     [this, calc_type](const int region) {
+                                         return BuiltInStatisticsPoints(calc_type, region);
+                                     });
+        }
+    }
+
+    // "volume_average" user functions: the values the function filled for the volume average
+    for (size_t index = 0; index < m_user_function_outputs.size(); index++) {
+        const auto& options = m_user_function_outputs[index].options;
+        if (options.statistics.empty() && options.histogram.bins == 0) {
+            continue;
+        }
+        RegisterStatisticsOutput(options.name,
+                                 options.component_names,
+                                 options.statistics,
+                                 options.histogram,
+                                 m_user_function_outputs[index].regions,
+                                 options.global,
+                                 [this, index](const int region)
+                                     -> std::shared_ptr<mfem::expt::PartialQuadratureFunction> {
+                                     // Runs the user function for this output step if the average
+                                     // did not already
+                                     if (!UserFunctionVolumeResult(index, region).is_valid) {
+                                         return nullptr;
+                                     }
+                                     return m_user_function_outputs[index].values.at(region);
+                                 });
+    }
+
+    // All statistics files go to the stats folder of the results directory
+    if (!m_statistics_outputs.empty()) {
+        auto stats_directory = m_file_manager->GetOutputDirectory() / "stats";
+        m_file_manager->EnsureDirectoryExists(stats_directory, MPI_COMM_WORLD);
+    }
+}
+
+void PostProcessingDriver::RegisterStatisticsOutput(
+    const std::string& name,
+    const std::vector<std::string>& component_names,
+    const std::vector<std::string>& statistics,
+    const HistogramOptions& histogram,
+    const std::vector<int>& regions,
+    const bool global,
+    std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values) {
+    const size_t index = m_statistics_outputs.size();
+    StatisticsOutput output;
+    output.name = name;
+    output.num_components = static_cast<int>(component_names.size());
+    output.component_names = component_names;
+    output.statistics = statistics;
+    output.histogram = histogram;
+    output.point_values = std::move(point_values);
+    m_statistics_outputs.push_back(std::move(output));
+
+    // One file per statistic, stats/<name>_<statistic>_*.txt, with one column per component
+    // (as in the average file), and one histogram file, stats/<name>_hist_*.txt, with every
+    // component's slots. The keys ("stats:...", "hist:...") only identify the files in the
+    // file manager and cannot clash with an average's name.
+    for (const auto& statistic : statistics) {
+        const std::string key = "stats:" + name + ":" + statistic;
+        m_file_manager->SetVolumeAverageFileLocation(key, name + "_" + statistic, "stats");
+        m_file_manager->SetVolumeAverageColumnNames(key, component_names);
+    }
+    if (histogram.bins > 0) {
+        const std::string key = "hist:" + name;
+        m_file_manager->SetVolumeAverageFileLocation(key, name + "_hist", "stats");
+        m_file_manager->SetVolumeAverageColumnNames(
+            key, exaconstit::HistogramColumnNames(component_names, histogram.bins));
+        m_file_manager->SetVolumeAverageHeaderComment(key,
+                                                      exaconstit::HistogramEdgesComment(histogram));
+    }
+
+    std::function<void(double)> global_output = nullptr;
+    if (global) {
+        global_output = [this, index](const double time) {
+            StatisticsGlobalOutput(index, time);
+        };
+    }
+    RegisterVolumeAverageFunction(
+        "statistics:" + name,
+        "Volume statistics of " + name,
+        [this, index](const int region, const double time) {
+            StatisticsRegionOutput(index, region, time);
+        },
+        global_output,
+        true);
+    // Only the selected regions produce region files (all when none are given)
+    if (!regions.empty()) {
+        auto& region_enabled = m_registered_volume_calcs.back().region_enabled;
+        std::fill(region_enabled.begin(), region_enabled.end(), false);
+        for (const int region : regions) {
+            region_enabled[static_cast<size_t>(region)] = true;
+        }
+    }
+}
+
+std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+PostProcessingDriver::BuiltInStatisticsPoints(const CalcType calc_type, const int region) {
+    int data_size = 0;
+    const auto values = PrepareVolumePoints(calc_type, region, data_size);
+    if (!values) {
+        return nullptr;
+    }
+    const int num_points = values->Size() / data_size;
+
+    if (calc_type == CalcType::ELASTIC_STRAIN) {
+        // The first 6 of the 9 values per point hold the strain (Voigt)
+        auto strain = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+            values->GetPartialSpaceShared(), 6, 0.0);
+        const auto source = mfem::Reshape(values->Read(), data_size, num_points);
+        auto target = mfem::Reshape(strain->Write(), 6, num_points);
+        mfem::forall(num_points, [=] MFEM_HOST_DEVICE(int ip) {
+            for (int i = 0; i < 6; i++) {
+                target(i, ip) = source(i, ip);
+            }
+        });
+        return strain;
+    }
+    if (calc_type == CalcType::EULER_STRAIN) {
+        // Euler strain of every point, E = (I - F^-T F^-1) / 2, from its deformation gradient
+        // (the euler_strain volume average instead converts the averaged deformation gradient)
+        auto strain = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+            values->GetPartialSpaceShared(), 6, 0.0);
+        const auto def_grad = mfem::Reshape(values->Read(), 3, 3, num_points);
+        auto target = mfem::Reshape(strain->Write(), 6, num_points);
+        mfem::forall(num_points, [=] MFEM_HOST_DEVICE(int ip) {
+            double f_data[9];
+            double f_inv_data[9];
+            for (int j = 0; j < 3; j++) {
+                for (int i = 0; i < 3; i++) {
+                    f_data[i + 3 * j] = def_grad(i, j, ip);
+                }
+            }
+            mfem::kernels::CalcInverse<3>(f_data, f_inv_data);
+            const auto f_inv = mfem::Reshape(f_inv_data, 3, 3);
+            // b_inv = F^-T F^-1
+            double b_inv[3][3];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    b_inv[i][j] = 0.0;
+                    for (int k = 0; k < 3; k++) {
+                        b_inv[i][j] += f_inv(k, i) * f_inv(k, j);
+                    }
+                }
+            }
+            target(0, ip) = 0.5 * (1.0 - b_inv[0][0]);
+            target(1, ip) = 0.5 * (1.0 - b_inv[1][1]);
+            target(2, ip) = 0.5 * (1.0 - b_inv[2][2]);
+            target(3, ip) = -0.5 * b_inv[1][2];
+            target(4, ip) = -0.5 * b_inv[0][2];
+            target(5, ip) = -0.5 * b_inv[0][1];
+        });
+        return strain;
+    }
+    return values;
+}
+
+PostProcessingDriver::VolumeAverageData PostProcessingDriver::StatisticsResult(const size_t index,
+                                                                               const int region) {
+    auto& output = m_statistics_outputs[index];
+    const auto cached = output.results.find(region);
+    if (cached != output.results.end()) {
+        return cached->second;
+    }
+    if (!m_sim_state->IsRegionActive(region)) {
+        return VolumeAverageData();
+    }
+    const auto values = output.point_values(region);
+    if (!values) {
+        output.results[region] = VolumeAverageData();
+        return output.results[region];
+    }
+    mfem::Vector packed;
+    const double volume = exaconstit::ComputeRegionStatistics(
+        *values,
+        output.histogram,
+        m_sim_state->GetOptions().solvers.rtmodel,
+        m_sim_state->GetRegionCommunicator(region),
+        packed);
+    output.results[region] = VolumeAverageData(volume, packed);
+    return output.results[region];
+}
+
+void PostProcessingDriver::StatisticsRegionOutput(const size_t index,
+                                                  const int region,
+                                                  const double time) {
+    const auto result = StatisticsResult(index, region);
+    if (!result.is_valid) {
+        return;
+    }
+    const auto& output = m_statistics_outputs[index];
+    WriteStatisticsRows(output,
+                        result,
+                        region,
+                        m_sim_state->GetRegionName(region),
+                        time,
+                        m_sim_state->GetRegionCommunicator(region));
+}
+
+void PostProcessingDriver::StatisticsGlobalOutput(const size_t index, const double time) {
+    const auto& output = m_statistics_outputs[index];
+    const int data_size = exaconstit::StatisticsDataSize(output.num_components,
+                                                         output.histogram.bins);
+    const auto regions = GatherRegionVolumeResults(
+        [this, index](const int region) {
+            return StatisticsResult(index, region);
+        },
+        data_size);
+    if (m_mpi_rank != 0) {
+        return;
+    }
+    std::vector<double> volumes;
+    std::vector<mfem::Vector> packed;
+    for (const auto& region : regions) {
+        volumes.push_back(region.volume);
+        packed.push_back(region.data);
+    }
+    mfem::Vector combined;
+    const double volume = exaconstit::CombineStatistics(
+        volumes, packed, output.num_components, output.histogram.bins, combined);
+    if (volume <= 0.0) {
+        return;
+    }
+    WriteStatisticsRows(output, VolumeAverageData(volume, combined), -1, "", time, MPI_COMM_SELF);
+}
+
+void PostProcessingDriver::WriteStatisticsRows(const StatisticsOutput& output,
+                                               const VolumeAverageData& result,
+                                               const int region,
+                                               const std::string& region_name,
+                                               const double time,
+                                               MPI_Comm comm) {
+    // One file per statistic: the statistic of every component
+    for (const auto& statistic : output.statistics) {
+        const auto row = exaconstit::StatisticRow(
+            result.data, result.volume, output.num_components, statistic);
+        m_file_manager->WriteVolumeAverage("stats:" + output.name + ":" + statistic,
+                                           region,
+                                           region_name,
+                                           time,
+                                           result.volume,
+                                           row,
+                                           row.Size(),
+                                           comm);
+    }
+    // One histogram file with every component
+    if (output.histogram.bins > 0) {
+        const auto row = exaconstit::HistogramRow(
+            result.data, result.volume, output.num_components, output.histogram.bins);
+        m_file_manager->WriteVolumeAverage(
+            "hist:" + output.name, region, region_name, time, result.volume, row, row.Size(), comm);
+    }
 }
 
 void PostProcessingDriver::RegisterDefaultVolumeCalculations() {

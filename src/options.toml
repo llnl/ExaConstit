@@ -770,6 +770,7 @@ grain_file = "grains.txt"
         # The actual output structure will be:
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
+        #   [output_directory]/[basename]/stats/             <- Volume statistics (if asked for)
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":
@@ -843,6 +844,51 @@ grain_file = "grains.txt"
         # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
         # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
         avg_elastic_strain_fname = "avg_elastic_strain.txt"
+
+        # ===== Volume Statistics (optional) =====
+        # An average hides how a quantity is spread over the volume (hot spots, the tail of
+        # the plastic strain distribution, stress differences between grains). These options
+        # also write the spread of the averaged quantities, per material and for the whole
+        # sample, into the stats/ folder of the results directory, at the same output
+        # frequency. Every integration point counts with its volume, so the "mean" is exactly
+        # the volume average above.
+        #
+        # Statistics of every enabled average above: a list of names, or "all"
+        #   "mean"      volume average
+        #   "variance"  volume average of (value - mean)^2
+        #   "std"       standard deviation, the square root of the variance
+        #   "skewness"  asymmetry of the distribution (0 for a symmetric one)
+        #   "kurtosis"  excess kurtosis: weight of the tails (0 for a normal distribution,
+        #               positive for heavier tails)
+        #   "min", "max" smallest and largest value at any integration point
+        # Each tensor component gets its own statistics. A spread below 1e-10 of the value
+        # itself (a constant field) is written as 0, and skewness and kurtosis are 0 then.
+        # The Euler strain statistics are of the strain at each point (the euler_strain
+        # average above instead converts the averaged deformation gradient). The plastic
+        # work file above holds the total (volume integral), while its statistics describe
+        # the plastic work per unit volume, so its "mean" is that total divided by the
+        # volume.
+        # Files: one per statistic, stats/[quantity]_[statistic]_global.txt and
+        # stats/[quantity]_[statistic]_region_*.txt (e.g. stats/stress_std_global.txt), with
+        # the same columns as the average file: Time, Volume, then one column per component
+        # (Sxx, Syy, ...).
+        # statistics = ["mean", "std", "skewness", "kurtosis", "min", "max"]
+        #
+        # Histograms: the volume fraction of the material (or sample) whose value falls in
+        # each of a fixed number of equal bins between range[0] and range[1], plus the
+        # fractions below and above the range. One entry per quantity, named like the
+        # switches above (stress, def_grad, euler_strain, plastic_work, eq_pl_strain,
+        # elastic_strain); the quantity must be enabled. A tensor gets one histogram per
+        # component, all with the same bins.
+        # Files: stats/[quantity]_hist_global.txt and stats/[quantity]_hist_region_*.txt
+        # (e.g. stats/stress_hist_global.txt); the first line lists the bin edges, then
+        # columns Time, Volume and for each component [component]_below,
+        # [component]_bin_1 ... [component]_bin_N, [component]_above.
+        # A bin includes its lower edge; the upper edge of the range belongs to the last bin.
+        # NaN values are counted in no slot, so the fractions then add up to less than 1.
+        # [PostProcessing.volume_averages.histograms]
+        #     eq_pl_strain = { bins = 20, range = [0.0, 0.05] }
+        #     stress = { bins = 40, range = [-0.2, 0.2] }
 
     # ===== Surface Quantities =====
     # Force, displacement, area and normal on chosen mesh surfaces, for comparing with
@@ -1070,6 +1116,13 @@ grain_file = "grains.txt"
     #                   (default: [name] for one value, else name_1, name_2, ...)
     #   regions         Material numbers to compute it for (first [[Materials]] entry =
     #                   1; default: all materials)
+    #   statistics      volume_average entries only: also write the volume statistics of
+    #                   the quantity, a list of names or "all" (see the Volume Statistics
+    #                   options of [PostProcessing.volume_averages] for the names), to
+    #                   stats/<name>_<statistic>_*.txt (one file per statistic)
+    #   histogram       volume_average entries only: a fixed-bin histogram of volume
+    #                   fractions, e.g. { bins = 30, range = [-1.0, 2.0] }, written to
+    #                   stats/<name>_hist_*.txt
     #   global          Also output the result combined over those materials: a field
     #                   in the global visualization output and an "_global" text file
     #                   (default: true). With a single material, visualization has only
@@ -1095,6 +1148,8 @@ grain_file = "grains.txt"
     #     type = "volume_average"
     #     name = "triaxiality"
     #     component_names = ["T"]
+    #     statistics = "all"                          # also its spread, in stats/
+    #     histogram = { bins = 30, range = [-1.0, 2.0] }
     #
     # Example: a two-value quantity from another library, for material 2 only, as a
     # field without a global field:
