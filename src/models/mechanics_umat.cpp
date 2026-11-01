@@ -100,24 +100,10 @@ AbaqusUmatModel::AbaqusUmatModel(const int region,
         }
     }
 
-    // NOEL / NPT, 1-based as in Abaqus: NOEL is the element's global number in the parallel
-    // mesh (this rank's offset plus its rank-local index; unique over all ranks, but it depends
-    // on how the mesh is split among the ranks), NPT the point's number within its element
+    // NOEL / NPT, 1-based as in Abaqus
     m_noel.SetSize(npts, mfem::Device::GetMemoryType());
     m_npt.SetSize(npts, mfem::Device::GetMemoryType());
-    {
-        const int* l2g = qspace->IsFullSpace() ? nullptr : qspace->GetLocal2Global().Read();
-        const int nqpts = m_nqpts;
-        int* noel = m_noel.Write();
-        int* npt = m_npt.Write();
-        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i) {
-            const int e = i / nqpts;
-            const int rank_elem = l2g ? l2g[e] : e;
-            // NOEL is a default (32-bit) integer in the UMAT interface
-            noel[i] = static_cast<int>(global_elem_offset + rank_elem) + 1;
-            npt[i] = i % nqpts + 1;
-        });
-    }
+    SetupElementNumbers(global_elem_offset);
 
     // CMNAME: the material name, blank-padded to 80 characters like a Fortran CHARACTER*80
     m_cmname.fill(' ');
@@ -154,6 +140,21 @@ void AbaqusUmatModel::UpdateModelVars() {
     // Output / restart copy of the converged deformation gradient (same point ordering)
     mfem::Vector& def_grad_beg = *GetDefGrad0();
     def_grad_beg = m_def_grad_end;
+}
+
+void AbaqusUmatModel::SetupElementNumbers(const long long global_elem_offset) {
+    auto qspace = GetDefGrad0()->GetPartialSpaceShared();
+    const int* l2g = qspace->IsFullSpace() ? nullptr : qspace->GetLocal2Global().Read();
+    const int nqpts = m_nqpts;
+    int* noel = m_noel.Write();
+    int* npt = m_npt.Write();
+    mfem::forall(m_noel.Size(), [=] MFEM_HOST_DEVICE(int i) {
+        const int e = i / nqpts;
+        const int rank_elem = l2g ? l2g[e] : e;
+        // NOEL is a default (32-bit) integer in the UMAT interface
+        noel[i] = static_cast<int>(global_elem_offset + rank_elem) + 1;
+        npt[i] = i % nqpts + 1;
+    });
 }
 
 void AbaqusUmatModel::SetupReferenceGeometry(const mfem::Vector& loc_grad) {

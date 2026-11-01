@@ -3,6 +3,7 @@
 
 #include "models/mechanics_model.hpp"
 #include "umats/unified_umat_loader.hpp"
+#include "utilities/cuda_access.hpp"
 
 #include "mfem.hpp"
 
@@ -259,7 +260,8 @@ public:
      */
     void UnloadUmatLibrary();
 
-protected:
+    // Methods with device kernels: nvcc does not allow device lambdas in non-public methods
+EXACONSTIT_CUDA_PROTECTED:
     /** @brief Whether the UMAT function for the selected interface is loaded */
     bool UmatLoaded() const {
         return m_batched ? (umat_batch_function != nullptr) : (umat_function != nullptr);
@@ -277,6 +279,18 @@ protected:
      * reference nodes is also correct after a restart.
      */
     void SetupReferenceGeometry(const mfem::Vector& loc_grad);
+
+    /**
+     * @brief NOEL and NPT of every region point, 1-based as in Abaqus (device kernel)
+     *
+     * @param global_elem_offset Global number of this rank's first element
+     *
+     * @details NOEL is the element's global number in the parallel mesh (this rank's offset plus
+     * its rank-local index; unique over all ranks, but it depends on how the mesh is split among
+     * the ranks), NPT the point's number within its element. Called from the constructor (nvcc
+     * does not allow device lambdas in constructors).
+     */
+    void SetupElementNumbers(const long long global_elem_offset);
 
     /**
      * @brief Deformation gradient F = d x / d X at the region's points for given nodal positions
