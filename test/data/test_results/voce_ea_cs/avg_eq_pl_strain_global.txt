@@ -1,4 +1,4 @@
-      # Time            Volume      Equiv_Plastic_Stra
+      # Time            Volume       Equiv_Plastic_Strain 
     5.00000000e-03    1.00000159e+00    0.00000000e+00
     2.00000000e-01    1.00006342e+00    3.46788929e-07
     3.00000000e-01    1.00008461e+00    3.88927914e-05
