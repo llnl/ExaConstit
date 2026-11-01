@@ -4,7 +4,9 @@
 #include "ECMech_cases.h"
 #include "ECMech_const.h"
 
+#include <algorithm>
 #include <iostream>
+#include <sstream>
 
 GrainInfo GrainInfo::from_toml(const toml::value& toml_input) {
     GrainInfo info;
@@ -84,6 +86,18 @@ StateVariables StateVariables::from_toml(const toml::value& toml_input) {
         // Support both "num_vars" and "num_state_vars" for backward compatibility
         const auto& key = toml_input.contains("num_vars") ? "num_vars" : "num_state_vars";
         vars.num_vars = toml::find<int>(toml_input, key);
+    }
+
+    if (toml_input.contains("library_path")) {
+        vars.library_path = toml::find<std::string>(toml_input, "library_path");
+    }
+
+    if (toml_input.contains("register_function")) {
+        vars.register_function = toml::find<std::string>(toml_input, "register_function");
+    }
+
+    if (toml_input.contains("initialize_function")) {
+        vars.initialize_function = toml::find<std::string>(toml_input, "initialize_function");
     }
 
     if (toml_input.contains("values")) {
@@ -276,6 +290,18 @@ MaterialOptions MaterialOptions::from_toml(const toml::value& toml_input) {
         options.model = MaterialModelOptions::from_toml(toml::find(toml_input, "Model"));
     }
 
+    // Named state variables to visualize: a list of names or "all"
+    if (toml_input.contains("visualize_state_vars")) {
+        const auto& viz = toml_input.at("visualize_state_vars");
+        if (viz.is_string()) {
+            options.visualize_state_vars = {
+                toml::find<std::string>(toml_input, "visualize_state_vars")};
+        } else {
+            options.visualize_state_vars = toml::find<std::vector<std::string>>(
+                toml_input, "visualize_state_vars");
+        }
+    }
+
     return options;
 }
 
@@ -362,6 +388,10 @@ bool StateVariables::validate(bool check_input_files) const {
         WARNING_0_OPT("Error: StateVariables num_vars != initial_values.size()");
         return false;
     }
+    if (!library_path.empty() && register_function.empty() && initialize_function.empty()) {
+        WARNING_0_OPT("Warning: State_Vars library_path is set but neither register_function nor "
+                      "initialize_function is given, so the library is not used");
+    }
     return true;
 }
 
@@ -427,6 +457,17 @@ bool MaterialModelOptions::validate() const {
 
 bool MaterialOptions::validate(bool check_input_files) const {
     std::string mat_name = material_name + "_" + std::to_string(region_id);
+
+    const bool viz_all = std::find(visualize_state_vars.begin(),
+                                   visualize_state_vars.end(),
+                                   "all") != visualize_state_vars.end();
+    if (viz_all && visualize_state_vars.size() > 1) {
+        std::ostringstream err;
+        err << "Error: Material table for material_name_region# " << mat_name
+            << " visualize_state_vars = \"all\" cannot be combined with other names";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
 
     if (mech_type == MechType::NOTYPE) {
         std::ostringstream err;

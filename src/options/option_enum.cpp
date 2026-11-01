@@ -172,3 +172,17 @@ VizFieldLocation string_to_viz_field_location(const std::string& str) {
 
     return string_to_enum(str, mapping, VizFieldLocation::NOTYPE, "visualization field location");
 }
+
+/**
+ * @brief Convert string to UserFunctionType enum
+ * @param str "visualization", "volume_average" or "volume_integral"
+ * @return Corresponding UserFunctionType enum value
+ */
+UserFunctionType string_to_user_function_type(const std::string& str) {
+    static const std::map<std::string, UserFunctionType> mapping = {
+        {"visualization", UserFunctionType::VISUALIZATION},
+        {"volume_average", UserFunctionType::VOLUME_AVERAGE},
+        {"volume_integral", UserFunctionType::VOLUME_INTEGRAL}};
+
+    return string_to_enum(str, mapping, UserFunctionType::NOTYPE, "user function");
+}

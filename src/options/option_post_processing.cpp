@@ -2,8 +2,11 @@
 #include "options/option_util.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <iostream>
 #include <set>
+#include <sstream>
+#include <string_view>
 
 /**
  * @brief Check if the TOML input contains legacy volume averaging options in [Visualizations]
@@ -652,8 +655,105 @@ ProjectionOptions ProjectionOptions::from_toml(const toml::value& toml_input) {
     return options;
 }
 
+int ProjectionOptions::region_number(const std::string& projection) {
+    constexpr std::string_view prefix = "region_";
+    const std::string_view entry = projection;
+    if (entry.substr(0, prefix.size()) != prefix) {
+        return -1;
+    }
+    // The rest must be a whole number and nothing else
+    const std::string_view digits = entry.substr(prefix.size());
+    int number = -1;
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), number);
+    if (digits.empty() || error != std::errc() || end != digits.data() + digits.size()) {
+        return -1;
+    }
+    return number;
+}
+
 bool ProjectionOptions::validate() const {
-    // Implement validation logic
+    // Names are checked by PostProcessingDriver::RegisterProjection (the one list of built-in
+    // projections); region_<N> numbers are checked in ExaOptions::validate, which knows the
+    // number of materials.
+    return true;
+}
+
+UserFunctionOptions UserFunctionOptions::from_toml(const toml::value& toml_input) {
+    UserFunctionOptions options;
+
+    if (toml_input.contains("library_path")) {
+        options.library_path = toml::find<std::string>(toml_input, "library_path");
+    }
+    if (toml_input.contains("function_name")) {
+        options.function_name = toml::find<std::string>(toml_input, "function_name");
+    }
+    if (toml_input.contains("type")) {
+        options.type = string_to_user_function_type(toml::find<std::string>(toml_input, "type"));
+    }
+    if (toml_input.contains("component_names")) {
+        options.component_names = toml::find<std::vector<std::string>>(toml_input,
+                                                                       "component_names");
+    }
+    if (toml_input.contains("regions")) {
+        options.regions = toml::find<std::vector<int>>(toml_input, "regions");
+    }
+    if (toml_input.contains("global")) {
+        options.global = toml::find<bool>(toml_input, "global");
+    }
+
+    // Defaults: name from the function, component count from the labels, labels from the name
+    options.name = toml_input.contains("name") ? toml::find<std::string>(toml_input, "name")
+                                               : options.function_name;
+    if (toml_input.contains("num_components")) {
+        options.num_components = toml::find<int>(toml_input, "num_components");
+    } else if (!options.component_names.empty()) {
+        options.num_components = static_cast<int>(options.component_names.size());
+    }
+    if (options.component_names.empty() && options.num_components >= 1) {
+        if (options.num_components == 1) {
+            options.component_names = {options.name};
+        } else {
+            for (int i = 1; i <= options.num_components; i++) {
+                options.component_names.push_back(options.name + "_" + std::to_string(i));
+            }
+        }
+    }
+
+    return options;
+}
+
+bool UserFunctionOptions::validate(size_t num_materials) const {
+    const auto fail = [this](const std::string& problem) {
+        std::ostringstream err;
+        err << "Error: [[PostProcessing.user_functions]] entry '"
+            << (name.empty() ? function_name : name) << "' " << problem;
+        WARNING_0_OPT(err.str());
+        return false;
+    };
+
+    if (function_name.empty()) {
+        return fail("needs a function_name");
+    }
+    if (type == UserFunctionType::NOTYPE) {
+        return fail("needs type = \"visualization\", \"volume_average\" or \"volume_integral\"");
+    }
+    if (num_components < 1) {
+        return fail("num_components must be at least 1");
+    }
+    if (static_cast<int>(component_names.size()) != num_components) {
+        return fail("has " + std::to_string(component_names.size()) +
+                    " component_names but num_components = " + std::to_string(num_components));
+    }
+    std::set<int> seen_regions;
+    for (const int region : regions) {
+        if (region < 1 || static_cast<size_t>(region) > num_materials) {
+            return fail("region " + std::to_string(region) + " is not a material number (1 to " +
+                        std::to_string(num_materials) + ")");
+        }
+        if (!seen_regions.insert(region).second) {
+            return fail("lists region " + std::to_string(region) + " more than once");
+        }
+    }
     return true;
 }
 
@@ -735,6 +835,12 @@ PostProcessingOptions PostProcessingOptions::from_toml(const toml::value& toml_i
         if (post_proc.contains("surface_quantities")) {
             options.surface_quantities = SurfaceQuantityOptions::from_toml(
                 toml::find(post_proc, "surface_quantities"));
+        }
+        if (post_proc.contains("user_functions")) {
+            for (const auto& entry :
+                 toml::find<std::vector<toml::value>>(post_proc, "user_functions")) {
+                options.user_functions.push_back(UserFunctionOptions::from_toml(entry));
+            }
         }
     }
 

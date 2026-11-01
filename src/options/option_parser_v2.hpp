@@ -133,6 +133,16 @@ enum class VizFieldLocation {
     NOTYPE      /**< Uninitialized or invalid field location */
 };
 
+/**
+ * @brief What ExaConstit does with the per-point values of a post-processing user function
+ */
+enum class UserFunctionType {
+    VISUALIZATION,   /**< Written as a visualization field (zone or quadrature output) */
+    VOLUME_AVERAGE,  /**< Volume averaged per region / globally and written to a file */
+    VOLUME_INTEGRAL, /**< Volume integrated per region / globally and written to a file */
+    NOTYPE           /**< Uninitialized or invalid type */
+};
+
 enum class LatticeType {
     CUBIC,
     HEXAGONAL,
@@ -303,6 +313,30 @@ struct StateVariables {
      */
     std::vector<double> initial_values;
 
+    /**
+     * @brief Shared library holding the user register / initialize functions
+     *
+     * Empty means the functions are searched in the ExaConstit executable itself, as for the
+     * built-in UMAT.
+     */
+    std::filesystem::path library_path;
+
+    /**
+     * @brief User function naming this material's state variables (optional)
+     *
+     * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It calls
+     * sim_state->AddQuadratureFunctionStatePair(name, {offset, length}, region) for each name.
+     */
+    std::string register_function;
+
+    /**
+     * @brief User function setting this material's initial history variables (optional)
+     *
+     * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It writes the
+     * region's "state_var_beg" quadrature function; ExaConstit copies it to "state_var_end".
+     */
+    std::string initialize_function;
+
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist)
     bool validate(bool check_input_files = true) const;
@@ -470,6 +504,17 @@ struct MaterialOptions {
      * @brief Operating temperature in Kelvin
      */
     double temperature = 298.0;
+
+    /**
+     * @brief Named state variables of this material written to the visualization output
+     *
+     * TOML key `visualize_state_vars`: a list of names (as registered in SimulationState, e.g.
+     * "eq_pl_strain", "quats") or "all" (stored as the single entry "all"), which writes every
+     * named state variable plus (except for ExaCMech) one scalar field per unnamed slot, like
+     * region_<N> in
+     * [PostProcessing.projections] enabled_projections. Only used when visualization is on.
+     */
+    std::vector<std::string> visualize_state_vars;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist)
@@ -1314,6 +1359,12 @@ struct VolumeAverageOptions {
 struct ProjectionOptions {
     /**
      * @brief List of enabled projection types for visualization
+     *
+     * Besides the built-in names, "region_<N>" (N = material number, 1-based) writes all of
+     * that material's state variables: one field per named state variable and one scalar field
+     * per unnamed slot (not for ExaCMech, whose names cover everything worth plotting); names
+     * registered with plot = false are left out.
+     * region_<N> entries are used even with auto_enable_compatible = true.
      */
     std::vector<std::string> enabled_projections;
 
@@ -1327,6 +1378,62 @@ struct ProjectionOptions {
 
     // Conversion from toml
     static ProjectionOptions from_toml(const toml::value& toml_input);
+
+    /**
+     * @brief Material number N of a "region_<N>" entry, or -1 if the entry is not of that form
+     */
+    static int region_number(const std::string& projection);
+};
+
+/**
+ * @brief One post-processing user function ([[PostProcessing.user_functions]] entry)
+ *
+ * The function fills the per-point values of one region:
+ *   void f(std::shared_ptr<SimulationState> sim_state, int region,
+ *          std::shared_ptr<mfem::expt::PartialQuadratureFunction> values);
+ * and `type` says what ExaConstit does with them. The same function can be listed in several
+ * entries (for example once as a visualization field and once as a volume average).
+ */
+struct UserFunctionOptions {
+    /** @brief Shared library holding the function (empty: search the executable) */
+    std::filesystem::path library_path;
+
+    /** @brief Function name (required) */
+    std::string function_name;
+
+    /** @brief What to do with the values (required) */
+    UserFunctionType type = UserFunctionType::NOTYPE;
+
+    /** @brief Output name: field name or file name stem (default: function_name) */
+    std::string name;
+
+    /** @brief Values per point (default: number of component_names, else 1) */
+    int num_components = 1;
+
+    /**
+     * @brief Column labels of volume average / integral files, written after Time and Volume
+     *
+     * Default: [name] for one component, else name_1 ... name_n.
+     */
+    std::vector<std::string> component_names;
+
+    /** @brief Material numbers (1-based) the function runs on (default: all materials) */
+    std::vector<int> regions;
+
+    /**
+     * @brief Also output the combination over the selected regions (default: true)
+     *
+     * For visualization it has no effect with a single material (the region output is the
+     * global output); volume averages / integrals then still write the _global file, like the
+     * built-in volume averages.
+     */
+    bool global = true;
+
+    // Validation (num_materials: number of [[Materials]] entries, for the region numbers)
+    bool validate(size_t num_materials) const;
+
+    // Conversion from toml (fills in the defaults above)
+    static UserFunctionOptions from_toml(const toml::value& toml_input);
 };
 
 /**
@@ -1393,6 +1500,11 @@ struct PostProcessingOptions {
      * @brief Light-up analysis configurations for crystal orientation visualization
      */
     std::vector<LightUpOptions> light_up_configs;
+
+    /**
+     * @brief Post-processing user functions ([[PostProcessing.user_functions]] array)
+     */
+    std::vector<UserFunctionOptions> user_functions;
 
     // Validation
     bool validate() const;
@@ -1784,3 +1896,10 @@ LatticeType string_to_lattice_type(const std::string& str);
  * @return Corresponding VizFieldLocation enum value, or NOTYPE if invalid
  */
 VizFieldLocation string_to_viz_field_location(const std::string& str);
+
+/**
+ * @brief Convert string to UserFunctionType enum
+ * @param str "visualization", "volume_average" or "volume_integral"
+ * @return Corresponding UserFunctionType enum value, or NOTYPE if invalid
+ */
+UserFunctionType string_to_user_function_type(const std::string& str);
