@@ -12,6 +12,9 @@
 #include "SNLS_linalg.h"
 
 #include <filesystem>
+#include <fstream>
+#include <regex>
+#include <sstream>
 namespace fs = std::filesystem;
 
 namespace {
@@ -1512,6 +1515,12 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                 paraview.SetLevelsOfDetail(options.mesh.order);
                 paraview.SetDataFormat(mfem::VTKFormat::BINARY);
                 paraview.SetHighOrderOutput(false);
+                // Restart: keep the .pvd entries written before the restart time
+                paraview.UseRestartMode(m_sim_state->IsRestartRun());
+                if (m_sim_state->IsRestartRun()) {
+                    m_restart_pvd_files.push_back(output_dir_vizs /
+                                                  (output_dir_vizs.filename().string() + ".pvd"));
+                }
                 dcs_keys.push_back(key);
             }
 #ifdef MFEM_USE_ADIOS2
@@ -1534,9 +1543,14 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                         dcs->RegisterField(disp_key, value.get());
                     }
                 }
-                dcs->SetCycle(0);
-                dcs->SetTime(0.0);
-                dcs->Save();
+                // The initial state, written once by the run that starts at t = 0. A restart
+                // keeps the files written before it and adds to them from its first output
+                // step on, so it must not overwrite cycle 0.
+                if (!m_sim_state->IsRestartRun()) {
+                    dcs->SetCycle(0);
+                    dcs->SetTime(0.0);
+                    dcs->Save();
+                }
             }
         }
     }
@@ -1572,6 +1586,12 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
             paraview.SetLevelsOfDetail(options.mesh.order);
             paraview.SetDataFormat(mfem::VTKFormat::BINARY);
             paraview.SetHighOrderOutput(false);
+            // Restart: keep the .pvd entries written before the restart time
+            paraview.UseRestartMode(m_sim_state->IsRestartRun());
+            if (m_sim_state->IsRestartRun()) {
+                m_restart_pvd_files.push_back(output_dir_vizs /
+                                              (output_dir_vizs.filename().string() + ".pvd"));
+            }
             dcs_keys.push_back(key);
         }
 #ifdef MFEM_USE_ADIOS2
@@ -1595,14 +1615,60 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                     dcs->RegisterField(disp_key, value.get());
                 }
             }
-            dcs->SetCycle(0);
-            dcs->SetTime(0.0);
-            dcs->Save();
+            // The initial state, written only by the run that starts at t = 0 (see above)
+            if (!m_sim_state->IsRestartRun()) {
+                dcs->SetCycle(0);
+                dcs->SetTime(0.0);
+                dcs->Save();
+            }
         }
     }
 }
 
+namespace {
+
+/**
+ * @brief Remove the entries of cycle first_cycle and later from a ParaView collection file
+ *
+ * @param pvd_file The .pvd file (nothing is done if it does not exist)
+ * @param first_cycle First cycle to remove
+ *
+ * Lines other than DataSet entries (the header and closing tags) are kept. MFEM's restart mode
+ * then appends the new entries after the kept ones.
+ */
+void TrimParaViewCollection(const fs::path& pvd_file, const int first_cycle) {
+    std::ifstream in(pvd_file);
+    if (!in) {
+        return;
+    }
+    static const std::regex cycle_regex("file=\"Cycle(\\d+)");
+    std::ostringstream kept;
+    std::string line;
+    std::smatch match;
+    while (std::getline(in, line)) {
+        if (std::regex_search(line, match, cycle_regex) && std::stoi(match[1]) >= first_cycle) {
+            continue;
+        }
+        kept << line << "\n";
+    }
+    in.close();
+    std::ofstream out(pvd_file, std::ios::trunc);
+    out << kept.str();
+}
+
+} // namespace
+
 void PostProcessingDriver::UpdateDataCollections(const int step, const double time) {
+    // First save of a restart run: drop the ParaView entries this run writes again (written by
+    // rank 0, which alone writes the .pvd files)
+    if (!m_restart_pvd_files.empty()) {
+        if (m_mpi_rank == 0) {
+            for (const auto& pvd_file : m_restart_pvd_files) {
+                TrimParaViewCollection(pvd_file, step);
+            }
+        }
+        m_restart_pvd_files.clear();
+    }
     for (auto& [tmp, dcs] : m_map_dcs) {
         dcs->SetCycle(step);
         dcs->SetTime(time);

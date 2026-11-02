@@ -122,6 +122,32 @@ if(ENABLE_AXOM)
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON ${_restart_tool_depends})
 
+    # Restart outputs (a short case of test_restart_runs.py, part of the default suite):
+    # checkpoints go inside the run's output folder, and restarts keep the visualization files
+    # written before them (ParaView and VisIt, also restarting from an earlier checkpoint)
+    set(_restart_outputs_np 2)
+    if(_restart_outputs_np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+        set(_restart_outputs_np ${EXACONSTIT_TEST_MAX_MPI_TASKS})
+    endif()
+    set(_restart_outputs_mpiexec "${MPIEXEC_EXECUTABLE}")
+    if(NOT _restart_outputs_mpiexec)
+        set(_restart_outputs_mpiexec "mpirun")
+    endif()
+    add_test(NAME test_restart_outputs
+             COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/test_restart_runs.py
+                     --cases outputs
+                     --nxyz 4
+                     --np ${_restart_outputs_np}
+                     --always-mpiexec
+                     --mpiexec ${_restart_outputs_mpiexec}
+                     --exe $<TARGET_FILE:mechanics>
+                     --compare-tool $<TARGET_FILE:compare_restart_checkpoints>
+                     --workdir ${CMAKE_BINARY_DIR}/test/restart_outputs
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/test)
+    set_tests_properties(test_restart_outputs PROPERTIES
+                         LABELS "restart"
+                         PROCESSORS ${_restart_outputs_np})
+
     # Restart tests on real runs (test_restart_runs.py): cyclic loading chained every 1 and 2
     # cycles, long monotonic tension chained halfway, a run with empty ranks, restarts from past
     # reference checkpoints, and a negative control. They take 10-15 minutes on 8 ranks, so they

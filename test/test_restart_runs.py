@@ -36,6 +36,10 @@ Cases:
                restarted from its halfway checkpoint; the negative control runs here.
   empty_ranks  Short tension run on a 2-element mesh, so with more than 2 ranks every rank but
                two owns no elements. Covers checkpointing and restarting with empty ranks.
+  outputs      Short tension run with ParaView and VisIt output (not run by default; a short
+               ctest of its own): checkpoints are written inside the run's output folder, and
+               a restart (also from an earlier checkpoint) keeps the visualization files written
+               before it, ending with exactly the files of an uninterrupted run.
 
 Defaults: 16^3 = 4096 hex elements, 8 MPI ranks, 4 cycles of +/-1% strain (160 steps), 10%
 monotonic strain (100 steps), and a 20-step empty-rank run. Run with --help for the options
@@ -173,7 +177,7 @@ def restart_block(restart: Dict[str, object]) -> str:
 
 def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: str,
                t_final: float, restart: Dict[str, object], rtmodel: str = "CPU",
-               assembly: str = "FULL") -> None:
+               assembly: str = "FULL", visualize: bool = False) -> None:
     """
     Write the options file for one run
 
@@ -191,7 +195,9 @@ def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: 
         restart: [Restart] keys and values
         rtmodel: [Solvers] rtmodel (CPU, OPENMP or GPU)
         assembly: [Solvers] assembly (FULL, PA or EA)
+        visualize: Write ParaView and VisIt files at every step
     """
+    viz = "true" if visualize else "false"
     path.write_text(f"""Version = "0.10.0"
 basename = "{basename}"
 grain_file = "{mesh.grain_file}"
@@ -224,9 +230,10 @@ grain_file = "{mesh.grain_file}"
         t_final = {t_final!r}
 
 [Visualizations]
-    visit = false
+    steps = 1
+    visit = {viz}
     conduit = false
-    paraview = false
+    paraview = {viz}
 
 [PostProcessing]
     [PostProcessing.volume_averages]
@@ -477,6 +484,61 @@ class Harness:
             self.check(bool(problems), f"{label}: outputs must differ from reference ({detail})")
             return
         self.check(not problems, f"{label}: outputs vs reference ({detail})")
+
+
+    def visualization_files(self, basename: str) -> Dict[str, bytes]:
+        """
+        Every visualization file of a run, by path with the basename replaced by "BASENAME"
+
+        Args:
+            basename: Basename of the run
+
+        Returns:
+            {relative path: contents}, with the basename also replaced in the contents (VisIt
+            root files name their data files)
+        """
+        root = self.workdir / "results" / basename / "visualizations"
+        files = {}
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                rel = str(path.relative_to(root)).replace(basename, "BASENAME")
+                files[rel] = path.read_bytes().replace(basename.encode(), b"BASENAME")
+        return files
+
+    def compare_visualizations(self, label: str, ref_basename: str, other_basename: str) -> None:
+        """
+        Check that a run has exactly the visualization files of the reference, byte for byte
+
+        Args:
+            label: Description used in the check message
+            ref_basename: Basename of the reference run
+            other_basename: Basename of the run to compare
+        """
+        ref = self.visualization_files(ref_basename)
+        other = self.visualization_files(other_basename)
+        missing = sorted(set(ref) - set(other))
+        extra = sorted(set(other) - set(ref))
+        differ = sorted(k for k in set(ref) & set(other) if ref[k] != other[k])
+        problems = [f"{len(v)} {what} (e.g. {v[0]})" for v, what in
+                    ((missing, "missing"), (extra, "extra"), (differ, "differ")) if v]
+        self.check(bool(ref) and not problems,
+                   f"{label}: visualization files vs reference ("
+                   f"{'; '.join(problems) if problems else f'{len(ref)} files identical'})")
+
+    def paraview_times(self, basename: str) -> Dict[str, List[float]]:
+        """
+        Times listed in each ParaView collection (.pvd) of a run
+
+        Args:
+            basename: Basename of the run
+
+        Returns:
+            {collection file relative to the visualizations folder: times in file order}
+        """
+        root = self.workdir / "results" / basename / "visualizations"
+        return {str(pvd.relative_to(root)): [float(t) for t in
+                                              re.findall(r'timestep="([^"]+)"', pvd.read_text())]
+                for pvd in sorted(root.rglob("*.pvd"))}
 
 
 # ============================================================================
@@ -777,6 +839,78 @@ def run_empty_ranks(h: Harness, mesh: MeshSpec) -> None:
     run_from_reference(h, ref, ref_cycles, from_cycles, mesh, bcs, total_steps)
 
 
+def run_outputs(h: Harness, mesh: MeshSpec) -> None:
+    """
+    Output case: where checkpoints go, and visualization files across restarts
+
+    A short tension run with ParaView and VisIt output at every step. The reference runs
+    uninterrupted, writing checkpoints. A chain stops after step 2 and restarts to the end, then
+    restarts once more from its checkpoint of step 1 (an earlier one), as when a run is redone
+    from an older checkpoint. Checks:
+    - checkpoints are written inside the run's output folder, results/<basename>/<directory>,
+      and nowhere in the work directory;
+    - a restart keeps the visualization files written before it: the first segment's step 0 is
+      not rewritten, and after each restart the visualization files (ParaView .pvd collections,
+      VTU pieces, VisIt root and data files) are byte for byte those of the uninterrupted run,
+      with every step listed once in each .pvd file.
+
+    Args:
+        h: Test harness
+        mesh: Mesh of the case
+    """
+    total_steps = 4
+    stop = 2
+    bcs = bc_block([1], [TOP_VELOCITY])
+    print(f"\n== outputs: {total_steps} steps with ParaView and VisIt output, chain stopped at "
+          f"step {stop}, then restarted again from step 1")
+
+    ref = "out_ref"
+    write_toml(h.workdir / f"{ref}.toml", ref, mesh, h.args.num_grains, bcs,
+               time_of(total_steps),
+               {"write": True, "interval": 1, "write_final": True, "keep_last": 0,
+                "directory": f"ckpt_{ref}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly, visualize=True)
+    h.run(ref, h.workdir / f"{ref}.toml")
+    inside = h.workdir / checkpoint_root(ref) / f"cycle_{total_steps:010d}" / "commit.json"
+    h.check(inside.exists() and not (h.workdir / f"ckpt_{ref}").exists(),
+            f"{ref}: checkpoints are in {checkpoint_root(ref)} (inside the output folder), "
+            f"not in the work directory")
+    expected_times = [time_of(step) for step in range(total_steps + 1)]
+    ref_times = h.paraview_times(ref)
+    h.check(bool(ref_times) and all(t == expected_times for t in ref_times.values()),
+            f"{ref}: every .pvd lists steps 0..{total_steps} ({ref_times})")
+
+    chain = "out_chain"
+    segments = [(f"{chain}_seg1", stop, {}),
+                (f"{chain}_seg2", total_steps, {"read": True}),
+                (f"{chain}_seg3", total_steps, {"read": True, "read_cycle": 1})]
+    step0 = None
+    for i, (segment, end, read) in enumerate(segments):
+        restart = {"write": True, "interval": 1, "write_final": True, "keep_last": 0,
+                   "directory": f"ckpt_{chain}", **read}
+        write_toml(h.workdir / f"{segment}.toml", chain, mesh, h.args.num_grains, bcs,
+                   time_of(end), restart, rtmodel=h.args.rtmodel, assembly=h.args.assembly,
+                   visualize=True)
+        h.run(segment, h.workdir / f"{segment}.toml")
+        files = h.visualization_files(chain)
+        if i == 0:
+            step0 = {k: v for k, v in files.items() if "Cycle000000" in k or "_000000" in k}
+            continue
+        h.verify_restart_log(segment, checkpoint_root(chain), read.get("read_cycle", stop), end)
+        kept = all(files.get(k) == v for k, v in step0.items())
+        h.check(bool(step0) and kept,
+                f"{segment}: the {len(step0)} step-0 visualization files of the first segment "
+                f"are still there, unchanged")
+        times = h.paraview_times(chain)
+        h.check(bool(times) and all(t == expected_times for t in times.values()),
+                f"{segment}: every .pvd lists steps 0..{total_steps} once ({times})")
+        h.compare_visualizations(segment, ref, chain)
+        if i == 1:
+            # Volume-average files are only appended to, so they are compared before segment 3
+            # computes steps 2..4 again
+            h.compare_outputs(segment, ref, chain)
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -848,6 +982,7 @@ def main() -> int:
         "cyclic": (run_cyclic, MeshSpec((args.nxyz,) * 3, "grains.txt")),
         "monotonic": (run_monotonic, MeshSpec((args.nxyz,) * 3, "grains.txt")),
         "empty_ranks": (run_empty_ranks, MeshSpec((2, 1, 1), "grains_empty_ranks.txt")),
+        "outputs": (run_outputs, MeshSpec((args.nxyz,) * 3, "grains.txt")),
     }
     requested = [c.strip() for c in args.cases.split(",") if c.strip()]
     unknown = [c for c in requested if c not in cases]
