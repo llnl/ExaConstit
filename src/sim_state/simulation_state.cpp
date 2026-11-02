@@ -894,6 +894,15 @@ SimulationState::SimulationState(ExaOptions& options)
         const int space_dim = m_mesh->SpaceDimension();
         std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(0);
         m_map_fec[l2_fec_str] = std::make_shared<mfem::L2_FECollection>(0, space_dim);
+        // Quadrature visualization output: L2 of the mesh order with Gauss-Lobatto nodes, i.e.
+        // nodes at the same reference locations as the H1 displacement nodes
+        if (options.visualization.field_location == VizFieldLocation::QUADRATURE) {
+            const int order = options.mesh.order;
+            std::string l2_viz_str = "L2_" + std::to_string(space_dim) + "D_P" +
+                                     std::to_string(order);
+            m_map_fec[l2_viz_str] = std::make_shared<mfem::L2_FECollection>(
+                order, space_dim, mfem::BasisType::GaussLobatto);
+        }
     }
 
     // Global QuadratureSpace Setup and QFs
@@ -1100,6 +1109,24 @@ SimulationState::SimulationState(ExaOptions& options)
                 m_map_qfs[def_grad_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
                     m_map_qs[qspace_name], 9, 0.0);
                 ::initializeDeformationGradientToIdentity(*m_map_qfs[def_grad_name]);
+
+                // The UMAT's accumulated energies per unit volume (Abaqus SSE, SPD, SCD: elastic
+                // strain energy, plastic and creep dissipation), one value per point. UMATs
+                // receive the converged values and add the increment's share, so they are kept
+                // from step to step like the stress (and so written to restart files).
+                for (const char* energy : {"umat_sse", "umat_spd", "umat_scd"}) {
+                    const auto beg_name = GetQuadratureFunctionMapName(
+                        std::string(energy) + "_beg", region_id);
+                    const auto end_name = GetQuadratureFunctionMapName(
+                        std::string(energy) + "_end", region_id);
+                    m_map_qfs[beg_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                        m_map_qs[qspace_name], 1, 0.0);
+                    m_map_qfs[end_name] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                        m_map_qs[qspace_name], 1, 0.0);
+                    m_map_qfs[beg_name]->operator=(0.0);
+                    m_map_qfs[end_name]->operator=(0.0);
+                    m_model_update_qf_pairs.push_back(std::make_pair(beg_name, end_name));
+                }
             }
 
             m_model_update_qf_pairs.push_back(
@@ -1203,13 +1230,62 @@ SimulationState::GetQuadratureFunctionStatePair(const std::string_view& state_na
 
 bool SimulationState::AddQuadratureFunctionStatePair(const std::string_view state_name,
                                                      std::pair<int, int> state_pair,
-                                                     const int region) {
+                                                     const int region,
+                                                     const bool plot) {
     std::string mat_name = GetQuadratureFunctionMapName(state_name, region);
-    if (m_map_qf_mappings.find(mat_name) == m_map_qf_mappings.end()) {
-        m_map_qf_mappings.emplace(mat_name, state_pair);
-        return true;
+    if (m_map_qf_mappings.find(mat_name) != m_map_qf_mappings.end()) {
+        return false;
     }
-    return false;
+
+    // A material region's slices must lie inside its state variables and must not overlap, or
+    // post-processing and user functions would read the wrong history variables.
+    if (region >= 0 && region < static_cast<int>(m_options.materials.size())) {
+        const int num_vars = m_options.materials[static_cast<size_t>(region)].state_vars.num_vars;
+        const int offset = state_pair.first;
+        const int length = state_pair.second;
+        MFEM_VERIFY_0(offset >= 0 && length >= 1 && offset + length <= num_vars,
+                      "State variable '" << state_name << "' of region " << GetRegionName(region)
+                                         << " has offset " << offset << " and length " << length
+                                         << ", which does not fit in the region's " << num_vars
+                                         << " state variables");
+        for (const auto& other : GetQuadratureFunctionStatePairs(region)) {
+            const std::string& other_name = other.first;
+            const int other_offset = other.second.first;
+            const int other_length = other.second.second;
+            const bool overlaps = offset < other_offset + other_length &&
+                                  other_offset < offset + length;
+            MFEM_VERIFY_0(!overlaps,
+                          "State variable '"
+                              << state_name << "' of region " << GetRegionName(region)
+                              << " (offset " << offset << ", length " << length << ") overlaps '"
+                              << other_name << "' (offset " << other_offset << ", length "
+                              << other_length << ")");
+        }
+    }
+
+    m_map_qf_mappings.emplace(mat_name, state_pair);
+    m_map_qf_mapping_plot.emplace(mat_name, plot);
+    m_map_qf_mapping_order[region].emplace_back(state_name);
+    return true;
+}
+
+bool SimulationState::GetQuadratureFunctionStatePlot(const std::string_view& state_name,
+                                                     const int region) const {
+    const auto plot = m_map_qf_mapping_plot.find(GetQuadratureFunctionMapName(state_name, region));
+    return (plot != m_map_qf_mapping_plot.end()) && plot->second;
+}
+
+std::vector<std::pair<std::string, std::pair<int, int>>>
+SimulationState::GetQuadratureFunctionStatePairs(const int region) const {
+    std::vector<std::pair<std::string, std::pair<int, int>>> pairs;
+    const auto order = m_map_qf_mapping_order.find(region);
+    if (order == m_map_qf_mapping_order.end()) {
+        return pairs;
+    }
+    for (const auto& name : order->second) {
+        pairs.emplace_back(name, GetQuadratureFunctionStatePair(name, region));
+    }
+    return pairs;
 }
 
 void SimulationState::FinishCycle() {

@@ -82,12 +82,18 @@
 #include "system_driver.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/unified_logger.hpp"
+#include "utilities/user_function_loader.hpp"
 
 #include "mfem.hpp"
 #include "mfem/general/forall.hpp"
 
 #include "SNLS_config.h"
 #if defined(SNLS_RAJA_PORT_SUITE)
+#include "SNLS_device_forall.h"
+#include "SNLS_memory_manager.h"
+
+#include <umpire/ResourceManager.hpp>
+#include <umpire/strategy/QuickPool.hpp>
 #include <umpire/util/io.hpp>
 #endif
 
@@ -180,6 +186,11 @@ int main(int argc, char* argv[]) {
 #endif
         toml_opt.print_options();
 
+        // Load every user function named in the options (state variable and post-processing
+        // functions) now, so a missing library or a wrong signature stops the run before any
+        // mesh or material setup, with the required signature in the message.
+        exaconstit::CheckUserFunctions(toml_opt);
+
         /**
          * **PHASE 3: DEVICE CONFIGURATION AND MEMORY MANAGEMENT**
          */
@@ -203,6 +214,38 @@ int main(int argc, char* argv[]) {
             device_config = "raja-hip";
 #endif
         }
+        /*
+         * Umpire Memory Pools:
+         * - MFEM and SNLS (which ExaCMech allocates through) share one host and one device
+         *   Umpire pool instead of each creating their own.
+         * - SNLS's execution strategy follows rtmodel, so that runs on the CPU allocate the
+         *   ExaCMech model data on the host.
+         */
+#if defined(SNLS_RAJA_PORT_SUITE)
+        if (toml_opt.solvers.rtmodel == RTModel::GPU) {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::GPU);
+        } else if (toml_opt.solvers.rtmodel == RTModel::OPENMP) {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::OPENMP);
+        } else {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::CPU);
+        }
+#if defined(MFEM_USE_UMPIRE)
+        {
+            auto& rm = umpire::ResourceManager::getInstance();
+            auto host_pool = rm.makeAllocator<umpire::strategy::QuickPool>(
+                "ExaConstit_HOST_pool", rm.getAllocator("HOST"));
+            mfem::MemoryManager::SetUmpireHostAllocatorName("ExaConstit_HOST_pool");
+            snls::memoryManager::getInstance().setHostAllocator(host_pool.getId());
+#if defined(__snls_gpu_active__)
+            auto device_pool = rm.makeAllocator<umpire::strategy::QuickPool>(
+                "ExaConstit_DEVICE_pool", rm.getAllocator("DEVICE"));
+            mfem::MemoryManager::SetUmpireDeviceAllocatorName("ExaConstit_DEVICE_pool");
+            snls::memoryManager::getInstance().setDeviceAllocator(device_pool.getId());
+#endif
+        }
+#endif
+#endif
+
         /*
          * MFEM Device Configuration:
          * - Configure device memory management for host/device data movement
@@ -325,6 +368,8 @@ int main(int argc, char* argv[]) {
             // ExaCMechModel::InitStateVars(), is simply replaced.
             sim_state->RestoreFromCheckpoint();
             ti = static_cast<int>(sim_state->GetRestartDriverStep());
+            // Post-processing output written after the checkpoint is dropped (HDF5 output)
+            post_process.ContinueAfterRestart(sim_state->GetTrueCycleTime());
 
             // Bring the boundary conditions to the segment that was active after step ti.
             //

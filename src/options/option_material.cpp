@@ -4,7 +4,20 @@
 #include "ECMech_cases.h"
 #include "ECMech_const.h"
 
+#include <algorithm>
+#include <cctype>
 #include <iostream>
+#include <sstream>
+
+namespace {
+/// Lower-case copy of an option string, so keyword values are case-insensitive
+std::string ToLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+} // namespace
 
 GrainInfo GrainInfo::from_toml(const toml::value& toml_input) {
     GrainInfo info;
@@ -73,6 +86,37 @@ MaterialProperties MaterialProperties::from_toml(const toml::value& toml_input) 
     return props;
 }
 
+void read_user_function_key(const toml::value& toml_input,
+                            const std::string& key,
+                            std::string& function_name,
+                            UserFactoryOptions& factory) {
+    if (!toml_input.contains(key)) {
+        return;
+    }
+    const auto& value = toml::find(toml_input, key);
+    if (!value.is_table()) {
+        function_name = toml::get<std::string>(value);
+        return;
+    }
+    for (const auto& [table_key, table_value] : value.as_table()) {
+        (void)table_value;
+        if (table_key != "factory" && table_key != "variant") {
+            throw std::runtime_error(key + " table has an unknown key '" + table_key +
+                                     "'; it takes factory and variant");
+        }
+    }
+    if (!value.contains("factory")) {
+        throw std::runtime_error(key + " table needs factory = \"<factory function name>\"");
+    }
+    factory.factory = toml::find<std::string>(value, "factory");
+    if (factory.factory.empty()) {
+        throw std::runtime_error(key + " table has an empty factory name");
+    }
+    if (value.contains("variant")) {
+        factory.variant = toml::find<std::string>(value, "variant");
+    }
+}
+
 StateVariables StateVariables::from_toml(const toml::value& toml_input) {
     StateVariables vars;
 
@@ -85,6 +129,15 @@ StateVariables StateVariables::from_toml(const toml::value& toml_input) {
         const auto& key = toml_input.contains("num_vars") ? "num_vars" : "num_state_vars";
         vars.num_vars = toml::find<int>(toml_input, key);
     }
+
+    if (toml_input.contains("library_path")) {
+        vars.library_path = toml::find<std::string>(toml_input, "library_path");
+    }
+
+    read_user_function_key(
+        toml_input, "register_function", vars.register_function, vars.register_factory);
+    read_user_function_key(
+        toml_input, "initialize_function", vars.initialize_function, vars.initialize_factory);
 
     if (toml_input.contains("values")) {
         vars.initial_values = toml::find<std::vector<double>>(toml_input, "values");
@@ -114,12 +167,15 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
     }
 
     if (toml_input.contains("thermal")) {
-        options.thermal = toml::find<bool>(toml_input, "thermal");
+        // Removed option: it was read but never had an effect (TEMP comes from the material's
+        // temperature option)
+        WARNING_0_OPT("Warning: the UMAT 'thermal' option was removed (it had no effect); "
+                      "ignoring it");
     }
 
     // New dynamic loading fields
     if (toml_input.contains("load_strategy")) {
-        options.load_strategy = toml::find<std::string>(toml_input, "load_strategy");
+        options.load_strategy = ToLower(toml::find<std::string>(toml_input, "load_strategy"));
     }
 
     if (toml_input.contains("enable_dynamic_loading")) {
@@ -131,6 +187,22 @@ UmatOptions UmatOptions::from_toml(const toml::value& toml_input) {
         for (auto& search_path : search_paths) {
             options.search_paths.push_back(search_path);
         }
+    }
+
+    if (toml_input.contains("interface")) {
+        options.interface = ToLower(toml::find<std::string>(toml_input, "interface"));
+    }
+
+    if (toml_input.contains("thread_safe")) {
+        options.thread_safe = toml::find<bool>(toml_input, "thread_safe");
+    }
+
+    if (toml_input.contains("strain_measure")) {
+        options.strain_measure = ToLower(toml::find<std::string>(toml_input, "strain_measure"));
+    }
+
+    if (toml_input.contains("rotate_stress")) {
+        options.rotate_stress = toml::find<bool>(toml_input, "rotate_stress");
     }
 
     return options;
@@ -276,6 +348,18 @@ MaterialOptions MaterialOptions::from_toml(const toml::value& toml_input) {
         options.model = MaterialModelOptions::from_toml(toml::find(toml_input, "Model"));
     }
 
+    // Named state variables to visualize: a list of names or "all"
+    if (toml_input.contains("visualize_state_vars")) {
+        const auto& viz = toml_input.at("visualize_state_vars");
+        if (viz.is_string()) {
+            options.visualize_state_vars = {
+                toml::find<std::string>(toml_input, "visualize_state_vars")};
+        } else {
+            options.visualize_state_vars = toml::find<std::vector<std::string>>(
+                toml_input, "visualize_state_vars");
+        }
+    }
+
     return options;
 }
 
@@ -367,6 +451,11 @@ bool StateVariables::validate(bool check_input_files) const {
         WARNING_0_OPT("Error: StateVariables num_vars != initial_values.size()");
         return false;
     }
+    if (!library_path.empty() && register_function.empty() && initialize_function.empty() &&
+        register_factory.empty() && initialize_factory.empty()) {
+        WARNING_0_OPT("Warning: State_Vars library_path is set but neither register_function nor "
+                      "initialize_function is given, so the library is not used");
+    }
     return true;
 }
 
@@ -382,6 +471,45 @@ bool UmatOptions::validate() const {
             << "'. Must be 'persistent', 'load_on_setup', or 'lazy_load'";
         WARNING_0_OPT(err.str());
         return false;
+    }
+
+    if (strain_measure != "logarithmic" && strain_measure != "eulerian") {
+        std::ostringstream err;
+        err << "Error: Invalid UMAT strain_measure '" << strain_measure
+            << "'. Must be 'logarithmic' or 'eulerian'";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
+
+    if (interface != "standard" && interface != "batched") {
+        std::ostringstream err;
+        err << "Error: Invalid UMAT interface '" << interface
+            << "'. Must be 'standard' or 'batched'";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
+
+    if (is_batched()) {
+        // The batched function has its own signature, so it can't be the built-in UMAT or a
+        // function with one of the standard UMAT names (umat_call is the default
+        // function_name): calling a standard UMAT as a batched one shifts every argument
+        if (!enable_dynamic_loading) {
+            WARNING_0_OPT("Error: UMAT interface = 'batched' needs a library "
+                          "(enable_dynamic_loading = true and library_path)");
+            return false;
+        }
+        const std::string name = ToLower(function_name);
+        if (name.empty() || name == "auto" || name == "umat_call" || name == "umat" ||
+            name == "userumat") {
+            WARNING_0_OPT("Error: UMAT interface = 'batched' needs function_name set to the "
+                          "name of the batched function in the library (not a standard UMAT "
+                          "name such as umat, userumat or umat_call)");
+            return false;
+        }
+        if (thread_safe) {
+            WARNING_0_OPT("Warning: UMAT thread_safe only applies to interface = 'standard'; "
+                          "a batched UMAT handles its own parallelism");
+        }
     }
 
     return true;
@@ -432,6 +560,17 @@ bool MaterialModelOptions::validate() const {
 
 bool MaterialOptions::validate(bool check_input_files, bool grains_from_hook) const {
     std::string mat_name = material_name + "_" + std::to_string(region_id);
+
+    const bool viz_all = std::find(visualize_state_vars.begin(),
+                                   visualize_state_vars.end(),
+                                   "all") != visualize_state_vars.end();
+    if (viz_all && visualize_state_vars.size() > 1) {
+        std::ostringstream err;
+        err << "Error: Material table for material_name_region# " << mat_name
+            << " visualize_state_vars = \"all\" cannot be combined with other names";
+        WARNING_0_OPT(err.str());
+        return false;
+    }
 
     if (mech_type == MechType::NOTYPE) {
         std::ostringstream err;

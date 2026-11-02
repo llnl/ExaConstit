@@ -98,6 +98,7 @@ ExaConstit requires a specific MFEM development branch with ExaConstit-specific 
 - **Repository**: https://github.com/rcarson3/mfem.git
 - **Branch**: `exaconstit-dev`
 - **Version Dependencies**:
+  - **v0.10.1**: Compatible with MFEM hash `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based)
   - **v0.10.0**: Compatible with MFEM hash `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based)
   - **v0.9.0**: Compatible with MFEM hashes `a6bb7b7c2717e991b52ad72460f212f7aec1173e`
   - **v0.8.0**: Compatible with MFEM hashes `31b42daa3cdddeff04ce3f59befa769b262facd7` or `29a8e15382682babe0f5c993211caa3008e1ec96`
@@ -232,6 +233,9 @@ The `src/` directory contains the core ExaConstit implementation organized into 
 - **`postprocessing_driver.hpp/cpp`**: Main post-processing orchestration
 - **`postprocessing_file_manager.hpp`**: File I/O and directory management
 - **`projection_class.hpp/cpp`**: Field projection operations
+- **`viz_point_map.hpp/cpp`**: Table pairing each visualization node with its source quadrature point (shared by zone and quadrature output)
+- **`volume_statistics.hpp/cpp`**: Volume-weighted statistics and histograms of a quantity per region, and their exact combination over regions
+- **`postprocessing_hdf5_file.hpp/cpp`**: The single HDF5 file of `output_format = "hdf5"` (Conduit relay): rows queued on every rank, gathered to rank 0 and appended at the end of each update; cut back to the checkpoint on restart. `PostProcessingFileManager::WriteVolumeAverage()` / `WriteSurfaceQuantity()` route rows there, so new outputs written through them appear in the file with no extra code
 - **`mechanics_lightup.hpp/cpp`**: Lattice strain calculations
 
 **Capabilities**:
@@ -395,7 +399,7 @@ ExaConstit uses TOML-based configuration files for all simulation parameters:
 ### Main Configuration File (`options.toml`)
 ```toml
 basename = "simulation_name"
-version = "0.10.0"
+version = "0.10.1"
 
 [Mesh]
 filename = "mesh.mesh"
@@ -634,8 +638,13 @@ label `microstructure`; anyone changing `src/microstructure` or the hook must ru
 ```bash
 ctest -L microstructure --output-on-failure
 ```
+
 No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults to the
 number of logical cores detected at configure time.
+
+GPU builds also register a GPU version of them (`test_restart_runs_gpu`; `ctest -L gpu` runs
+only that one). No test uses more MPI ranks than `EXACONSTIT_TEST_MAX_MPI_TASKS`, which defaults
+to the number of physical cores detected at configure time (Open MPI's default number of slots).
 
 ### Example Workflows
 The `test/data/` directory contains various example cases:
@@ -666,6 +675,21 @@ The `test/data/` directory contains various example cases:
 1. Extend `BCManager` class
 2. Add parsing support in `option_boundary_conditions.cpp`
 3. Update documentation and examples
+
+#### User Functions
+Users can add their own state variable names, initial values and post-processing quantities
+without changing ExaConstit, through plain C++ functions in a shared library (see the USER
+FUNCTIONS section of `src/options.toml` and `examples/user_functions`). The pieces:
+- `src/utilities/user_function_loader.hpp`: the required signatures, loading through
+  `DynamicFunctionLoader`, and the startup check (`CheckUserFunctions`, called from
+  `mechanics_driver.cpp`) that finds each function by the compiler's symbol name for the exact
+  signature.
+- `MultiExaModel::RunStateVariableUserFunctions` calls the register / initialize functions;
+  `PostProcessingDriver::SetupUserFunctions` sets up the post-processing ones.
+- `cmake/ExaConstitConfig.cmake.in` and `cmake/ExaConstitUserLibrary.cmake`: the installed CMake
+  package and `exaconstit_add_user_library()`, also used by the tests in `test/user_functions`.
+When changing a signature, update the `using` aliases in `user_function_loader.hpp`, the docs in
+`src/options.toml`, the example and the test library together.
 
 #### Keeping New State Restartable
 Checkpoints (`src/sim_state/restart_checkpoint.*`, described in `doc/restart.md`) save some

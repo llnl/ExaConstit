@@ -3,77 +3,163 @@
 
 #include "models/mechanics_model.hpp"
 #include "umats/unified_umat_loader.hpp"
+#include "utilities/cuda_access.hpp"
 
 #include "mfem.hpp"
 
+#include <array>
 #include <filesystem>
-namespace fs = std::filesystem;
 
 /**
- * @brief Enhanced Abaqus UMAT model with dynamic library loading support
+ * @brief Abaqus-style UMAT material model, with an optional batched (all points at once) form
  *
- * @details Implementation of ExaModel for Abaqus UMAT (User Material) interfaces.
- * Supports both static linking and dynamic loading of UMAT shared libraries, enabling
- * flexible material model integration without recompilation.
+ * @details Runs a user material subroutine (UMAT) for one material region. Everything
+ * ExaConstit prepares for the UMAT and everything it does with the UMAT's results runs in
+ * mfem::forall loops, so on GPU runs the data stays on the GPU:
+ * 1. Kinematics: the deformation gradients at the beginning (F_beg) and end (F_end) of the step
+ *    are computed exactly from the stored nodal positions (reference, beginning-of-step and
+ *    current nodes) with the shared GradCalc kernel and reference Jacobians, so nothing is
+ *    accumulated from step to step. With the B-bar integrator both get the F-bar treatment
+ *    (exaconstit::kernel::FBarElement).
+ * 2. Packing: the UMAT arguments are filled for every point in the Abaqus conventions: stress
+ *    in (11, 22, 33, 12, 13, 23) order, DROT = exact rotation of F_incr = F_end F_beg^-1
+ *    (polar decomposition), STRAN / DSTRAN = logarithmic (ln V, default) or Eulerian strain of
+ *    F_beg / F_incr, STRESS and STRAN rotated by DROT unless rotate_stress = false,
+ *    DFGRD0 = F_beg, DFGRD1 = F_end, COORDS = current point positions, CELENT = cube root of
+ *    the element volume near the point; see the UMAT section of src/options.toml.
+ * 3. The UMAT call, in one of two forms ([Materials.Model.UMAT] interface):
+ *    - "standard": the Abaqus interface (UmatFunction), once per point, on the host (arrays are
+ *      copied from the GPU on GPU runs). With thread_safe = true and an OpenMP build the points
+ *      run in an OpenMP loop.
+ *    - "batched": one call with all of the region's points on this rank (UmatBatchFunction in
+ *      umats/userumat.h), with the arrays in the run's memory space (GPU arrays on GPU runs).
+ * 4. Unpacking: the stress goes back to ExaConstit's order, and the tangent DDSDDE is reordered
+ *    and turned into the rate form the integrators use (DDSDDE dt).
  *
- * Key features:
- * - Dynamic loading of UMAT shared libraries
- * - Support for multiple UMATs in different regions
- * - Configurable loading strategies (persistent, on-demand, etc.)
- * - Thread-safe library management
- * - Automatic cleanup and error handling
+ * UMAT libraries are loaded dynamically (or the built-in UMAT is used), with the persistent,
+ * load-on-setup or lazy loading strategies.
  */
 class AbaqusUmatModel : public ExaModel {
 protected:
-    /** @brief Characteristic element length passed to UMAT */
-    double elem_length;
+    // ---------------------------------------------------------------------------------------
+    // UMAT function and how it is called
+    // ---------------------------------------------------------------------------------------
 
-    /** @brief Initial local shape function gradients working space */
-    std::shared_ptr<mfem::expt::PartialQuadratureFunction> loc0_sf_grad;
-
-    /**
-     * @brief Quadrature weight times det(J) in the reference configuration, one value per point
-     *
-     * @details Filled with loc0_sf_grad in InitLocSFGrads. With IntegrationModel::BBAR it gives
-     * the volume weights of the F-bar treatment (exaconstit::kernel::FBarElement), whose
-     * element-averaged det F is the element's current-to-reference volume ratio.
-     */
-    std::shared_ptr<mfem::expt::PartialQuadratureFunction> loc0_wdetj;
-
-    /** @brief Incremental deformation gradients working space */
-    std::shared_ptr<mfem::expt::PartialQuadratureFunction> incr_def_grad;
-
-    /** @brief End-of-step deformation gradients working space */
-    std::shared_ptr<mfem::expt::PartialQuadratureFunction> end_def_grad;
-
-    /** @brief Path to UMAT shared library */
+    /** @brief Path to UMAT shared library (empty: built-in UMAT) */
     std::filesystem::path umat_library_path;
 
-    /** @brief Pointer to loaded UMAT function */
+    /** @brief Loaded standard UMAT (interface = "standard") */
     UmatFunction umat_function;
+
+    /** @brief Loaded batched UMAT (interface = "batched") */
+    UmatBatchFunction umat_batch_function;
 
     /** @brief Loading strategy for the library */
     exaconstit::LoadStrategy load_strategy;
 
-    /** @brief Flag to enable/disable dynamic loading */
+    /** @brief Whether the UMAT comes from a shared library (false: built-in UMAT) */
     bool use_dynamic_loading;
 
-    /** @brief UMAT function name if supplied */
+    /** @brief UMAT function name given in the options */
     const std::string umat_function_name;
+
+    /** @brief Batched interface: one call for all points of the region */
+    const bool m_batched;
+
+    /** @brief Standard interface: the per-point calls may run in an OpenMP loop */
+    const bool m_thread_safe;
+
+    /** @brief Temperature passed to the UMAT (TEMP), from the material's temperature option */
+    const double m_temperature;
+
+    /** @brief STRAN / DSTRAN as logarithmic strains (true) or Eulerian strains (false) */
+    const bool m_log_strain;
+
+    /** @brief Rotate STRESS and STRAN by DROT before the call */
+    const bool m_rotate_stress;
+
+    // ---------------------------------------------------------------------------------------
+    // Kinematics (region-sized, in the run's memory space)
+    // ---------------------------------------------------------------------------------------
+
+    /** @brief Quadrature points per element */
+    int m_nqpts;
+
+    /** @brief Nodes (dofs per component) per element */
+    int m_nnodes;
+
+    /** @brief Region elements on this rank */
+    int m_nelems;
+
+    /** @brief Reference Jacobians and volume weights have been computed (first ModelSetup) */
+    bool m_reference_ready;
+
+    /**
+     * @brief Reference Jacobians d X / d xi of the region's elements, layout (3, 3, nqpts,
+     * region elements), column-major (the layout GradCalc reads)
+     */
+    mfem::Vector m_ref_jacobians;
+
+    /** @brief Quadrature weight times det(d X / d xi), one value per region point (F-bar) */
+    mfem::Vector m_ref_wdetj;
+
+    /** @brief Nodal coordinates of all elements of the rank, NATIVE dof order (scratch) */
+    mfem::Vector m_elem_coords;
+
+    /** @brief Nodal coordinates of the region's elements, layout (nnodes, 3, region elements) */
+    mfem::Vector m_region_coords;
+
+    /** @brief Deformation gradient at the beginning of the step, 9 values per region point */
+    mfem::Vector m_def_grad_beg;
+
+    /** @brief Deformation gradient at the end of the step (current iterate), 9 per point */
+    mfem::Vector m_def_grad_end;
+
+    // ---------------------------------------------------------------------------------------
+    // UMAT arguments, point-major (point i's values start at i * size), Abaqus conventions.
+    // STATEV, SSE, SPD, SCD and DDSDDE use the region's state_var_end, umat_sse_end,
+    // umat_spd_end, umat_scd_end and tangent_stiffness directly, and
+    // DFGRD0 / DFGRD1 are m_def_grad_beg / m_def_grad_end.
+    // ---------------------------------------------------------------------------------------
+
+    mfem::Vector m_stress; ///< STRESS, 6 per point, Abaqus order
+    mfem::Vector m_stran;  ///< STRAN, 6 per point
+    mfem::Vector m_dstran; ///< DSTRAN, 6 per point
+    mfem::Vector m_drot;   ///< DROT, 9 per point
+    mfem::Vector m_coords; ///< COORDS, 3 per point
+    mfem::Vector m_celent; ///< CELENT, 1 per point
+    mfem::Vector m_pnewdt; ///< PNEWDT, 1 per point
+    mfem::Vector m_temp;   ///< TEMP, 1 per point
+    mfem::Vector m_dtemp;  ///< DTEMP, 1 per point
+    mfem::Vector m_predef; ///< PREDEF, 1 per point (no predefined fields)
+    mfem::Vector m_dpred;  ///< DPRED, 1 per point
+    mfem::Vector m_rpl;    ///< RPL, 1 per point
+    mfem::Vector m_drpldt; ///< DRPLDT, 1 per point
+    mfem::Vector m_ddsdt;  ///< DDSDDT, 6 per point
+    mfem::Vector m_drplde; ///< DRPLDE, 6 per point
+    mfem::Vector m_props;  ///< PROPS, the region's material properties
+    mfem::Array<int> m_noel; ///< NOEL: the point's global element number (1-based)
+    mfem::Array<int> m_npt;  ///< NPT: the point's number within its element (1-based)
+    std::array<char, 81> m_cmname; ///< CMNAME: material name, blank-padded to 80 characters
 
 public:
     /**
-     * @brief Constructor with dynamic UMAT loading support
+     * @brief Constructor
      *
-     * @param region Region identifier
+     * @param region Region identifier (0-based)
      * @param n_state_vars Number of state variables
-     * @param sim_state Reference to simulation state
-     * @param umat_library_path Path to UMAT shared library (empty for static linking)
-     * @param load_strategy Strategy for loading/unloading the library
-     * @param umat_function_name UMAT function name that the user wants us to load
-     *
-     * @details Creates an Abaqus UMAT model instance with support for dynamic library loading.
-     * Initializes working space for deformation gradients and prepares for UMAT execution.
+     * @param sim_state Simulation state
+     * @param umat_library_path_ Path to UMAT shared library (empty for the built-in UMAT)
+     * @param load_strategy_ Strategy for loading/unloading the library
+     * @param umat_function_name_ UMAT function name to load
+     * @param batched Use the batched interface (UmatBatchFunction) instead of the standard one
+     * @param thread_safe Standard interface: run the per-point calls in an OpenMP loop
+     * @param temperature Temperature passed to the UMAT (K)
+     * @param material_name Material name passed to the UMAT as CMNAME
+     * @param global_elem_offset Global number of this rank's first element, for NOEL
+     *        (ParMesh::GetGlobalElementNum(0); computed by the caller, since it is collective)
+     * @param log_strain STRAN / DSTRAN as logarithmic (true) or Eulerian (false) strains
+     * @param rotate_stress Rotate STRESS and STRAN by DROT before the call
      */
     AbaqusUmatModel(
         const int region,
@@ -81,65 +167,56 @@ public:
         std::shared_ptr<SimulationState> sim_state,
         const std::filesystem::path& umat_library_path_ = "",
         const exaconstit::LoadStrategy& load_strategy_ = exaconstit::LoadStrategy::PERSISTENT,
-        const std::string umat_function_name_ = "");
+        const std::string umat_function_name_ = "",
+        const bool batched = false,
+        const bool thread_safe = false,
+        const double temperature = 298.0,
+        const std::string& material_name = "",
+        const long long global_elem_offset = 0,
+        const bool log_strain = true,
+        const bool rotate_stress = true);
 
     /**
-     * @brief Destructor - cleans up resources and unloads library if needed
-     *
-     * @details Cleans up resources and unloads UMAT library if using non-persistent loading
-     * strategy.
+     * @brief Destructor - unloads the library if it is not persistent
      */
     virtual ~AbaqusUmatModel();
 
     /**
-     * @brief Get the beginning-of-step deformation gradient quadrature function
+     * @brief The region's beginning-of-step deformation gradient quadrature function
      *
-     * @return Shared pointer to the beginning-of-step deformation gradient quadrature function
-     *
-     * @details Retrieves the deformation gradient at the beginning of the time step from
-     * SimulationState for this model's region. This replaces direct member variable access
-     * and enables dynamic access to the correct region-specific deformation gradient data.
+     * @details Holds the converged deformation gradient after each step (written by
+     * UpdateModelVars) for output and restart files; the kinematics are recomputed from the
+     * nodes every step and don't read it.
      */
     std::shared_ptr<mfem::expt::PartialQuadratureFunction> GetDefGrad0();
 
     /**
-     * @brief Update beginning-of-step deformation gradient with converged values
-     *
-     * @details Updates the beginning-of-step deformation gradient with converged end-of-step
-     * values after successful solution convergence. We just need to update our beginning of
-     * time step def. grad. with our end step def. grad. now that they are equal.
+     * @brief Store the converged end-of-step deformation gradient in "def_grad_beg"
      */
     virtual void UpdateModelVars() override;
 
     /**
-     * @brief Main UMAT execution method
+     * @brief Run the UMAT for every point of the region
      *
      * @param nqpts Number of quadrature points per element
-     * @param nelems Number of elements in this batch
-     * @param space_dim Spatial dimension
-     * @param nnodes Number of nodes per element (unused in current implementation)
-     * @param jacobian Jacobian transformation matrices for elements
-     * @param loc_grad Local gradient operators (unused in current implementation)
-     * @param vel Velocity field at elemental level (unused in current implementation)
+     * @param nelems Number of elements on this rank (all regions)
+     * @param space_dim Spatial dimension (3)
+     * @param nnodes Number of nodes per element
+     * @param jacobian Current Jacobians d x / d xi, layout (3, 3, nqpts, nelems)
+     * @param loc_grad Reference shape derivatives, layout (nnodes, 3, nqpts), NATIVE dof order
+     * @param vel Element nodal velocities (unused: the kinematics come from the nodal positions)
      *
-     * @details Main UMAT execution method that:
-     * 1. Loads UMAT library if using on-demand loading
-     * 2. Computes incremental deformation gradients
-     * 3. Calls UMAT for each quadrature point with appropriate strain measures
-     * 4. Collects stress and tangent stiffness results
-     * 5. Updates state variables
-     * 6. Unloads library if using LOAD_ON_SETUP strategy
-     *
-     * Since, it is just copy and pasted from the old EvalModel function and now
-     * has loops added to it. Now uses accessor methods to get QuadratureFunctions from
-     * SimulationState.
+     * @details Kinematics, packing, UMAT call(s) and unpacking as described in the class
+     * documentation; fills the region's cauchy_stress_end, state_var_end and tangent_stiffness
+     * and copies the stress and tangent into the global quadrature functions. Throws if any
+     * point returns PNEWDT < 1.
      */
     virtual void ModelSetup(const int nqpts,
                             const int nelems,
                             const int space_dim,
-                            const int /*nnodes*/,
+                            const int nnodes,
                             const mfem::Vector& jacobian,
-                            const mfem::Vector& /*loc_grad*/,
+                            const mfem::Vector& loc_grad,
                             const mfem::Vector& vel) override;
 
     /**
@@ -148,8 +225,6 @@ public:
      * @param library_path Path to the UMAT shared library
      * @param strategy Loading strategy to use
      * @return True if library setup succeeded, false otherwise
-     *
-     * @details Configures dynamic loading of a UMAT library with the specified loading strategy.
      */
     bool SetUmatLibrary(const std::filesystem::path& library_path,
                         exaconstit::LoadStrategy strategy = exaconstit::LoadStrategy::PERSISTENT);
@@ -170,177 +245,99 @@ public:
 
     /**
      * @brief Force reload of the current UMAT library
-     *
      * @return True if reload succeeded, false otherwise
-     *
-     * @details Forces unloading and reloading of the current UMAT library,
-     * useful for development and testing.
      */
     bool ReloadUmatLibrary();
 
     /**
-     * @brief Load the UMAT shared library
-     *
+     * @brief Load the UMAT shared library and get the UMAT function (standard or batched)
      * @return True if loading succeeded, false otherwise
-     *
-     * @details Loads the UMAT shared library and retrieves the UMAT function pointer.
      */
     bool LoadUmatLibrary();
 
     /**
-     * @brief Unload the currently loaded UMAT library
-     *
-     * @details Unloads the currently loaded UMAT library and resets the function pointer.
+     * @brief Unload the currently loaded UMAT library and reset the function pointer
      */
     void UnloadUmatLibrary();
 
-protected:
-    /**
-     * @brief Call the UMAT function (either static or dynamic)
-     *
-     * @param stress Stress tensor components
-     * @param statev State variables array
-     * @param ddsdde Material tangent matrix
-     * @param sse Specific elastic strain energy
-     * @param spd Plastic dissipation
-     * @param scd Creep dissipation
-     * @param rpl Volumetric heat generation
-     * @param ddsdt Stress increment due to temperature
-     * @param drplde Heat generation rate due to strain
-     * @param drpldt Heat generation rate due to temperature
-     * @param stran Strain tensor
-     * @param dstran Strain increment
-     * @param time Current time and time at beginning of increment
-     * @param deltaTime Time increment
-     * @param tempk Temperature in Kelvin
-     * @param dtemp Temperature increment
-     * @param predef Predefined field variables
-     * @param dpred Predefined field variable increments
-     * @param cmname Material name
-     * @param ndi Number of direct stress components
-     * @param nshr Number of shear stress components
-     * @param ntens Total number of stress components
-     * @param nstatv Number of state variables
-     * @param props Material properties
-     * @param nprops Number of material properties
-     * @param coords Coordinates
-     * @param drot Rotation increment matrix
-     * @param pnewdt Suggested new time increment
-     * @param celent Characteristic element length
-     * @param dfgrd0 Deformation gradient at beginning of increment
-     * @param dfgrd1 Deformation gradient at end of increment
-     * @param noel Element number
-     * @param npt Integration point number
-     * @param layer Layer number
-     * @param kspt Section point number
-     * @param kstep Step number
-     * @param kinc Increment number
-     *
-     * @details Calls the UMAT function (either statically linked or dynamically loaded)
-     * with the standard Abaqus UMAT interface.
-     */
-    void CallUmat(double* stress,
-                  double* statev,
-                  double* ddsdde,
-                  double* sse,
-                  double* spd,
-                  double* scd,
-                  double* rpl,
-                  double* ddsdt,
-                  double* drplde,
-                  double* drpldt,
-                  double* stran,
-                  double* dstran,
-                  double* time,
-                  double* deltaTime,
-                  double* tempk,
-                  double* dtemp,
-                  double* predef,
-                  double* dpred,
-                  char* cmname,
-                  int* ndi,
-                  int* nshr,
-                  int* ntens,
-                  int* nstatv,
-                  double* props,
-                  int* nprops,
-                  double* coords,
-                  double* drot,
-                  double* pnewdt,
-                  double* celent,
-                  double* dfgrd0,
-                  double* dfgrd1,
-                  int* noel,
-                  int* npt,
-                  int* layer,
-                  int* kspt,
-                  int* kstep,
-                  int* kinc);
+    // Methods with device kernels: nvcc does not allow device lambdas in non-public methods
+EXACONSTIT_CUDA_PROTECTED:
+    /** @brief Whether the UMAT function for the selected interface is loaded */
+    bool UmatLoaded() const {
+        return m_batched ? (umat_batch_function != nullptr) : (umat_function != nullptr);
+    }
 
     /**
-     * @brief Initialize local shape function gradients
+     * @brief Reference Jacobians and volume weights of the region's points (first ModelSetup)
      *
-     * @param fes Parallel finite element space
+     * @param loc_grad Reference shape derivatives from the operator (only checked against the
+     *        quadrature rule size here)
      *
-     * @details Initializes local shape function gradients for UMAT calculations.
+     * @details MFEM's QuadratureInterpolator turns the reference nodes into d X / d xi at the
+     * points (NATIVE dof order, the order of loc_grad), then the region's elements are copied out.
+     * Done once: the reference configuration never changes, and computing it from the stored
+     * reference nodes is also correct after a restart.
      */
-    void InitLocSFGrads(const std::shared_ptr<mfem::ParFiniteElementSpace> fes);
+    void SetupReferenceGeometry(const mfem::Vector& loc_grad);
 
     /**
-     * @brief Initialize incremental and end-of-step deformation gradient quadrature functions
+     * @brief NOEL and NPT of every region point, 1-based as in Abaqus (device kernel)
      *
-     * @details Initializes incremental and end-of-step deformation gradient quadrature functions.
+     * @param global_elem_offset Global number of this rank's first element
+     *
+     * @details NOEL is the element's global number in the parallel mesh (this rank's offset plus
+     * its rank-local index; unique over all ranks, but it depends on how the mesh is split among
+     * the ranks), NPT the point's number within its element. Called from the constructor (nvcc
+     * does not allow device lambdas in constructors).
      */
-    void InitIncrEndDefGrad();
+    void SetupElementNumbers(const long long global_elem_offset);
 
     /**
-     * @brief Calculate incremental and end-of-step deformation gradients
+     * @brief Deformation gradient F = d x / d X at the region's points for given nodal positions
      *
-     * @param x0 Current coordinates grid function
+     * @param nodes Nodal positions (beginning-of-step or current), a grid function on the mesh
+     *        space
+     * @param loc_grad Reference shape derivatives (NATIVE dof order)
+     * @param[out] def_grad 9 values per region point, column-major
      *
-     * @details Calculates incremental and end-of-step deformation gradients from current mesh
-     * coordinates.
+     * @details Element coordinates are restricted from the grid function, the region's elements
+     * copied out, and GradCalc applied with the reference Jacobians, so F is exact for the given
+     * nodes. With the B-bar integrator, FBarElement then gives every point of an element the
+     * element's volume ratio V / V_0.
      */
-    void CalcIncrEndDefGrad(const mfem::ParGridFunction& x0);
+    void ComputeDefGrad(const mfem::ParGridFunction& nodes,
+                        const mfem::Vector& loc_grad,
+                        mfem::Vector& def_grad);
 
     /**
-     * @brief Calculate logarithmic strain increment from deformation gradient
+     * @brief Fill the UMAT input arrays for every region point (device kernel)
      *
-     * @param dE Output strain increment matrix
-     * @param Jpt Deformation gradient at quadrature point
-     *
-     * @details Calculates logarithmic strain increment from deformation gradients for UMAT input.
+     * @param jacobian Current Jacobians (rank elements), for CELENT
+     * @param local2global Region element -> rank element map (device pointer), or nullptr
      */
-    void CalcLogStrainIncrement(mfem::DenseMatrix& dE, const mfem::DenseMatrix& Jpt);
+    void PackUmatInputs(const mfem::Vector& jacobian, const int* local2global);
 
     /**
-     * @brief Calculate Eulerian strain increment from deformation gradient
-     *
-     * @param dE Output strain increment matrix
-     * @param Jpt Deformation gradient at quadrature point
-     *
-     * @details Calculates Eulerian strain increment from deformation gradients for UMAT input.
+     * @brief Shared UMAT scalars of the current increment: TIME (both entries at the start of
+     * the increment), DTIME, KSTEP (1) and KINC (1-based time step number)
      */
-    void CalcEulerianStrainIncr(mfem::DenseMatrix& dE, const mfem::DenseMatrix& Jpt);
+    void IncrementInfo(double time[2], double& dtime, int& kstep, int& kinc);
 
     /**
-     * @brief Calculate Lagrangian strain increment from deformation gradient
-     *
-     * @param dE Output strain increment matrix
-     * @param Jpt Deformation gradient at quadrature point
-     *
-     * @details Calculates Lagrangian strain increment from deformation gradients for UMAT input.
+     * @brief Call the standard UMAT once per point on the host
      */
-    void CalcLagrangianStrainIncr(mfem::DenseMatrix& dE, const mfem::DenseMatrix& Jpt);
+    void CallUmatPerPoint();
 
     /**
-     * @brief Calculate element length from element volume
-     *
-     * @param elemVol Element volume
-     *
-     * @details Calculates characteristic element length as cube root of element volume.
+     * @brief Call the batched UMAT once with all points, in the run's memory space
      */
-    void CalcElemLength(const double elemVol);
+    void CallUmatBatched();
+
+    /**
+     * @brief Copy the UMAT results back into ExaConstit's conventions (device kernel), and
+     * stop if a point asked for a smaller time step
+     */
+    void UnpackUmatOutputs();
 };
 
 #endif

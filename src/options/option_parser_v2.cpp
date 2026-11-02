@@ -204,6 +204,20 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
     resolved_str.resize(static_cast<size_t>(length));
     MPI_Bcast(resolved_str.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
     output_dir = resolved_str;
+
+    // Checkpoints are part of this run's output: a relative [Restart] directory is taken inside
+    // the run's output folder, <output_directory>/<basename>, next to its logs, volume averages
+    // and visualizations. read_directory names checkpoints written elsewhere (often by another
+    // run), so a relative read_directory stays relative to the working directory.
+    if (restart.directory.is_relative()) {
+        restart.directory = fs::path(output_dir) / basename / restart.directory;
+    }
+    // Checked here rather than in RestartOptions::validate(), which runs before the directory
+    // is resolved. Which checkpoint inside it is used, and whether it is complete, is decided
+    // when the simulation starts.
+    VERIFY_0_OPT(!restart.read || fs::is_directory(restart.GetReadDirectory()),
+                 "Restart table has `read` = true, but the checkpoint directory '"
+                     << restart.GetReadDirectory().string() << "' does not exist.");
 }
 
 void ExaOptions::parse_from_toml(const toml::value& toml_input) {
@@ -554,6 +568,44 @@ bool ExaOptions::validate() {
                           "defined. ");
             WARNING_0_OPT("Please specify explicit material_name for each light_up configuration.");
             return false;
+        }
+    }
+
+    // Material numbers used by region_<N> projections and post-processing user functions
+    for (const auto& projection : post_processing.projections.enabled_projections) {
+        const int region = ProjectionOptions::region_number(projection);
+        if (region < 0) {
+            continue; // A built-in projection name, checked by the post-processing driver
+        }
+        if (region == 0 || static_cast<size_t>(region) > materials.size()) {
+            std::ostringstream err;
+            err << "Error: [PostProcessing.projections] enabled_projections entry '" << projection
+                << "' is not a material number (1 to " << materials.size() << ")";
+            WARNING_0_OPT(err.str());
+            return false;
+        }
+    }
+    for (size_t i = 0; i < post_processing.user_functions.size(); i++) {
+        const auto& user_function = post_processing.user_functions[i];
+        if (!user_function.validate(materials.size())) {
+            return false;
+        }
+        for (size_t j = 0; j < i; j++) {
+            const auto& other = post_processing.user_functions[j];
+            // Visualization fields share one set of names, volume average and volume integral
+            // files another (both are written as avg_<name>_*.txt)
+            const bool both_fields = (other.type == UserFunctionType::VISUALIZATION) &&
+                                     (user_function.type == UserFunctionType::VISUALIZATION);
+            const bool both_files = (other.type != UserFunctionType::VISUALIZATION) &&
+                                    (user_function.type != UserFunctionType::VISUALIZATION);
+            if ((both_fields || both_files) && other.name == user_function.name) {
+                std::ostringstream err;
+                err << "Error: two [[PostProcessing.user_functions]] entries "
+                    << (both_fields ? "of type visualization" : "writing volume files")
+                    << " have the name '" << user_function.name << "'; give them different names";
+                WARNING_0_OPT(err.str());
+                return false;
+            }
         }
     }
 
@@ -1083,6 +1135,34 @@ void ExaOptions::print_material_options() const {
         // State variables
         std::cout << "    State variables file: " << mat.state_vars.state_file << "\n";
         std::cout << "    Number of state variables: " << mat.state_vars.num_vars << "\n";
+        const auto& vars = mat.state_vars;
+        if (!vars.register_function.empty() || !vars.initialize_function.empty() ||
+            !vars.register_factory.empty() || !vars.initialize_factory.empty()) {
+            std::cout << "    State variable functions library: "
+                      << (vars.library_path.empty() ? std::string("(executable)")
+                                                    : vars.library_path.string())
+                      << "\n";
+            if (!vars.register_function.empty()) {
+                std::cout << "      register_function: " << vars.register_function << "\n";
+            }
+            if (!vars.initialize_function.empty()) {
+                std::cout << "      initialize_function: " << vars.initialize_function << "\n";
+            }
+            if (!vars.register_factory.empty()) {
+                std::cout << "      register_function: " << vars.register_factory.label() << "\n";
+            }
+            if (!vars.initialize_factory.empty()) {
+                std::cout << "      initialize_function: " << vars.initialize_factory.label()
+                          << "\n";
+            }
+        }
+        if (!mat.visualize_state_vars.empty()) {
+            std::cout << "    Visualized state variables:";
+            for (const auto& name : mat.visualize_state_vars) {
+                std::cout << " " << name;
+            }
+            std::cout << "\n";
+        }
 
         // Grain info (if crystal plasticity)
         if (mat.grain_info.has_value()) {
@@ -1126,10 +1206,15 @@ void ExaOptions::print_material_options() const {
             std::cout << "    UMAT options:\n";
             std::cout << "      Library: " << umat.library_path << "\n";
             std::cout << "      Function: " << umat.function_name << "\n";
-            std::cout << "      Thermal: " << (umat.thermal ? "Enabled" : "Disabled") << "\n";
             std::cout << "      Dynamic loading: "
                       << (umat.enable_dynamic_loading ? "Enabled" : "Disabled") << "\n";
             std::cout << "      Load strategy: " << umat.load_strategy << "\n";
+            std::cout << "      Interface: " << umat.interface << "\n";
+            std::cout << "      Strain measure: " << umat.strain_measure << "\n";
+            std::cout << "      Rotate stress: " << (umat.rotate_stress ? "Yes" : "No") << "\n";
+            if (!umat.is_batched()) {
+                std::cout << "      Thread safe: " << (umat.thread_safe ? "Yes" : "No") << "\n";
+            }
             if (!umat.search_paths.empty()) {
                 std::cout << "      Search paths: ";
                 for (size_t j = 0; j < umat.search_paths.size(); ++j) {
@@ -1360,6 +1445,11 @@ void ExaOptions::print_visualization_options() const {
     std::cout << "  ADIOS2: " << (visualization.adios2 ? "Enabled" : "Disabled") << "\n";
     std::cout << "  Output frequency: " << visualization.output_frequency << "\n";
     std::cout << "  Output location: " << visualization.floc << "\n";
+    std::cout << "  Field location: "
+              << (visualization.field_location == VizFieldLocation::QUADRATURE
+                      ? "quadrature (nearest quadrature point at each H1 node location)"
+                      : "zone (element average)")
+              << "\n";
 }
 
 void ExaOptions::print_post_processing_options() const {
@@ -1405,6 +1495,12 @@ void ExaOptions::print_post_processing_options() const {
                   << "\n";
     }
 
+    std::cout << "  Output format: "
+              << (post_processing.output_format == PostProcessingFormat::HDF5
+                      ? "HDF5 (post_processing.hdf5)"
+                      : "text")
+              << "\n";
+
     // Surface quantities
     const auto& surf = post_processing.surface_quantities;
     std::cout << "  Surface quantities: " << (surf.enabled ? "Enabled" : "Disabled") << "\n";
@@ -1428,6 +1524,29 @@ void ExaOptions::print_post_processing_options() const {
         std::cout << "    Enabled projections:\n";
         for (const auto& p : proj.enabled_projections) {
             std::cout << "      - " << p << "\n";
+        }
+    }
+
+    // User functions
+    if (!post_processing.user_functions.empty()) {
+        std::cout << "  User functions:\n";
+        for (const auto& uf : post_processing.user_functions) {
+            const char* type = (uf.type == UserFunctionType::VISUALIZATION)    ? "visualization"
+                               : (uf.type == UserFunctionType::VOLUME_AVERAGE) ? "volume_average"
+                                                                               : "volume_integral";
+            const std::string function = uf.factory.empty() ? uf.function_name : uf.factory.label();
+            std::cout << "    - " << uf.name << " (" << type << "): " << function << " in "
+                      << (uf.library_path.empty() ? std::string("(executable)")
+                                                  : uf.library_path.string())
+                      << ", " << uf.num_components << " component(s), regions ";
+            if (uf.regions.empty()) {
+                std::cout << "all";
+            } else {
+                for (size_t i = 0; i < uf.regions.size(); i++) {
+                    std::cout << (i ? "," : "") << uf.regions[i];
+                }
+            }
+            std::cout << (uf.global ? ", global" : "") << "\n";
         }
     }
 

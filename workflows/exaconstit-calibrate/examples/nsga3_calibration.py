@@ -1189,13 +1189,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         # components. ExaConstit writes its volume-averaged output
         # files with a ``# Time  Volume  ...`` header prefix followed
         # by calc-type-specific columns. For stress the columns are
-        # Sxx/Syy/Szz/Sxy/Sxz/Syz (capital S, x/y/z axis indexing —
+        # Sxx/Syy/Szz/Syz/Sxz/Sxy (capital S, x/y/z axis indexing —
         # Load direction here is z so stress_column="Szz" above.
         # See ExaConstit/src/postprocessing/postprocessing_file_manager.hpp
         # GetVolumeAverageHeader for the authoritative column lists.
         "avg_stress": TextTableSpec(columns=[
             "Time", "Volume",
-            "Sxx", "Syy", "Szz", "Sxy", "Sxz", "Syz",
+            "Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy",
         ]),
         # avg_def_grad_global.txt: Time + Volume + 9 F-components.
         # Written by mechanics but optional for calibration; we keep
@@ -1203,9 +1203,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         "avg_def_grad": TextTableSpec(
             columns=[
                 "Time", "Volume",
-                "F11", "F12", "F13",
-                "F21", "F22", "F23",
-                "F31", "F32", "F33",
+                "F11", "F21", "F31",
+                "F12", "F22", "F32",
+                "F13", "F23", "F33",
             ],
             required=False,
         ),    

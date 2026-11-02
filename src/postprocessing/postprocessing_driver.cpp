@@ -4,15 +4,22 @@
 #include "postprocessing/postprocessing_file_manager.hpp"
 #include "postprocessing/projection_class.hpp"
 #include "postprocessing/surface_quantities.hpp"
+#include "postprocessing/volume_statistics.hpp"
 #include "utilities/mechanics_kernels.hpp"
 #include "utilities/mechanics_log.hpp"
 #include "utilities/rotations.hpp"
 #include "utilities/unified_logger.hpp"
 
+#include "mfem/linalg/kernels.hpp"
+
 #include "ECMech_const.h"
 #include "SNLS_linalg.h"
 
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <regex>
+#include <sstream>
 namespace fs = std::filesystem;
 
 namespace {
@@ -120,16 +127,28 @@ RegisterHydroStress(const std::vector<MechType>& region_model_types) {
 /**
  * @brief Register all state variables projections for all regions
  *
+ * @param sim_state Reference to simulation state (for the options)
  * @param region_model_types Vector of material model types per region
  * @return Vector of AllStateVariablesProjection instances
  *
  * Creates projections that output all available state variables
  * for debugging and detailed analysis. State variable count and
  * interpretation depend on the specific material model.
+ *
+ * The vector size must be known here, before the grid functions are created, and must be the
+ * same on every rank (ranks without elements of a region still create its grid function), so it
+ * is taken from the material options rather than from a quadrature function.
  */
 std::vector<std::shared_ptr<ProjectionBase>>
-RegisterAllState(const std::vector<MechType>& region_model_types) {
-    return RegisterGeneric<AllStateVariablesProjection>(region_model_types);
+RegisterAllState(const std::shared_ptr<SimulationState> sim_state,
+                 const std::vector<MechType>& region_model_types) {
+    std::vector<std::shared_ptr<ProjectionBase>> base;
+    const auto& materials = sim_state->GetOptions().materials;
+    for (size_t i = 0; i < region_model_types.size(); i++) {
+        base.emplace_back(
+            std::make_shared<AllStateVariablesProjection>(materials[i].state_vars.num_vars));
+    }
+    return base;
 }
 
 /**
@@ -288,6 +307,88 @@ RegisterShearRateProjection(const std::shared_ptr<SimulationState> sim_state,
     std::string display_name = "Shearing Rate";
     return RegisterECMech<ShearingRateProjection>(sim_state, region_model_types, key, display_name);
 }
+
+/**
+ * @brief List the state variables of one region to write as visualization fields
+ *
+ * @param sim_state Simulation state (state variable names and the material options)
+ * @param region Region index (material index, 0-based)
+ * @param selection Names to write, or the single entry "all"
+ * @return One entry per field: (field name, (first slot, number of slots)) in the region's
+ *         state variable vector, in output order
+ *
+ * With "all": every named state variable of the region whose plot flag is set (see
+ * SimulationState::AddQuadratureFunctionStatePair) in the order it was registered. Slots of
+ * names registered with plot = false are not written. For models other than ExaCMech this is
+ * followed by one scalar field "State Var <k>" for each slot k (0-based) that no name covers, so
+ * the whole state variable vector is written: ExaConstit cannot tell which of those slots are worth
+ * plotting. ExaCMech names every quantity worth plotting itself, so its unnamed slots (for example
+ * the count of function evaluations) are not written. With a list: the listed names in the list's
+ * order (a name listed twice is written once). An unknown name stops the run with a message listing
+ * the names the region has.
+ *
+ * Only the registered names and the material's state variable count are used, both of which
+ * are the same on every rank, so all ranks get the same list even for regions that have no
+ * elements on them.
+ */
+std::vector<std::pair<std::string, std::pair<int, int>>> StateVariableFieldList(
+    const SimulationState& sim_state, const int region, const std::vector<std::string>& selection) {
+    const auto named = sim_state.GetQuadratureFunctionStatePairs(region);
+    std::vector<std::pair<std::string, std::pair<int, int>>> fields;
+
+    if (selection.size() == 1 && selection[0] == "all") {
+        // Every named state variable first, marking the slots each one uses
+        const int num_vars =
+            sim_state.GetOptions().materials[static_cast<size_t>(region)].state_vars.num_vars;
+        std::vector<bool> covered(static_cast<size_t>(std::max(num_vars, 0)), false);
+        for (const auto& entry : named) {
+            if (sim_state.GetQuadratureFunctionStatePlot(entry.first, region)) {
+                fields.push_back(entry);
+            }
+            const int offset = entry.second.first;
+            const int length = entry.second.second;
+            for (int k = std::max(offset, 0); k < std::min(offset + length, num_vars); k++) {
+                covered[static_cast<size_t>(k)] = true;
+            }
+        }
+        // Then one scalar field per slot without a name, except for ExaCMech, whose names
+        // already cover everything worth plotting
+        if (sim_state.GetRegionModelType(static_cast<size_t>(region)) == MechType::EXACMECH) {
+            return fields;
+        }
+        for (int k = 0; k < num_vars; k++) {
+            if (!covered[static_cast<size_t>(k)]) {
+                fields.push_back({"State Var " + std::to_string(k), {k, 1}});
+            }
+        }
+        return fields;
+    }
+
+    for (const auto& name : selection) {
+        // Skip a name the user listed more than once
+        const auto is_name = [&name](const auto& entry) {
+            return entry.first == name;
+        };
+        if (std::find_if(fields.begin(), fields.end(), is_name) != fields.end()) {
+            continue;
+        }
+        const auto match = std::find_if(named.begin(), named.end(), is_name);
+        if (match == named.end()) {
+            std::ostringstream available;
+            for (const auto& entry : named) {
+                available << " \"" << entry.first << "\"";
+            }
+            const std::string available_names = named.empty() ? std::string(" (none)")
+                                                              : available.str();
+            MFEM_ABORT_0("visualize_state_vars of material " << region + 1 << " lists \"" << name
+                                                             << "\", which is not a state variable "
+                                                                "name of this material. Available:"
+                                                             << available_names);
+        }
+        fields.push_back(*match);
+    }
+    return fields;
+}
 } // namespace
 
 void PostProcessingDriver::RegisterProjection(const std::string& field) {
@@ -304,7 +405,7 @@ void PostProcessingDriver::RegisterProjection(const std::string& field) {
     } else if (field == "hydro") {
         projection_class = RegisterHydroStress(m_region_model_types);
     } else if (field == "all_state") {
-        projection_class = RegisterAllState(m_region_model_types);
+        projection_class = RegisterAllState(m_sim_state, m_region_model_types);
     } else if (field == "dpeff") {
         projection_class = RegisterDpEffProjection(m_sim_state, m_region_model_types);
     } else if (field == "eps") {
@@ -318,6 +419,14 @@ void PostProcessingDriver::RegisterProjection(const std::string& field) {
     } else if (field == "shear_rate") {
         projection_class = RegisterShearRateProjection(m_sim_state, m_region_model_types);
     } else {
+        // region_<N> entries are handled by RegisterStateVariableProjections()
+        if (ProjectionOptions::region_number(field) < 0) {
+            MFEM_WARNING_0("[PostProcessing.projections] enabled_projections entry '"
+                           << field
+                           << "' is not a known projection and is ignored. Known: region_<N>, "
+                              "centroid, volume, cauchy, von_mises, hydro, all_state, dpeff, eps, "
+                              "xtal_ori, elastic_strain, hardness, shear_rate");
+        }
         return;
     }
 
@@ -368,6 +477,7 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
                                            ExaOptions& options)
     : m_sim_state(sim_state), m_mpi_rank(0), m_num_regions(sim_state->GetNumberOfRegions()),
       m_aggregation_mode(AggregationMode::BOTH),
+      m_viz_location(options.visualization.field_location),
       m_enable_visualization(options.visualization.visit || options.visualization.conduit ||
                              options.visualization.paraview || options.visualization.adios2),
       m_viz_output_frequency(options.visualization.output_frequency) {
@@ -416,16 +526,22 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
 
     // Register default projections and volume calculations
     RegisterDefaultVolumeCalculations();
+    SetupUserFunctions();
+    SetupVolumeStatistics();
 
     // Initialize grid functions and data collections
     if (m_enable_visualization) {
         auto mesh = m_sim_state->GetMesh();
+
+        // Local element of each region's partial quadrature space -> element of the mesh the
+        // region is visualized on (the full mesh for one region, its submesh otherwise).
+        std::map<int, mfem::Array<int>> map_pqs2submesh;
         if (m_num_regions == 1) {
             auto l2g = sim_state->GetQuadratureFunction("cauchy_stress_end", 0)
                            ->GetPartialSpaceShared()
                            ->GetLocal2Global();
             mfem::Array<int> pqs2submesh(l2g);
-            m_map_pqs2submesh.emplace(0, std::move(pqs2submesh));
+            map_pqs2submesh.emplace(0, std::move(pqs2submesh));
             m_map_submesh.emplace(0, mesh);
         } else {
             for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
@@ -448,8 +564,22 @@ PostProcessingDriver::PostProcessingDriver(std::shared_ptr<SimulationState> sim_
                                             ->GetSubMeshElementFromParent(l2g[i]);
                     pqs2submesh[i] = mapping;
                 }
-                m_map_pqs2submesh.emplace(region, std::move(pqs2submesh));
+                map_pqs2submesh.emplace(region, std::move(pqs2submesh));
             }
+        }
+
+        // Build each region's (source quadrature point, output node) table. Zone output reads
+        // the element averages ("_avg", one point per element); quadrature output reads the
+        // end-of-step quadrature values ("_end") and picks the nearest point for each node.
+        const std::string source_qf_name = (m_viz_location == VizFieldLocation::QUADRATURE)
+                                               ? "cauchy_stress_end"
+                                               : "cauchy_stress_avg";
+        for (auto& [region, pqs2submesh] : map_pqs2submesh) {
+            auto source_qspace =
+                sim_state->GetQuadratureFunction(source_qf_name, region)->GetPartialSpaceShared();
+            auto scalar_fes = GetParFiniteElementSpace(region, 1);
+            m_map_viz_points.emplace(
+                region, VizPointMap(m_viz_location, *source_qspace, *scalar_fes, pqs2submesh));
         }
 
         RegisterDefaultProjections();
@@ -475,9 +605,14 @@ PostProcessingDriver::GetParFiniteElementSpace(const int region, const int vdim)
     }
 
     if (m_map_pfes[region].find(vdim) == m_map_pfes[region].end()) {
-        auto mesh = m_map_submesh[region];
+        auto mesh = (region < 0) ? m_sim_state->GetMesh() : m_map_submesh[region];
         const int space_dim = mesh->SpaceDimension();
-        std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(0);
+        // Zone output: order 0. Quadrature output: Gauss-Lobatto L2 of the mesh order (both
+        // collections are owned by SimulationState).
+        const int order = (m_viz_location == VizFieldLocation::QUADRATURE)
+                              ? m_sim_state->GetOptions().mesh.order
+                              : 0;
+        std::string l2_fec_str = "L2_" + std::to_string(space_dim) + "D_P" + std::to_string(order);
         auto l2_fec = m_sim_state->GetFiniteElementCollection(l2_fec_str);
         auto value = std::make_shared<mfem::ParFiniteElementSpace>(
             mesh.get(), l2_fec.get(), vdim, mfem::Ordering::byVDIM);
@@ -486,10 +621,11 @@ PostProcessingDriver::GetParFiniteElementSpace(const int region, const int vdim)
     return m_map_pfes[region][vdim];
 }
 
-void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
-                                        [[maybe_unused]] const double time) {
+void PostProcessingDriver::UpdateFields(const int step, [[maybe_unused]] const double time) {
+    // Zone output reads element averages, so refresh them. Quadrature output reads the
+    // end-of-step quadrature values directly and needs no averaging.
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
-        if (!m_sim_state->IsRegionActive(region)) {
+        if (!m_sim_state->IsRegionActive(region) || m_viz_location != VizFieldLocation::ZONE) {
             continue;
         }
         auto state_qf_avg = m_sim_state->GetQuadratureFunction("state_var_avg", region);
@@ -500,6 +636,12 @@ void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
         CalcElementAvg(cauchy_qf_avg.get(), cauchy_qf_end.get());
     }
 
+    // Post-processing user functions written as fields compute their values only at
+    // visualization output steps (their fields are only written then)
+    if (m_enable_visualization && ShouldOutputVisualizationAtStep(step)) {
+        UpdateUserFunctionFields();
+    }
+
     // Execute projections based on aggregation mode
     if (m_aggregation_mode == AggregationMode::PER_REGION ||
         m_aggregation_mode == AggregationMode::BOTH) {
@@ -508,14 +650,18 @@ void PostProcessingDriver::UpdateFields([[maybe_unused]] const int step,
             if (!m_sim_state->IsRegionActive(region)) {
                 continue;
             }
+            // No table means visualization is off (nothing is registered to project)
+            const auto points_it = m_map_viz_points.find(region);
+            if (points_it == m_map_viz_points.end()) {
+                continue;
+            }
             const size_t reg_idx = static_cast<size_t>(region);
-            auto qpts2mesh = m_map_pqs2submesh[region];
+            const auto& points = points_it->second;
             for (auto& reg : m_registered_projections) {
                 if (reg.region_enabled[reg_idx]) {
                     const auto gf_name = GetGridFunctionName(reg.display_name, region);
                     auto& grid_func = m_map_gfs[gf_name];
-                    reg.projection_class[reg_idx]->Execute(
-                        m_sim_state, grid_func, qpts2mesh, region);
+                    reg.projection_class[reg_idx]->Execute(m_sim_state, grid_func, points, region);
                 }
             }
         }
@@ -554,6 +700,13 @@ void PostProcessingDriver::Update(const int step, const double time) {
     if (m_light_up_instances.size() > 0) {
         UpdateLightUpAnalysis();
     }
+
+    // HDF5 output: gather this step's rows to rank 0 and append them to the file
+    m_file_manager->FinishOutputStep();
+}
+
+void PostProcessingDriver::ContinueAfterRestart(const double restart_time) {
+    m_file_manager->ContinueAfterRestart(restart_time);
 }
 
 PostProcessingDriver::~PostProcessingDriver() = default;
@@ -607,14 +760,14 @@ PostProcessingDriver::CalcType PostProcessingDriver::GetCalcType(const std::stri
     }
 }
 
-PostProcessingDriver::VolumeAverageData
-PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
+std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+PostProcessingDriver::PrepareVolumePoints(CalcType calc_type, int region, int& data_size) {
+    data_size = 0;
     if (!m_sim_state->IsRegionActive(region)) {
-        return VolumeAverageData();
+        return nullptr;
     }
 
     std::shared_ptr<mfem::expt::PartialQuadratureFunction> qf;
-    int data_size;
     std::string qf_name;
     const size_t reg_idx = static_cast<size_t>(region);
 
@@ -622,18 +775,18 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     switch (calc_type) {
     case CalcType::STRESS:
         qf_name = "cauchy_stress_end";
-        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Sxy, Sxz, Syz
+        data_size = 6; // Voigt notation: Sxx, Syy, Szz, Syz, Sxz, Sxy
         break;
 
     case CalcType::DEF_GRAD:
         qf_name = "kinetic_grads";
-        data_size = 9; // Full 3x3 tensor: F11, F12, F13, F21, F22, F23, F31, F32, F33
+        data_size = 9; // Full 3x3 tensor, column-major: F11, F21, F31, F12, ..., F33
         break;
 
     case CalcType::PLASTIC_WORK:
     case CalcType::EQ_PL_STRAIN:
         if (m_region_model_types[reg_idx] == MechType::UMAT) {
-            return VolumeAverageData();
+            return nullptr;
         }
         qf_name = "scalar";
         data_size = 1; // Scalar quantities
@@ -646,7 +799,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
 
     case CalcType::ELASTIC_STRAIN:
         if (m_region_model_types[reg_idx] == MechType::UMAT) {
-            return VolumeAverageData();
+            return nullptr;
         }
         qf_name = "kinetic_grads"; // Adjust this to your actual QF name for elastic strain
         data_size = 9;             // Voigt notation: Ee11, Ee22, Ee33, Ee23, Ee13, Ee12
@@ -655,14 +808,14 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     default:
         // This should never happen due to enum type safety, but defensive programming
         MFEM_ABORT_0("Unhandled calculation type in CalculateVolumeAverage");
-        return VolumeAverageData();
+        return nullptr;
     }
 
     // Get the quadrature function for this region
     qf = m_sim_state->GetQuadratureFunction(qf_name, region);
     if (!qf) {
         // Region doesn't have this quadrature function - return invalid data
-        return VolumeAverageData();
+        return nullptr;
     }
 
     // Handle calculation-specific preprocessing
@@ -713,8 +866,9 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
     case CalcType::ELASTIC_STRAIN: {
         auto state_vars = m_sim_state->GetQuadratureFunction("state_var_end", region)->Read();
         const int vdim = m_sim_state->GetQuadratureFunction("state_var_end", region)->GetVDim();
-        const int ne =
-            m_sim_state->GetQuadratureFunction("state_var_end", region)->GetSpaceShared()->GetNE();
+        // One value per quadrature point (not per element): state_vars and data both hold
+        // every quadrature point of the region
+        const int npts = m_sim_state->GetQuadratureFunction("state_var_end", region)->Size() / vdim;
         const int estrain_ind =
             m_sim_state->GetQuadratureFunctionStatePair("elastic_strain", region).first;
         const int quats_ind = m_sim_state->GetQuadratureFunctionStatePair("quats", region).first;
@@ -723,7 +877,7 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
         qf->operator=(0.0);
         auto data = qf->Write();
 
-        mfem::forall(ne, [=] MFEM_HOST_DEVICE(int i) {
+        mfem::forall(npts, [=] MFEM_HOST_DEVICE(int i) {
             const auto strain_lat = &state_vars[i * vdim + estrain_ind];
             const auto quats = &state_vars[i * vdim + quats_ind];
             const auto rel_vol = state_vars[i * vdim + rel_vol_ind];
@@ -779,6 +933,17 @@ PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
         // No special preprocessing needed for these types
         // The quadrature function already contains the correct data
         break;
+    }
+    return qf;
+}
+
+PostProcessingDriver::VolumeAverageData
+PostProcessingDriver::CalculateVolumeAverage(CalcType calc_type, int region) {
+    // Per-point values of the quantity on the region (null if it has none on this rank)
+    int data_size = 0;
+    const auto qf = PrepareVolumePoints(calc_type, region, data_size);
+    if (!qf) {
+        return VolumeAverageData();
     }
 
     // Perform the volume integration to compute average
@@ -867,6 +1032,12 @@ PostProcessingDriver::GetOrCalculateVolumeAverage(CalcType calc_type, int region
 void PostProcessingDriver::ClearVolumeAverageCache() {
     // Clear all cached data at the beginning of each time step
     m_region_cache.clear();
+    for (auto& entry : m_user_function_outputs) {
+        entry.results.clear();
+    }
+    for (auto& output : m_statistics_outputs) {
+        output.results.clear();
+    }
 }
 
 void PostProcessingDriver::VolumeAverage(const std::string& calc_type_str,
@@ -936,23 +1107,52 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
         break;
     }
 
-    // Initialize accumulators for volume-weighted averaging
-    mfem::Vector global_avg_data(data_size);
-    global_avg_data = 0.0;
-    double global_volume = 0.0;
+    // Gather every region's result on rank 0 and combine them over the whole sample
+    // (volume-weighted average, or plain sum for the integrated plastic work)
+    const bool average = (calc_type != CalcType::PLASTIC_WORK);
+    const auto global = CombineRegionVolumeResults(
+        [this, calc_type](const int region) {
+            return GetOrCalculateVolumeAverage(calc_type, region);
+        },
+        data_size,
+        average);
+    if (!global.is_valid) {
+        // No valid regions found - issue warning
+        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
+        return;
+    }
 
-    // Accumulate contributions from all regions
+    // Write global output (region = -1 indicates global file)
+    if (data_size == 1) {
+        // Scalar quantity
+        m_file_manager->WriteVolumeAverage(
+            calc_type_str, -1, "", time, global.volume, global.data[0]);
+    } else {
+        // Vector/tensor quantity
+        m_file_manager->WriteVolumeAverage(calc_type_str, -1, "", time, global.volume, global.data);
+    }
+}
+
+std::vector<PostProcessingDriver::VolumeAverageData>
+PostProcessingDriver::GatherRegionVolumeResults(
+    const std::function<VolumeAverageData(int)>& region_result, const int data_size) {
+    std::vector<VolumeAverageData> results(m_num_regions);
     for (int region = 0; region < static_cast<int>(m_num_regions); ++region) {
-        // Use cached data if available, calculate if not
-        auto region_data = GetOrCalculateVolumeAverage(calc_type, region);
-        // Now gather all region data to rank 0
+        // Collective on the region's communicator; ranks without the region get invalid data
+        auto region_data = region_result(region);
+        // An invalid result still takes part in the exchange below: send data_size zeros with
+        // zero volume so it is skipped
+        if (!region_data.is_valid || region_data.data.Size() != data_size) {
+            region_data.data.SetSize(data_size);
+            region_data.data = 0.0;
+            region_data.volume = 0.0;
+        }
+
+        // Gather all region data to rank 0
         if (m_mpi_rank == 0) {
             // Rank 0 receives from all region roots
             const int root_rank = m_sim_state->GetRegionRootRank(region);
             if (root_rank > m_mpi_rank) {
-                region_data.data.SetSize(data_size);
-                region_data.is_valid = true;
-                // Receive from the region root
                 MPI_Recv(region_data.data.HostWrite(),
                          data_size,
                          MPI_DOUBLE,
@@ -968,54 +1168,49 @@ void PostProcessingDriver::GlobalVolumeAverage(const std::string& calc_type_str,
                          MPI_COMM_WORLD,
                          MPI_STATUS_IGNORE);
             }
-        } else {
+        } else if (m_sim_state->IsRegionIORoot(region)) {
             // Other ranks send their region data if they're region roots
-            if (m_sim_state->IsRegionIORoot(region)) {
-                MPI_Send(
-                    region_data.data.HostRead(), data_size, MPI_DOUBLE, 0, region, MPI_COMM_WORLD);
-                MPI_Send(&region_data.volume,
-                         1,
-                         MPI_DOUBLE,
-                         0,
-                         static_cast<int>(m_num_regions) * 2 + region,
-                         MPI_COMM_WORLD);
-            }
+            MPI_Send(region_data.data.HostRead(), data_size, MPI_DOUBLE, 0, region, MPI_COMM_WORLD);
+            MPI_Send(&region_data.volume,
+                     1,
+                     MPI_DOUBLE,
+                     0,
+                     static_cast<int>(m_num_regions) * 2 + region,
+                     MPI_COMM_WORLD);
         }
+        region_data.is_valid = (region_data.volume > 0.0);
+        results[static_cast<size_t>(region)] = region_data;
+    }
+    return results;
+}
 
-        if (region_data.is_valid && region_data.volume > 0.0) {
-            // Add volume-weighted contribution to global average
+PostProcessingDriver::VolumeAverageData PostProcessingDriver::CombineRegionVolumeResults(
+    const std::function<VolumeAverageData(int)>& region_result,
+    const int data_size,
+    const bool average) {
+    mfem::Vector global_data(data_size);
+    global_data = 0.0;
+    double global_volume = 0.0;
+
+    for (auto& region_data : GatherRegionVolumeResults(region_result, data_size)) {
+        if (region_data.volume > 0.0) {
+            // Volume-weighted contribution (averages) or plain sum (integrals)
+            region_data.data.HostRead();
             for (int i = 0; i < data_size; ++i) {
-                if (calc_type != CalcType::PLASTIC_WORK) {
-                    global_avg_data[i] += region_data.data[i] * region_data.volume;
-                } else {
-                    global_avg_data[i] += region_data.data[i];
-                }
+                const double value = region_data.data[i];
+                global_data[i] += average ? value * region_data.volume : value;
             }
             global_volume += region_data.volume;
         }
     }
 
-    // Normalize by total volume to get the true global average
-    if (global_volume > 0.0) {
-        if (calc_type != CalcType::PLASTIC_WORK) {
-            global_avg_data /= global_volume;
-        }
-    } else {
-        // No valid regions found - issue warning
-        MFEM_WARNING_0("No valid regions found for global " << calc_type_str << " calculation");
-        return;
+    if (global_volume <= 0.0) {
+        return VolumeAverageData();
     }
-
-    // Write global output (region = -1 indicates global file)
-    if (data_size == 1) {
-        // Scalar quantity
-        m_file_manager->WriteVolumeAverage(
-            calc_type_str, -1, "", time, global_volume, global_avg_data[0]);
-    } else {
-        // Vector/tensor quantity
-        m_file_manager->WriteVolumeAverage(
-            calc_type_str, -1, "", time, global_volume, global_avg_data);
+    if (average) {
+        global_data /= global_volume;
     }
+    return VolumeAverageData(global_volume, global_data);
 }
 
 bool PostProcessingDriver::ShouldOutputAtStep(int step) const {
@@ -1095,8 +1290,614 @@ void PostProcessingDriver::RegisterDefaultProjections() {
         fields = projection_opts.enabled_projections;
     }
 
+    // region_<N> entries are not built-in names; RegisterProjection skips them and they are
+    // handled below
     for (const auto& field : fields) {
         RegisterProjection(field);
+    }
+
+    // State variable fields requested per region (region_<N> entries and visualize_state_vars)
+    // are added in every case, also when auto_enable_compatible picked the built-in list
+    RegisterStateVariableProjections();
+
+    // Fields from "visualization" post-processing user functions
+    RegisterUserFunctionFields();
+}
+
+void PostProcessingDriver::RegisterStateVariableProjections() {
+    const auto& options = m_sim_state->GetOptions();
+
+    // What each region asks for: nothing (empty), {"all"}, or a list of names.
+    // A region_<N> entry asks for everything of material N.
+    std::vector<std::vector<std::string>> selection(m_num_regions);
+    for (const auto& entry : options.post_processing.projections.enabled_projections) {
+        const int number = ProjectionOptions::region_number(entry);
+        if (number >= 1 && number <= static_cast<int>(m_num_regions)) {
+            selection[static_cast<size_t>(number - 1)] = {"all"};
+        }
+    }
+    // The material's own list is used unless region_<N> already asked for everything (which
+    // includes every listed name, so nothing is created twice)
+    for (size_t region = 0; region < m_num_regions && region < options.materials.size(); region++) {
+        const auto& requested = options.materials[region].visualize_state_vars;
+        const bool already_all = (selection[region].size() == 1 && selection[region][0] == "all");
+        if (!requested.empty() && !already_all) {
+            selection[region] = requested;
+        }
+    }
+
+    using PTMC = ProjectionTraits::ModelCompatibility;
+    for (size_t region = 0; region < m_num_regions; region++) {
+        if (selection[region].empty()) {
+            continue;
+        }
+        const int region_int = static_cast<int>(region);
+        const auto fields = StateVariableFieldList(*m_sim_state, region_int, selection[region]);
+        for (const auto& field : fields) {
+            const std::string name = field.first;
+            const int offset = field.second.first;
+            const int length = field.second.second;
+
+            // A field of the same name already written for this region (for example a user
+            // state variable called "Hardness") would share its grid function; keep the first
+            const bool name_taken = std::any_of(m_registered_projections.begin(),
+                                                m_registered_projections.end(),
+                                                [&name, region](const ProjectionRegistration& reg) {
+                                                    return reg.display_name == name &&
+                                                           reg.region_enabled[region];
+                                                });
+            if (name_taken) {
+                MFEM_WARNING_0("State variable field \""
+                               << name << "\" of material " << region + 1
+                               << " has the same name as another visualization field of that "
+                                  "region and is not written");
+                continue;
+            }
+
+            // Copy slots [offset, offset + length) of the state variables unchanged. The
+            // field is turned on for this region only and never combined into the global
+            // output; the other regions' entries are placeholders that are never used.
+            auto projection = std::make_shared<StateVariableProjection>(
+                name, offset, length, name, PTMC::ALL_MODELS);
+            std::vector<std::shared_ptr<ProjectionBase>> projection_class(m_num_regions,
+                                                                          projection);
+            std::vector<bool> region_enabled(m_num_regions, false);
+            std::vector<int> region_length(m_num_regions, 0);
+            region_enabled[region] = true;
+            region_length[region] = length;
+
+            m_registered_projections.push_back(
+                {"state_var_region_" + std::to_string(region + 1) + "_" + name,
+                 name,
+                 PTMC::ALL_MODELS,
+                 region_enabled,
+                 projection_class,
+                 region_length,
+                 false});
+        }
+    }
+}
+
+void PostProcessingDriver::SetupUserFunctions() {
+    const auto& entries = m_sim_state->GetOptions().post_processing.user_functions;
+    m_user_function_outputs.reserve(entries.size());
+
+    for (size_t index = 0; index < entries.size(); index++) {
+        UserFunctionOutput entry;
+        entry.options = entries[index];
+        const auto& options = entry.options;
+
+        // Selected regions (options use material numbers starting at 1); all when none given
+        if (options.regions.empty()) {
+            for (int region = 0; region < static_cast<int>(m_num_regions); region++) {
+                entry.regions.push_back(region);
+            }
+        } else {
+            for (const int material : options.regions) {
+                entry.regions.push_back(material - 1);
+            }
+        }
+
+        // Already loaded and checked at startup (CheckUserFunctions), so this comes from the cache
+        if (options.factory.empty()) {
+            entry.function = exaconstit::LoadUserFunction<exaconstit::PostProcessingFunction>(
+                options.library_path,
+                options.function_name,
+                exaconstit::PostProcessingFunctionSignature(options.function_name),
+                "post-processing user function of entry '" + options.name + "'");
+        } else {
+            entry.function = exaconstit::MakeUserPostProcessingCall(
+                m_sim_state, index, options, entry.regions);
+        }
+
+        // Point values on each selected region this rank owns elements of, on the region's
+        // quadrature points; for zone visualization also their element averages (one point per
+        // element, the space of the "_avg" functions)
+        const bool zone_fields = (options.type == UserFunctionType::VISUALIZATION &&
+                                  m_viz_location == VizFieldLocation::ZONE);
+        for (const int region : entry.regions) {
+            if (!m_sim_state->IsRegionActive(region)) {
+                continue;
+            }
+            const auto point_space = m_sim_state->GetQuadratureFunction("cauchy_stress_end", region)
+                                         ->GetPartialSpaceShared();
+            entry.values[region] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                point_space, options.num_components, 0.0);
+            if (zone_fields) {
+                const auto element_space = m_sim_state
+                                               ->GetQuadratureFunction("cauchy_stress_avg", region)
+                                               ->GetPartialSpaceShared();
+                entry.averages[region] = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+                    element_space, options.num_components, 0.0);
+            }
+        }
+        m_user_function_outputs.push_back(std::move(entry));
+    }
+
+    // Volume outputs: one registration per entry, run only on its regions
+    for (size_t index = 0; index < m_user_function_outputs.size(); index++) {
+        const auto& entry = m_user_function_outputs[index];
+        const auto& options = entry.options;
+        if (options.type == UserFunctionType::VISUALIZATION) {
+            if (!m_enable_visualization) {
+                MFEM_WARNING_0("Post-processing user function entry '"
+                               << options.name
+                               << "' is of type visualization but no visualization format is "
+                                  "enabled in [Visualizations]; it is not written");
+            }
+            continue;
+        }
+
+        // The output name picks the file names; it must not be one of the built-in averages
+        static const std::vector<std::string> built_in = {"stress",
+                                                          "def_grad",
+                                                          "plastic_work",
+                                                          "pl_work",
+                                                          "eq_pl_strain",
+                                                          "eps",
+                                                          "euler_strain",
+                                                          "elastic_strain",
+                                                          "estrain"};
+        MFEM_VERIFY_0(std::find(built_in.begin(), built_in.end(), options.name) == built_in.end(),
+                      "Post-processing user function entry name '"
+                          << options.name
+                          << "' is the name of a built-in volume average; choose another name");
+        m_file_manager->SetVolumeAverageColumnNames(options.name, options.component_names);
+
+        std::function<void(double)> global_output = nullptr;
+        if (options.global) {
+            global_output = [this, index](const double time) {
+                GlobalUserFunctionVolumeOutput(index, time);
+            };
+        }
+        RegisterVolumeAverageFunction(
+            options.name,
+            options.name,
+            [this, index](const int region, const double time) {
+                UserFunctionVolumeOutput(index, region, time);
+            },
+            global_output,
+            true);
+        // Only the entry's regions produce a region file
+        auto& region_enabled = m_registered_volume_calcs.back().region_enabled;
+        std::fill(region_enabled.begin(), region_enabled.end(), false);
+        for (const int region : entry.regions) {
+            region_enabled[static_cast<size_t>(region)] = true;
+        }
+    }
+}
+
+void PostProcessingDriver::RegisterUserFunctionFields() {
+    using PTMC = ProjectionTraits::ModelCompatibility;
+    for (const auto& entry : m_user_function_outputs) {
+        const auto& options = entry.options;
+        if (options.type != UserFunctionType::VISUALIZATION) {
+            continue;
+        }
+        // A field name already used would share that field's grid function
+        const bool name_taken = std::any_of(m_registered_projections.begin(),
+                                            m_registered_projections.end(),
+                                            [&options](const ProjectionRegistration& reg) {
+                                                return reg.display_name == options.name;
+                                            });
+        MFEM_VERIFY_0(!name_taken,
+                      "Post-processing user function entry name '"
+                          << options.name
+                          << "' is already the name of another visualization field; choose "
+                             "another name");
+
+        // One projection per region holding that region's buffers (none where the region is
+        // not selected or has no elements on this rank). The field exists, with the same size,
+        // on every rank, as the data collections require.
+        std::vector<std::shared_ptr<ProjectionBase>> projection_class;
+        std::vector<bool> region_enabled(m_num_regions, false);
+        std::vector<int> region_length(m_num_regions, options.num_components);
+        for (size_t region = 0; region < m_num_regions; region++) {
+            const int region_int = static_cast<int>(region);
+            const auto values = entry.values.find(region_int);
+            const auto averages = entry.averages.find(region_int);
+            projection_class.push_back(std::make_shared<QuadratureFunctionProjection>(
+                options.name,
+                options.num_components,
+                (values != entry.values.end()) ? values->second : nullptr,
+                (averages != entry.averages.end()) ? averages->second : nullptr,
+                options.global));
+            region_enabled[region] = std::find(entry.regions.begin(),
+                                               entry.regions.end(),
+                                               region_int) != entry.regions.end();
+        }
+
+        m_registered_projections.push_back({"user_function_" + options.name,
+                                            options.name,
+                                            PTMC::ALL_MODELS,
+                                            region_enabled,
+                                            projection_class,
+                                            region_length,
+                                            options.global});
+    }
+}
+
+void PostProcessingDriver::UpdateUserFunctionFields() {
+    for (auto& entry : m_user_function_outputs) {
+        if (entry.options.type != UserFunctionType::VISUALIZATION) {
+            continue;
+        }
+        for (auto& [region, values] : entry.values) {
+            entry.function(m_sim_state, region, values);
+            // Zone output shows the element average of the values
+            const auto averages = entry.averages.find(region);
+            if (averages != entry.averages.end()) {
+                CalcElementAvg(averages->second.get(), values.get());
+            }
+        }
+    }
+}
+
+PostProcessingDriver::VolumeAverageData
+PostProcessingDriver::UserFunctionVolumeResult(const size_t index, const int region) {
+    auto& entry = m_user_function_outputs[index];
+    const auto values = entry.values.find(region);
+    if (values == entry.values.end()) {
+        return VolumeAverageData(); // Region not selected, or no elements on this rank
+    }
+    // Computed once per output step (the cache is cleared with the built-in one)
+    const auto cached = entry.results.find(region);
+    if (cached != entry.results.end()) {
+        return cached->second;
+    }
+
+    // The user's quantity at every point of the region, then its volume average or integral
+    // (collective on the region's communicator)
+    entry.function(m_sim_state, region, values->second);
+    const int num_components = entry.options.num_components;
+    mfem::Vector result(num_components);
+    const auto rtmodel = m_sim_state->GetOptions().solvers.rtmodel;
+    const auto region_comm = m_sim_state->GetRegionCommunicator(region);
+    const double volume =
+        (entry.options.type == UserFunctionType::VOLUME_AVERAGE)
+            ? exaconstit::kernel::ComputeVolAvgTensorFromPartial<true>(
+                  values->second.get(), result, num_components, rtmodel, region_comm)
+            : exaconstit::kernel::ComputeVolAvgTensorFromPartial<false>(
+                  values->second.get(), result, num_components, rtmodel, region_comm);
+    entry.results[region] = VolumeAverageData(volume, result);
+    return entry.results[region];
+}
+
+void PostProcessingDriver::UserFunctionVolumeOutput(const size_t index,
+                                                    const int region,
+                                                    const double time) {
+    const auto result = UserFunctionVolumeResult(index, region);
+    if (!result.is_valid) {
+        return;
+    }
+    const auto& options = m_user_function_outputs[index].options;
+    m_file_manager->WriteVolumeAverage(options.name,
+                                       region,
+                                       m_sim_state->GetRegionName(region),
+                                       time,
+                                       result.volume,
+                                       result.data,
+                                       options.num_components,
+                                       m_sim_state->GetRegionCommunicator(region));
+}
+
+void PostProcessingDriver::GlobalUserFunctionVolumeOutput(const size_t index, const double time) {
+    const auto& entry = m_user_function_outputs[index];
+    const bool average = (entry.options.type == UserFunctionType::VOLUME_AVERAGE);
+    const auto global = CombineRegionVolumeResults(
+        [this, index](const int region) {
+            return UserFunctionVolumeResult(index, region);
+        },
+        entry.options.num_components,
+        average);
+    if (!global.is_valid) {
+        return; // No selected region had any volume
+    }
+    m_file_manager->WriteVolumeAverage(
+        entry.options.name, -1, "", time, global.volume, global.data, entry.options.num_components);
+}
+
+void PostProcessingDriver::SetupVolumeStatistics() {
+    const auto& vol_opts = m_sim_state->GetOptions().post_processing.volume_averages;
+
+    // Built-in averages: statistics (one list for all) and per-quantity histograms of every
+    // enabled average, by the names of their switches
+    if (vol_opts.enabled) {
+        const std::vector<std::pair<std::string, bool>> built_in = {
+            {"stress", vol_opts.stress},
+            {"def_grad", vol_opts.def_grad},
+            {"euler_strain", vol_opts.euler_strain},
+            {"plastic_work", vol_opts.plastic_work},
+            {"eq_pl_strain", vol_opts.eq_pl_strain},
+            {"elastic_strain", vol_opts.elastic_strain}};
+        for (const auto& [name, enabled] : built_in) {
+            const auto histogram = vol_opts.histograms.find(name);
+            const HistogramOptions histogram_options = (histogram != vol_opts.histograms.end())
+                                                           ? histogram->second
+                                                           : HistogramOptions();
+            if (!enabled || (vol_opts.statistics.empty() && histogram_options.bins == 0)) {
+                continue;
+            }
+            const CalcType calc_type = GetCalcType(name);
+            RegisterStatisticsOutput(name,
+                                     m_file_manager->GetVolumeAverageColumnNames(name),
+                                     vol_opts.statistics,
+                                     histogram_options,
+                                     std::vector<int>(),
+                                     true,
+                                     [this, calc_type](const int region) {
+                                         return BuiltInStatisticsPoints(calc_type, region);
+                                     });
+        }
+    }
+
+    // "volume_average" user functions: the values the function filled for the volume average
+    for (size_t index = 0; index < m_user_function_outputs.size(); index++) {
+        const auto& options = m_user_function_outputs[index].options;
+        if (options.statistics.empty() && options.histogram.bins == 0) {
+            continue;
+        }
+        RegisterStatisticsOutput(options.name,
+                                 options.component_names,
+                                 options.statistics,
+                                 options.histogram,
+                                 m_user_function_outputs[index].regions,
+                                 options.global,
+                                 [this, index](const int region)
+                                     -> std::shared_ptr<mfem::expt::PartialQuadratureFunction> {
+                                     // Runs the user function for this output step if the average
+                                     // did not already
+                                     if (!UserFunctionVolumeResult(index, region).is_valid) {
+                                         return nullptr;
+                                     }
+                                     return m_user_function_outputs[index].values.at(region);
+                                 });
+    }
+
+    // All statistics files go to the stats folder of the results directory (text output only;
+    // the HDF5 output keeps them in its one file)
+    if (!m_statistics_outputs.empty() && !m_file_manager->WritesHDF5()) {
+        auto stats_directory = m_file_manager->GetOutputDirectory() / "stats";
+        m_file_manager->EnsureDirectoryExists(stats_directory, MPI_COMM_WORLD);
+    }
+}
+
+void PostProcessingDriver::RegisterStatisticsOutput(
+    const std::string& name,
+    const std::vector<std::string>& component_names,
+    const std::vector<std::string>& statistics,
+    const HistogramOptions& histogram,
+    const std::vector<int>& regions,
+    const bool global,
+    std::function<std::shared_ptr<mfem::expt::PartialQuadratureFunction>(int)> point_values) {
+    const size_t index = m_statistics_outputs.size();
+    StatisticsOutput output;
+    output.name = name;
+    output.num_components = static_cast<int>(component_names.size());
+    output.component_names = component_names;
+    output.statistics = statistics;
+    output.histogram = histogram;
+    output.point_values = std::move(point_values);
+    m_statistics_outputs.push_back(std::move(output));
+
+    // One file per statistic, stats/<name>_<statistic>_*.txt, with one column per component
+    // (as in the average file), and one histogram file, stats/<name>_hist_*.txt, with every
+    // component's slots. The keys ("stats:...", "hist:...") only identify the files in the
+    // file manager and cannot clash with an average's name.
+    for (const auto& statistic : statistics) {
+        const std::string key = "stats:" + name + ":" + statistic;
+        m_file_manager->SetVolumeAverageFileLocation(key, name + "_" + statistic, "stats");
+        m_file_manager->SetVolumeAverageColumnNames(key, component_names);
+    }
+    if (histogram.bins > 0) {
+        const std::string key = "hist:" + name;
+        m_file_manager->SetVolumeAverageFileLocation(key, name + "_hist", "stats");
+        m_file_manager->SetVolumeAverageColumnNames(
+            key, exaconstit::HistogramColumnNames(component_names, histogram.bins));
+        m_file_manager->SetVolumeAverageHeaderComment(key,
+                                                      exaconstit::HistogramEdgesComment(histogram));
+        m_file_manager->SetVolumeAverageBinEdges(key, exaconstit::HistogramEdges(histogram));
+    }
+
+    std::function<void(double)> global_output = nullptr;
+    if (global) {
+        global_output = [this, index](const double time) {
+            StatisticsGlobalOutput(index, time);
+        };
+    }
+    RegisterVolumeAverageFunction(
+        "statistics:" + name,
+        "Volume statistics of " + name,
+        [this, index](const int region, const double time) {
+            StatisticsRegionOutput(index, region, time);
+        },
+        global_output,
+        true);
+    // Only the selected regions produce region files (all when none are given)
+    if (!regions.empty()) {
+        auto& region_enabled = m_registered_volume_calcs.back().region_enabled;
+        std::fill(region_enabled.begin(), region_enabled.end(), false);
+        for (const int region : regions) {
+            region_enabled[static_cast<size_t>(region)] = true;
+        }
+    }
+}
+
+std::shared_ptr<mfem::expt::PartialQuadratureFunction>
+PostProcessingDriver::BuiltInStatisticsPoints(const CalcType calc_type, const int region) {
+    int data_size = 0;
+    const auto values = PrepareVolumePoints(calc_type, region, data_size);
+    if (!values) {
+        return nullptr;
+    }
+    const int num_points = values->Size() / data_size;
+
+    if (calc_type == CalcType::ELASTIC_STRAIN) {
+        // The first 6 of the 9 values per point hold the strain (Voigt)
+        auto strain = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+            values->GetPartialSpaceShared(), 6, 0.0);
+        const auto source = mfem::Reshape(values->Read(), data_size, num_points);
+        auto target = mfem::Reshape(strain->Write(), 6, num_points);
+        mfem::forall(num_points, [=] MFEM_HOST_DEVICE(int ip) {
+            for (int i = 0; i < 6; i++) {
+                target(i, ip) = source(i, ip);
+            }
+        });
+        return strain;
+    }
+    if (calc_type == CalcType::EULER_STRAIN) {
+        // Euler strain of every point, E = (I - F^-T F^-1) / 2, from its deformation gradient
+        // (the euler_strain volume average instead converts the averaged deformation gradient)
+        auto strain = std::make_shared<mfem::expt::PartialQuadratureFunction>(
+            values->GetPartialSpaceShared(), 6, 0.0);
+        const auto def_grad = mfem::Reshape(values->Read(), 3, 3, num_points);
+        auto target = mfem::Reshape(strain->Write(), 6, num_points);
+        mfem::forall(num_points, [=] MFEM_HOST_DEVICE(int ip) {
+            double f_data[9];
+            double f_inv_data[9];
+            for (int j = 0; j < 3; j++) {
+                for (int i = 0; i < 3; i++) {
+                    f_data[i + 3 * j] = def_grad(i, j, ip);
+                }
+            }
+            mfem::kernels::CalcInverse<3>(f_data, f_inv_data);
+            const auto f_inv = mfem::Reshape(f_inv_data, 3, 3);
+            // b_inv = F^-T F^-1
+            double b_inv[3][3];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    b_inv[i][j] = 0.0;
+                    for (int k = 0; k < 3; k++) {
+                        b_inv[i][j] += f_inv(k, i) * f_inv(k, j);
+                    }
+                }
+            }
+            target(0, ip) = 0.5 * (1.0 - b_inv[0][0]);
+            target(1, ip) = 0.5 * (1.0 - b_inv[1][1]);
+            target(2, ip) = 0.5 * (1.0 - b_inv[2][2]);
+            target(3, ip) = -0.5 * b_inv[1][2];
+            target(4, ip) = -0.5 * b_inv[0][2];
+            target(5, ip) = -0.5 * b_inv[0][1];
+        });
+        return strain;
+    }
+    return values;
+}
+
+PostProcessingDriver::VolumeAverageData PostProcessingDriver::StatisticsResult(const size_t index,
+                                                                               const int region) {
+    auto& output = m_statistics_outputs[index];
+    const auto cached = output.results.find(region);
+    if (cached != output.results.end()) {
+        return cached->second;
+    }
+    if (!m_sim_state->IsRegionActive(region)) {
+        return VolumeAverageData();
+    }
+    const auto values = output.point_values(region);
+    if (!values) {
+        output.results[region] = VolumeAverageData();
+        return output.results[region];
+    }
+    mfem::Vector packed;
+    const double volume = exaconstit::ComputeRegionStatistics(
+        *values,
+        output.histogram,
+        m_sim_state->GetOptions().solvers.rtmodel,
+        m_sim_state->GetRegionCommunicator(region),
+        packed);
+    output.results[region] = VolumeAverageData(volume, packed);
+    return output.results[region];
+}
+
+void PostProcessingDriver::StatisticsRegionOutput(const size_t index,
+                                                  const int region,
+                                                  const double time) {
+    const auto result = StatisticsResult(index, region);
+    if (!result.is_valid) {
+        return;
+    }
+    const auto& output = m_statistics_outputs[index];
+    WriteStatisticsRows(output,
+                        result,
+                        region,
+                        m_sim_state->GetRegionName(region),
+                        time,
+                        m_sim_state->GetRegionCommunicator(region));
+}
+
+void PostProcessingDriver::StatisticsGlobalOutput(const size_t index, const double time) {
+    const auto& output = m_statistics_outputs[index];
+    const int data_size = exaconstit::StatisticsDataSize(output.num_components,
+                                                         output.histogram.bins);
+    const auto regions = GatherRegionVolumeResults(
+        [this, index](const int region) {
+            return StatisticsResult(index, region);
+        },
+        data_size);
+    if (m_mpi_rank != 0) {
+        return;
+    }
+    std::vector<double> volumes;
+    std::vector<mfem::Vector> packed;
+    for (const auto& region : regions) {
+        volumes.push_back(region.volume);
+        packed.push_back(region.data);
+    }
+    mfem::Vector combined;
+    const double volume = exaconstit::CombineStatistics(
+        volumes, packed, output.num_components, output.histogram.bins, combined);
+    if (volume <= 0.0) {
+        return;
+    }
+    WriteStatisticsRows(output, VolumeAverageData(volume, combined), -1, "", time, MPI_COMM_SELF);
+}
+
+void PostProcessingDriver::WriteStatisticsRows(const StatisticsOutput& output,
+                                               const VolumeAverageData& result,
+                                               const int region,
+                                               const std::string& region_name,
+                                               const double time,
+                                               MPI_Comm comm) {
+    // One file per statistic: the statistic of every component
+    for (const auto& statistic : output.statistics) {
+        const auto row = exaconstit::StatisticRow(
+            result.data, result.volume, output.num_components, statistic);
+        m_file_manager->WriteVolumeAverage("stats:" + output.name + ":" + statistic,
+                                           region,
+                                           region_name,
+                                           time,
+                                           result.volume,
+                                           row,
+                                           row.Size(),
+                                           comm);
+    }
+    // One histogram file with every component
+    if (output.histogram.bins > 0) {
+        const auto row = exaconstit::HistogramRow(
+            result.data, result.volume, output.num_components, output.histogram.bins);
+        m_file_manager->WriteVolumeAverage(
+            "hist:" + output.name, region, region_name, time, result.volume, row, row.Size(), comm);
     }
 }
 
@@ -1428,7 +2229,7 @@ void PostProcessingDriver::InitializeGridFunctions() {
             }
 
             auto gf_name = GetGridFunctionName(reg.display_name, -1);
-            auto fe_space = m_sim_state->GetParFiniteElementSpace(max_vdim);
+            auto fe_space = GetParFiniteElementSpace(-1, max_vdim);
             m_map_gfs.emplace(gf_name, std::make_shared<mfem::ParGridFunction>(fe_space.get()));
             m_map_gfs[gf_name]->operator=(0.0);
         }
@@ -1520,6 +2321,12 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                 paraview.SetLevelsOfDetail(options.mesh.order);
                 paraview.SetDataFormat(mfem::VTKFormat::BINARY);
                 paraview.SetHighOrderOutput(false);
+                // Restart: keep the .pvd entries written before the restart time
+                paraview.UseRestartMode(m_sim_state->IsRestartRun());
+                if (m_sim_state->IsRestartRun()) {
+                    m_restart_pvd_files.push_back(output_dir_vizs /
+                                                  (output_dir_vizs.filename().string() + ".pvd"));
+                }
                 dcs_keys.push_back(key);
             }
 #ifdef MFEM_USE_ADIOS2
@@ -1542,9 +2349,14 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                         dcs->RegisterField(disp_key, value.get());
                     }
                 }
-                dcs->SetCycle(0);
-                dcs->SetTime(0.0);
-                dcs->Save();
+                // The initial state, written once by the run that starts at t = 0. A restart
+                // keeps the files written before it and adds to them from its first output
+                // step on, so it must not overwrite cycle 0.
+                if (!m_sim_state->IsRestartRun()) {
+                    dcs->SetCycle(0);
+                    dcs->SetTime(0.0);
+                    dcs->Save();
+                }
             }
         }
     }
@@ -1580,6 +2392,12 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
             paraview.SetLevelsOfDetail(options.mesh.order);
             paraview.SetDataFormat(mfem::VTKFormat::BINARY);
             paraview.SetHighOrderOutput(false);
+            // Restart: keep the .pvd entries written before the restart time
+            paraview.UseRestartMode(m_sim_state->IsRestartRun());
+            if (m_sim_state->IsRestartRun()) {
+                m_restart_pvd_files.push_back(output_dir_vizs /
+                                              (output_dir_vizs.filename().string() + ".pvd"));
+            }
             dcs_keys.push_back(key);
         }
 #ifdef MFEM_USE_ADIOS2
@@ -1603,14 +2421,60 @@ void PostProcessingDriver::InitializeDataCollections(ExaOptions& options) {
                     dcs->RegisterField(disp_key, value.get());
                 }
             }
-            dcs->SetCycle(0);
-            dcs->SetTime(0.0);
-            dcs->Save();
+            // The initial state, written only by the run that starts at t = 0 (see above)
+            if (!m_sim_state->IsRestartRun()) {
+                dcs->SetCycle(0);
+                dcs->SetTime(0.0);
+                dcs->Save();
+            }
         }
     }
 }
 
+namespace {
+
+/**
+ * @brief Remove the entries of cycle first_cycle and later from a ParaView collection file
+ *
+ * @param pvd_file The .pvd file (nothing is done if it does not exist)
+ * @param first_cycle First cycle to remove
+ *
+ * Lines other than DataSet entries (the header and closing tags) are kept. MFEM's restart mode
+ * then appends the new entries after the kept ones.
+ */
+void TrimParaViewCollection(const fs::path& pvd_file, const int first_cycle) {
+    std::ifstream in(pvd_file);
+    if (!in) {
+        return;
+    }
+    static const std::regex cycle_regex("file=\"Cycle(\\d+)");
+    std::ostringstream kept;
+    std::string line;
+    std::smatch match;
+    while (std::getline(in, line)) {
+        if (std::regex_search(line, match, cycle_regex) && std::stoi(match[1]) >= first_cycle) {
+            continue;
+        }
+        kept << line << "\n";
+    }
+    in.close();
+    std::ofstream out(pvd_file, std::ios::trunc);
+    out << kept.str();
+}
+
+} // namespace
+
 void PostProcessingDriver::UpdateDataCollections(const int step, const double time) {
+    // First save of a restart run: drop the ParaView entries this run writes again (written by
+    // rank 0, which alone writes the .pvd files)
+    if (!m_restart_pvd_files.empty()) {
+        if (m_mpi_rank == 0) {
+            for (const auto& pvd_file : m_restart_pvd_files) {
+                TrimParaViewCollection(pvd_file, step);
+            }
+        }
+        m_restart_pvd_files.clear();
+    }
     for (auto& [tmp, dcs] : m_map_dcs) {
         dcs->SetCycle(step);
         dcs->SetTime(time);

@@ -1,0 +1,104 @@
+# Two-region input deck for the UMAT interface tests (test/umat/CMakeLists.txt).
+#
+# The deck of umat.toml.in split into two materials with the same properties (grains.txt +
+# region_mapping.txt from test/data: 63 and 62 elements of the 5x5x5 auto mesh). Region 1 uses
+# the batched interface, region 2 the standard one. Each region's points are then a partial
+# quadrature space (scattered elements, element index maps), and on 2 ranks each rank owns parts
+# of both. The results must equal the one-region run with the same integrator (check_umat.py).
+Version = "0.10.1"
+basename = "umat_@CASE_NAME@"
+grain_file = "@EXACONSTIT_TEST_DATA_DIR@/grains.txt"
+region_mapping_file = "@EXACONSTIT_TEST_DATA_DIR@/region_mapping.txt"
+
+[[Materials]]
+    name = "elastic_batched"
+    mech_type = "umat"
+    temperature = 298.0
+    [Materials.Properties]
+        num_props = 2
+        values = [3000.0, 0.3]
+    [Materials.State_Vars]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    [Materials.Model]
+        crystal_plasticity = false
+        [Materials.Model.UMAT]
+            library_path = "@UMAT_TEST_LIBRARY@"
+            function_name = "test_umat_elastic_batch"
+            interface = "batched"
+
+[[Materials]]
+    name = "elastic_standard"
+    mech_type = "umat"
+    temperature = 298.0
+    [Materials.Properties]
+        num_props = 2
+        values = [3000.0, 0.3]
+    [Materials.State_Vars]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    [Materials.Model]
+        crystal_plasticity = false
+        [Materials.Model.UMAT]
+            library_path = "@UMAT_TEST_LIBRARY@"
+            function_name = "test_umat_elastic"
+            interface = "standard"
+
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1]
+        essential_comps = [7]
+        essential_vals = [0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [7]
+        velocity_gradient = [[0.0, 0.0, 0.04],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.05]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 0.5
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        # Every case runs in its own directory; all write into the shared results folder
+        output_directory = "../results"
+        stress = true
+        def_grad = true
+        output_frequency = 1
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    integ_model = "@INTEG_MODEL@"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 1e-10
+        abs_tol = 1e-14
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-12
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    type = "auto"
+    [Mesh.Auto]
+        mxyz = [1.0, 1.0, 1.0]
+        nxyz = [5, 5, 5]

@@ -6,7 +6,7 @@
 # Version of ExaConstit this configuration is designed for
 # This is recorded as metadata (it's echoed in the options summary printed at startup)
 # so you know which version of ExaConstit a configuration was written for / run with
-Version = "0.10.0"
+Version = "0.10.1"
 
 # Base name for the simulation output directory
 # This creates a subdirectory to organize all outputs from this simulation
@@ -34,6 +34,65 @@ region_mapping_file = "region_mapping.txt"
 # Format: one integer per line, each representing a grain ID
 # Line 1 = grain ID for element 1, Line 2 = grain ID for element 2, etc.
 grain_file = "grains.txt"
+
+# =====================================
+# USER FUNCTIONS (Optional)
+# =====================================
+# You can give ExaConstit your own small C++ functions, compiled into a shared library
+# (.so on Linux, .dylib on macOS), much like a UMAT. ExaConstit loads them at startup and
+# calls them at the right time. They are optional and independent: write only the ones
+# you need. Three kinds exist:
+#
+# 1. register_function   (in a material's [Materials.State_Vars] table)
+#    Gives names to the material's state variables, e.g. slot 0 = "damage", slots 1-6 =
+#    "back_stress". Names let you plot state variables by name (visualize_state_vars,
+#    region_<N>) and let your other functions find them. ExaCMech materials already
+#    have names (listed under visualize_state_vars below); UMATs have none unless you
+#    add them.
+# 2. initialize_function (in a material's [Materials.State_Vars] table)
+#    Sets the starting values of the material's state variables, point by point (for
+#    example an initial damage field), after ExaConstit's own initialization.
+# 3. Post-processing user functions ([[PostProcessing.user_functions]] entries)
+#    Compute an extra quantity at every integration point from the current state (for
+#    example stress triaxiality or the Lode parameter). ExaConstit then writes it as a
+#    visualization field, or as a volume average / volume integral per material and for
+#    the whole sample, depending on the entry.
+#
+# Building a library: examples/user_functions in the ExaConstit source has a complete,
+# commented example (functions, a 3-line CMakeLists.txt and the matching options).
+# With an installed ExaConstit:
+#   cmake -S examples/user_functions -B build -DCMAKE_PREFIX_PATH=<ExaConstit install>
+#   cmake --build build
+# The ExaConstit CMake package sets up all compiler settings and libraries; just use the
+# same C++ compiler ExaConstit was built with.
+#
+# Writing a function: a normal C++ function at global scope (not extern "C", not inside
+# a namespace) with exactly these argument types:
+#   void my_function(std::shared_ptr<SimulationState> sim_state, int region);
+#       (register_function and initialize_function)
+#   void my_function(std::shared_ptr<SimulationState> sim_state, int region,
+#                    std::shared_ptr<mfem::expt::PartialQuadratureFunction> values);
+#       (post-processing user functions)
+# Note: in this file materials are numbered from 1; inside the functions `region` counts
+# from 0 (material 1 is region 0).
+#
+# Checks: right after reading this file, ExaConstit loads every function listed here. A
+# missing library, a missing function or a function with different arguments stops the
+# run immediately with a message that shows the exact signature required.
+#
+# C++ classes instead of functions (for example with one shared ExaConstit installation on
+# an HPC machine): each of the three keys can name a factory in your library instead of a
+# function:
+#   register_function = { factory = "MakeMyClasses", variant = "my_names" }
+# Your library then includes only the header exaconstit_user.hpp from the ExaConstit
+# installation (no other ExaConstit or MFEM headers, no CMake package) and is built with
+# one compiler command, written at the top of that header. Your classes ask for the data
+# they need by name (cauchy_stress, def_grad, state_vars, a named state variable, coords,
+# ...) and get it as plain arrays; the header lists every name, and an unknown name stops
+# the run with the list of names the material has. variant (optional, default "") is
+# handed to the factory, so one factory can make several classes. Two beginner examples,
+# with build and options instructions, are in examples/user_classes. A post-processing
+# entry given as a table takes its name from the variant when name is not given.
 
 # =====================================
 # MATERIAL DEFINITIONS
@@ -84,7 +143,74 @@ grain_file = "grains.txt"
         
         # Option 2: Define initial values directly (usually zeros for virgin material)
         # values = [0.0, 0.0, 0.0, ...]  # Initial values (often all zeros)
-    
+
+        # ----- Optional user functions (any material model) -----
+        # See the USER FUNCTIONS section at the top of this file for what these are and
+        # how to build them.
+        #
+        # Shared library holding the functions below. Absolute path, or relative to the
+        # directory you run ExaConstit from. Leave it out if the functions are compiled
+        # into the ExaConstit executable itself.
+        # library_path = "./libmy_material_functions.so"
+        #
+        # Function that names this material's state variables. Each name covers a
+        # range of slots, given as {first slot (counting from 0), number of slots}:
+        #   sim_state->AddQuadratureFunctionStatePair("damage", {0, 1}, region);
+        #   sim_state->AddQuadratureFunctionStatePair("back_stress", {1, 6}, region);
+        #   sim_state->AddQuadratureFunctionStatePair("newton_iterations", {7, 1}, region, false);
+        # The optional last value says whether the variable is plotted when ALL of the
+        # material's state variables are requested (visualize_state_vars = "all" or
+        # region_<N>): true (default) or false for bookkeeping values such as counters
+        # that are not worth plotting.
+        # Rules: each range must fit inside num_vars and must not overlap another one,
+        # otherwise the run stops with a message naming the variable. For ExaCMech
+        # materials the built-in names come first and cannot be changed; you can only
+        # name the slots ExaCMech leaves unnamed.
+        # register_function = "RegisterMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # register_function = { factory = "MakeMyStateVariables", variant = "names" }
+        #
+        # Function that sets the starting values of this material's state variables,
+        # point by point (for example an initial damage field). It writes the values at
+        # the beginning of the step ("state_var_beg"); ExaConstit copies them to the end
+        # of the step. It runs after the values above (values / floc) and, for ExaCMech,
+        # after ExaCMech's own initialization have been applied. It is not called when
+        # restarting from a checkpoint: the saved state is used instead.
+        # initialize_function = "InitializeMyStateVariables"
+        # or a class from a factory (see USER FUNCTIONS at the top of this file):
+        # initialize_function = { factory = "MakeMyStateVariables", variant = "starting_damage" }
+
+    # ===== Visualized state variables (optional) =====
+    # State variables of this material to write to the visualization files (needs a
+    # format enabled in [Visualizations]), each as its own field named as below. They
+    # appear only in this material's output and follow [Visualizations] field_location.
+    #
+    # Either a list of names, written in that order:
+    #   visualize_state_vars = ["eq_pl_strain", "quats"]
+    # or "all": every named state variable in the material's own order (except names
+    # registered with plot = false), plus, for UMATs and other non-ExaCMech models, one
+    # field "State Var <k>" for each slot k (counting from 0) that has no name:
+    #   visualize_state_vars = "all"
+    # (Same as adding "region_<N>" to [PostProcessing.projections] enabled_projections.)
+    # ExaCMech names everything worth plotting, so its unnamed slots are not written;
+    # for other models ExaConstit cannot tell, so it writes them unless you name them
+    # with plot = false in a register_function.
+    #
+    # Names available for ExaCMech materials (number of values in parentheses):
+    #   "eq_pl_strain_rate" (1)  equivalent plastic strain rate
+    #   "eq_pl_strain"      (1)  equivalent plastic strain
+    #   "plastic_work"      (1)  plastic work
+    #   "quats"             (4)  lattice orientation as a quaternion (as stored, not
+    #                            re-normalized; the "xtal_ori" projection normalizes)
+    #   "shear_rate"        (number of slip systems)  shearing rate on each slip system
+    #   "hardness"          (number of hardening variables)  slip system hardness
+    #   "internal_energy"   (1)  internal energy
+    #   "relative_volume"   (1)  current volume / initial volume
+    #   "elastic_strain"    (5)  deviatoric elastic strain in the lattice frame
+    # For other models the names are the ones given by a register_function. An unknown
+    # name stops the run and lists the names the material has.
+    # visualize_state_vars = ["eq_pl_strain", "quats"]
+
     # ===== Crystal/Grain Information (for crystal plasticity only) =====
     [Materials.Grain]
         # Where orientations are stored in the state variable array
@@ -166,10 +292,22 @@ grain_file = "grains.txt"
         # For polymer: [Young's modulus, Poisson's ratio]
         values = [3000.0, 0.35]
     
+    # Plot this material's damage and accumulated slip (names from the register
+    # function below)
+    # visualize_state_vars = ["damage", "accumulated_slip"]
+
     [Materials.State_Vars]
         num_vars = 5
         # Initial state (zeros for undeformed material)
         values = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+        # Optional: name the UMAT's state variables and set their starting values with
+        # your own functions (see the USER FUNCTIONS section at the top). For example, a
+        # register function could name slot 0 "damage", slots 1-3 "back_stress" and slot
+        # 4 "accumulated_slip".
+        # library_path = "./libmy_material_functions.so"
+        # register_function = "RegisterMyStateVariables"
+        # initialize_function = "InitializeMyStateVariables"
     
     [Materials.Model]
         mech_type = "umat"
@@ -198,6 +336,98 @@ grain_file = "grains.txt"
             # Directories to search for the UMAT library
             # Searched in order if library_path is just a filename
             search_paths = ["./", "./umats/", "/shared/umat_libs/"]
+
+            # How the UMAT is called:
+            # - "standard" = the usual Abaqus UMAT interface, one call per material point
+            #   (default). Runs on the CPU; on GPU runs the point data is copied to the CPU
+            #   for the calls and back afterwards.
+            # - "batched" = one call with all of the material's points on this MPI rank.
+            #   The arguments are the UMAT arguments in the same order with NPTS added first;
+            #   arrays get a last dimension NPTS (STRESS(NTENS,NPTS), DFGRD1(3,3,NPTS), ...)
+            #   and per-point scalars become arrays (PNEWDT(NPTS), CELENT(NPTS), ...). The
+            #   arrays live where the run's data lives: GPU memory on GPU runs, so a GPU-capable
+            #   UMAT can work on them directly, and CPU memory otherwise (where the UMAT may
+            #   use OpenMP over the points). The sizes (NPTS, NTENS, NSTATV, ...) are always
+            #   in CPU memory. Needs library_path and function_name (the batched function's
+            #   name, not one of the standard UMAT names). Full description in
+            #   src/umats/userumat.h (UmatBatchFunction); example in examples/umat_batched.
+            interface = "standard"
+
+            # Standard interface only: set true if the UMAT can be called for several points
+            # at the same time (no Fortran SAVE / COMMON or other shared data it writes to).
+            # ExaConstit built with OpenMP then calls the points in an OpenMP loop.
+            thread_safe = false
+
+            # Strain measure of STRAN and DSTRAN:
+            # - "logarithmic" (default) = exact logarithmic (Hencky) strains ln V in the current
+            #   configuration: STRAN = ln V of DFGRD0, DSTRAN = ln V of the increment
+            #   DFGRD1 DFGRD0^-1 (no midpoint or rate approximation)
+            # - "eulerian" = the Eulerian (Almansi) strain 1/2 (I - B^-1) of the same tensors
+            strain_measure = "logarithmic"
+
+            # Rotate STRESS and STRAN by DROT (R T R^T) before calling the UMAT, as Abaqus does.
+            # DROT is the exact rotation of the increment, so the old stress is carried along
+            # with the rigid rotation of the material. Keep true (default) for UMATs written for
+            # unrotated input (isotropic models); set false for UMATs that handle rotations
+            # themselves (anisotropic models): they then get the old values as they are.
+            rotate_stress = true
+
+            # ----- What ExaConstit passes to the UMAT and what it uses back -----
+            # 3D only: NDI = 3, NSHR = 3, NTENS = 6. Vectors use the Abaqus order
+            # (11, 22, 33, 12, 13, 23); strains use engineering shears (2 e12, ...); 3x3
+            # matrices are stored column by column, as Fortran stores DFGRD1(3,3).
+            # Called for every material point at every Newton iteration of a time step, always
+            # from the converged state of the previous step.
+            #
+            # Inputs:
+            #   STRESS   Cauchy stress at the start of the increment (the converged stress of
+            #            the previous step), rotated by DROT when rotate_stress = true
+            #   STATEV   state variables at the start of the increment (never rotated)
+            #   SSE, SPD, SCD   accumulated specific elastic strain energy, plastic dissipation
+            #            and creep dissipation at the start of the increment (0 at the start of
+            #            the run); the UMAT adds the increment's share
+            #   DFGRD0   deformation gradient at the start of the increment, computed exactly
+            #            from the reference and beginning-of-step mesh nodes
+            #   DFGRD1   deformation gradient at the end of the increment (current Newton
+            #            iterate), computed exactly from the reference and current nodes
+            #   STRAN    strain of DFGRD0 in the chosen strain_measure, rotated by DROT when
+            #            rotate_stress = true
+            #   DSTRAN   strain of the increment DFGRD1 DFGRD0^-1 in the chosen strain_measure
+            #   DROT     exact rotation of the increment: R of the polar decomposition
+            #            DFGRD1 DFGRD0^-1 = R U
+            #   TIME     TIME(1) = TIME(2) = time at the start of the increment (one analysis
+            #            step); DTIME = time step
+            #   TEMP     the material's temperature option (constant); DTEMP = 0
+            #   PREDEF, DPRED   0 (no predefined fields)
+            #   PROPS, NPROPS   the material's [Materials.Properties] values
+            #   COORDS   current position of the point
+            #   CELENT   cube root of the element volume near the point (det J times the
+            #            reference element volume)
+            #   NOEL     1-based global element number in the parallel mesh (unique over all
+            #            ranks, but it depends on how the mesh is split among the ranks)
+            #   NPT      1-based number of the point within its element
+            #   CMNAME   the material's name, blank-padded to 80 characters
+            #   KSTEP = 1, KINC = time step number (1-based), LAYER = KSPT = 0
+            #   With integ_model = "BBAR" both deformation gradients get the F-bar treatment
+            #   (every point of an element gets the element's volume change), and the strains
+            #   and DROT follow from them.
+            #
+            # Outputs ExaConstit uses:
+            #   STRESS   Cauchy stress at the end of the increment
+            #   STATEV   state variables at the end of the increment (kept when the step
+            #            converges, written to restart files)
+            #   SSE, SPD, SCD   accumulated energies at the end of the increment, kept and
+            #            written to restart files like STATEV (in their own quadrature
+            #            functions umat_sse / umat_spd / umat_scd, not in STATEV); ExaConstit
+            #            itself does not use them
+            #   DDSDDE   material tangent d STRESS / d DSTRAN (required). ExaConstit reorders
+            #            it and multiplies it by DTIME for its rate-form tangent.
+            #   PNEWDT   start value 10; any point below 1 fails the iteration: with [Time.Auto]
+            #            the step is retried with ExaConstit's own smaller time step (the value
+            #            does not set the new step), otherwise the run stops; values above 1 are
+            #            ignored
+            #
+            # Outputs ignored (start at 0 for every call): RPL, DDSDDT, DRPLDE, DRPLDT.
 
 # =====================================
 # BOUNDARY CONDITIONS
@@ -564,7 +794,21 @@ grain_file = "grains.txt"
     # 10 = every 10th time step
     # 100 = every 100th time step
     output_frequency = 10
-    
+
+    # ===== Field Location =====
+    # Where material fields (stress, plastic strain, orientations, state variables
+    # from visualize_state_vars / region_<N>, user function fields, ...) are placed
+    # in the output. Displacement, velocity and grain IDs are not affected.
+    # "zone"       = one value per element: the volume average of its
+    #                quadrature points (default, smallest files)
+    # "quadrature" = one value at each H1 (displacement) node location of each
+    #                element, copied from the quadrature point closest to that
+    #                node. Shows the variation inside elements. Values are never
+    #                blended across quadrature points, so bounded quantities stay
+    #                bounded (unit quaternions, non-negative plastic strain).
+    #                For mesh order 1 or 2, ParaView shows exactly these values.
+    field_location = "zone"
+
     # ===== IMPORTANT: Visualization Output Location =====
     # Visualization files are always written to:
     #   [PostProcessing.volume_averages.output_directory]/[basename]/visualizations/
@@ -585,6 +829,42 @@ grain_file = "grains.txt"
 # Analysis and data extraction from your simulation
 
 [PostProcessing]
+    # ===== Output Format =====
+    # "text" (default): one text file per quantity, material and statistic, as described in the
+    #   sections below.
+    # "hdf5": the volume averages, volume statistics and histograms, user function averages /
+    #   integrals and surface quantities go into ONE file per run,
+    #   [output_directory]/[basename]/post_processing.hdf5, written at the same steps. Needs
+    #   ExaConstit built with Axom (it provides Conduit and HDF5). Visualization files and the
+    #   light-up analysis files are not affected. The *_fname options are not used for it.
+    #   A new run replaces an existing post_processing.hdf5 (text files are appended to instead).
+    #   User function names must then differ from each other and from the built-in quantity
+    #   names below, and their component names must not contain '/', repeat, or be one of
+    #   time, volume, statistics, histogram, bin_edges, description.
+    #
+    # Layout of the HDF5 file: each text file becomes a group and each text column a dataset with
+    # the column's name, one value per output step (row k of every dataset in a group belongs to
+    # time[k] of that group):
+    #   /volume/[quantity]/[region]/time, volume, [columns]      e.g. /volume/stress/global/Szz
+    #       [quantity]: stress, def_grad, euler_strain, plastic_work, eq_pl_strain,
+    #                   elastic_strain, or a user function's name
+    #       [region]:   global, or [material name]_[material number] (e.g. material_A_1)
+    #   /volume/[quantity]/[region]/statistics/[statistic]/[columns]
+    #       e.g. /volume/stress/material_A_1/statistics/std/Szz (same time and volume as above)
+    #   /volume/[quantity]/[region]/histogram/[column]_below, [column]_bin_1 ..., [column]_above
+    #   /volume/[quantity]/[region]/histogram/bin_edges          (the bin edges, not per step)
+    #   /surface/surface_[id]/time, area, Disp_x, ..., Normal_z (Moment_x ... with moments)
+    #   /surface/surface_[id]/description                         (the text file's comment lines)
+    # Reading it in Python: scripts/postprocessing/read_post_processing.py (needs h5py), e.g.
+    #   import h5py; f = h5py.File("results/tensile_test/post_processing.hdf5")
+    #   szz = f["volume/stress/global/Szz"][:]; t = f["volume/stress/global/time"][:]
+    # After a restart, the rows written after the checkpoint (steps run before the stop) are
+    # removed when the run continues, so no step appears twice. Keep the post-processing
+    # settings of a restarted run as they were: a quantity, statistic or moment added on restart
+    # reads 0 for the steps before it, and changed histogram bins keep the old bin_edges (use a
+    # new basename for different outputs).
+    output_format = "text"
+
     # ===== Volume Averaging =====
     # Computes average quantities over the entire domain or by material
     # Useful for: stress-strain curves, homogenized properties
@@ -594,8 +874,10 @@ grain_file = "grains.txt"
         
         # Which quantities to average:
         # Each creates a separate output file with time history
+        # (Your own averaged or integrated quantities: see [[PostProcessing.user_functions]]
+        # near the end of this section.)
         
-        # Stress tensor (6 components: σxx, σyy, σzz, σxy, σyz, σxz)
+        # Stress tensor (6 components: σxx, σyy, σzz, σyz, σxz, σxy)
         stress = true
         
         # Deformation gradient tensor F (9 components)
@@ -634,7 +916,11 @@ grain_file = "grains.txt"
         # The actual output structure will be:
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
+        #   [output_directory]/[basename]/stats/             <- Volume statistics (if asked for)
+        #   [output_directory]/[basename]/post_processing.hdf5 <- All of the above, instead,
+        #                                                       with output_format = "hdf5"
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
+        #   [output_directory]/[basename]/restart/           <- Checkpoints ([Restart])
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":
         #   ./results/tensile_test/                          <- All outputs go here
@@ -679,17 +965,17 @@ grain_file = "grains.txt"
         # Actual filenames will have _global or _region_[name]_[id] appended
         
         # Stress components file
-        # Columns: time, volume, σxx, σyy, σzz, σxy, σyz, σxz
+        # Columns: time, volume, σxx, σyy, σzz, σyz, σxz, σxy
         # Creates: avg_stress_global.txt, avg_stress_region_*.txt
         avg_stress_fname = "avg_stress.txt"
         
         # Deformation gradient file  
-        # Columns: time, volume, F11, F12, F13, F21, F22, F23, F31, F32, F33
+        # Columns: time, volume, F11, F21, F31, F12, F22, F32, F13, F23, F33 (column by column)
         # Creates: avg_def_grad_global.txt, avg_def_grad_region_*.txt
         avg_def_grad_fname = "avg_def_grad.txt"
         
         # Euler strain file
-        # Columns: time, volume, εxx, εyy, εzz, εxy, εyz, εxz
+        # Columns: time, volume, εxx, εyy, εzz, εyz, εxz, εxy
         # Creates: avg_euler_strain_global.txt, avg_euler_strain_region_*.txt
         avg_euler_strain_fname = "avg_euler_strain.txt"
         
@@ -704,9 +990,57 @@ grain_file = "grains.txt"
         avg_eq_pl_strain_fname = "avg_eq_pl_strain.txt"
         
         # Elastic strain file (ExaCMech only)
-        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
+        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_yz, εe_xz, εe_xy
         # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
         avg_elastic_strain_fname = "avg_elastic_strain.txt"
+
+        # ===== Volume Statistics (optional) =====
+        # An average hides how a quantity is spread over the volume (hot spots, the tail of
+        # the plastic strain distribution, stress differences between grains). These options
+        # also write the spread of the averaged quantities, per material and for the whole
+        # sample, into the stats/ folder of the results directory, at the same output
+        # frequency. Every integration point counts with its volume, so the "mean" is exactly
+        # the volume average above.
+        #
+        # Statistics of every enabled average above: a list of names, or "all"
+        #   "mean"      volume average
+        #   "variance"  volume average of (value - mean)^2
+        #   "std"       standard deviation, the square root of the variance
+        #   "skewness"  asymmetry of the distribution (0 for a symmetric one)
+        #   "kurtosis"  excess kurtosis: weight of the tails (0 for a normal distribution,
+        #               positive for heavier tails)
+        #   "min", "max" smallest and largest value at any integration point
+        # Each tensor component gets its own statistics. A spread below 1e-10 of the value
+        # itself (a constant field) is written as 0, and skewness and kurtosis are 0 then.
+        # The Euler strain statistics are of the strain at each point (the euler_strain
+        # average above instead converts the averaged deformation gradient). The plastic
+        # work file above holds the total (volume integral), while its statistics describe
+        # the plastic work per unit volume, so its "mean" is that total divided by the
+        # volume.
+        # Files: one per statistic, stats/[quantity]_[statistic]_global.txt and
+        # stats/[quantity]_[statistic]_region_*.txt (e.g. stats/stress_std_global.txt), with
+        # the same columns as the average file: Time, Volume, then one column per component
+        # (Sxx, Syy, ...).
+        # statistics = ["mean", "std", "skewness", "kurtosis", "min", "max"]
+        #
+        # Histograms: the volume fraction of the material (or sample) whose value falls in
+        # each of a fixed number of equal bins between range[0] and range[1], plus the
+        # fractions below and above the range. One entry per quantity, named like the
+        # switches above (stress, def_grad, euler_strain, plastic_work, eq_pl_strain,
+        # elastic_strain); the quantity must be enabled. A tensor gets one histogram per
+        # component, all with the same bins.
+        # Files: stats/[quantity]_hist_global.txt and stats/[quantity]_hist_region_*.txt
+        # (e.g. stats/stress_hist_global.txt); the first line lists the bin edges, then
+        # columns Time, Volume and for each component [component]_below,
+        # [component]_bin_1 ... [component]_bin_N, [component]_above.
+        # A bin includes its lower edge; the upper edge of the range belongs to the last bin.
+        # NaN values are counted in no slot, so the fractions then add up to less than 1.
+        # Note: with rtmodel = "GPU" histograms are not bitwise reproducible: the bin sums
+        # are added in a different order on each run, so the fractions can differ in the
+        # last digits (round-off) between runs, including a restarted run.
+        # [PostProcessing.volume_averages.histograms]
+        #     eq_pl_strain = { bins = 20, range = [0.0, 0.05] }
+        #     stress = { bins = 40, range = [-0.2, 0.2] }
 
     # ===== Surface Quantities =====
     # Force, displacement, area and normal on chosen mesh surfaces, for comparing with
@@ -892,7 +1226,97 @@ grain_file = "grains.txt"
         #   enabled_projections = ["cauchy", "von_mises", "eps"]            # Basic stress + plasticity
         #   enabled_projections = ["volume", "cauchy", "dpeff", "xtal_ori"] # Geometry + crystal fields
         #   enabled_projections = ["all_state"]                             # Everything (large output)
+        #
+        # All state variables of one material: add "region_<N>", where N is the
+        # material number (first [[Materials]] entry = 1). This is the same as setting
+        # visualize_state_vars = "all" for that material (see [[Materials]] above):
+        # one field per named state variable, plus "State Var <k>" fields for unnamed
+        # slots of non-ExaCMech models. These fields appear only in material N's
+        # output. region_<N> entries are used even when auto_enable_compatible = true.
+        #   enabled_projections = ["region_1"]
         enabled_projections = []
+
+    # ===== User Functions (optional) =====
+    # Extra output quantities computed by your own functions (see the USER FUNCTIONS
+    # section at the top of this file). Each [[PostProcessing.user_functions]] entry
+    # names one function that computes a quantity at every integration point of a
+    # material, and says what to do with it. Use as many entries as you like, from as
+    # many libraries as you like; the same function can appear in several entries (for
+    # example once as a field and once as a volume average).
+    #
+    # Keys of an entry:
+    #   library_path    Shared library with the function (leave out if the function is
+    #                   compiled into the ExaConstit executable)
+    #   function_name   Name of the function (required), or a class from a factory:
+    #                   { factory = "MakeMyOutput", variant = "..." } (see USER
+    #                   FUNCTIONS at the top of this file)
+    #   type            What to do with the values (required):
+    #                     "visualization"   write a field to the visualization files
+    #                                       (follows [Visualizations] field_location and
+    #                                       output_frequency)
+    #                     "volume_average"  volume average, written to a text file
+    #                     "volume_integral" volume integral (total over the volume),
+    #                                       written to a text file
+    #                   Text files are written at the [PostProcessing.volume_averages]
+    #                   output frequency, next to the built-in volume averages.
+    #   name            Field name, or the name used in the text file names
+    #                   (default: function_name, or the variant of a factory table).
+    #                   Two visualization entries must have
+    #                   different names, and so must two volume entries (average or
+    #                   integral), since both write avg_<name>_*.txt files.
+    #   num_components  Number of values the function computes per point, e.g. 1 for
+    #                   triaxiality, 6 for a symmetric tensor (default: the number of
+    #                   component_names, or 1)
+    #   component_names Column headers of the text files, written after Time and Volume
+    #                   (default: [name] for one value, else name_1, name_2, ...)
+    #   regions         Material numbers to compute it for (first [[Materials]] entry =
+    #                   1; default: all materials)
+    #   statistics      volume_average entries only: also write the volume statistics of
+    #                   the quantity, a list of names or "all" (see the Volume Statistics
+    #                   options of [PostProcessing.volume_averages] for the names), to
+    #                   stats/<name>_<statistic>_*.txt (one file per statistic)
+    #   histogram       volume_average entries only: a fixed-bin histogram of volume
+    #                   fractions, e.g. { bins = 30, range = [-1.0, 2.0] }, written to
+    #                   stats/<name>_hist_*.txt (on the GPU not bitwise reproducible,
+    #                   see the histogram note in [PostProcessing.volume_averages])
+    #   global          Also output the result combined over those materials: a field
+    #                   in the global visualization output and an "_global" text file
+    #                   (default: true). With a single material, visualization has only
+    #                   the one output, while the text files are written both per material
+    #                   and as _global, like the built-in volume averages.
+    #
+    # Text files: avg_<name>_region_<material name>_<N>.txt for each material and
+    # avg_<name>_global.txt for the combination, with columns Time, Volume and the
+    # component_names, like the built-in volume average files.
+    #
+    # Example: stress triaxiality as a field, and its volume average per material and
+    # overall (the function is in examples/user_functions):
+    #
+    # [[PostProcessing.user_functions]]
+    #     library_path = "./libmy_exaconstit_functions.so"
+    #     function_name = "StressTriaxiality"
+    #     type = "visualization"
+    #     name = "Stress Triaxiality"
+    #
+    # [[PostProcessing.user_functions]]
+    #     library_path = "./libmy_exaconstit_functions.so"
+    #     function_name = "StressTriaxiality"
+    #     type = "volume_average"
+    #     name = "triaxiality"
+    #     component_names = ["T"]
+    #     statistics = "all"                          # also its spread, in stats/
+    #     histogram = { bins = 30, range = [-1.0, 2.0] }
+    #
+    # Example: a two-value quantity from another library, for material 2 only, as a
+    # field without a global field:
+    #
+    # [[PostProcessing.user_functions]]
+    #     library_path = "./libmy_damage_outputs.so"
+    #     function_name = "LodeAndDamage"
+    #     type = "visualization"
+    #     num_components = 2
+    #     regions = [2]
+    #     global = false
 
 # =====================================
 # MESH SETTINGS
@@ -1068,7 +1492,11 @@ grain_file = "grains.txt"
     keep_last = 2
 
     # Directory checkpoints are written to, one subdirectory per checkpoint
-    # (cycle_<number of completed steps>)
+    # (cycle_<number of completed steps>). A relative path is inside the run's
+    # output folder, [output_directory]/[basename] (see [PostProcessing.volume_averages]
+    # output_directory), next to the other outputs: by default
+    # ./results/<basename>/restart. A restart with the same output_directory and
+    # basename finds its checkpoints there.
     directory = "restart"
 
     # Restart this run from a checkpoint
@@ -1080,5 +1508,7 @@ grain_file = "grains.txt"
 
     # Read the checkpoint from this directory instead of `directory`
     # Useful for restarting from another run's checkpoints without touching
-    # them; this run still writes its own checkpoints to `directory`
-    # read_directory = "other_run/restart"
+    # them; this run still writes its own checkpoints to `directory`. A relative
+    # path is relative to the directory ExaConstit is started in (not the output
+    # folder), e.g. another run's checkpoints:
+    # read_directory = "results/other_run/restart"

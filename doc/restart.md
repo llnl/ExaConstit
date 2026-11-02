@@ -58,6 +58,12 @@ from it prints a warning unless `t_final` has been increased.
 **Output files.** Volume-average output files are opened in append mode, so a continuation
 that keeps the same `basename` appends to the original run's files and they read as one
 uninterrupted run. Use a different `basename` to keep the continuation's output separate.
+If the original run went on past the checkpoint before it stopped, the text files keep those
+steps too, and the continuation writes them again. With `[PostProcessing] output_format =
+"hdf5"`, the continuation first removes the rows after the checkpoint time from
+`post_processing.hdf5`, so every step appears once. Keep the post-processing settings as they
+were in that case: an output added on restart reads 0 for the earlier steps in the file, and
+changed histogram bins keep the old `bin_edges`.
 
 ## What may change between runs
 
@@ -174,8 +180,8 @@ The restart tests are built when ExaConstit is configured with Axom and tests ar
   synthetic evolved state, deletes the input files, restarts, and compares everything bitwise.
 
 No test uses more MPI ranks than the machine has cores: rank counts above
-`EXACONSTIT_TEST_MAX_MPI_TASKS` (default: the logical core count detected at configure time)
-are skipped.
+`EXACONSTIT_TEST_MAX_MPI_TASKS` (default: the physical core count detected at configure time,
+since Open MPI counts physical cores as slots) are skipped.
 
 **Long tests** (not on CI; developers changing the restart code must run them locally):
 configure with `-DEXACONSTIT_ENABLE_LONG_TESTS=ON`, then run
@@ -198,7 +204,13 @@ the same step, and its volume-average output row by row. Each restarted run's lo
 confirm it really restarted from the expected checkpoint and ran only the remaining steps, and
 a negative control restarts from a slightly perturbed checkpoint and requires the result to
 differ. `python3 test_restart_runs.py --help` lists the options, including a smaller mesh, fewer
-steps and fewer ranks for quick local checks.
+steps and fewer ranks for quick local checks, and the device (`--rtmodel`) and assembly
+(`--assembly`) of the runs.
+
+GPU builds also register `test_restart_runs_gpu` (labels `restart;long;gpu`), which runs the same
+cases with `rtmodel = "GPU"` and `EXACONSTIT_RESTART_RUN_TEST_GPU_ASSEMBLY` (default `EA`, the
+fastest GPU assembly for these runs). It checks that the restored host data reaches the device and
+that GPU runs restart bitwise identically. Run only the GPU tests with `ctest -L gpu`.
 
 ## Limitations
 
@@ -209,5 +221,6 @@ steps and fewer ranks for quick local checks.
 - **Conforming meshes only**, with one element geometry and one boundary geometry
   (segment, triangle, quadrilateral, tetrahedron or hexahedron). Nonconforming and NURBS meshes
   are rejected.
-- **Not yet tested on GPUs.** The restored data is written on the host and marked valid there,
-  so it should be copied to the device on first use, but no GPU run has been tested yet.
+- **GPU testing so far is CUDA only.** The restored data is written on the host and marked
+  valid there, so it is copied to the device on first use. `test_restart_runs_gpu` passes
+  bitwise with PA and EA on an NVIDIA GPU (CUDA); it has not been run on an AMD GPU (HIP) yet.

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "postprocessing/viz_point_map.hpp"
 #include "sim_state/simulation_state.hpp"
 #include "utilities/cuda_access.hpp"
+#include "utilities/unified_logger.hpp"
 
 #include "mfem.hpp"
 
@@ -70,11 +72,14 @@ public:
      * @brief Execute the projection for a specific region
      * @param sim_state Reference to simulation state
      * @param grid_function Target grid function to populate
+     * @param points Region's table of (source quadrature point, output node) pairs. It decides
+     *               both which quadrature function is read ("_avg" for zone output, "_end" for
+     *               quadrature output) and where each value lands; see VizPointMap.
      * @param region Region index
      */
     virtual void Execute(std::shared_ptr<SimulationState> sim_state,
                          std::shared_ptr<mfem::ParGridFunction> grid_function,
-                         mfem::Array<int>& qpts2mesh,
+                         const VizPointMap& points,
                          int region) = 0;
 
     /**
@@ -94,6 +99,25 @@ public:
      */
     virtual std::string GetDisplayName() const = 0;
 };
+
+/**
+ * @brief Copy per-point values onto the visualization nodes of one region
+ *
+ * @param source Region quadrature function (element averages for zone output, end-of-step point
+ *               values for quadrature output; see VizPointMap)
+ * @param first_component First component of `source` to copy
+ * @param num_components Number of components to copy (output components 0 .. num_components-1)
+ * @param output Region grid function to fill
+ * @param points Region's table of (source quadrature point, output node) pairs
+ *
+ * The kernel shared by the projections that write values unchanged (state variables, user
+ * function quantities): output(j, dest(k)) = source(first_component + j, source_point(k)).
+ */
+void CopyPointValues(const mfem::expt::PartialQuadratureFunction& source,
+                     const int first_component,
+                     const int num_components,
+                     mfem::ParGridFunction& output,
+                     const VizPointMap& points);
 
 //=============================================================================
 // GEOMETRY PROJECTIONS
@@ -130,19 +154,20 @@ public:
      *
      * @param sim_state Reference to simulation state (unused for geometry)
      * @param grid_function Target grid function to populate
-     * @param qpts2mesh Mapping array (unused for geometry)
+     * @param points Region's point table (only its element list is used)
      * @param region Region index (unused for geometry)
      *
      * Executes geometry-based projection by calling the pure virtual
      * ProjectGeometry() method. Geometry projections are region-independent
-     * since they depend only on mesh topology and element geometry.
+     * since they depend only on mesh topology and element geometry. The value is an
+     * element quantity, so in quadrature output it is repeated on every node of the element.
      */
     void Execute([[maybe_unused]] std::shared_ptr<SimulationState> sim_state,
                  std::shared_ptr<mfem::ParGridFunction> grid_function,
-                 [[maybe_unused]] mfem::Array<int>& qpts2mesh,
+                 const VizPointMap& points,
                  [[maybe_unused]] int region) override {
         // Geometry projections don't depend on region-specific data
-        ProjectGeometry(grid_function);
+        ProjectGeometry(grid_function, points);
     }
 
     /**
@@ -157,12 +182,15 @@ protected:
      * @brief Pure virtual method for geometry calculations
      *
      * @param grid_function Target grid function to populate with geometry data
+     * @param points Region's point table; every output node of an element receives the
+     *               element's value
      *
      * Derived classes implement this method to compute geometry-based quantities
      * such as element centroids or volumes. The method has direct access to
      * mesh geometry through the grid function's finite element space.
      */
-    virtual void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) = 0;
+    virtual void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                                 const VizPointMap& points) = 0;
 };
 
 /**
@@ -190,8 +218,9 @@ public:
         return "Element Centroids";
     }
 
-    EXACONSTIT_CUDA_PROTECTED:
-    void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) override;
+EXACONSTIT_CUDA_PROTECTED:
+    void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                         const VizPointMap& points) override;
 };
 
 /**
@@ -231,8 +260,9 @@ public:
         return "Element Volumes";
     }
 
-    EXACONSTIT_CUDA_PROTECTED:
-    void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) override;
+EXACONSTIT_CUDA_PROTECTED:
+    void ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                         const VizPointMap& points) override;
 };
 
 //=============================================================================
@@ -269,15 +299,18 @@ public:
 
     void Execute(std::shared_ptr<SimulationState> sim_state,
                  std::shared_ptr<mfem::ParGridFunction> grid_function,
-                 mfem::Array<int>& qpts2mesh,
+                 const VizPointMap& points,
                  int region) override {
-        // Get stress quadrature function for this region
-        auto stress_qf = sim_state->GetQuadratureFunction("cauchy_stress_avg", region);
+        // Element averages (zone output) or end-of-step quadrature values (quadrature output)
+        auto stress_qf = sim_state->GetQuadratureFunction(points.SourceName("cauchy_stress"),
+                                                          region);
         if (!stress_qf)
             return; // Region doesn't have stress data
+        MFEM_VERIFY_0(stress_qf->GetVDim() == 6,
+                      "StressProjection expects 6 Cauchy stress components (Voigt notation)");
 
         // Project the stress calculation
-        ProjectStress(stress_qf, grid_function, qpts2mesh);
+        ProjectStress(stress_qf, grid_function, points);
     }
 
     /**
@@ -293,7 +326,7 @@ protected:
      *
      * @param stress_qf Partial quadrature function containing stress tensor data
      * @param grid_function Target grid function to populate with processed stress
-     * @param qpts2mesh Mapping from local partial space to global element indices
+     * @param points Table of (source quadrature point, output node) pairs for the region
      *
      * Derived classes implement this method to perform specific stress calculations
      * such as Von Mises equivalent stress, hydrostatic stress, or direct stress
@@ -303,7 +336,7 @@ protected:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> grid_function,
-                  mfem::Array<int>& qpts2mesh) = 0;
+                  const VizPointMap& points) = 0;
 };
 
 /**
@@ -347,7 +380,7 @@ public:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> stress_gf,
-                  mfem::Array<int>& qpts2mesh) override;
+                  const VizPointMap& points) override;
 };
 
 /**
@@ -390,7 +423,7 @@ public:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> von_mises,
-                  mfem::Array<int>& qpts2mesh) override;
+                  const VizPointMap& points) override;
 };
 
 /**
@@ -435,7 +468,7 @@ public:
     virtual void
     ProjectStress(const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
                   std::shared_ptr<mfem::ParGridFunction> hydro_static,
-                  mfem::Array<int>& qpts2mesh) override;
+                  const VizPointMap& points) override;
 };
 
 //=============================================================================
@@ -485,7 +518,7 @@ public:
 
     void Execute(std::shared_ptr<SimulationState> sim_state,
                  std::shared_ptr<mfem::ParGridFunction> state_gf,
-                 mfem::Array<int>& qpts2mesh,
+                 const VizPointMap& points,
                  int region) override;
 
     std::string GetDisplayName() const override {
@@ -501,17 +534,18 @@ protected:
      * @brief Post-processing hook for derived classes
      *
      * @param grid_function Target grid function containing extracted state data
-     * @param qspace Partial quadrature space for the region
-     * @param qpts2mesh Mapping from local to global element indices
+     * @param points Region's point table; the output nodes written by this region are
+     *               points.ReadDest()[0 .. points.GetNumPoints() - 1]
      *
      * Virtual method called after state variable extraction to allow derived
      * classes to perform additional processing such as normalization, coordinate
-     * transformations, or value clamping. Default implementation does nothing.
+     * transformations, or value clamping. It runs node by node on values that were each
+     * copied from a single quadrature point, so per-point constraints hold exactly.
+     * Default implementation does nothing.
      */
     virtual void PostProcessStateVariable(
         [[maybe_unused]] std::shared_ptr<mfem::ParGridFunction> grid_function,
-        [[maybe_unused]] std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
-        [[maybe_unused]] mfem::Array<int>& qpts2mesh) const {};
+        [[maybe_unused]] const VizPointMap& points) const {};
 
     /**
      * @brief State variable name for SimulationState lookup
@@ -579,13 +613,12 @@ protected:
  */
 class AllStateVariablesProjection final : public StateVariableProjection {
 public:
-    AllStateVariablesProjection() : StateVariableProjection("all_state_vars", 0, -1) {}
-
-    AllStateVariablesProjection([[maybe_unused]] const std::string& state_var_name,
-                                [[maybe_unused]] int component_index,
-                                [[maybe_unused]] int component_length,
-                                [[maybe_unused]] const std::string& display_name)
-        : StateVariableProjection("all_state_vars", 0, -1, "All State Variables") {}
+    /**
+     * @param num_state_vars Number of state variables per point of the region (the vector size
+     *                       of the output field)
+     */
+    explicit AllStateVariablesProjection(int num_state_vars)
+        : StateVariableProjection("all_state_vars", 0, num_state_vars, "All State Variables") {}
 
     ~AllStateVariablesProjection() {};
     virtual bool CanAggregateGlobally() const override {
@@ -672,16 +705,13 @@ public:
      * forall construct for optimal performance on both CPU and GPU architectures.
      *
      * @param grid_function Shared pointer to the MFEM grid function containing state data
-     * @param qspace Quadrature space (unused in this projection)
-     * @param qpts2mesh Quadrature point to mesh mapping (unused in this projection)
+     * @param points Region's point table (output nodes to clamp)
      *
      * @note The mathematical operation applied is: data[i] = max(data[i], 0.0)
-     *       for all degrees of freedom i in the local element range.
+     *       for every component of every output node written by this region.
      */
-    virtual void PostProcessStateVariable(
-        std::shared_ptr<mfem::ParGridFunction> grid_function,
-        [[maybe_unused]] std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
-        [[maybe_unused]] mfem::Array<int>& qpts2mesh) const override;
+    virtual void PostProcessStateVariable(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                                          const VizPointMap& points) const override;
 };
 
 /**
@@ -691,8 +721,9 @@ public:
  * automatic normalization to ensure unit quaternions. Handles quaternion
  * data extraction and post-processing for texture analysis applications.
  *
- * The post-processing step normalizes quaternions to correct for numerical
- * drift during simulation and ensure valid rotation representations.
+ * The post-processing step normalizes quaternions to unit length to correct for
+ * numerical drift (and, in zone output, for the shortening caused by averaging the
+ * quaternions of an element) and ensure valid rotation representations.
  * Output quaternions follow the convention [q0, q1, q2, q3] where q0
  * is the scalar component.
  *
@@ -718,11 +749,9 @@ public:
         return true;
     }
 
-    EXACONSTIT_CUDA_PROTECTED:
-    virtual void
-    PostProcessStateVariable(std::shared_ptr<mfem::ParGridFunction> grid_function,
-                             std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
-                             mfem::Array<int>& qpts2mesh) const override;
+EXACONSTIT_CUDA_PROTECTED:
+    virtual void PostProcessStateVariable(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                                          const VizPointMap& points) const override;
 };
 
 /**
@@ -761,7 +790,7 @@ public:
      *
      * @param sim_state Reference to simulation state for data access
      * @param elastic_strain_gf Target grid function for elastic strain output
-     * @param qpts2mesh Mapping from local to global element indices
+     * @param points Table of (source quadrature point, output node) pairs for the region
      * @param region Material region identifier
      *
      * Overrides the base StateVariableProjection::Execute() method to implement
@@ -781,7 +810,7 @@ public:
      */
     void Execute(std::shared_ptr<SimulationState> sim_state,
                  std::shared_ptr<mfem::ParGridFunction> elastic_strain_gf,
-                 mfem::Array<int>& qpts2mesh,
+                 const VizPointMap& points,
                  int region) override;
 
     virtual bool CanAggregateGlobally() const override {
@@ -820,4 +849,70 @@ public:
     virtual bool CanAggregateGlobally() const override {
         return false;
     }
+};
+//=============================================================================
+// USER FUNCTION PROJECTIONS
+//=============================================================================
+
+/**
+ * @brief Writes the values of a post-processing user function as a visualization field
+ *
+ * A [[PostProcessing.user_functions]] entry of type "visualization" fills, for each selected
+ * region, a quadrature function with its quantity at every integration point (see
+ * PostProcessingDriver). This projection copies those values onto the region's visualization
+ * nodes through the same VizPointMap as every other projection: in zone output it reads the
+ * element averages of the values (filled by the driver), in quadrature output the point values
+ * themselves.
+ *
+ * The quadrature functions belong to the driver and are given at construction, unlike the other
+ * projections, which look their input up in SimulationState by name. One instance is created per
+ * region; regions the quantity is not computed for get an instance without data and are skipped.
+ *
+ * @ingroup ExaConstit_projections
+ */
+class QuadratureFunctionProjection final : public ProjectionBase {
+public:
+    /**
+     * @param display_name Field name in the visualization files
+     * @param num_components Values per point
+     * @param values Point values of the region (null if the region is not computed here)
+     * @param averages Element averages of the values (null if the region is not computed here)
+     * @param global Whether the field is also combined over the regions into the global output
+     */
+    QuadratureFunctionProjection(const std::string& display_name,
+                                 const int num_components,
+                                 std::shared_ptr<mfem::expt::PartialQuadratureFunction> values,
+                                 std::shared_ptr<mfem::expt::PartialQuadratureFunction> averages,
+                                 const bool global)
+        : m_display_name(display_name), m_num_components(num_components),
+          m_values(std::move(values)), m_averages(std::move(averages)), m_global(global) {}
+
+    void Execute(std::shared_ptr<SimulationState> sim_state,
+                 std::shared_ptr<mfem::ParGridFunction> grid_function,
+                 const VizPointMap& points,
+                 int region) override;
+
+    int GetVectorDimension() const override {
+        return m_num_components;
+    }
+
+    bool CanAggregateGlobally() const override {
+        return m_global;
+    }
+
+    std::string GetDisplayName() const override {
+        return m_display_name;
+    }
+
+private:
+    /// Field name in the visualization files
+    std::string m_display_name;
+    /// Values per point
+    int m_num_components;
+    /// Point values of the region, filled by the user function
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction> m_values;
+    /// Element averages of m_values (zone output)
+    std::shared_ptr<mfem::expt::PartialQuadratureFunction> m_averages;
+    /// Combined into the global output
+    bool m_global;
 };

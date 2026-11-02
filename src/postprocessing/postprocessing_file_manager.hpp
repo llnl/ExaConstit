@@ -1,6 +1,7 @@
 #pragma once
 
 #include "options/option_parser_v2.hpp"
+#include "postprocessing/postprocessing_hdf5_file.hpp"
 
 #include "mfem.hpp"
 
@@ -118,6 +119,86 @@ public:
     std::string GetVolumeAverageHeader(const std::string& calc_type) const;
 
     /**
+     * @brief Set the column names of a volume average file (written after Time and Volume)
+     *
+     * @param calc_type Calculation name, as passed to WriteVolumeAverage()
+     * @param column_names One name per value
+     *
+     * Used for quantities the file manager does not know (post-processing user functions);
+     * the built-in quantities have fixed column names.
+     */
+    void SetVolumeAverageColumnNames(const std::string& calc_type,
+                                     const std::vector<std::string>& column_names) {
+        m_column_names[calc_type] = column_names;
+    }
+
+    /**
+     * @brief Put a calculation's files under another name and in a subfolder
+     *
+     * @param calc_type Calculation name, as passed to WriteVolumeAverage()
+     * @param file_stem File name stem used instead of avg_<calc_type> (region / global suffix
+     *                  and .txt are added as usual)
+     * @param subdirectory Folder inside the output directory (created by the caller with
+     *                     EnsureDirectoryExists(), which is collective)
+     *
+     * Used for the volume statistics (stats/<name>_<statistic>_*.txt, stats/<name>_hist_*.txt).
+     */
+    void SetVolumeAverageFileLocation(const std::string& calc_type,
+                                      const std::string& file_stem,
+                                      const fs::path& subdirectory) {
+        m_file_locations[calc_type] = {file_stem, subdirectory};
+    }
+
+    /**
+     * @brief Comment line written above a calculation's column header (e.g. histogram edges)
+     */
+    void SetVolumeAverageHeaderComment(const std::string& calc_type, const std::string& comment) {
+        m_header_comments[calc_type] = comment;
+    }
+
+    /**
+     * @brief Histogram bin edges of a calculation, stored as its bin_edges dataset in the HDF5
+     *        output (the text files list them in their header comment instead)
+     */
+    void SetVolumeAverageBinEdges(const std::string& calc_type, const std::vector<double>& edges) {
+        m_bin_edges[calc_type] = edges;
+    }
+
+    /// True if the post-processing output goes to the single HDF5 file (output_format = "hdf5")
+    bool WritesHDF5() const {
+        return m_hdf5 != nullptr;
+    }
+
+    /**
+     * @brief End of a post-processing update: the HDF5 output gathers the rows queued on every
+     *        rank to rank 0 and appends them to the file (collective; nothing to do for text)
+     */
+    void FinishOutputStep() {
+        if (m_hdf5) {
+            m_hdf5->FinishOutputStep();
+        }
+    }
+
+    /**
+     * @brief Restarted run: the HDF5 output drops the rows after the checkpoint time
+     *        (collective; nothing to do for text)
+     */
+    void ContinueAfterRestart(const double restart_time) {
+        if (m_hdf5) {
+            m_hdf5->ContinueAfterRestart(restart_time);
+        }
+    }
+
+    /**
+     * @brief Column names (after Time and Volume) of a volume average file
+     *
+     * @param calc_type Calculation name
+     * @return The names set with SetVolumeAverageColumnNames(), or the built-in names of the
+     *         built-in quantities (e.g. Sxx ... for stress), or {calc_type} for anything else
+     */
+    std::vector<std::string> GetVolumeAverageColumnNames(const std::string& calc_type) const;
+
+    /**
      * @brief Check if output should occur at the current step
      *
      * @param step Current time step number
@@ -190,6 +271,12 @@ public:
         if (rank != 0)
             return;
 
+        if (m_hdf5) {
+            QueueVolumeAverageRow(
+                calc_type, region, region_name, time, volume, ValuesOf(data, data_size));
+            return;
+        }
+
         auto filepath = GetVolumeAverageFilePath(calc_type, region, region_name);
 
         auto file = CreateOutputFile(filepath, true, comm);
@@ -225,6 +312,13 @@ public:
     std::string GetSurfaceQuantityHeader(bool moments) const;
 
     /**
+     * @brief Column names of a surface quantity file after Time, Surface_ID and Area
+     *
+     * @param moments Whether the moment columns are included
+     */
+    std::vector<std::string> GetSurfaceQuantityColumnNames(bool moments) const;
+
+    /**
      * @brief Write one row of surface quantity output (rank 0 of MPI_COMM_WORLD only)
      *
      * @param surface_id Mesh boundary attribute of the surface
@@ -245,6 +339,20 @@ public:
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         if (rank != 0)
             return;
+
+        if (m_hdf5) {
+            const std::string group = "surface/surface_" + std::to_string(surface_id);
+            std::vector<std::string> names = {"time", "area"};
+            std::vector<double> row = {time, area};
+            const auto columns = GetSurfaceQuantityColumnNames(moments);
+            names.insert(names.end(), columns.begin(), columns.end());
+            row.insert(row.end(), values.begin(), values.end());
+            m_hdf5->AddRow(group, names, row);
+            if (!preamble.empty()) {
+                m_hdf5->AddFixed(group + "/description", preamble);
+            }
+            return;
+        }
 
         auto file = CreateOutputFile(GetSurfaceQuantityFilePath(surface_id), true);
 
@@ -349,6 +457,39 @@ private:
         }
     }
 
+    /// The values WriteDataSafe() writes, as a vector (for the HDF5 output)
+    std::vector<double> ValuesOf(const mfem::Vector& data, int size) const {
+        const int actual_size = (size > 0) ? size : data.Size();
+        return std::vector<double>(data.GetData(), data.GetData() + actual_size);
+    }
+    std::vector<double> ValuesOf(double data, int /*size*/) const {
+        return {data};
+    }
+    std::vector<double> ValuesOf(const double* data, int size) const {
+        return std::vector<double>(data, data + size);
+    }
+    std::vector<double> ValuesOf(const std::vector<double>& data, int size) const {
+        const size_t actual_size = (size > 0) ? static_cast<size_t>(size) : data.size();
+        return std::vector<double>(data.begin(), data.begin() + static_cast<long>(actual_size));
+    }
+
+    /**
+     * @brief Queue one volume average / statistics / histogram row for the HDF5 output
+     *
+     * The group follows the text file the row would go to: a calculation's file becomes
+     * volume/<calc>/<region> with time, volume and its columns; its statistics files
+     * (key "stats:<name>:<statistic>") volume/<name>/<region>/statistics/<statistic> and its
+     * histogram file (key "hist:<name>") volume/<name>/<region>/histogram, both with only their
+     * columns (they share the average's time and volume). <region> is the region name used in
+     * the text file names, or "global".
+     */
+    void QueueVolumeAverageRow(const std::string& calc_type,
+                               int region,
+                               const std::string& region_name,
+                               double time,
+                               double volume,
+                               const std::vector<double>& values);
+
     /**
      * @brief Create a centered string within a fixed column width
      *
@@ -356,13 +497,16 @@ private:
      * @param width Total column width
      * @return Centered string with padding
      *
-     * Centers text within the specified width using spaces for padding.
-     * If the text is longer than the width, it will be truncated.
+     * Centers text within the specified width using spaces for padding. Text that does not fit
+     * is written whole with a space on each side (never truncated).
      */
     std::string CenterText(const std::string& text, int width) const {
         const size_t width_z = static_cast<size_t>(width);
         if (text.length() >= width_z) {
-            return text.substr(0, width_z); // Truncate if too long
+            // Too long for the column: keep the whole name, separated by spaces, so every header
+            // name stays readable and splits into one word per column (the header is then wider
+            // than the data columns)
+            return " " + text + " ";
         }
 
         const size_t padding = width_z - text.length();
@@ -422,6 +566,24 @@ private:
      * Improves performance for frequent output operations to the same files.
      */
     mutable std::map<std::string, std::weak_ptr<std::ofstream>> m_file_cache;
+
+    /**
+     * @brief Column names of volume average files of quantities set by
+     * SetVolumeAverageColumnNames(), by calculation name
+     */
+    std::map<std::string, std::vector<std::string>> m_column_names;
+
+    /// File name stem and subfolder of calculations set by SetVolumeAverageFileLocation()
+    std::map<std::string, std::pair<std::string, fs::path>> m_file_locations;
+
+    /// Comment lines set by SetVolumeAverageHeaderComment()
+    std::map<std::string, std::string> m_header_comments;
+
+    /// Histogram bin edges set by SetVolumeAverageBinEdges()
+    std::map<std::string, std::vector<double>> m_bin_edges;
+
+    /// The single output file with output_format = "hdf5" (null for text output)
+    std::unique_ptr<PostProcessingHDF5File> m_hdf5;
 };
 
 // Implementation
@@ -452,12 +614,61 @@ inline PostProcessingFileManager::PostProcessingFileManager(const ExaOptions& op
         options.visualization.adios2) {
         m_output_viz = m_output_directory / "visualizations";
     }
+
+    if (options.post_processing.output_format == PostProcessingFormat::HDF5) {
+        m_hdf5 = std::make_unique<PostProcessingHDF5File>(m_output_directory /
+                                                          "post_processing.hdf5");
+    }
+}
+
+inline void PostProcessingFileManager::QueueVolumeAverageRow(const std::string& calc_type,
+                                                             int region,
+                                                             const std::string& region_name,
+                                                             double time,
+                                                             double volume,
+                                                             const std::vector<double>& values) {
+    const std::string region_label = (region == -1)        ? std::string("global")
+                                     : region_name.empty() ? std::to_string(region)
+                                                           : region_name;
+    const auto columns = GetVolumeAverageColumnNames(calc_type);
+    MFEM_VERIFY(columns.size() == values.size(),
+                "HDF5 output of " << calc_type << ": " << columns.size() << " column names but "
+                                  << values.size() << " values");
+
+    // Statistics and histogram keys: "stats:<name>:<statistic>", "hist:<name>"
+    const auto colon = calc_type.find(':');
+    const std::string kind = (colon == std::string::npos) ? "" : calc_type.substr(0, colon);
+    if (kind == "stats") {
+        const auto second = calc_type.find(':', colon + 1);
+        const std::string name = calc_type.substr(colon + 1, second - colon - 1);
+        const std::string statistic = calc_type.substr(second + 1);
+        m_hdf5->AddRow(
+            "volume/" + name + "/" + region_label + "/statistics/" + statistic, columns, values);
+    } else if (kind == "hist") {
+        const std::string group = "volume/" + calc_type.substr(colon + 1) + "/" + region_label +
+                                  "/histogram";
+        m_hdf5->AddRow(group, columns, values);
+        const auto edges = m_bin_edges.find(calc_type);
+        if (edges != m_bin_edges.end()) {
+            m_hdf5->AddFixed(group + "/bin_edges", edges->second);
+        }
+    } else {
+        std::vector<std::string> names = {"time", "volume"};
+        names.insert(names.end(), columns.begin(), columns.end());
+        std::vector<double> row = {time, volume};
+        row.insert(row.end(), values.begin(), values.end());
+        m_hdf5->AddRow("volume/" + calc_type + "/" + region_label, names, row);
+    }
 }
 
 inline std::string PostProcessingFileManager::GetVolumeAverageFilePath(
     const std::string& calc_type, int region, const std::string& region_name) const {
-    // Get base filename with extension for this calculation type
-    fs::path specific_filename = GetSpecificFilename(calc_type);
+    // Get base filename with extension for this calculation type (or the stem and subfolder set
+    // by SetVolumeAverageFileLocation)
+    const auto location = m_file_locations.find(calc_type);
+    const bool relocated = (location != m_file_locations.end());
+    fs::path specific_filename = relocated ? fs::path(location->second.first + ".txt")
+                                           : fs::path(GetSpecificFilename(calc_type));
 
     // Split into base and extension
     fs::path extension = specific_filename.extension();
@@ -478,7 +689,8 @@ inline std::string PostProcessingFileManager::GetVolumeAverageFilePath(
             base_name.string(), extension.string(), region, region_name);
     }
 
-    return m_output_directory / filename;
+    return relocated ? m_output_directory / location->second.second / filename
+                     : m_output_directory / filename;
 }
 
 inline std::string
@@ -638,23 +850,53 @@ inline std::string PostProcessingFileManager::GetSurfaceQuantityHeader(bool mome
     header << CenterText("# Time", COLUMN_WIDTH);
     header << CenterText("Surface_ID", COLUMN_WIDTH);
     header << CenterText("Area", COLUMN_WIDTH);
-    header << CenterText("Disp_x", COLUMN_WIDTH);
-    header << CenterText("Disp_y", COLUMN_WIDTH);
-    header << CenterText("Disp_z", COLUMN_WIDTH);
-    header << CenterText("Force_x", COLUMN_WIDTH);
-    header << CenterText("Force_y", COLUMN_WIDTH);
-    header << CenterText("Force_z", COLUMN_WIDTH);
-    header << CenterText("Normal_x", COLUMN_WIDTH);
-    header << CenterText("Normal_y", COLUMN_WIDTH);
-    header << CenterText("Normal_z", COLUMN_WIDTH);
-    if (moments) {
-        header << CenterText("Moment_x", COLUMN_WIDTH);
-        header << CenterText("Moment_y", COLUMN_WIDTH);
-        header << CenterText("Moment_z", COLUMN_WIDTH);
+    for (const auto& column : GetSurfaceQuantityColumnNames(moments)) {
+        header << CenterText(column, COLUMN_WIDTH);
     }
 
     header << "\n";
     return header.str();
+}
+
+inline std::vector<std::string>
+PostProcessingFileManager::GetSurfaceQuantityColumnNames(bool moments) const {
+    std::vector<std::string> names = {"Disp_x",
+                                      "Disp_y",
+                                      "Disp_z",
+                                      "Force_x",
+                                      "Force_y",
+                                      "Force_z",
+                                      "Normal_x",
+                                      "Normal_y",
+                                      "Normal_z"};
+    if (moments) {
+        names.insert(names.end(), {"Moment_x", "Moment_y", "Moment_z"});
+    }
+    return names;
+}
+
+inline std::vector<std::string>
+PostProcessingFileManager::GetVolumeAverageColumnNames(const std::string& calc_type) const {
+    const auto custom = m_column_names.find(calc_type);
+    if (custom != m_column_names.end()) {
+        return custom->second;
+    }
+    if (calc_type == "stress") {
+        // Voigt order of the stress quadrature function: 11, 22, 33, 23, 13, 12
+        return {"Sxx", "Syy", "Szz", "Syz", "Sxz", "Sxy"};
+    } else if (calc_type == "def_grad") {
+        // The deformation gradient is stored column by column (column-major 3x3)
+        return {"F11", "F21", "F31", "F12", "F22", "F32", "F13", "F23", "F33"};
+    } else if (calc_type == "euler_strain") {
+        return {"E11", "E22", "E33", "E23", "E13", "E12"};
+    } else if (calc_type == "plastic_work" || calc_type == "pl_work") {
+        return {"Plastic_Work"};
+    } else if (calc_type == "elastic_strain") {
+        return {"Ee11", "Ee22", "Ee33", "Ee23", "Ee13", "Ee12"};
+    } else if (calc_type == "eps" || calc_type == "eq_pl_strain") {
+        return {"Equiv_Plastic_Strain"}; // Shortened to fit better
+    }
+    return {calc_type};
 }
 
 // Updated GetVolumeAverageHeader method with proper alignment:
@@ -662,47 +904,16 @@ inline std::string
 PostProcessingFileManager::GetVolumeAverageHeader(const std::string& calc_type) const {
     std::ostringstream header;
 
+    const auto comment = m_header_comments.find(calc_type);
+    if (comment != m_header_comments.end()) {
+        header << comment->second << "\n";
+    }
+
     // Set formatting for header to match data columns
     header << CenterText("# Time", COLUMN_WIDTH);
     header << CenterText("Volume", COLUMN_WIDTH);
-
-    if (calc_type == "stress") {
-        header << CenterText("Sxx", COLUMN_WIDTH);
-        header << CenterText("Syy", COLUMN_WIDTH);
-        header << CenterText("Szz", COLUMN_WIDTH);
-        header << CenterText("Sxy", COLUMN_WIDTH);
-        header << CenterText("Sxz", COLUMN_WIDTH);
-        header << CenterText("Syz", COLUMN_WIDTH);
-    } else if (calc_type == "def_grad") {
-        header << CenterText("F11", COLUMN_WIDTH);
-        header << CenterText("F12", COLUMN_WIDTH);
-        header << CenterText("F13", COLUMN_WIDTH);
-        header << CenterText("F21", COLUMN_WIDTH);
-        header << CenterText("F22", COLUMN_WIDTH);
-        header << CenterText("F23", COLUMN_WIDTH);
-        header << CenterText("F31", COLUMN_WIDTH);
-        header << CenterText("F32", COLUMN_WIDTH);
-        header << CenterText("F33", COLUMN_WIDTH);
-    } else if (calc_type == "euler_strain") {
-        header << CenterText("E11", COLUMN_WIDTH);
-        header << CenterText("E22", COLUMN_WIDTH);
-        header << CenterText("E33", COLUMN_WIDTH);
-        header << CenterText("E23", COLUMN_WIDTH);
-        header << CenterText("E13", COLUMN_WIDTH);
-        header << CenterText("E12", COLUMN_WIDTH);
-    } else if (calc_type == "plastic_work" || calc_type == "pl_work") {
-        header << CenterText("Plastic_Work", COLUMN_WIDTH);
-    } else if (calc_type == "elastic_strain") {
-        header << CenterText("Ee11", COLUMN_WIDTH);
-        header << CenterText("Ee22", COLUMN_WIDTH);
-        header << CenterText("Ee33", COLUMN_WIDTH);
-        header << CenterText("Ee23", COLUMN_WIDTH);
-        header << CenterText("Ee13", COLUMN_WIDTH);
-        header << CenterText("Ee12", COLUMN_WIDTH);
-    } else if (calc_type == "eps" || calc_type == "eq_pl_strain") {
-        header << CenterText("Equiv_Plastic_Strain", COLUMN_WIDTH); // Shortened to fit better
-    } else {
-        header << CenterText(calc_type, COLUMN_WIDTH);
+    for (const auto& column : GetVolumeAverageColumnNames(calc_type)) {
+        header << CenterText(column, COLUMN_WIDTH);
     }
 
     header << "\n";

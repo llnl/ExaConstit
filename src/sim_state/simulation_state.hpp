@@ -511,6 +511,10 @@ private:
     // history variables such as how it's done with ECMech's models.
     /** @brief Quadrature function state variable mappings for ExaCMech models */
     std::map<std::string, std::pair<int, int>> m_map_qf_mappings;
+    /** @brief Registration order of the state variable names of each region (bare names) */
+    std::map<int, std::vector<std::string>> m_map_qf_mapping_order;
+    /** @brief Plot flag of each state variable mapping (same keys as m_map_qf_mappings) */
+    std::map<std::string, bool> m_map_qf_mapping_plot;
     // Class devoted to updating our time based on various logic we might have.
     /** @brief Time management instance for comprehensive time control */
     TimeManagement m_time_manager;
@@ -672,6 +676,28 @@ public:
     }
 
     /**
+     * @brief Base names of the quadrature functions registered for a region
+     *
+     * @param region Region index (0-based)
+     * @return Names as passed to GetQuadratureFunction(name, region), e.g. "state_var_beg"
+     *
+     * @details Matches registry names ending in the region's name, so a name can show up that
+     * belongs to a region whose name ends the same way; callers check the function's space.
+     */
+    std::vector<std::string> GetQuadratureFunctionNames(const int region) const {
+        const std::string suffix = "_" + GetRegionName(region);
+        std::vector<std::string> names;
+        for (const auto& entry : m_map_qfs) {
+            const auto& key = entry.first;
+            if (key.size() > suffix.size() &&
+                key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                names.push_back(key.substr(0, key.size() - suffix.size()));
+            }
+        }
+        return names;
+    }
+
+    /**
      * @brief Add a new quadrature function for a specific region
      *
      * @param qf_name Base quadrature function name
@@ -717,41 +743,73 @@ public:
                                const int region = -1);
 
     /**
-     * @brief Get state variable mapping for ExaCMech models
+     * @brief Get where a named state variable sits in a region's state variable vector
      *
-     * @param state_name State variable name (e.g., "slip_rates", "hardness")
+     * @param state_name State variable name (e.g., "shear_rate", "hardness")
      * @param region Region index (-1 for global)
-     * @return Pair containing (offset, length) within the state variable vector
-     * @throws std::out_of_range if mapping doesn't exist
+     * @return Pair (offset, length) within the region's state variable vector, or {-1, -1} if
+     *         the region has no state variable of that name
      *
-     * @details ExaCMech models store multiple state variables in a single large vector.
-     * This method returns the offset and length for a specific state variable within
-     * that vector, enabling efficient access to individual quantities.
+     * @details A material stores all of its history variables in one vector per point. These
+     * names (registered by the ExaCMech setup or by a user register_function) say which slice of
+     * that vector holds which quantity.
      *
      * **Example Usage**:
      * ```cpp
-     * auto [offset, length] = sim_state.GetQuadratureFunctionStatePair("slip_rates", 0);
-     * // slip_rates for region 0 starts at 'offset' and has 'length' components
+     * auto [offset, length] = sim_state.GetQuadratureFunctionStatePair("shear_rate", 0);
+     * // shear_rate for region 0 starts at 'offset' and has 'length' components
      * ```
      */
     std::pair<int, int> GetQuadratureFunctionStatePair(const std::string_view& state_name,
                                                        const int region = -1) const;
 
     /**
-     * @brief Add state variable mapping for ExaCMech models
+     * @brief All named state variables of a region, in the order they were registered
+     *
+     * @param region Region index (0-based)
+     * @return (name, (offset, length)) for each registered name. Empty if the region has none
+     *         (for example a UMAT region without a register_function).
+     *
+     * @details The order is the registration order: ExaCMech's own order for ExaCMech regions,
+     * the order of the calls in a user register_function otherwise. Slots of the state variable
+     * vector that no name covers are simply not listed.
+     */
+    std::vector<std::pair<std::string, std::pair<int, int>>>
+    GetQuadratureFunctionStatePairs(const int region) const;
+
+    /**
+     * @brief Register where a named state variable sits in a region's state variable vector
      *
      * @param state_name State variable name
-     * @param state_pair Pair containing (offset, length) within state vector
+     * @param state_pair Pair (offset, length) within the region's state variable vector
      * @param region Region index
-     * @return True if successfully added, false if already exists
+     * @param plot Whether the variable is written when all of the region's state variables
+     *             are asked for (visualize_state_vars = "all" or region_<N>); default true.
+     *             Pass false for bookkeeping slots (counters, flags, ...) not worth plotting.
+     *             A variable listed by name in visualize_state_vars is written regardless.
+     * @return True if added, false if the name already exists for this region (the first
+     *         registration wins, so built-in ExaCMech names cannot be replaced)
      *
-     * @details Used by ExaCMech models during initialization to register the location
-     * of specific state variables within the large state variable vector. This enables
-     * efficient access without searching or string parsing during simulation.
+     * @details Called by the ExaCMech setup and by user register_functions, on every rank for
+     * every region (active or not) so all ranks agree. For a material region the slice must lie
+     * inside the region's state variables (offset >= 0, length >= 1,
+     * offset + length <= number of state variables) and must not overlap a slice registered
+     * earlier; otherwise the run stops with a message naming the variable.
      */
     bool AddQuadratureFunctionStatePair(const std::string_view state_name,
                                         std::pair<int, int> state_pair,
-                                        const int region);
+                                        const int region,
+                                        const bool plot = true);
+
+    /**
+     * @brief Whether a named state variable is written when all state variables are asked for
+     *
+     * @param state_name State variable name
+     * @param region Region index
+     * @return The plot flag given to AddQuadratureFunctionStatePair (false if the name is not
+     *         registered)
+     */
+    bool GetQuadratureFunctionStatePlot(const std::string_view& state_name, const int region) const;
 
     // =========================================================================
     // MODEL UPDATE MANAGEMENT
@@ -980,6 +1038,8 @@ public:
      * - "L2_3D_P0": Discontinuous constant elements for 3D
      * - "H1_3D_P1": Continuous linear elements for 3D
      * - "L2_2D_P0": Discontinuous constant elements for 2D
+     * - "L2_3D_P<order>": Discontinuous Gauss-Lobatto elements of the mesh order, only with
+     *   quadrature visualization output (Visualizations field_location = "quadrature")
      *
      * Used internally by GetParFiniteElementSpace() and other methods requiring
      * specific finite element collections.

@@ -116,6 +116,43 @@ enum class PreconditionerType {
     NOTYPE     /**< Uninitialized or invalid preconditioner type */
 };
 
+/**
+ * @brief Where field values are placed in the visualization output
+ *
+ * Material quantities (stress, state variables, ...) live at the quadrature points
+ * of each element. For visualization they are written on a discontinuous (L2) field:
+ * - ZONE: one value per element, the volume average of the quadrature point values.
+ * - QUADRATURE: several values per element, placed at the same reference locations as
+ *   the H1 (displacement) nodes. Each of those values is copied from the quadrature
+ *   point closest to it, so no quadrature data is blended together and bounded
+ *   quantities (unit quaternions, non-negative plastic strain, ...) stay bounded.
+ */
+enum class VizFieldLocation {
+    ZONE,       /**< One volume averaged value per element (L2 order 0) */
+    QUADRATURE, /**< Nearest quadrature point value at each H1 node location */
+    NOTYPE      /**< Uninitialized or invalid field location */
+};
+
+/**
+ * @brief What ExaConstit does with the per-point values of a post-processing user function
+ */
+enum class UserFunctionType {
+    VISUALIZATION,   /**< Written as a visualization field (zone or quadrature output) */
+    VOLUME_AVERAGE,  /**< Volume averaged per region / globally and written to a file */
+    VOLUME_INTEGRAL, /**< Volume integrated per region / globally and written to a file */
+    NOTYPE           /**< Uninitialized or invalid type */
+};
+
+/**
+ * @brief Format of the post-processing output (volume averages, statistics, user function
+ *        averages / integrals, surface quantities)
+ */
+enum class PostProcessingFormat {
+    TEXT,  /**< One text file per quantity, region and statistic */
+    HDF5,  /**< One HDF5 file per run, written with Conduit (needs Axom) */
+    NOTYPE /**< Uninitialized or invalid format */
+};
+
 enum class LatticeType {
     CUBIC,
     HEXAGONAL,
@@ -287,6 +324,46 @@ struct MaterialProperties {
 };
 
 /**
+ * @brief A user class made by a factory of a user library (table form of a user function key)
+ *
+ * In the options file: key = { factory = "MakeMyClasses", variant = "my_class" }. The factory is
+ * a C++ function in the user library that returns a new object for the variant string; the
+ * classes derive from the base classes in exaconstit_user.hpp.
+ */
+struct UserFactoryOptions {
+    /** @brief Factory function name in the library (empty: the key is not a table) */
+    std::string factory;
+
+    /** @brief Variant string handed to the factory ("" when not given) */
+    std::string variant;
+
+    bool empty() const {
+        return factory.empty();
+    }
+
+    /** @brief Readable form for messages: factory 'MakeMyClasses', variant 'my_class' */
+    std::string label() const {
+        return "factory '" + factory + "', variant '" + variant + "'";
+    }
+};
+
+/**
+ * @brief Read a user function key that is either a function name or a factory table
+ *
+ * @param toml_input Table holding the key
+ * @param key Key name (register_function, initialize_function, function_name)
+ * @param function_name Set to the string when the key is a string
+ * @param factory Set when the key is a table { factory = "...", variant = "..." }
+ *
+ * Throws std::runtime_error for a table without factory or with keys other than factory and
+ * variant.
+ */
+void read_user_function_key(const toml::value& toml_input,
+                            const std::string& key,
+                            std::string& function_name,
+                            UserFactoryOptions& factory);
+
+/**
  * @brief State variables configuration
  */
 struct StateVariables {
@@ -304,6 +381,41 @@ struct StateVariables {
      * @brief Initial values for state variables
      */
     std::vector<double> initial_values;
+
+    /**
+     * @brief Shared library holding the user register / initialize functions
+     *
+     * Empty means the functions are searched in the ExaConstit executable itself, as for the
+     * built-in UMAT.
+     */
+    std::filesystem::path library_path;
+
+    /**
+     * @brief User function naming this material's state variables (optional)
+     *
+     * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It calls
+     * sim_state->AddQuadratureFunctionStatePair(name, {offset, length}, region) for each name.
+     */
+    std::string register_function;
+
+    /**
+     * @brief register_function given as a factory table: a user::RegisterFunction class
+     */
+    UserFactoryOptions register_factory;
+
+    /**
+     * @brief User function setting this material's initial history variables (optional)
+     *
+     * Signature: void f(std::shared_ptr<SimulationState> sim_state, int region). It writes the
+     * region's "state_var_beg" quadrature function; ExaConstit copies it to "state_var_end".
+     * Not called on a restart (the checkpoint has the state).
+     */
+    std::string initialize_function;
+
+    /**
+     * @brief initialize_function given as a factory table: a user::InitializeFunction class
+     */
+    UserFactoryOptions initialize_factory;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist)
@@ -328,11 +440,6 @@ struct UmatOptions {
     std::string function_name = "umat_call";
 
     /**
-     * @brief Whether thermal effects are enabled
-     */
-    bool thermal = false;
-
-    /**
      * @brief Strategy for loading the library ("persistent", "load_on_setup", "lazy_load")
      */
     std::string load_strategy = "persistent";
@@ -346,6 +453,58 @@ struct UmatOptions {
      * @brief Additional search paths for UMAT libraries
      */
     std::vector<std::filesystem::path> search_paths;
+
+    /**
+     * @brief How the UMAT is called: "standard" or "batched"
+     *
+     * - "standard" (default): the Abaqus UMAT interface, one call per material point, on the
+     *   CPU (the points are copied from the GPU on GPU runs).
+     * - "batched": one call per region with all of its points on this rank (UmatBatchFunction
+     *   in umats/userumat.h): the UMAT arguments with NPTS first and a last NPTS dimension on the
+     *   arrays. The arrays are in the run's memory space (GPU arrays on GPU runs). Requires a
+     *   library and function_name.
+     */
+    std::string interface = "standard";
+
+    /**
+     * @brief Standard interface only: the UMAT can be called for several points at the same
+     * time (no Fortran SAVE / COMMON or other shared data it writes to). When true and
+     * ExaConstit is built with OpenMP, the per-point calls run in an OpenMP parallel loop.
+     */
+    bool thread_safe = false;
+
+    /**
+     * @brief Strain measure of STRAN and DSTRAN: "logarithmic" (default) or "eulerian"
+     *
+     * - "logarithmic": STRAN = ln V of DFGRD0, DSTRAN = ln V of the increment
+     *   DFGRD1 DFGRD0^-1 (exact Hencky strains in the current configuration).
+     * - "eulerian": the Eulerian (Almansi) strain 1/2 (I - B^-1) of the same tensors.
+     */
+    std::string strain_measure = "logarithmic";
+
+    /**
+     * @brief Rotate STRESS and STRAN by DROT before calling the UMAT (default true)
+     *
+     * DROT is the exact rotation of the increment (polar decomposition of DFGRD1 DFGRD0^-1).
+     * true suits UMATs written for unrotated input (isotropic models, as Abaqus pre-rotates);
+     * false passes the beginning-of-increment values as they are, for UMATs that handle
+     * rotations themselves (anisotropic models).
+     */
+    bool rotate_stress = true;
+
+    /**
+     * @brief Whether the logarithmic strain measure is selected
+     */
+    bool uses_log_strain() const {
+        return strain_measure == "logarithmic";
+    }
+
+    /**
+     * @brief Whether the batched interface is selected
+     */
+    bool is_batched() const {
+        return interface == "batched";
+    }
 
     /**
      * @brief Validates if the load strategy is one of the accepted values
@@ -472,6 +631,17 @@ struct MaterialOptions {
      * @brief Operating temperature in Kelvin
      */
     double temperature = 298.0;
+
+    /**
+     * @brief Named state variables of this material written to the visualization output
+     *
+     * TOML key `visualize_state_vars`: a list of names (as registered in SimulationState, e.g.
+     * "eq_pl_strain", "quats") or "all" (stored as the single entry "all"), which writes every
+     * named state variable plus (except for ExaCMech) one scalar field per unnamed slot, like
+     * region_<N> in
+     * [PostProcessing.projections] enabled_projections. Only used when visualization is on.
+     */
+    std::vector<std::string> visualize_state_vars;
 
     // Validation (check_input_files = false skips the checks on input files a restart does
     // not read, since they may no longer exist; grains_from_hook is passed on to
@@ -1195,6 +1365,13 @@ struct VisualizationOptions {
     int output_frequency = 1;
 
     /**
+     * @brief Where material fields are placed in the visualization output
+     *
+     * TOML key `field_location`: "zone" (default) or "quadrature". See VizFieldLocation.
+     */
+    VizFieldLocation field_location = VizFieldLocation::ZONE;
+
+    /**
      * @brief Base path/filename for visualization output files
      */
     std::filesystem::path floc = "results";
@@ -1205,6 +1382,50 @@ struct VisualizationOptions {
     // Conversion from toml
     static VisualizationOptions from_toml(const toml::value& toml_input);
 };
+
+/**
+ * @brief Fixed-bin histogram of a volume quantity (volume fraction in each bin)
+ *
+ * TOML inline table `{ bins = 20, range = [0.0, 0.05] }` (both keys required). bins = 0
+ * means no histogram.
+ */
+struct HistogramOptions {
+    /** @brief Number of bins between range_min and range_max (0: no histogram) */
+    int bins = 0;
+    /** @brief Lower edge of the first bin */
+    double range_min = 0.0;
+    /** @brief Upper edge of the last bin */
+    double range_max = 1.0;
+    /** @brief Whether a histogram was asked for (a histogram table was given) */
+    bool requested = false;
+    /** @brief Whether the table had the form { bins = N, range = [lower, upper] } */
+    bool well_formed = true;
+
+    // Validation (where: the table it comes from, for messages)
+    bool validate(const std::string& where) const;
+
+    // Conversion from toml (an inline table)
+    static HistogramOptions from_toml(const toml::value& toml_input);
+};
+
+/**
+ * @brief Volume statistic names accepted by `statistics` keys, in the order "all" expands to
+ *
+ * "mean", "variance", "std", "skewness", "kurtosis" (excess), "min", "max".
+ */
+const std::vector<std::string>& volume_statistic_names();
+
+/**
+ * @brief Read a `statistics` key: a name, a list of names, or "all" (expanded)
+ *
+ * @param toml_input Table holding the key
+ * @param where Table name for messages
+ * @param statistics Output: statistic names in output order
+ * @return false (with a message) for an unknown name or "all" combined with other names
+ */
+bool parse_volume_statistics(const toml::value& toml_input,
+                             const std::string& where,
+                             std::vector<std::string>& statistics);
 
 /**
  * @brief Volume average calculation options
@@ -1290,6 +1511,22 @@ struct VolumeAverageOptions {
      */
     int output_frequency = 1;
 
+    /**
+     * @brief Statistics of every enabled built-in average (TOML `statistics`: a name, a list or
+     * "all"), written to stats/<name>_<statistic>_*.txt. Empty: no statistics.
+     */
+    std::vector<std::string> statistics;
+
+    /**
+     * @brief Histograms of built-in averages by quantity name (TOML table `histograms`, e.g.
+     * eq_pl_strain = { bins = 20, range = [0.0, 0.05] }), written to
+     * stats/<name>_hist_*.txt
+     */
+    std::map<std::string, HistogramOptions> histograms;
+
+    /// Set when statistics or histograms could not be read (reported by validate())
+    bool statistics_valid = true;
+
     // Validation
     bool validate() const;
 
@@ -1310,6 +1547,12 @@ struct VolumeAverageOptions {
 struct ProjectionOptions {
     /**
      * @brief List of enabled projection types for visualization
+     *
+     * Besides the built-in names, "region_<N>" (N = material number, 1-based) writes all of
+     * that material's state variables: one field per named state variable and one scalar field
+     * per unnamed slot (not for ExaCMech, whose names cover everything worth plotting); names
+     * registered with plot = false are left out.
+     * region_<N> entries are used even with auto_enable_compatible = true.
      */
     std::vector<std::string> enabled_projections;
 
@@ -1323,6 +1566,79 @@ struct ProjectionOptions {
 
     // Conversion from toml
     static ProjectionOptions from_toml(const toml::value& toml_input);
+
+    /**
+     * @brief Material number N of a "region_<N>" entry, or -1 if the entry is not of that form
+     */
+    static int region_number(const std::string& projection);
+};
+
+/**
+ * @brief One post-processing user function ([[PostProcessing.user_functions]] entry)
+ *
+ * The function fills the per-point values of one region:
+ *   void f(std::shared_ptr<SimulationState> sim_state, int region,
+ *          std::shared_ptr<mfem::expt::PartialQuadratureFunction> values);
+ * and `type` says what ExaConstit does with them. The same function can be listed in several
+ * entries (for example once as a visualization field and once as a volume average).
+ */
+struct UserFunctionOptions {
+    /** @brief Shared library holding the function (empty: search the executable) */
+    std::filesystem::path library_path;
+
+    /** @brief Function name (this or factory is required) */
+    std::string function_name;
+
+    /** @brief function_name given as a factory table: a user::PostProcessingFunction class */
+    UserFactoryOptions factory;
+
+    /** @brief What to do with the values (required) */
+    UserFunctionType type = UserFunctionType::NOTYPE;
+
+    /** @brief Output name: field name or file name stem (default: function_name, or the
+     * factory's variant) */
+    std::string name;
+
+    /** @brief Values per point (default: number of component_names, else 1) */
+    int num_components = 1;
+
+    /**
+     * @brief Column labels of volume average / integral files, written after Time and Volume
+     *
+     * Default: [name] for one component, else name_1 ... name_n.
+     */
+    std::vector<std::string> component_names;
+
+    /** @brief Material numbers (1-based) the function runs on (default: all materials) */
+    std::vector<int> regions;
+
+    /**
+     * @brief Also output the combination over the selected regions (default: true)
+     *
+     * For visualization it has no effect with a single material (the region output is the
+     * global output); volume averages / integrals then still write the _global file, like the
+     * built-in volume averages.
+     */
+    bool global = true;
+
+    /**
+     * @brief Statistics of a "volume_average" entry (TOML `statistics`: a name, a list or
+     * "all"), written to stats/<name>_<statistic>_*.txt. Empty: no statistics.
+     */
+    std::vector<std::string> statistics;
+
+    /** @brief Histogram of a "volume_average" entry (TOML `histogram`), written to
+     * stats/<name>_hist_*.txt */
+    HistogramOptions histogram;
+
+    /// Set when statistics or histogram could not be read (reported by validate())
+    bool statistics_valid = true;
+
+    // Validation (num_materials: number of [[Materials]] entries, for the region numbers)
+    bool validate(size_t num_materials) const;
+
+    // Conversion from toml (fills in the defaults above)
+    static UserFunctionOptions from_toml(const toml::value& toml_input);
 };
 
 /**
@@ -1390,8 +1706,29 @@ struct PostProcessingOptions {
      */
     std::vector<LightUpOptions> light_up_configs;
 
+    /**
+     * @brief Post-processing user functions ([[PostProcessing.user_functions]] array)
+     */
+    std::vector<UserFunctionOptions> user_functions;
+
+    /**
+     * @brief Output format ([PostProcessing] output_format = "text" or "hdf5")
+     *
+     * "hdf5" writes every volume average, statistic, histogram, user function average / integral
+     * and surface quantity to one file, <output_directory>/<basename>/post_processing.hdf5.
+     */
+    PostProcessingFormat output_format = PostProcessingFormat::TEXT;
+
     // Validation
     bool validate() const;
+
+    /**
+     * @brief Checks of the user function names for the HDF5 output (output_format = "hdf5"):
+     *        no built-in quantity or repeated name, no component name with '/', repeated or
+     *        used by the file itself (time, volume, statistics, histogram, bin_edges,
+     *        description)
+     */
+    bool validate_hdf5_names() const;
 
     // Conversion from toml
     static PostProcessingOptions from_toml(const toml::value& toml_input);
@@ -1461,6 +1798,9 @@ struct RestartOptions {
 
     /**
      * @brief Directory checkpoints are written to (and read from unless read_directory is set)
+     *
+     * @details A relative path is taken inside the run's output folder,
+     * <output_directory>/<basename> (ExaOptions::parse_options() replaces it by the full path).
      */
     std::filesystem::path directory = "restart";
 
@@ -1468,8 +1808,9 @@ struct RestartOptions {
      * @brief Directory to read the restart checkpoint from instead of directory
      *
      * @details Lets a continuation restart from another run's checkpoints while writing its own
-     * to directory. Writing, superseding and keep_last pruning only ever act on directory, so
-     * the other run's checkpoints are never renamed or removed.
+     * to directory. A relative path is relative to the working directory. Writing, superseding and
+     * keep_last pruning only ever act on directory, so the other run's checkpoints are never
+     * renamed or removed.
      */
     std::optional<std::filesystem::path> read_directory;
 
@@ -1502,7 +1843,7 @@ public:
     /**
      * @brief Version string for ExaConstit
      */
-    std::string version = "0.10.0";
+    std::string version = "0.10.1";
 
     /**
      * @brief Mesh generation and refinement options
@@ -1785,3 +2126,24 @@ OriType string_to_ori_type(const std::string& str);
  * @return Corresponding LatticeType enum value
  */
 LatticeType string_to_lattice_type(const std::string& str);
+
+/**
+ * @brief Convert string to VizFieldLocation enum
+ * @param str String representation of the field location ("zone", "quadrature")
+ * @return Corresponding VizFieldLocation enum value, or NOTYPE if invalid
+ */
+VizFieldLocation string_to_viz_field_location(const std::string& str);
+
+/**
+ * @brief Convert string to UserFunctionType enum
+ * @param str "visualization", "volume_average" or "volume_integral"
+ * @return Corresponding UserFunctionType enum value, or NOTYPE if invalid
+ */
+UserFunctionType string_to_user_function_type(const std::string& str);
+
+/**
+ * @brief Convert string to PostProcessingFormat enum
+ * @param str "text" or "hdf5"
+ * @return Corresponding PostProcessingFormat enum value, or NOTYPE if invalid
+ */
+PostProcessingFormat string_to_post_processing_format(const std::string& str);

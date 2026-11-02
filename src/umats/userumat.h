@@ -84,6 +84,93 @@ using UmatFunction = void (*)(double* stress,
                               int* kstep,
                               int* kinc);
 
+/**
+ * @brief Function pointer type for batched UMATs: one call for many material points.
+ *
+ * Selected with `interface = "batched"` in `[Materials.Model.UMAT]`. The arguments are the
+ * UMAT arguments, in the same order, with one extra argument first: NPTS, the number of
+ * material points in the call (all points of the material region on this MPI rank).
+ *
+ * Arrays get one more, last, dimension of size NPTS, and the UMAT scalars that differ from
+ * point to point become arrays of length NPTS. In Fortran the declarations read
+ * @code{.f}
+ *       SUBROUTINE UMATBATCH(NPTS,STRESS,STATEV,DDSDDE,SSE,SPD,SCD,
+ *      1 RPL,DDSDDT,DRPLDE,DRPLDT,
+ *      1 STRAN,DSTRAN,TIME,DTIME,TEMP,DTEMP,PREDEF,DPRED,CMNAME,
+ *      1 NDI,NSHR,NTENS,NSTATV,PROPS,NPROPS,COORDS,DROT,PNEWDT,
+ *      1 CELENT,DFGRD0,DFGRD1,NOEL,NPT,LAYER,KSPT,KSTEP,KINC)
+ *       INTEGER NPTS, NTENS, NSTATV, NPROPS, NOEL(NPTS), NPT(NPTS), ...
+ *       REAL*8 STRESS(NTENS,NPTS), STATEV(NSTATV,NPTS), DDSDDE(NTENS,NTENS,NPTS)
+ *       REAL*8 SSE(NPTS), ..., DFGRD0(3,3,NPTS), DROT(3,3,NPTS), PNEWDT(NPTS)
+ *       REAL*8 PROPS(NPROPS), TIME(2), DTIME
+ * @endcode
+ * and point I's data is STRESS(:,I), DFGRD1(:,:,I), and so on. In C or C++ the same memory
+ * is indexed as `stress[i * ntens + k]`, `dfgrd1[i * 9 + r + 3 * c]` (point i, 0-based).
+ *
+ * Per point (last dimension NPTS):
+ *   stress(ntens), statev(nstatv), ddsdde(ntens, ntens), sse, spd, scd, rpl, ddsdt(ntens),
+ *   drplde(ntens), drpldt, stran(ntens), dstran(ntens), temp, dtemp, predef(1), dpred(1),
+ *   coords(3), drot(3, 3), pnewdt, celent, dfgrd0(3, 3), dfgrd1(3, 3), noel, npt
+ * Shared by all points (as in UMAT):
+ *   time(2), dtime, cmname, ndi, nshr, ntens, nstatv, props(nprops), nprops, layer, kspt,
+ *   kstep, kinc
+ *
+ * What every argument holds, and which outputs ExaConstit uses, is listed in the UMAT section of
+ * src/options.toml (the same for both interfaces).
+ *
+ * Each point reports its own PNEWDT (no reduction needed in user code); ExaConstit uses the
+ * smallest value. A value below 1 fails the material update for the current Newton iteration,
+ * as for standard UMATs: with automatic time stepping ([Time.Auto]) the step is retried with a
+ * smaller time step, otherwise the step is reported as not converged.
+ *
+ * Memory: the arrays (every argument with an NPTS dimension, and PROPS) are in ExaConstit's
+ * memory space for the run. On a GPU run (`rtmodel = "GPU"`) they are device arrays, so the
+ * function must do its work on the GPU (CUDA, HIP, OpenMP target with is_device_ptr, ...);
+ * ExaConstit waits for the device after the call returns. On CPU and OpenMP runs they are
+ * ordinary host arrays and the function may use OpenMP over the points. The remaining
+ * arguments (npts, ndi, nshr, ntens, nstatv, nprops, layer, kspt, kstep, kinc, dtime, time,
+ * cmname) are always in host memory, so the code that launches the GPU work can read the
+ * sizes directly.
+ */
+using UmatBatchFunction = void (*)(int* npts,
+                                   double* stress,
+                                   double* statev,
+                                   double* ddsdde,
+                                   double* sse,
+                                   double* spd,
+                                   double* scd,
+                                   double* rpl,
+                                   double* ddsdt,
+                                   double* drplde,
+                                   double* drpldt,
+                                   double* stran,
+                                   double* dstran,
+                                   double* time,
+                                   double* deltaTime,
+                                   double* tempk,
+                                   double* dtemp,
+                                   double* predef,
+                                   double* dpred,
+                                   char* cmname,
+                                   int* ndi,
+                                   int* nshr,
+                                   int* ntens,
+                                   int* nstatv,
+                                   double* props,
+                                   int* nprops,
+                                   double* coords,
+                                   double* drot,
+                                   double* pnewdt,
+                                   double* celent,
+                                   double* dfgrd0,
+                                   double* dfgrd1,
+                                   int* noel,
+                                   int* npt,
+                                   int* layer,
+                                   int* kspt,
+                                   int* kstep,
+                                   int* kinc);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

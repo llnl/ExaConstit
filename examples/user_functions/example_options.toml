@@ -1,0 +1,34 @@
+# Options-file pieces that use the example library (my_exaconstit_functions.cpp).
+# Merge them into a full options file; see src/options.toml for every option.
+
+[[Materials]]
+    name = "my_umat_material"
+    mech_type = "umat"
+    # Write these state variables as visualization fields (or "all")
+    visualize_state_vars = ["damage", "accumulated_slip"]
+
+    [Materials.State_Vars]
+        num_vars = 9
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        library_path = "build/libmy_exaconstit_functions.so"   # .dylib on macOS
+        register_function = "RegisterMyStateVariables"
+        initialize_function = "InitializeMyStateVariables"
+
+[PostProcessing]
+    # Stress triaxiality as a visualization field (zone or quadrature output, following
+    # [Visualizations] field_location) ...
+    [[PostProcessing.user_functions]]
+        library_path = "build/libmy_exaconstit_functions.so"
+        function_name = "StressTriaxiality"
+        type = "visualization"
+        name = "Stress Triaxiality"
+
+    # ... and the same function volume-averaged per region and globally, written to
+    # avg_triaxiality_region_<material>_<N>.txt and avg_triaxiality_global.txt
+    # (columns: Time, Volume, T)
+    [[PostProcessing.user_functions]]
+        library_path = "build/libmy_exaconstit_functions.so"
+        function_name = "StressTriaxiality"
+        type = "volume_average"
+        name = "triaxiality"
+        component_names = ["T"]

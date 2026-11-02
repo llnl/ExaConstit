@@ -1,0 +1,90 @@
+# Input deck template for the UMAT interface tests (test/umat/CMakeLists.txt).
+#
+# CMake fills in the fields marked with at signs once per case (configure_file), then the library path
+# (file(GENERATE)). One UMAT material on the 5x5x5 auto mesh; the bottom face is held and the top
+# face follows a velocity gradient with tension and shear, so the points see finite rotations.
+# The same deck runs with interface = "standard" and "batched" (test_umat_elastic /
+# test_umat_elastic_batch in test_umat_functions.cpp, the same material model), with the default
+# and the B-bar integrator, with ExaConstit or the UMAT rotating the stress (rotate_stress, third
+# property), and with both strain measures; check_umat.py compares the runs.
+Version = "0.10.1"
+basename = "umat_@CASE_NAME@"
+
+[[Materials]]
+    name = "elastic"
+    mech_type = "umat"
+    temperature = 298.0
+    [Materials.Properties]
+        num_props = @NUM_PROPS@
+        values = [@PROPS@]
+    [Materials.State_Vars]
+        num_vars = 10
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    [Materials.Model]
+        crystal_plasticity = false
+        [Materials.Model.UMAT]
+            library_path = "@UMAT_TEST_LIBRARY@"
+            function_name = "@UMAT_FUNCTION@"
+            interface = "@UMAT_INTERFACE@"
+            rotate_stress = @ROTATE_STRESS@
+            strain_measure = "@STRAIN_MEASURE@"
+
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1]
+        essential_comps = [7]
+        essential_vals = [0.0, 0.0, 0.0]
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [7]
+        velocity_gradient = [[0.0, 0.0, 0.04],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.05]]
+        origin = [0.0, 0.0, 0.0]
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]
+
+[Time]
+    [Time.Fixed]
+        dt = 0.1
+        t_final = @T_FINAL@
+
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+
+[PostProcessing]
+    [PostProcessing.volume_averages]
+        enabled = true
+        # Every case runs in its own directory; all write into the shared results folder
+        output_directory = "../results"
+        stress = true
+        def_grad = true
+        output_frequency = 1
+
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    integ_model = "@INTEG_MODEL@"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 1e-10
+        abs_tol = 1e-14
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-12
+        abs_tol = 1e-27
+        solver = "CG"
+
+[Mesh]
+    ref_ser = 0
+    ref_par = 0
+    p_refinement = 1
+    type = "auto"
+    [Mesh.Auto]
+        mxyz = [1.0, 1.0, 1.0]
+        nxyz = [5, 5, 5]
+@RESTART_BLOCK@

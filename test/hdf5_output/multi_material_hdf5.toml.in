@@ -1,0 +1,128 @@
+# The multi-material regression deck (test/data/voce_full_multi.toml) with
+# [PostProcessing] output_format = "hdf5": everything it writes as text files (volume averages,
+# statistics, histograms, surface quantities) goes into results/multi_material_test/
+# post_processing.hdf5 instead. check_hdf5_output.py compares that file with the deck's text
+# reference files in test/data/test_results/multi_material_test. Keep the settings in step with
+# voce_full_multi.toml (input files are read from the source tree, configured by CMake).
+#
+# CMake configures this file twice: the first run writes checkpoints every 10 steps, the second
+# restarts from step 20 into the same results folder (EXACONSTIT_RESTART_TABLE below), whose
+# post_processing.hdf5 must then equal the first run's (no step written twice).
+Version = "0.8.0"
+basename = "multi_material_test"
+region_mapping_file = "@EXACONSTIT_TEST_DATA@/region_mapping.txt"
+grain_file = "@EXACONSTIT_TEST_DATA@/grains.txt"
+[[Materials]]
+    name = "material_A"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+[[Materials]]
+    name = "material_B"
+    mech_type = "exacmech"
+    temperature = 298.0
+    [Materials.Properties]
+        floc = "@EXACONSTIT_TEST_DATA@/props_cp_voce.txt"
+        num_props = 17
+    [Materials.State_Vars]
+        floc = "@EXACONSTIT_TEST_DATA@/state_cp_voce.txt"
+        num_vars = 24
+    [Materials.Grain]
+        ori_state_var_loc = 9
+        ori_stride = 4
+        ori_type = "quat"
+        num_grains = 500
+        orientation_file = "@EXACONSTIT_TEST_DATA@/voce_quats.ori"
+    [Materials.Model]
+        crystal_plasticity = true
+        [Materials.Model.ExaCMech]
+            shortcut = "evptn_FCC_A"
+[BCs]
+    [[BCs.velocity_bcs]]
+        essential_ids = [1, 2, 3]
+        essential_comps = [3, 1, 2]  # 3=xyz constrained, 1=x constrained, 2=y constrained
+        essential_vals = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 3 components × 3 boundaries
+    [[BCs.velocity_gradient_bcs]]
+        essential_ids = [4]
+        essential_comps = [3]  # xyz components for velocity gradient
+        velocity_gradient = [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.001]]  # 3x3 matrix as flat array
+        origin = [0.0, 0.0, 0.0]  # Optional origin point for velocity gradient application
+    [BCs.time_info]
+        cycle_dependent = true
+        cycles = [1]  # Apply these BCs starting at cycle 1
+[Time]
+    [Time.Auto]
+        dt_start = 0.1
+        dt_min = 0.05
+        dt_scale = 0.333333
+        t_final = 10.0
+        auto_dt_file = "auto_dt_out.txt"
+    [Time.Fixed]
+        dt = 0.1
+        t_final = 7.1
+    [Time.Custom]
+        nsteps = 40
+        floc = "@EXACONSTIT_TEST_DATA@/custom_dt.txt"
+[Visualizations]
+    steps = 1
+    visit = false
+    conduit = false
+    paraview = false
+[PostProcessing]
+    output_format = "hdf5"
+    [PostProcessing.volume_averages]
+        enabled = true
+        stress = true
+        def_grad = true
+        euler_strain = true
+        plastic_work = true
+        elastic_strain = true
+        output_frequency = 1
+        output_directory = "./results"
+        statistics = "all"
+        [PostProcessing.volume_averages.histograms]
+            stress = { bins = 10, range = [-0.25, 0.25] }
+            plastic_work = { bins = 6, range = [0.0, 1.2e-3] }
+    [PostProcessing.surface_quantities]
+        enabled = true
+        boundary_ids = [1, 2, 3, 4, 5, 6]
+        moments = true
+[Solvers]
+    assembly = "FULL"
+    rtmodel = "CPU"
+    [Solvers.NR]
+        iter = 25
+        rel_tol = 5e-5
+        abs_tol = 5e-10
+    [Solvers.Krylov]
+        iter = 1000
+        rel_tol = 1e-7
+        abs_tol = 1e-27
+        solver = "CG"
+[Mesh]
+    ref_ser = 1
+    ref_par = 0
+    p_refinement = 1
+    floc = "../../data/cube-hex-ro.mesh"
+    type = "auto"
+    [Mesh.Auto]
+        mxyz = [1.0, 1.0, 1.0]
+        nxyz = [5, 5, 5]
+@EXACONSTIT_RESTART_TABLE@

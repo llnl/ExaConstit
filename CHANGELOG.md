@@ -3,7 +3,52 @@
 All notable changes to ExaConstit are documented in this file, one line per change.
 Entries for releases before v0.10.0 were reconstructed from the release tag notes.
 
-## [v0.10.0] - Unreleased
+## [Unreleased]
+
+### Added
+- `field_location` option in `[Visualizations]`: `"zone"` (default, one element-averaged value per element) or `"quadrature"` (at each H1 node location of every element, the value of the nearest quadrature point, so bounded quantities such as unit quaternions and non-negative plastic strain stay bounded). Both share the same projection kernels through `VizPointMap`.
+- Named state variables in the visualization output: `visualize_state_vars` in a `[[Materials]]` table (a list of names or `"all"`) and `region_<N>` in `[PostProcessing.projections] enabled_projections`. Names come from `SimulationState::GetQuadratureFunctionStatePairs`, in registration order; unnamed slots of non-ExaCMech models are written as `State Var <k>`.
+- User functions loaded from shared libraries like a UMAT, as plain C++ functions taking `std::shared_ptr<SimulationState>` and a region: `register_function` / `initialize_function` in `[Materials.State_Vars]` (name state variables, with an optional plot flag, and set their initial values for any material model), and `[[PostProcessing.user_functions]]` entries (per-point quantities written as visualization fields or volume averages / integrals, per material and globally). Every function's library and signature is checked at startup.
+- `find_package(ExaConstit)` CMake package and `exaconstit_add_user_library()` for building user function libraries against an installed ExaConstit, with an example in `examples/user_functions`.
+- User classes from a factory, for shared installations: `register_function`, `initialize_function` and `function_name` also take `{ factory = "...", variant = "..." }`. The user library includes only the installed `exaconstit_user.hpp` (one base class per key, inputs asked for by name and handed over as views of ExaConstit's data, outputs written in place) and builds with one compiler command; examples in `examples/user_classes`.
+- `SimulationState::AddQuadratureFunctionStatePair` stops the run for a slice outside the state variables or overlapping another one.
+- Volume statistics: `statistics` (mean, variance, std, skewness, excess kurtosis, min, max, or `"all"`) and fixed-bin `histograms` for the built-in volume averages in `[PostProcessing.volume_averages]`, and `statistics` / `histogram` keys for `volume_average` user function entries. Volume-weighted, per material and for the whole sample (combined exactly from the material statistics), written to a new `stats/` folder of the results directory, one file per statistic and one histogram file per quantity.
+- `[PostProcessing] output_format = "hdf5"`: all volume averages, volume statistics and histograms, user function averages / integrals and surface quantities of a run in one file, `post_processing.hdf5`, written with Conduit (needs Axom). Each text file is a group and each text column a dataset; a restarted run removes the rows written after its checkpoint, so no step is repeated. `scripts/postprocessing/read_post_processing.py` reads it (h5py).
+- Batched UMATs: `interface = "batched"` in `[Materials.Model.UMAT]` calls the UMAT once per region with all of its points (`UmatBatchFunction` in `src/umats/userumat.h`: the UMAT arguments with `NPTS` first and a last `NPTS` dimension on the arrays), in the run's memory space, so a GPU-capable UMAT runs on the GPU and a CPU one can use OpenMP. Examples in C++ and Fortran in `examples/umat_batched`.
+- `thread_safe = true` in `[Materials.Model.UMAT]` runs standard (per-point) UMAT calls in an OpenMP loop.
+
+### Changed
+- The UMAT model prepares the UMAT arguments and handles its results in device kernels (shared `GradCalc` and new `utilities/kinematics_kernels.hpp`), so GPU runs only copy data for standard (per-point) UMAT calls. `DFGRD0` / `DFGRD1` are computed exactly from the beginning-of-step and current nodes every step instead of from stored reference shape gradients, and the per-point reference shape gradient copy is gone.
+- UMAT inputs follow their definitions: `STRAN` is the Eulerian strain at the start of the increment (was at the end), `DSTRAN` the Eulerian strain 1/2 (I - B^-1) of the increment (was 1/2 (I - C^-1)), `CELENT` uses the reference element volume (unchanged for hexahedra, was too small for tetrahedra), and `TEMP` is the material's `temperature` (was 300 K). Results of UMATs that use `STRAN`, `DSTRAN` or `CELENT` change.
+- UMAT strains and stress rotation (`[Materials.Model.UMAT]`): `strain_measure = "logarithmic"` (default; exact Hencky strains ln V of `DFGRD0` and of the increment) or `"eulerian"`, and `rotate_stress = true` (default), which rotates `STRESS` and `STRAN` by `DROT` before the call as Abaqus does, so isotropic UMATs written for Abaqus work unchanged; set it false for UMATs that rotate themselves. `DROT` is the exact rotation of the increment (polar decomposition). With the defaults, results of UMATs that rotated the stress themselves or used the strains change.
+- UMAT bookkeeping inputs follow Abaqus: `TIME(1)` and `TIME(2)` are the time at the start of the increment (`TIME(2)` was the end), `KSTEP` = 1 and `KINC` the time step number (both were 0), `NOEL` the 1-based global element number and `NPT` the 1-based point number (were 0-based region-local indices), and `CMNAME` the material's name (was empty).
+- The UMAT section of `src/options.toml` lists what every UMAT argument holds and which outputs ExaConstit uses.
+- UMAT energies `SSE`, `SPD`, `SCD` are kept from step to step (per-region quadrature functions `umat_sse`, `umat_spd`, `umat_scd` with beginning- and end-of-step copies, written to restart files) instead of starting at 0 in every call, so UMATs that accumulate them, for example damage models driven by elastic energy or dissipation, get the accumulated values Abaqus would pass. A restart from a checkpoint written before this change starts them from 0.
+- A user `initialize_function` no longer runs on a restart, like the built-in state variable initialization: the checkpoint has the state.
+
+### Removed
+- The `thermal` UMAT option: it was read but had no effect. Input files that still set it get a warning.
+
+### Fixed
+- `load_strategy = "lazy_load"` never loaded the UMAT library, so runs stopped with "UMAT function not available"; with `load_on_setup`, a point asking for a smaller time step left the library loaded.
+- The `Crystal Orientations` visualization field divided the quaternions by their squared length instead of their length, so they were not unit quaternions.
+- Enabling the `all_state` projection crashed (its vector size was unknown when the visualization fields were created).
+- Installed headers kept no directory structure, so headers including e.g. `sim_state/simulation_state.hpp` could not be used from an install.
+- The rank-0 gather of global volume averages sent more values than it held from a region root whose region had no valid result.
+- The built-in UMAT (`enable_dynamic_loading = false`) could not be found: it was only in the static library, which nothing referenced it from, so it was not linked into `mechanics` and runs stopped with "No built-in UMAT available". It is now compiled into the executable.
+- Volume average file headers truncated column names of 18 characters or more and ran them together (e.g. `Equiv_Plastic_Strain`); long names are now written whole.
+- UMAT materials crashed with `rtmodel = "GPU"`: the UMAT model read the element map and the quadrature point coordinates through device pointers in its host loops.
+- Volume-average output headers mislabeled columns (values were correct): stress is `Sxx Syy Szz Syz Sxz Sxy`, and the deformation gradient is column-major `F11 F21 F31 F12 F22 F32 F13 F23 F33`.
+
+## [v0.10.1] - 2026-10-21
+
+Requires the same MFEM fork commit as v0.10.0.
+
+### Fixed
+- Volume-averaged elastic strains (`avg_elastic_strain_*.txt`) only included the first quadrature points of each region on each rank (as many as the region had elements) and counted the rest as zero, so they were wrong and changed with the number of MPI ranks. Elastic strain averages written by v0.9.0 and v0.10.0 should not be used.
+- The `Elastic Strains` visualization field read the quadrature point state variables by element index instead of the element-averaged ones, so its values were wrong and changed with the number of MPI ranks (v0.9.0 and v0.10.0).
+
+## [v0.10.0] - 2026-10-20
 
 Requires the `exaconstit-dev` branch of the ExaConstit MFEM fork (https://github.com/rcarson3/mfem),
 tested with commit `74ded90191cacabfa294b974e7d69d11ea84d364` (MFEM v4.9.1 based).

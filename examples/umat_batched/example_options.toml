@@ -1,0 +1,23 @@
+# The UMAT part of an options file for the batched example (the rest of the file as usual,
+# see src/options.toml). Both libraries hold the same material: Young's modulus and Poisson's
+# ratio as the two properties.
+
+[[Materials]]
+    name = "elastic"
+    mech_type = "umat"
+    temperature = 298.0
+    [Materials.Properties]
+        num_props = 2
+        values = [3000.0, 0.3]
+    [Materials.State_Vars]
+        num_vars = 1
+        values = [0.0]
+    [Materials.Model]
+        crystal_plasticity = false
+        [Materials.Model.UMAT]
+            library_path = "./build/libumat_batched.so"   # .dylib on macOS
+            function_name = "umat_batched"
+            # Fortran version instead:
+            #   library_path = "./build/libumat_batched_f.so"
+            #   function_name = "umat_batched_f"
+            interface = "batched"

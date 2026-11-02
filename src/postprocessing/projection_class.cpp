@@ -9,160 +9,199 @@
 //=============================================================================
 // GEOMETRY PROJECTIONS
 //=============================================================================
-void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
+namespace {
+/**
+ * @brief Integration rule for element geometry quantities
+ *
+ * Chosen from the mesh geometry (its nodal order when the mesh is curved) rather than from the
+ * output field, so zone (order 0) and quadrature (mesh order) output give the same centroids
+ * and volumes.
+ */
+const mfem::IntegrationRule& GeometryIntRule(const mfem::ParFiniteElementSpace& fes) {
+    const auto* mesh = fes.GetMesh();
+    const auto* nodal_fes = mesh->GetNodalFESpace();
+    const int geom_order = nodal_fes ? nodal_fes->GetMaxElementOrder() : 1;
+    return mfem::IntRules.Get(fes.GetTypicalFE()->GetGeomType(), 2 * geom_order + 1);
+}
+} // namespace
+
+void CentroidProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                                         const VizPointMap& points) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetTypicalFE();
-    const mfem::IntegrationRule* ir = &(
-        mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
+    const mfem::IntegrationRule* ir = &GeometryIntRule(*fes);
 
     const int nqpts = ir->GetNPoints();
-    const int nelems = fes->GetNE();
-    const int vdim = mesh->SpaceDimension();
+    const int nelems_mesh = mesh->GetNE();
+    const int nelems = points.GetNumElements();
+    const int space_dim = mesh->SpaceDimension();
+    const int gf_vdim = grid_function->VectorDim();
 
     const mfem::GeometricFactors* geom = mesh->GetGeometricFactors(
         *ir, mfem::GeometricFactors::DETERMINANTS | mfem::GeometricFactors::COORDINATES);
 
-    const double* W = ir->GetWeights().Read();
-    const double* const detJ = geom->detJ.Read();
-    const auto x_coords = mfem::Reshape(geom->X.Read(), nqpts, vdim, nelems);
+    const auto W = mfem::Reshape(ir->GetWeights().Read(), nqpts);
+    const auto detJ = mfem::Reshape(geom->detJ.Read(), nqpts, nelems_mesh);
+    const auto x_coords = mfem::Reshape(geom->X.Read(), nqpts, space_dim, nelems_mesh);
+    const auto out_elem = points.ReadOutElement();
+    const auto elem_offsets = points.ReadElementOffsets();
+    const auto dest = points.ReadDest();
+    auto centroid = mfem::Reshape(grid_function->ReadWrite(), gf_vdim, fes->GetNDofs());
 
-    double* centroid_data = grid_function->ReadWrite();
-
-    // Calculate element centroids
-    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int ie) {
+    // Calculate element centroids and write them on every output node of the element
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+        const int ie = out_elem(i);
         double vol = 0.0;
-        for (int iv = 0; iv < vdim; ++iv) {
-            centroid_data[ie * vdim + iv] = 0.0;
-        }
+        double x_sum[3] = {0.0, 0.0, 0.0};
 
         for (int iq = 0; iq < nqpts; ++iq) {
-            const double wt = detJ[ie * nqpts + iq] * W[iq];
+            const double wt = detJ(iq, ie) * W(iq);
             vol += wt;
-            for (int iv = 0; iv < vdim; ++iv) {
-                const double coord = x_coords(iq, iv, ie);
-                centroid_data[ie * vdim + iv] += coord * wt;
+            for (int iv = 0; iv < space_dim; ++iv) {
+                x_sum[iv] += x_coords(iq, iv, ie) * wt;
             }
         }
 
         const double inv_vol = 1.0 / vol;
-        for (int iv = 0; iv < vdim; ++iv) {
-            centroid_data[ie * vdim + iv] *= inv_vol;
+        for (int k = elem_offsets(i); k < elem_offsets(i + 1); ++k) {
+            for (int iv = 0; iv < space_dim; ++iv) {
+                centroid(iv, dest(k)) = x_sum[iv] * inv_vol;
+            }
         }
     });
 }
 
-void VolumeProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function) {
+void VolumeProjection::ProjectGeometry(std::shared_ptr<mfem::ParGridFunction> grid_function,
+                                       const VizPointMap& points) {
     auto* fes = grid_function->ParFESpace();
     auto* mesh = fes->GetMesh();
-    const mfem::FiniteElement& el = *fes->GetTypicalFE();
-    const mfem::IntegrationRule* ir = &(
-        mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 1));
+    const mfem::IntegrationRule* ir = &GeometryIntRule(*fes);
 
     const int nqpts = ir->GetNPoints();
-    const int nelems = fes->GetNE();
+    const int nelems_mesh = mesh->GetNE();
+    const int nelems = points.GetNumElements();
 
     const mfem::GeometricFactors* geom = mesh->GetGeometricFactors(
         *ir, mfem::GeometricFactors::DETERMINANTS);
 
-    const double* const W = ir->GetWeights().Read();
-    const double* const detJ = geom->detJ.Read();
+    const auto W = mfem::Reshape(ir->GetWeights().Read(), nqpts);
+    const auto detJ = mfem::Reshape(geom->detJ.Read(), nqpts, nelems_mesh);
+    const auto out_elem = points.ReadOutElement();
+    const auto elem_offsets = points.ReadElementOffsets();
+    const auto dest = points.ReadDest();
+    auto volume = mfem::Reshape(
+        grid_function->ReadWrite(), grid_function->VectorDim(), fes->GetNDofs());
 
-    double* volume_data = grid_function->ReadWrite();
-
-    // Calculate element volumes
-    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int ie) {
+    // Calculate element volumes and write them on every output node of the element
+    mfem::forall(nelems, [=] MFEM_HOST_DEVICE(int i) {
+        const int ie = out_elem(i);
         double vol = 0.0;
         for (int iq = 0; iq < nqpts; ++iq) {
-            vol += detJ[ie * nqpts + iq] * W[iq];
+            vol += detJ(iq, ie) * W(iq);
         }
-        volume_data[ie] = vol;
+        for (int k = elem_offsets(i); k < elem_offsets(i + 1); ++k) {
+            volume(0, dest(k)) = vol;
+        }
     });
 }
 
 //=============================================================================
 // STRESS-BASED PROJECTIONS
 //=============================================================================
+//
+// Every kernel below has the same shape: for each entry k of the region's VizPointMap, read the
+// stress at source point src(k) and write the result on output node dst(k). Both sides are
+// mfem::Reshape views sized (components, points), so a wrong index is caught by the view's bounds
+// check in debug builds. This one loop serves both zone output (source = element average, one
+// node per element) and quadrature output (source = nearest quadrature point, one node per H1
+// node location).
+
+namespace {
+/// (components, points) view of a region's quadrature function data
+mfem::DeviceTensor<2, const double> ReadPointView(const mfem::expt::PartialQuadratureFunction& qf) {
+    const int vdim = qf.GetVDim();
+    return mfem::Reshape(qf.Read(), vdim, qf.Size() / vdim);
+}
+
+/// (components, nodes) view of an output grid function (byVDIM ordering)
+mfem::DeviceTensor<2, double> ReadWriteNodeView(mfem::ParGridFunction& gf) {
+    return mfem::Reshape(gf.ReadWrite(), gf.VectorDim(), gf.ParFESpace()->GetNDofs());
+}
+} // namespace
+
+void CopyPointValues(const mfem::expt::PartialQuadratureFunction& source,
+                     const int first_component,
+                     const int num_components,
+                     mfem::ParGridFunction& output,
+                     const VizPointMap& points) {
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto values = ReadPointView(source);
+    auto values_out = ReadWriteNodeView(output);
+
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        for (int j = 0; j < num_components; j++) {
+            values_out(j, dst(k)) = values(j + first_component, src(k));
+        }
+    });
+}
 
 void CauchyStressProjection::ProjectStress(
     const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
     std::shared_ptr<mfem::ParGridFunction> stress_gf,
-    mfem::Array<int>& qpts2mesh) {
-    // Get stress data and compute Von Mises
-    const int nelems = stress_gf->ParFESpace()->GetNE();
-    const auto part_quad_space = stress_qf->GetPartialSpaceShared();
-    const int local_nelems = part_quad_space->GetNE();
+    const VizPointMap& points) {
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto stress = ReadPointView(*stress_qf);
+    auto stress_out = ReadWriteNodeView(*stress_gf);
 
-    const auto l2g = qpts2mesh.Read();
-    const auto stress_data = mfem::Reshape(stress_qf->Read(), 6, local_nelems);
-    auto stress_gf_data = mfem::Reshape(stress_gf->Write(), 6, nelems);
-
-    // Compute element-averaged Von Mises stress
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
-        const int global_idx = l2g[ie];
-
-        stress_gf_data(0, global_idx) = stress_data(0, ie);
-        stress_gf_data(1, global_idx) = stress_data(1, ie);
-        stress_gf_data(2, global_idx) = stress_data(2, ie);
-        stress_gf_data(3, global_idx) = stress_data(3, ie);
-        stress_gf_data(4, global_idx) = stress_data(4, ie);
-        stress_gf_data(5, global_idx) = stress_data(5, ie);
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        for (int i = 0; i < 6; i++) {
+            stress_out(i, dst(k)) = stress(i, src(k));
+        }
     });
 }
 
 void VonMisesStressProjection::ProjectStress(
     const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
     std::shared_ptr<mfem::ParGridFunction> von_mises,
-    mfem::Array<int>& qpts2mesh) {
-    // Get stress data and compute Von Mises
-    const int nelems = von_mises->ParFESpace()->GetNE();
-    const auto part_quad_space = stress_qf->GetPartialSpaceShared();
-    const int local_nelems = part_quad_space->GetNE();
+    const VizPointMap& points) {
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto stress = ReadPointView(*stress_qf);
+    auto von_mises_out = ReadWriteNodeView(*von_mises);
 
-    const auto l2g = qpts2mesh.Read();
-    const auto stress_data = mfem::Reshape(stress_qf->Read(), 6, local_nelems);
-    auto von_mises_data = mfem::Reshape(von_mises->Write(), nelems);
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        const int s = src(k);
 
-    // Compute element-averaged Von Mises stress
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
-        const int global_idx = l2g[ie];
-
-        double term1 = stress_data(0, ie) - stress_data(1, ie);
-        double term2 = stress_data(1, ie) - stress_data(2, ie);
-        double term3 = stress_data(2, ie) - stress_data(0, ie);
-        double term4 = stress_data(3, ie) * stress_data(3, ie) +
-                       stress_data(4, ie) * stress_data(4, ie) +
-                       stress_data(5, ie) * stress_data(5, ie);
+        double term1 = stress(0, s) - stress(1, s);
+        double term2 = stress(1, s) - stress(2, s);
+        double term3 = stress(2, s) - stress(0, s);
+        double term4 = stress(3, s) * stress(3, s) + stress(4, s) * stress(4, s) +
+                       stress(5, s) * stress(5, s);
 
         term1 *= term1;
         term2 *= term2;
         term3 *= term3;
         term4 *= 6.0;
 
-        von_mises_data(global_idx) = sqrt(0.5 * (term1 + term2 + term3 + term4));
+        von_mises_out(0, dst(k)) = sqrt(0.5 * (term1 + term2 + term3 + term4));
     });
 }
 
 void HydrostaticStressProjection::ProjectStress(
     const std::shared_ptr<mfem::expt::PartialQuadratureFunction> stress_qf,
     std::shared_ptr<mfem::ParGridFunction> hydro_static,
-    mfem::Array<int>& qpts2mesh) {
-    // Get stress data and compute Von Mises
-    const int nelems = hydro_static->ParFESpace()->GetNE();
-    const auto part_quad_space = stress_qf->GetPartialSpaceShared();
-    const int local_nelems = part_quad_space->GetNE();
+    const VizPointMap& points) {
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto stress = ReadPointView(*stress_qf);
+    auto hydro_static_out = ReadWriteNodeView(*hydro_static);
 
-    const auto l2g = qpts2mesh.Read();
-    const auto stress_data = mfem::Reshape(stress_qf->Read(), 6, local_nelems);
-    auto hydro_static_data = mfem::Reshape(hydro_static->Write(), nelems);
-
-    // Compute element-averaged Von Mises stress
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
-        const int global_idx = l2g[ie];
-
-        hydro_static_data(global_idx) = ecmech::onethird *
-                                        (stress_data(0, ie) + stress_data(1, ie) +
-                                         stress_data(2, ie));
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        const int s = src(k);
+        hydro_static_out(0, dst(k)) = ecmech::onethird *
+                                      (stress(0, s) + stress(1, s) + stress(2, s));
     });
 }
 
@@ -172,17 +211,13 @@ void HydrostaticStressProjection::ProjectStress(
 
 void StateVariableProjection::Execute(std::shared_ptr<SimulationState> sim_state,
                                       std::shared_ptr<mfem::ParGridFunction> state_gf,
-                                      mfem::Array<int>& qpts2mesh,
+                                      const VizPointMap& points,
                                       int region) {
-    // Get state variable quadrature function for this region
-    auto state_qf = sim_state->GetQuadratureFunction("state_var_avg", region);
+    // Element averages (zone output) or end-of-step quadrature values (quadrature output)
+    auto state_qf = sim_state->GetQuadratureFunction(points.SourceName("state_var"), region);
     if (!state_qf)
         return; // Region doesn't have state variables
 
-    // Project the specific component(s)
-    const int nelems = state_gf->ParFESpace()->GetNE();
-    const auto part_quad_space = state_qf->GetPartialSpaceShared();
-    const int local_nelems = part_quad_space->GetNE();
     const int vdim = state_qf->GetVDim();
     m_component_length = (m_component_length == -1) ? vdim : m_component_length;
 
@@ -193,135 +228,155 @@ void StateVariableProjection::Execute(std::shared_ptr<SimulationState> sim_state
                   "StateVariableProjection provided length is greater than the gridfunction "
                   "vector length");
 
-    const auto l2g = qpts2mesh.Read();
-    const auto state_qf_data = mfem::Reshape(state_qf->Read(), vdim, local_nelems);
-    auto state_gf_data = mfem::Reshape(state_gf->Write(), state_gf->VectorDim(), nelems);
-
-    // Compute element-averaged Von Mises stress
-    const auto component_length = m_component_length;
-    const auto component_index = m_component_index;
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
-        const int global_idx = l2g[ie];
-        for (int j = 0; j < component_length; j++) {
-            state_gf_data(j, global_idx) = state_qf_data(j + component_index, ie);
-        }
-    });
+    // Copy the requested slice of the state variables from each source point to its node
+    CopyPointValues(*state_qf, m_component_index, m_component_length, *state_gf, points);
 
     // Apply any post-processing
-    PostProcessStateVariable(state_gf, part_quad_space, qpts2mesh);
+    PostProcessStateVariable(state_gf, points);
 }
 
 void NNegStateProjection::PostProcessStateVariable(
-    std::shared_ptr<mfem::ParGridFunction> grid_function,
-    [[maybe_unused]] std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
-    [[maybe_unused]] mfem::Array<int>& qpts2mesh) const {
-    auto data = grid_function->Write();
-    const int local_nelems = grid_function->Size();
+    std::shared_ptr<mfem::ParGridFunction> grid_function, const VizPointMap& points) const {
+    const int vdim = grid_function->VectorDim();
+    const auto dst = points.ReadDest();
+    auto values = ReadWriteNodeView(*grid_function);
 
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int i) {
-        data[i] = fmax(data[i], 0.0);
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        for (int j = 0; j < vdim; j++) {
+            values(j, dst(k)) = fmax(values(j, dst(k)), 0.0);
+        }
     });
 }
 
 void XtalOrientationProjection::PostProcessStateVariable(
-    std::shared_ptr<mfem::ParGridFunction> grid_function,
-    std::shared_ptr<mfem::expt::PartialQuadratureSpace> qspace,
-    mfem::Array<int>& qpts2mesh) const {
-    const int nelems = grid_function->ParFESpace()->GetNE();
-    auto ori = mfem::Reshape(grid_function->Write(), grid_function->VectorDim(), nelems);
-    const auto l2g = qpts2mesh.Read();
-    const int local_nelems = qspace->GetNE();
+    std::shared_ptr<mfem::ParGridFunction> grid_function, const VizPointMap& points) const {
+    const auto dst = points.ReadDest();
+    auto quats = ReadWriteNodeView(*grid_function);
 
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int i) {
-        const int ie = l2g[i];
-        const double inv_norm = 1.0 / (ori(0, ie) * ori(0, ie) + ori(1, ie) * ori(1, ie) +
-                                       ori(2, ie) * ori(2, ie) + ori(3, ie) * ori(3, ie));
-
-        ori(0, ie) = ori(0, ie) * inv_norm;
-        ori(1, ie) = ori(1, ie) * inv_norm;
-        ori(2, ie) = ori(2, ie) * inv_norm;
-        ori(3, ie) = ori(3, ie) * inv_norm;
+    // Scale each quaternion back to unit length. A zero length can only come from averaging
+    // quaternions of opposite sign (q and -q are the same rotation) in zone output; leave such a
+    // value at zero rather than writing NaN.
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        const int d = dst(k);
+        const double norm = sqrt(quats(0, d) * quats(0, d) + quats(1, d) * quats(1, d) +
+                                 quats(2, d) * quats(2, d) + quats(3, d) * quats(3, d));
+        const double inv_norm = (norm > 0.0) ? 1.0 / norm : 0.0;
+        for (int i = 0; i < 4; i++) {
+            quats(i, d) *= inv_norm;
+        }
     });
 }
 
 void ElasticStrainProjection::Execute(std::shared_ptr<SimulationState> sim_state,
                                       std::shared_ptr<mfem::ParGridFunction> elastic_strain_gf,
-                                      mfem::Array<int>& qpts2mesh,
+                                      const VizPointMap& points,
                                       int region) {
-    // Get state variable quadrature function for this region
-    auto state_qf = sim_state->GetQuadratureFunction("state_var_avg", region);
+    // Element averages (zone output) or end-of-step quadrature values (quadrature output)
+    auto state_qf = sim_state->GetQuadratureFunction(points.SourceName("state_var"), region);
     if (!state_qf)
         return; // Region doesn't have state variables
 
-    const int nelems = elastic_strain_gf->ParFESpace()->GetNE();
-    const auto part_quad_space = state_qf->GetPartialSpaceShared();
-
-    const auto l2g = qpts2mesh.Read();
-    const int local_nelems = part_quad_space->GetNE();
     const int vdim = state_qf->GetVDim();
-    const int gf_vdim = elastic_strain_gf->VectorDim();
-    m_component_length = (m_component_length == -1) ? vdim : m_component_length;
 
-    MFEM_VERIFY_0((m_component_length + m_component_index) <= vdim,
-                  "ElasticStrainProjection provided a length and index that pushes us past the "
-                  "state variable length");
-    MFEM_VERIFY_0(m_component_length <= gf_vdim,
-                  "ElasticStrainProjection provided length is greater than the gridfunction "
-                  "vector length");
+    // The three state variable slices read below: deviatoric elastic strain in the lattice frame
+    // (5 values), the lattice orientation quaternion (4) and the relative volume (1). The output
+    // is the full symmetric strain in the sample frame (6 values).
+    const auto estrain_slice = sim_state->GetQuadratureFunctionStatePair("elastic_strain", region);
+    const auto quats_slice = sim_state->GetQuadratureFunctionStatePair("quats", region);
+    const auto rel_vol_slice = sim_state->GetQuadratureFunctionStatePair("relative_volume", region);
+    const int estrain_ind = estrain_slice.first;
+    const int quats_ind = quats_slice.first;
+    const int rel_vol_ind = rel_vol_slice.first;
 
-    const int estrain_ind =
-        sim_state->GetQuadratureFunctionStatePair("elastic_strain", region).first;
-    const int quats_ind = sim_state->GetQuadratureFunctionStatePair("quats", region).first;
-    const int rel_vol_ind =
-        sim_state->GetQuadratureFunctionStatePair("relative_volume", region).first;
+    MFEM_VERIFY_0(estrain_ind >= 0 && estrain_slice.second == ecmech::ntvec &&
+                      estrain_ind + estrain_slice.second <= vdim,
+                  "ElasticStrainProjection: elastic strain slice is missing or outside the state "
+                  "variables");
+    MFEM_VERIFY_0(quats_ind >= 0 && quats_slice.second == 4 &&
+                      quats_ind + quats_slice.second <= vdim,
+                  "ElasticStrainProjection: quaternion slice is missing or outside the state "
+                  "variables");
+    MFEM_VERIFY_0(rel_vol_ind >= 0 && rel_vol_slice.second == 1 &&
+                      rel_vol_ind + rel_vol_slice.second <= vdim,
+                  "ElasticStrainProjection: relative volume slice is missing or outside the state "
+                  "variables");
+    MFEM_VERIFY_0(elastic_strain_gf->VectorDim() >= 6,
+                  "ElasticStrainProjection: output grid function needs 6 components");
 
-    auto state_vars = sim_state->GetQuadratureFunction("state_var_end", region)->Read();
-    auto strain = mfem::Reshape(elastic_strain_gf->Write(), gf_vdim, nelems);
+    const auto src = points.ReadSource();
+    const auto dst = points.ReadDest();
+    const auto state = ReadPointView(*state_qf);
+    auto strain = ReadWriteNodeView(*elastic_strain_gf);
 
-    mfem::forall(local_nelems, [=] MFEM_HOST_DEVICE(int ie) {
-        const int global_idx = l2g[ie];
-
-        const auto strain_lat = &state_vars[ie * vdim + estrain_ind];
-        const auto quats = &state_vars[ie * vdim + quats_ind];
-        const auto rel_vol = state_vars[ie * vdim + rel_vol_ind];
-        {
-            double strainm[3 * 3] = {};
-            double* strain_m[3] = {&strainm[0], &strainm[3], &strainm[6]};
-            const double t1 = ecmech::sqr2i * strain_lat[0];
-            const double t2 = ecmech::sqr6i * strain_lat[1];
-            //
-            // Volume strain is ln(V^e_mean) term aka ln(relative volume)
-            // Our plastic deformation has a det(1) aka no change in volume change
-            const double elas_vol_strain = log(rel_vol);
-            // We output elastic strain formulation such that the relationship
-            // between V^e and \varepsilon is just V^e = I + \varepsilon
-            strain_m[0][0] = (t1 - t2) + elas_vol_strain;                      // 11
-            strain_m[1][1] = (-t1 - t2) + elas_vol_strain;                     // 22
-            strain_m[2][2] = ecmech::sqr2b3 * strain_lat[1] + elas_vol_strain; // 33
-            strain_m[1][2] = ecmech::sqr2i * strain_lat[4];                    // 23
-            strain_m[2][0] = ecmech::sqr2i * strain_lat[3];                    // 31
-            strain_m[0][1] = ecmech::sqr2i * strain_lat[2];                    // 12
-
-            strain_m[2][1] = strain_m[1][2];
-            strain_m[0][2] = strain_m[2][0];
-            strain_m[1][0] = strain_m[0][1];
-
-            double rmat[3 * 3] = {};
-            double strain_samp[3 * 3] = {};
-
-            Quat2RMat(quats, rmat);
-            snls::linalg::rotMatrix<3, false>(strainm, rmat, strain_samp);
-
-            strain_m[0] = &strain_samp[0];
-            strain_m[1] = &strain_samp[3];
-            strain_m[2] = &strain_samp[6];
-
-            strain(0, global_idx) = strain_m[0][0];
-            strain(1, global_idx) = strain_m[1][1];
-            strain(2, global_idx) = strain_m[2][2];
-            strain(3, global_idx) = strain_m[1][2];
-            strain(4, global_idx) = strain_m[0][2];
-            strain(5, global_idx) = strain_m[0][1];
+    mfem::forall(points.GetNumPoints(), [=] MFEM_HOST_DEVICE(int k) {
+        const int s = src(k);
+        // Unit quaternion: element averaging (zone output) shortens it, so renormalize before
+        // building the rotation.
+        double quats[4] = {state(quats_ind + 0, s),
+                           state(quats_ind + 1, s),
+                           state(quats_ind + 2, s),
+                           state(quats_ind + 3, s)};
+        const double quat_norm = sqrt(quats[0] * quats[0] + quats[1] * quats[1] +
+                                      quats[2] * quats[2] + quats[3] * quats[3]);
+        const double inv_norm = (quat_norm > 0.0) ? 1.0 / quat_norm : 0.0;
+        for (int i = 0; i < 4; i++) {
+            quats[i] *= inv_norm;
         }
+
+        // Full elastic strain in the lattice frame (symmetric 3x3, so storage order is irrelevant)
+        double strain_lat_data[3 * 3] = {};
+        auto strain_lat = mfem::Reshape(strain_lat_data, 3, 3);
+        const double t1 = ecmech::sqr2i * state(estrain_ind + 0, s);
+        const double t2 = ecmech::sqr6i * state(estrain_ind + 1, s);
+        //
+        // Volume strain is ln(V^e_mean) term aka ln(relative volume)
+        // Our plastic deformation has a det(1) aka no change in volume change
+        const double elas_vol_strain = log(state(rel_vol_ind, s));
+        // We output elastic strain formulation such that the relationship
+        // between V^e and \varepsilon is just V^e = I + \varepsilon
+        strain_lat(0, 0) = (t1 - t2) + elas_vol_strain;                                  // 11
+        strain_lat(1, 1) = (-t1 - t2) + elas_vol_strain;                                 // 22
+        strain_lat(2, 2) = ecmech::sqr2b3 * state(estrain_ind + 1, s) + elas_vol_strain; // 33
+        strain_lat(1, 2) = ecmech::sqr2i * state(estrain_ind + 4, s);                    // 23
+        strain_lat(2, 0) = ecmech::sqr2i * state(estrain_ind + 3, s);                    // 31
+        strain_lat(0, 1) = ecmech::sqr2i * state(estrain_ind + 2, s);                    // 12
+
+        strain_lat(2, 1) = strain_lat(1, 2);
+        strain_lat(0, 2) = strain_lat(2, 0);
+        strain_lat(1, 0) = strain_lat(0, 1);
+
+        // Rotate to the sample frame. rotMatrix works on row-major 3x3 data while the view is
+        // column-major, so entry (row i, column j) of the result is strain_samp(j, i). The result
+        // is symmetric only to round-off, so read the same entries as the row-major layout.
+        double rmat[3 * 3] = {};
+        double strain_samp_data[3 * 3] = {};
+        Quat2RMat(quats, rmat);
+        snls::linalg::rotMatrix<3, false>(strain_lat_data, rmat, strain_samp_data);
+        const auto strain_samp = mfem::Reshape(strain_samp_data, 3, 3);
+
+        const int d = dst(k);
+        strain(0, d) = strain_samp(0, 0); // 11
+        strain(1, d) = strain_samp(1, 1); // 22
+        strain(2, d) = strain_samp(2, 2); // 33
+        strain(3, d) = strain_samp(2, 1); // 23
+        strain(4, d) = strain_samp(2, 0); // 13
+        strain(5, d) = strain_samp(1, 0); // 12
     });
+}
+
+//=============================================================================
+// USER FUNCTION PROJECTIONS
+//=============================================================================
+
+void QuadratureFunctionProjection::Execute(
+    [[maybe_unused]] std::shared_ptr<SimulationState> sim_state,
+    std::shared_ptr<mfem::ParGridFunction> grid_function,
+    const VizPointMap& points,
+    [[maybe_unused]] int region) {
+    // Zone output reads the element averages, quadrature output the point values
+    const auto& source = (points.GetLocation() == VizFieldLocation::ZONE) ? m_averages : m_values;
+    if (!source) {
+        return; // Region not selected for this quantity, or no elements on this rank
+    }
+    CopyPointValues(*source, 0, m_num_components, *grid_function, points);
 }

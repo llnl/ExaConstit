@@ -114,8 +114,8 @@ class StressStrainExtractor:
     ``strain_source_column`` to the relevant component
     (e.g. ``"E33"``).
 
-    Stress columns: ExaConstit uses ``Sxx``/``Syy``/``Szz``/``Sxy``
-    /``Sxz``/``Syz``. See
+    Stress columns: ExaConstit uses ``Sxx``/``Syy``/``Szz``/``Syz``
+    /``Sxz``/``Sxy``. See
     ``ExaConstit/src/postprocessing/postprocessing_file_manager.hpp``
     :: ``GetVolumeAverageHeader`` for the authoritative list.
 

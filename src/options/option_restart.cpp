@@ -1,11 +1,6 @@
 #include "options/option_parser_v2.hpp"
 #include "options/option_util.hpp"
 
-#include <filesystem>
-#include <sstream>
-
-namespace fs = std::filesystem;
-
 RestartOptions RestartOptions::from_toml(const toml::value& toml_input) {
     RestartOptions options;
 
@@ -78,16 +73,8 @@ bool RestartOptions::validate() const {
         return false;
     }
 
-    // Checking the directory here gives a clear message before any setup work is done. Which
-    // checkpoint inside it is used, and whether it is complete, is decided when the
-    // simulation starts.
-    if (read && !fs::is_directory(GetReadDirectory())) {
-        std::ostringstream err;
-        err << "Error: Restart table has `read` = true, but the checkpoint directory '"
-            << GetReadDirectory().string() << "' does not exist.";
-        WARNING_0_OPT(err.str());
-        return false;
-    }
+    // Whether the checkpoint directory exists is checked in ExaOptions::parse_options(), once a
+    // relative `directory` has been placed inside the output folder.
 
     // The remaining cases are allowed but probably not what was intended.
     if (read_directory.has_value() && !read) {

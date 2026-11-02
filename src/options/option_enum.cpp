@@ -156,3 +156,45 @@ LatticeType string_to_lattice_type(const std::string& str) {
 
     return string_to_enum(str, mapping, LatticeType::CUBIC, "lattice type");
 }
+/**
+ * @brief Convert string to VizFieldLocation enum
+ * @param str String representation of the field location. "zone" (alias "element") gives one
+ *            averaged value per element; "quadrature" (alias "qpt") gives nearest quadrature
+ *            point values at the H1 node locations of each element.
+ * @return Corresponding VizFieldLocation enum value
+ */
+VizFieldLocation string_to_viz_field_location(const std::string& str) {
+    static const std::map<std::string, VizFieldLocation> mapping = {
+        {"zone", VizFieldLocation::ZONE},
+        {"element", VizFieldLocation::ZONE},
+        {"quadrature", VizFieldLocation::QUADRATURE},
+        {"qpt", VizFieldLocation::QUADRATURE}};
+
+    return string_to_enum(str, mapping, VizFieldLocation::NOTYPE, "visualization field location");
+}
+
+/**
+ * @brief Convert string to UserFunctionType enum
+ * @param str "visualization", "volume_average" or "volume_integral"
+ * @return Corresponding UserFunctionType enum value
+ */
+UserFunctionType string_to_user_function_type(const std::string& str) {
+    static const std::map<std::string, UserFunctionType> mapping = {
+        {"visualization", UserFunctionType::VISUALIZATION},
+        {"volume_average", UserFunctionType::VOLUME_AVERAGE},
+        {"volume_integral", UserFunctionType::VOLUME_INTEGRAL}};
+
+    return string_to_enum(str, mapping, UserFunctionType::NOTYPE, "user function");
+}
+
+/**
+ * @brief Convert string to PostProcessingFormat enum
+ * @param str "text" or "hdf5"
+ * @return Corresponding PostProcessingFormat enum value
+ */
+PostProcessingFormat string_to_post_processing_format(const std::string& str) {
+    static const std::map<std::string, PostProcessingFormat> mapping = {
+        {"text", PostProcessingFormat::TEXT}, {"hdf5", PostProcessingFormat::HDF5}};
+
+    return string_to_enum(str, mapping, PostProcessingFormat::NOTYPE, "post-processing format");
+}

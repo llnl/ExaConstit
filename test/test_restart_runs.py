@@ -36,6 +36,10 @@ Cases:
                restarted from its halfway checkpoint; the negative control runs here.
   empty_ranks  Short tension run on a 2-element mesh, so with more than 2 ranks every rank but
                two owns no elements. Covers checkpointing and restarting with empty ranks.
+  outputs      Short tension run with ParaView and VisIt output (not run by default; a short
+               ctest of its own): checkpoints are written inside the run's output folder, and
+               a restart (also from an earlier checkpoint) keeps the visualization files written
+               before it, ending with exactly the files of an uninterrupted run.
 
 Defaults: 16^3 = 4096 hex elements, 8 MPI ranks, 4 cycles of +/-1% strain (160 steps), 10%
 monotonic strain (100 steps), and a 20-step empty-rank run. Run with --help for the options
@@ -45,6 +49,7 @@ restart from).
 
 import argparse
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -171,7 +176,8 @@ def restart_block(restart: Dict[str, object]) -> str:
 
 
 def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: str,
-               t_final: float, restart: Dict[str, object]) -> None:
+               t_final: float, restart: Dict[str, object], rtmodel: str = "CPU",
+               assembly: str = "FULL", visualize: bool = False) -> None:
     """
     Write the options file for one run
 
@@ -187,7 +193,11 @@ def write_toml(path: Path, basename: str, mesh: MeshSpec, num_grains: int, bcs: 
         bcs: [BCs] table from bc_block()
         t_final: Final simulation time of this run
         restart: [Restart] keys and values
+        rtmodel: [Solvers] rtmodel (CPU, OPENMP or GPU)
+        assembly: [Solvers] assembly (FULL, PA or EA)
+        visualize: Write ParaView and VisIt files at every step
     """
+    viz = "true" if visualize else "false"
     path.write_text(f"""Version = "0.10.0"
 basename = "{basename}"
 grain_file = "{mesh.grain_file}"
@@ -220,9 +230,10 @@ grain_file = "{mesh.grain_file}"
         t_final = {t_final!r}
 
 [Visualizations]
-    visit = false
+    steps = 1
+    visit = {viz}
     conduit = false
-    paraview = false
+    paraview = {viz}
 
 [PostProcessing]
     [PostProcessing.volume_averages]
@@ -235,8 +246,8 @@ grain_file = "{mesh.grain_file}"
         output_directory = "./results"
 
 [Solvers]
-    assembly = "FULL"
-    rtmodel = "CPU"
+    assembly = "{assembly}"
+    rtmodel = "{rtmodel}"
     [Solvers.NR]
         iter = 25
         rel_tol = 5e-5
@@ -270,6 +281,22 @@ def time_of(steps: int) -> float:
         steps * DT, rounded so it prints and compares cleanly
     """
     return round(steps * DT, 10)
+
+
+def checkpoint_root(name: str) -> str:
+    """
+    Where a run writes its checkpoints, relative to the work directory
+
+    Every run here has basename name and [Restart] directory = "ckpt_<name>", which ExaConstit
+    places inside the run's output folder, results/<basename>.
+
+    Args:
+        name: Run name (its basename)
+
+    Returns:
+        results/<name>/ckpt_<name>
+    """
+    return f"results/{name}/ckpt_{name}"
 
 
 # ============================================================================
@@ -347,13 +374,16 @@ class Harness:
         Args:
             name: Run name (its log is checked)
             read_dir: Checkpoint directory the run should have read, relative to the work
-                directory
+                directory (a full path in the log ending in it also matches)
             cycle: Cycle of the checkpoint it should have restarted from
             end_step: Last step it should have run
         """
         text = (self.logdir / f"{name}.log").read_text()
-        expected = f"Restarting from checkpoint {read_dir}/cycle_{cycle:010d} (cycle {cycle},"
-        restarted = expected in text and "Restored checkpoint state" in text
+        # The log prints the directory as ExaConstit resolved it: as given for read_directory,
+        # the full path for a directory inside the output folder
+        expected = re.compile(r"Restarting from checkpoint (\S*/)?" + re.escape(read_dir) +
+                              rf"/cycle_{cycle:010d} \(cycle {cycle},")
+        restarted = bool(expected.search(text)) and "Restored checkpoint state" in text
         steps = [int(line.split(":")[1]) for line in text.splitlines()
                  if line.startswith("Simulation cycle:")]
         ran_remaining = steps == list(range(cycle + 1, end_step + 1))
@@ -456,6 +486,61 @@ class Harness:
         self.check(not problems, f"{label}: outputs vs reference ({detail})")
 
 
+    def visualization_files(self, basename: str) -> Dict[str, bytes]:
+        """
+        Every visualization file of a run, by path with the basename replaced by "BASENAME"
+
+        Args:
+            basename: Basename of the run
+
+        Returns:
+            {relative path: contents}, with the basename also replaced in the contents (VisIt
+            root files name their data files)
+        """
+        root = self.workdir / "results" / basename / "visualizations"
+        files = {}
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                rel = str(path.relative_to(root)).replace(basename, "BASENAME")
+                files[rel] = path.read_bytes().replace(basename.encode(), b"BASENAME")
+        return files
+
+    def compare_visualizations(self, label: str, ref_basename: str, other_basename: str) -> None:
+        """
+        Check that a run has exactly the visualization files of the reference, byte for byte
+
+        Args:
+            label: Description used in the check message
+            ref_basename: Basename of the reference run
+            other_basename: Basename of the run to compare
+        """
+        ref = self.visualization_files(ref_basename)
+        other = self.visualization_files(other_basename)
+        missing = sorted(set(ref) - set(other))
+        extra = sorted(set(other) - set(ref))
+        differ = sorted(k for k in set(ref) & set(other) if ref[k] != other[k])
+        problems = [f"{len(v)} {what} (e.g. {v[0]})" for v, what in
+                    ((missing, "missing"), (extra, "extra"), (differ, "differ")) if v]
+        self.check(bool(ref) and not problems,
+                   f"{label}: visualization files vs reference ("
+                   f"{'; '.join(problems) if problems else f'{len(ref)} files identical'})")
+
+    def paraview_times(self, basename: str) -> Dict[str, List[float]]:
+        """
+        Times listed in each ParaView collection (.pvd) of a run
+
+        Args:
+            basename: Basename of the run
+
+        Returns:
+            {collection file relative to the visualizations folder: times in file order}
+        """
+        root = self.workdir / "results" / basename / "visualizations"
+        return {str(pvd.relative_to(root)): [float(t) for t in
+                                              re.findall(r'timestep="([^"]+)"', pvd.read_text())]
+                for pvd in sorted(root.rglob("*.pvd"))}
+
+
 # ============================================================================
 # TEST CASE BUILDING BLOCKS
 # ============================================================================
@@ -500,10 +585,11 @@ def run_reference(h: Harness, name: str, mesh: MeshSpec, bcs: str, total_steps: 
     write_toml(h.workdir / f"{name}.toml", name, mesh, h.args.num_grains, bcs,
                time_of(total_steps),
                {"write": True, "interval": interval, "write_final": True,
-                "keep_last": h.args.keep_last, "directory": f"ckpt_{name}"})
+                "keep_last": h.args.keep_last, "directory": f"ckpt_{name}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly)
     h.run(name, h.workdir / f"{name}.toml")
     ref_cycles = sorted(int(p.name.split("_")[1])
-                        for p in (h.workdir / f"ckpt_{name}").glob("cycle_*")
+                        for p in (h.workdir / checkpoint_root(name)).glob("cycle_*")
                         if (p / "commit.json").exists())
     print(f"  reference checkpoints kept: {ref_cycles}")
     return ref_cycles
@@ -535,14 +621,15 @@ def run_chain(h: Harness, ref: str, ref_cycles: List[int], name: str, mesh: Mesh
         if i > 0:
             restart["read"] = True
         write_toml(h.workdir / f"{segment}.toml", name, mesh, h.args.num_grains, bcs,
-                   time_of(stop), restart)
+                   time_of(stop), restart, rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(segment, h.workdir / f"{segment}.toml")
         if i > 0:
-            h.verify_restart_log(segment, f"ckpt_{name}", stops[i - 1], stop)
+            h.verify_restart_log(segment, checkpoint_root(name), stops[i - 1], stop)
     for stop in stops:
         if stop in ref_cycles:
-            h.compare_checkpoints(f"{name} cycle {stop}", h.checkpoint(f"ckpt_{ref}", stop),
-                                  h.checkpoint(f"ckpt_{name}", stop))
+            h.compare_checkpoints(f"{name} cycle {stop}",
+                                  h.checkpoint(checkpoint_root(ref), stop),
+                                  h.checkpoint(checkpoint_root(name), stop))
     h.compare_outputs(name, ref, name)
 
 
@@ -574,13 +661,14 @@ def run_from_reference(h: Harness, ref: str, ref_cycles: List[int], from_cycles:
         write_toml(h.workdir / f"{name}.toml", name, mesh, h.args.num_grains, bcs,
                    time_of(total_steps),
                    {"write": True, "interval": 0, "write_final": True, "keep_last": 0,
-                    "read": True, "read_cycle": cycle, "read_directory": f"ckpt_{ref}",
-                    "directory": f"ckpt_{name}"})
+                    "read": True, "read_cycle": cycle, "read_directory": checkpoint_root(ref),
+                    "directory": f"ckpt_{name}"},
+                   rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(name, h.workdir / f"{name}.toml")
-        h.verify_restart_log(name, f"ckpt_{ref}", cycle, total_steps)
+        h.verify_restart_log(name, checkpoint_root(ref), cycle, total_steps)
         h.compare_checkpoints(f"{name} final cycle {total_steps}",
-                              h.checkpoint(f"ckpt_{ref}", total_steps),
-                              h.checkpoint(f"ckpt_{name}", total_steps))
+                              h.checkpoint(checkpoint_root(ref), total_steps),
+                              h.checkpoint(checkpoint_root(name), total_steps))
         h.compare_outputs(name, ref, name, after_time=time_of(cycle))
 
 
@@ -615,7 +703,7 @@ def run_negative_control(h: Harness, ref: str, ref_cycles: List[int], mesh: Mesh
     cycle = candidates[-1]  # the latest one keeps this extra run short
     name = f"{ref}_perturbed{cycle}"
     source = h.workdir / f"ckpt_{name}_src"
-    shutil.copytree(h.checkpoint(f"ckpt_{ref}", cycle), source / f"cycle_{cycle:010d}")
+    shutil.copytree(h.checkpoint(checkpoint_root(ref), cycle), source / f"cycle_{cycle:010d}")
     with h5py.File(source / f"cycle_{cycle:010d}" / "rank_000000.hdf5", "r+") as f:
         paths = [f"sidre/external/qfuncs/{g}/values" for g in f["sidre/external/qfuncs"]
                  if g.startswith("state_var_beg")]
@@ -630,12 +718,13 @@ def run_negative_control(h: Harness, ref: str, ref_cycles: List[int], mesh: Mesh
                time_of(total_steps),
                {"write": True, "interval": 0, "write_final": True, "keep_last": 0,
                 "read": True, "read_cycle": cycle, "read_directory": source.name,
-                "directory": f"ckpt_{name}"})
+                "directory": f"ckpt_{name}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly)
     h.run(name, h.workdir / f"{name}.toml")
     h.verify_restart_log(name, source.name, cycle, total_steps)
     h.compare_checkpoints(f"{name} (negative control) final cycle {total_steps}",
-                          h.checkpoint(f"ckpt_{ref}", total_steps),
-                          h.checkpoint(f"ckpt_{name}", total_steps), expect_differ=True)
+                          h.checkpoint(checkpoint_root(ref), total_steps),
+                          h.checkpoint(checkpoint_root(name), total_steps), expect_differ=True)
     h.compare_outputs(f"{name} (negative control)", ref, name, after_time=time_of(cycle),
                       expect_differ=True)
 
@@ -750,6 +839,78 @@ def run_empty_ranks(h: Harness, mesh: MeshSpec) -> None:
     run_from_reference(h, ref, ref_cycles, from_cycles, mesh, bcs, total_steps)
 
 
+def run_outputs(h: Harness, mesh: MeshSpec) -> None:
+    """
+    Output case: where checkpoints go, and visualization files across restarts
+
+    A short tension run with ParaView and VisIt output at every step. The reference runs
+    uninterrupted, writing checkpoints. A chain stops after step 2 and restarts to the end, then
+    restarts once more from its checkpoint of step 1 (an earlier one), as when a run is redone
+    from an older checkpoint. Checks:
+    - checkpoints are written inside the run's output folder, results/<basename>/<directory>,
+      and nowhere in the work directory;
+    - a restart keeps the visualization files written before it: the first segment's step 0 is
+      not rewritten, and after each restart the visualization files (ParaView .pvd collections,
+      VTU pieces, VisIt root and data files) are byte for byte those of the uninterrupted run,
+      with every step listed once in each .pvd file.
+
+    Args:
+        h: Test harness
+        mesh: Mesh of the case
+    """
+    total_steps = 4
+    stop = 2
+    bcs = bc_block([1], [TOP_VELOCITY])
+    print(f"\n== outputs: {total_steps} steps with ParaView and VisIt output, chain stopped at "
+          f"step {stop}, then restarted again from step 1")
+
+    ref = "out_ref"
+    write_toml(h.workdir / f"{ref}.toml", ref, mesh, h.args.num_grains, bcs,
+               time_of(total_steps),
+               {"write": True, "interval": 1, "write_final": True, "keep_last": 0,
+                "directory": f"ckpt_{ref}"},
+               rtmodel=h.args.rtmodel, assembly=h.args.assembly, visualize=True)
+    h.run(ref, h.workdir / f"{ref}.toml")
+    inside = h.workdir / checkpoint_root(ref) / f"cycle_{total_steps:010d}" / "commit.json"
+    h.check(inside.exists() and not (h.workdir / f"ckpt_{ref}").exists(),
+            f"{ref}: checkpoints are in {checkpoint_root(ref)} (inside the output folder), "
+            f"not in the work directory")
+    expected_times = [time_of(step) for step in range(total_steps + 1)]
+    ref_times = h.paraview_times(ref)
+    h.check(bool(ref_times) and all(t == expected_times for t in ref_times.values()),
+            f"{ref}: every .pvd lists steps 0..{total_steps} ({ref_times})")
+
+    chain = "out_chain"
+    segments = [(f"{chain}_seg1", stop, {}),
+                (f"{chain}_seg2", total_steps, {"read": True}),
+                (f"{chain}_seg3", total_steps, {"read": True, "read_cycle": 1})]
+    step0 = None
+    for i, (segment, end, read) in enumerate(segments):
+        restart = {"write": True, "interval": 1, "write_final": True, "keep_last": 0,
+                   "directory": f"ckpt_{chain}", **read}
+        write_toml(h.workdir / f"{segment}.toml", chain, mesh, h.args.num_grains, bcs,
+                   time_of(end), restart, rtmodel=h.args.rtmodel, assembly=h.args.assembly,
+                   visualize=True)
+        h.run(segment, h.workdir / f"{segment}.toml")
+        files = h.visualization_files(chain)
+        if i == 0:
+            step0 = {k: v for k, v in files.items() if "Cycle000000" in k or "_000000" in k}
+            continue
+        h.verify_restart_log(segment, checkpoint_root(chain), read.get("read_cycle", stop), end)
+        kept = all(files.get(k) == v for k, v in step0.items())
+        h.check(bool(step0) and kept,
+                f"{segment}: the {len(step0)} step-0 visualization files of the first segment "
+                f"are still there, unchanged")
+        times = h.paraview_times(chain)
+        h.check(bool(times) and all(t == expected_times for t in times.values()),
+                f"{segment}: every .pvd lists steps 0..{total_steps} once ({times})")
+        h.compare_visualizations(segment, ref, chain)
+        if i == 1:
+            # Volume-average files are only appended to, so they are compared before segment 3
+            # computes steps 2..4 again
+            h.compare_outputs(segment, ref, chain)
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -764,6 +925,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--np", type=int, default=8, help="MPI ranks (default 8)")
+    p.add_argument("--rtmodel", default="CPU", choices=["CPU", "OPENMP", "GPU"],
+                   help="[Solvers] rtmodel of every run (default CPU)")
+    p.add_argument("--assembly", default="FULL", choices=["FULL", "PA", "EA"],
+                   help="[Solvers] assembly of every run (default FULL)")
     p.add_argument("--mpiexec", default="mpirun", help="MPI launcher (default mpirun)")
     p.add_argument("--always-mpiexec", action="store_true",
                    help="use the launcher even with --np 1 (default: run the binary directly)")
@@ -817,6 +982,7 @@ def main() -> int:
         "cyclic": (run_cyclic, MeshSpec((args.nxyz,) * 3, "grains.txt")),
         "monotonic": (run_monotonic, MeshSpec((args.nxyz,) * 3, "grains.txt")),
         "empty_ranks": (run_empty_ranks, MeshSpec((2, 1, 1), "grains_empty_ranks.txt")),
+        "outputs": (run_outputs, MeshSpec((args.nxyz,) * 3, "grains.txt")),
     }
     requested = [c.strip() for c in args.cases.split(",") if c.strip()]
     unknown = [c for c in requested if c not in cases]
@@ -832,7 +998,8 @@ def main() -> int:
         prepare_inputs(workdir, find_data_dir(args.data_dir), list(meshes.values()),
                        args.num_grains, args.seed)
         h = Harness(args, workdir)
-        print(f"Restart run tests: {args.np} rank(s), workdir {workdir}")
+        print(f"Restart run tests: {args.np} rank(s), rtmodel {args.rtmodel}, assembly "
+              f"{args.assembly}, workdir {workdir}")
         for case in requested:
             run_case, mesh = cases[case]
             run_case(h, mesh)

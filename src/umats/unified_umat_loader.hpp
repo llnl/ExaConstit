@@ -126,11 +126,66 @@ public:
         return Loader::get_last_error();
     }
 
+    /** @brief Loader of batched UMATs (UmatBatchFunction); its cache is separate from Loader's */
+    using BatchLoader = DynamicFunctionLoader<UmatBatchFunction>;
+
+    /**
+     * @brief Load a batched UMAT (interface = "batched") from a shared library
+     *
+     * @param library_path Path to the library (required: there is no built-in batched UMAT)
+     * @param strategy Loading strategy
+     * @param function_name Name of the batched function (required). Fortran name mangling
+     *        (trailing underscores, case) is tried as for standard UMATs.
+     * @return Function pointer, or nullptr on failure (see GetLastBatchError())
+     *
+     * @details Only the given name is searched: the standard UMAT names ("umat", ...) have the
+     * standard signature and must never be picked up as a batched function.
+     */
+    static UmatBatchFunction LoadUmatBatch(const std::string& library_path,
+                                           LoadStrategy strategy,
+                                           const std::string& function_name) {
+        SymbolConfig config = BatchConfig(library_path, function_name);
+        auto result = BatchLoader::load(library_path, config, strategy);
+        if (result.success && std::getenv("EXACONSTIT_DEBUG_UMAT")) {
+            std::cout << "Successfully loaded batched UMAT from: " << library_path
+                      << " using symbol: " << result.resolved_symbol << std::endl;
+        }
+        return result.function;
+    }
+
+    /**
+     * @brief Unload a batched UMAT library
+     */
+    static bool UnloadUmatBatch(const std::string& library_path, const std::string& function_name) {
+        return BatchLoader::unload(library_path, BatchConfig(library_path, function_name));
+    }
+
+    /**
+     * @brief Last error message of the batched UMAT loader
+     */
+    static std::string GetLastBatchError() {
+        return BatchLoader::get_last_error();
+    }
+
+
     /**
      * @brief Clear all cached UMATs
      */
     static void ClearCache() {
         Loader::clear_cache();
+        BatchLoader::clear_cache();
+    }
+
+private:
+    /** @brief Symbol search settings for batched UMATs: the user's name only */
+    static SymbolConfig BatchConfig(const std::string& library_path,
+                                    const std::string& function_name) {
+        SymbolConfig config;
+        config.search_names = {function_name};
+        config.enable_fortran_mangling = true;
+        config.enable_builtin_search = library_path.empty();
+        config.case_sensitive = false;
+        return config;
     }
 };
 } // namespace exaconstit
