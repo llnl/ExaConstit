@@ -305,11 +305,11 @@ resolver = TemplatePathResolver(
 )
 reader = TextTableReader({
     "avg_stress": TextTableSpec(columns=[
-        "time", "s11", "s22", "s33", "s12", "s23", "s13",
+        "time", "s11", "s22", "s33", "s23", "s13", "s12",
     ]),
     "avg_def_grad": TextTableSpec(
-        columns=["time", "F11", "F12", "F13",
-                 "F21", "F22", "F23", "F31", "F32", "F33"],
+        columns=["time", "F11", "F21", "F31",
+                 "F12", "F22", "F32", "F13", "F23", "F33"],
         required=False,
     ),
 })
@@ -675,7 +675,7 @@ resolver = TemplatePathResolver(
 )
 reader = TextTableReader({
     "avg_stress": TextTableSpec(columns=[
-        "time", "s11", "s22", "s33", "s12", "s23", "s13",
+        "time", "s11", "s22", "s33", "s23", "s13", "s12",
     ]),
 })
 

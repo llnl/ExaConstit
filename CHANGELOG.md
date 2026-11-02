@@ -3,6 +3,11 @@
 All notable changes to ExaConstit are documented in this file, one line per change.
 Entries for releases before v0.10.0 were reconstructed from the release tag notes.
 
+## [Unreleased]
+
+### Fixed
+- Volume-average output headers mislabeled columns (values were correct): stress is `Sxx Syy Szz Syz Sxz Sxy`, and the deformation gradient is column-major `F11 F21 F31 F12 F22 F32 F13 F23 F33`.
+
 ## [v0.10.1] - 2026-10-21
 
 Requires the same MFEM fork commit as v0.10.0.

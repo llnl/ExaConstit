@@ -877,21 +877,21 @@ def plot_top_solutions_overlay(
                     # of the smooth response while excluding the
                     # top ~5% (typically elastic spikes or
                     # start-of-test artifacts).
-                    bulk_clip = min(
-                        0,
-                        1.0,
+                    bulk_clip = (
+                        float(np.percentile(nonzero, 90))
+                        if nonzero.size else 1.0
                     )
                     positives = finite[finite > 0]
                     negatives = finite[finite < 0]
                     n_pos, n_neg = positives.size, negatives.size
-                    n_total = n_pos + n_neg
+                    n_signed = n_pos + n_neg
                     # 10% threshold: if one side has fewer than
                     # 10% of all signed points, treat it as the
                     # minority. Empirically this catches start-
                     # of-test numerical noise without misfiring
                     # on real two-sided responses.
                     MINORITY = 0.10
-                    if n_total == 0:
+                    if n_signed == 0:
                         upper, lower = 1.0, -1.0
                     elif n_neg == 0:
                         # All non-negative: full positive range,
@@ -901,7 +901,7 @@ def plot_top_solutions_overlay(
                     elif n_pos == 0:
                         upper = 0.0
                         lower = float(negatives.min()) * 1.05
-                    elif n_neg / n_total < MINORITY:
+                    elif n_neg / n_signed < MINORITY:
                         # Mostly positive: full positive range,
                         # clip the negative tail to bulk envelope
                         # so the plastic bulk doesn't get crushed
@@ -911,7 +911,7 @@ def plot_top_solutions_overlay(
                             bulk_clip,
                         )
                         lower = -bulk_clip
-                    elif n_pos / n_total < MINORITY:
+                    elif n_pos / n_signed < MINORITY:
                         upper = bulk_clip
                         lower = min(
                             float(negatives.min()) * 1.05,

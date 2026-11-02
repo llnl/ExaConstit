@@ -568,21 +568,23 @@ PostProcessingFileManager::GetVolumeAverageHeader(const std::string& calc_type) 
     header << CenterText("Volume", COLUMN_WIDTH);
 
     if (calc_type == "stress") {
+        // Voigt order of the stress quadrature function: 11, 22, 33, 23, 13, 12
         header << CenterText("Sxx", COLUMN_WIDTH);
         header << CenterText("Syy", COLUMN_WIDTH);
         header << CenterText("Szz", COLUMN_WIDTH);
-        header << CenterText("Sxy", COLUMN_WIDTH);
-        header << CenterText("Sxz", COLUMN_WIDTH);
         header << CenterText("Syz", COLUMN_WIDTH);
+        header << CenterText("Sxz", COLUMN_WIDTH);
+        header << CenterText("Sxy", COLUMN_WIDTH);
     } else if (calc_type == "def_grad") {
+        // The deformation gradient is stored column by column (column-major 3x3)
         header << CenterText("F11", COLUMN_WIDTH);
-        header << CenterText("F12", COLUMN_WIDTH);
-        header << CenterText("F13", COLUMN_WIDTH);
         header << CenterText("F21", COLUMN_WIDTH);
-        header << CenterText("F22", COLUMN_WIDTH);
-        header << CenterText("F23", COLUMN_WIDTH);
         header << CenterText("F31", COLUMN_WIDTH);
+        header << CenterText("F12", COLUMN_WIDTH);
+        header << CenterText("F22", COLUMN_WIDTH);
         header << CenterText("F32", COLUMN_WIDTH);
+        header << CenterText("F13", COLUMN_WIDTH);
+        header << CenterText("F23", COLUMN_WIDTH);
         header << CenterText("F33", COLUMN_WIDTH);
     } else if (calc_type == "euler_strain") {
         header << CenterText("E11", COLUMN_WIDTH);

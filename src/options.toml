@@ -595,7 +595,7 @@ grain_file = "grains.txt"
         # Which quantities to average:
         # Each creates a separate output file with time history
         
-        # Stress tensor (6 components: σxx, σyy, σzz, σxy, σyz, σxz)
+        # Stress tensor (6 components: σxx, σyy, σzz, σyz, σxz, σxy)
         stress = true
         
         # Deformation gradient tensor F (9 components)
@@ -679,17 +679,17 @@ grain_file = "grains.txt"
         # Actual filenames will have _global or _region_[name]_[id] appended
         
         # Stress components file
-        # Columns: time, volume, σxx, σyy, σzz, σxy, σyz, σxz
+        # Columns: time, volume, σxx, σyy, σzz, σyz, σxz, σxy
         # Creates: avg_stress_global.txt, avg_stress_region_*.txt
         avg_stress_fname = "avg_stress.txt"
         
         # Deformation gradient file  
-        # Columns: time, volume, F11, F12, F13, F21, F22, F23, F31, F32, F33
+        # Columns: time, volume, F11, F21, F31, F12, F22, F32, F13, F23, F33 (column by column)
         # Creates: avg_def_grad_global.txt, avg_def_grad_region_*.txt
         avg_def_grad_fname = "avg_def_grad.txt"
         
         # Euler strain file
-        # Columns: time, volume, εxx, εyy, εzz, εxy, εyz, εxz
+        # Columns: time, volume, εxx, εyy, εzz, εyz, εxz, εxy
         # Creates: avg_euler_strain_global.txt, avg_euler_strain_region_*.txt
         avg_euler_strain_fname = "avg_euler_strain.txt"
         
@@ -704,7 +704,7 @@ grain_file = "grains.txt"
         avg_eq_pl_strain_fname = "avg_eq_pl_strain.txt"
         
         # Elastic strain file (ExaCMech only)
-        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_xy, εe_yz, εe_xz
+        # Columns: time, volume, εe_xx, εe_yy, εe_zz, εe_yz, εe_xz, εe_xy
         # Creates: avg_elastic_strain_global.txt, avg_elastic_strain_region_*.txt
         avg_elastic_strain_fname = "avg_elastic_strain.txt"
     
