@@ -45,6 +45,7 @@ restart from).
 
 import argparse
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -275,6 +276,22 @@ def time_of(steps: int) -> float:
     return round(steps * DT, 10)
 
 
+def checkpoint_root(name: str) -> str:
+    """
+    Where a run writes its checkpoints, relative to the work directory
+
+    Every run here has basename name and [Restart] directory = "ckpt_<name>", which ExaConstit
+    places inside the run's output folder, results/<basename>.
+
+    Args:
+        name: Run name (its basename)
+
+    Returns:
+        results/<name>/ckpt_<name>
+    """
+    return f"results/{name}/ckpt_{name}"
+
+
 # ============================================================================
 # RUNNING AND COMPARING
 # ============================================================================
@@ -350,13 +367,16 @@ class Harness:
         Args:
             name: Run name (its log is checked)
             read_dir: Checkpoint directory the run should have read, relative to the work
-                directory
+                directory (a full path in the log ending in it also matches)
             cycle: Cycle of the checkpoint it should have restarted from
             end_step: Last step it should have run
         """
         text = (self.logdir / f"{name}.log").read_text()
-        expected = f"Restarting from checkpoint {read_dir}/cycle_{cycle:010d} (cycle {cycle},"
-        restarted = expected in text and "Restored checkpoint state" in text
+        # The log prints the directory as ExaConstit resolved it: as given for read_directory,
+        # the full path for a directory inside the output folder
+        expected = re.compile(r"Restarting from checkpoint (\S*/)?" + re.escape(read_dir) +
+                              rf"/cycle_{cycle:010d} \(cycle {cycle},")
+        restarted = bool(expected.search(text)) and "Restored checkpoint state" in text
         steps = [int(line.split(":")[1]) for line in text.splitlines()
                  if line.startswith("Simulation cycle:")]
         ran_remaining = steps == list(range(cycle + 1, end_step + 1))
@@ -507,7 +527,7 @@ def run_reference(h: Harness, name: str, mesh: MeshSpec, bcs: str, total_steps: 
                rtmodel=h.args.rtmodel, assembly=h.args.assembly)
     h.run(name, h.workdir / f"{name}.toml")
     ref_cycles = sorted(int(p.name.split("_")[1])
-                        for p in (h.workdir / f"ckpt_{name}").glob("cycle_*")
+                        for p in (h.workdir / checkpoint_root(name)).glob("cycle_*")
                         if (p / "commit.json").exists())
     print(f"  reference checkpoints kept: {ref_cycles}")
     return ref_cycles
@@ -542,11 +562,12 @@ def run_chain(h: Harness, ref: str, ref_cycles: List[int], name: str, mesh: Mesh
                    time_of(stop), restart, rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(segment, h.workdir / f"{segment}.toml")
         if i > 0:
-            h.verify_restart_log(segment, f"ckpt_{name}", stops[i - 1], stop)
+            h.verify_restart_log(segment, checkpoint_root(name), stops[i - 1], stop)
     for stop in stops:
         if stop in ref_cycles:
-            h.compare_checkpoints(f"{name} cycle {stop}", h.checkpoint(f"ckpt_{ref}", stop),
-                                  h.checkpoint(f"ckpt_{name}", stop))
+            h.compare_checkpoints(f"{name} cycle {stop}",
+                                  h.checkpoint(checkpoint_root(ref), stop),
+                                  h.checkpoint(checkpoint_root(name), stop))
     h.compare_outputs(name, ref, name)
 
 
@@ -578,14 +599,14 @@ def run_from_reference(h: Harness, ref: str, ref_cycles: List[int], from_cycles:
         write_toml(h.workdir / f"{name}.toml", name, mesh, h.args.num_grains, bcs,
                    time_of(total_steps),
                    {"write": True, "interval": 0, "write_final": True, "keep_last": 0,
-                    "read": True, "read_cycle": cycle, "read_directory": f"ckpt_{ref}",
+                    "read": True, "read_cycle": cycle, "read_directory": checkpoint_root(ref),
                     "directory": f"ckpt_{name}"},
                    rtmodel=h.args.rtmodel, assembly=h.args.assembly)
         h.run(name, h.workdir / f"{name}.toml")
-        h.verify_restart_log(name, f"ckpt_{ref}", cycle, total_steps)
+        h.verify_restart_log(name, checkpoint_root(ref), cycle, total_steps)
         h.compare_checkpoints(f"{name} final cycle {total_steps}",
-                              h.checkpoint(f"ckpt_{ref}", total_steps),
-                              h.checkpoint(f"ckpt_{name}", total_steps))
+                              h.checkpoint(checkpoint_root(ref), total_steps),
+                              h.checkpoint(checkpoint_root(name), total_steps))
         h.compare_outputs(name, ref, name, after_time=time_of(cycle))
 
 
@@ -620,7 +641,7 @@ def run_negative_control(h: Harness, ref: str, ref_cycles: List[int], mesh: Mesh
     cycle = candidates[-1]  # the latest one keeps this extra run short
     name = f"{ref}_perturbed{cycle}"
     source = h.workdir / f"ckpt_{name}_src"
-    shutil.copytree(h.checkpoint(f"ckpt_{ref}", cycle), source / f"cycle_{cycle:010d}")
+    shutil.copytree(h.checkpoint(checkpoint_root(ref), cycle), source / f"cycle_{cycle:010d}")
     with h5py.File(source / f"cycle_{cycle:010d}" / "rank_000000.hdf5", "r+") as f:
         paths = [f"sidre/external/qfuncs/{g}/values" for g in f["sidre/external/qfuncs"]
                  if g.startswith("state_var_beg")]
@@ -640,8 +661,8 @@ def run_negative_control(h: Harness, ref: str, ref_cycles: List[int], mesh: Mesh
     h.run(name, h.workdir / f"{name}.toml")
     h.verify_restart_log(name, source.name, cycle, total_steps)
     h.compare_checkpoints(f"{name} (negative control) final cycle {total_steps}",
-                          h.checkpoint(f"ckpt_{ref}", total_steps),
-                          h.checkpoint(f"ckpt_{name}", total_steps), expect_differ=True)
+                          h.checkpoint(checkpoint_root(ref), total_steps),
+                          h.checkpoint(checkpoint_root(name), total_steps), expect_differ=True)
     h.compare_outputs(f"{name} (negative control)", ref, name, after_time=time_of(cycle),
                       expect_differ=True)
 

@@ -635,6 +635,7 @@ grain_file = "grains.txt"
         #   [output_directory]/[basename]/                    <- Main simulation folder
         #   [output_directory]/[basename]/avg_*.txt          <- Volume average files
         #   [output_directory]/[basename]/visualizations/    <- Visualization files
+        #   [output_directory]/[basename]/restart/           <- Checkpoints ([Restart])
         # 
         # Example: If output_directory = "./results" and basename = "tensile_test":
         #   ./results/tensile_test/                          <- All outputs go here
@@ -925,7 +926,11 @@ grain_file = "grains.txt"
     keep_last = 2
 
     # Directory checkpoints are written to, one subdirectory per checkpoint
-    # (cycle_<number of completed steps>)
+    # (cycle_<number of completed steps>). A relative path is inside the run's
+    # output folder, [output_directory]/[basename] (see [PostProcessing.volume_averages]
+    # output_directory), next to the other outputs: by default
+    # ./results/<basename>/restart. A restart with the same output_directory and
+    # basename finds its checkpoints there.
     directory = "restart"
 
     # Restart this run from a checkpoint
@@ -937,5 +942,7 @@ grain_file = "grains.txt"
 
     # Read the checkpoint from this directory instead of `directory`
     # Useful for restarting from another run's checkpoints without touching
-    # them; this run still writes its own checkpoints to `directory`
-    # read_directory = "other_run/restart"
+    # them; this run still writes its own checkpoints to `directory`. A relative
+    # path is relative to the directory ExaConstit is started in (not the output
+    # folder), e.g. another run's checkpoints:
+    # read_directory = "results/other_run/restart"

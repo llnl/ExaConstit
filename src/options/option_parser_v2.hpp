@@ -1385,6 +1385,9 @@ struct RestartOptions {
 
     /**
      * @brief Directory checkpoints are written to (and read from unless read_directory is set)
+     *
+     * @details A relative path is taken inside the run's output folder,
+     * <output_directory>/<basename> (ExaOptions::parse_options() replaces it by the full path).
      */
     std::filesystem::path directory = "restart";
 
@@ -1392,8 +1395,9 @@ struct RestartOptions {
      * @brief Directory to read the restart checkpoint from instead of directory
      *
      * @details Lets a continuation restart from another run's checkpoints while writing its own
-     * to directory. Writing, superseding and keep_last pruning only ever act on directory, so
-     * the other run's checkpoints are never renamed or removed.
+     * to directory. A relative path is relative to the working directory. Writing, superseding and
+     * keep_last pruning only ever act on directory, so the other run's checkpoints are never
+     * renamed or removed.
      */
     std::optional<std::filesystem::path> read_directory;
 
