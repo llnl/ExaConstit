@@ -166,6 +166,35 @@ public:
     PartialQuadratureFunction& operator=(const QuadratureFunction& qf);
 
     /**
+     * @brief Copy constructor: a new function on the same partial space with a copy of the data.
+     *
+     * @details Declared (defaulted) explicitly because the copy assignment below is
+     * user-provided; the behaviour is that of the former implicit copy constructor.
+     */
+    PartialQuadratureFunction(const PartialQuadratureFunction&) = default;
+
+    /**
+     * @brief Copy assignment with value semantics: copies the DATA only.
+     * @param rhs Function on an identically laid-out partial space (same vdim and size)
+     * @return Reference to this PartialQuadratureFunction
+     *
+     * @details The implicitly-declared version relied on mfem::QuadratureFunction's
+     * implicitly-declared copy assignment, which is deprecated because QuadratureFunction has a
+     * user-provided copy constructor (-Wdeprecated-copy), and it also re-pointed this function's
+     * space members at the source's. It is reached from SimulationState::SetupModelVariables
+     * (every registered begin/end pair) and ExaCMechModel::InitStateVars; both copy between
+     * functions on the same space, for which data-only copying is exactly the intended operation.
+     */
+    PartialQuadratureFunction& operator=(const PartialQuadratureFunction& rhs) {
+        MFEM_ASSERT(rhs.GetVDim() == vdim && rhs.Size() == this->Size(),
+                    "PartialQuadratureFunction copy assignment requires identical layouts");
+        if (this != &rhs) {
+            QuadratureFunction::operator=(static_cast<const Vector&>(rhs));
+        }
+        return *this;
+    }
+
+    /**
      * @brief Fill a global QuadratureFunction with data from this partial function.
      *
      * @param qf Reference to the global QuadratureFunction to fill

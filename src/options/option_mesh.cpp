@@ -61,7 +61,7 @@ MeshOptions MeshOptions::from_toml(const toml::value& toml_input) {
     return options;
 }
 
-bool MeshOptions::validate() const {
+bool MeshOptions::validate(bool check_input_files) const {
     if (mesh_type == MeshType::NOTYPE) {
         WARNING_0_OPT("Error: Mesh table was not provided an appropriate mesh type");
         return false;
@@ -87,8 +87,9 @@ bool MeshOptions::validate() const {
         }
     }
 
-    // Check that mesh file exists for CUBIT or OTHER mesh types
-    if ((mesh_type == MeshType::FILE) && !mesh_file.empty()) {
+    // Check that mesh file exists for CUBIT or OTHER mesh types. A restart rebuilds the mesh
+    // from the checkpoint, so the file is not needed (or checked) then.
+    if (check_input_files && (mesh_type == MeshType::FILE) && !mesh_file.empty()) {
         if (!fs::exists(mesh_file)) {
             std::ostringstream err;
             err << "Error: Mesh file '" << mesh_file << "' does not exist." << std::endl;

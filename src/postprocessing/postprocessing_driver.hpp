@@ -966,6 +966,18 @@ private:
     std::map<std::string, std::unique_ptr<mfem::DataCollection>> m_map_dcs;
 
     /**
+     * @brief ParaView collection files (.pvd) to trim before the first save of a restart run
+     *
+     * A restart keeps the visualization files written before it. ParaView's restart mode
+     * (ParaViewDataCollection::UseRestartMode) keeps the .pvd entries whose time is below the
+     * current time, but it compares with the times printed in the file, so an entry of the cycle
+     * being written again (a restart from an earlier checkpoint) can look earlier and stop the
+     * run. UpdateDataCollections() therefore first removes, by cycle, the entries from the cycle
+     * it writes on. Empty after that first save, and in runs that are not restarts.
+     */
+    std::vector<std::filesystem::path> m_restart_pvd_files;
+
+    /**
      * @brief Registered projection operations
      *
      * Vector of ProjectionRegistration structures containing metadata and

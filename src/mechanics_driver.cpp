@@ -88,6 +88,11 @@
 
 #include "SNLS_config.h"
 #if defined(SNLS_RAJA_PORT_SUITE)
+#include "SNLS_device_forall.h"
+#include "SNLS_memory_manager.h"
+
+#include <umpire/ResourceManager.hpp>
+#include <umpire/strategy/QuickPool.hpp>
 #include <umpire/util/io.hpp>
 #endif
 
@@ -204,6 +209,38 @@ int main(int argc, char* argv[]) {
 #endif
         }
         /*
+         * Umpire Memory Pools:
+         * - MFEM and SNLS (which ExaCMech allocates through) share one host and one device
+         *   Umpire pool instead of each creating their own.
+         * - SNLS's execution strategy follows rtmodel, so that runs on the CPU allocate the
+         *   ExaCMech model data on the host.
+         */
+#if defined(SNLS_RAJA_PORT_SUITE)
+        if (toml_opt.solvers.rtmodel == RTModel::GPU) {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::GPU);
+        } else if (toml_opt.solvers.rtmodel == RTModel::OPENMP) {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::OPENMP);
+        } else {
+            snls::Device::GetInstance().SetBackend(snls::ExecutionStrategy::CPU);
+        }
+#if defined(MFEM_USE_UMPIRE)
+        {
+            auto& rm = umpire::ResourceManager::getInstance();
+            auto host_pool = rm.makeAllocator<umpire::strategy::QuickPool>(
+                "ExaConstit_HOST_pool", rm.getAllocator("HOST"));
+            mfem::MemoryManager::SetUmpireHostAllocatorName("ExaConstit_HOST_pool");
+            snls::memoryManager::getInstance().setHostAllocator(host_pool.getId());
+#if defined(__snls_gpu_active__)
+            auto device_pool = rm.makeAllocator<umpire::strategy::QuickPool>(
+                "ExaConstit_DEVICE_pool", rm.getAllocator("DEVICE"));
+            mfem::MemoryManager::SetUmpireDeviceAllocatorName("ExaConstit_DEVICE_pool");
+            snls::memoryManager::getInstance().setDeviceAllocator(device_pool.getId());
+#endif
+        }
+#endif
+#endif
+
+        /*
          * MFEM Device Configuration:
          * - Configure device memory management for host/device data movement
          * - Set up automatic memory synchronization for CPU/GPU execution
@@ -318,6 +355,39 @@ int main(int argc, char* argv[]) {
          * - Performs material state updates and post-processing at each step
          */
         int ti = 0;
+        if (sim_state->IsRestartRun()) {
+            // Restart phase 2. Every object above has been built exactly as in a fresh run, so
+            // the checkpoint now overwrites the evolving state (coordinates, velocity, state
+            // variables, stresses and time). Whatever the constructors initialized, such as
+            // ExaCMechModel::InitStateVars(), is simply replaced.
+            sim_state->RestoreFromCheckpoint();
+            ti = static_cast<int>(sim_state->GetRestartDriverStep());
+
+            // Bring the boundary conditions to the segment that was active after step ti.
+            //
+            // SystemDriver's constructor set up the boundary conditions of step 1. In an
+            // uninterrupted run, each later update step s calls GetUpdateStep(s), which makes s
+            // BCManager's current step, and then UpdateEssBdr() rebuilds the boundary data and
+            // essential DOFs for it (followed by UpdateVelocity() and SolveInit()).
+            // GetUpdateStep(s) has no other side effects and only changes the current step when
+            // s is an update step, so replaying it for s = 1..ti leaves BCManager on the last
+            // update step <= ti, and UpdateEssBdr() then rebuilds that segment's boundary data.
+            //
+            // UpdateVelocity() and SolveInit() are not repeated. UpdateVelocity() is called by
+            // the loop before every Solve(). SolveInit() was the corrector applied at the start of
+            // that segment, and its effect is already part of the restored velocity. If ti + 1
+            // is itself an update step, the loop below handles it exactly as an uninterrupted
+            // run would.
+            int last_bc_update_step = 0;
+            for (int step = 1; step <= ti; ++step) {
+                if (BCManager::GetInstance().GetUpdateStep(step)) {
+                    last_bc_update_step = step;
+                }
+            }
+            if (last_bc_update_step > 0) {
+                oper.UpdateEssBdr();
+            }
+        }
         auto v_sol = sim_state->GetPrimalField();
         while (!sim_state->IsFinished()) {
             ti++;
@@ -367,6 +437,7 @@ int main(int argc, char* argv[]) {
             sim_state->FinishCycle();
             oper.UpdateModel();
             post_process.Update(ti, sim_state->GetTrueCycleTime());
+            sim_state->WriteCheckpointIfDue(static_cast<size_t>(ti));
         } // end loop over time steps
 
         /**
