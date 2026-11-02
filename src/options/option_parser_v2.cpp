@@ -203,6 +203,20 @@ void ExaOptions::parse_options(const std::string& filename, int my_id) {
     resolved_str.resize(static_cast<size_t>(length));
     MPI_Bcast(resolved_str.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
     output_dir = resolved_str;
+
+    // Checkpoints are part of this run's output: a relative [Restart] directory is taken inside
+    // the run's output folder, <output_directory>/<basename>, next to its logs, volume averages
+    // and visualizations. read_directory names checkpoints written elsewhere (often by another
+    // run), so a relative read_directory stays relative to the working directory.
+    if (restart.directory.is_relative()) {
+        restart.directory = fs::path(output_dir) / basename / restart.directory;
+    }
+    // Checked here rather than in RestartOptions::validate(), which runs before the directory
+    // is resolved. Which checkpoint inside it is used, and whether it is complete, is decided
+    // when the simulation starts.
+    VERIFY_0_OPT(!restart.read || fs::is_directory(restart.GetReadDirectory()),
+                 "Restart table has `read` = true, but the checkpoint directory '"
+                     << restart.GetReadDirectory().string() << "' does not exist.");
 }
 
 void ExaOptions::parse_from_toml(const toml::value& toml_input) {

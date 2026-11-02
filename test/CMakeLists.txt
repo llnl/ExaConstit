@@ -205,6 +205,22 @@ if(ENABLE_AXOM)
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON ${EXACONSTIT_TEST_DEPENDS} gtest)
 
+    # MPI tests never use more ranks than the machine has cores, so the suite does not
+    # oversubscribe small machines such as the 4-core CI runners (Open MPI refuses to start more
+    # ranks than slots by default). Open MPI counts physical cores as slots, not hardware
+    # threads, so the default is the number of physical cores CMake detects (falling back to
+    # logical cores if that is unknown); set EXACONSTIT_TEST_MAX_MPI_TASKS to override it. Rank
+    # counts above the cap are skipped.
+    cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_PHYSICAL_CORES)
+    if(NOT _detected_cores OR _detected_cores LESS 1)
+        cmake_host_system_information(RESULT _detected_cores QUERY NUMBER_OF_LOGICAL_CORES)
+    endif()
+    if(NOT _detected_cores OR _detected_cores LESS 1)
+        set(_detected_cores 1)
+    endif()
+    set(EXACONSTIT_TEST_MAX_MPI_TASKS ${_detected_cores} CACHE STRING
+        "Largest number of MPI ranks any test may use (default: detected physical cores)")
+
     foreach(_np 1 2 3 4)
         if(NOT _np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
             blt_add_test(NAME          test_restart_mesh_roundtrip_np${_np}
@@ -246,6 +262,32 @@ if(ENABLE_AXOM)
                        OUTPUT_DIR ${TEST_OUTPUT_DIR}
                        DEPENDS_ON ${_restart_tool_depends})
 
+    # Restart outputs (a short case of test_restart_runs.py, part of the default suite):
+    # checkpoints go inside the run's output folder, and restarts keep the visualization files
+    # written before them (ParaView and VisIt, also restarting from an earlier checkpoint)
+    set(_restart_outputs_np 2)
+    if(_restart_outputs_np GREATER EXACONSTIT_TEST_MAX_MPI_TASKS)
+        set(_restart_outputs_np ${EXACONSTIT_TEST_MAX_MPI_TASKS})
+    endif()
+    set(_restart_outputs_mpiexec "${MPIEXEC_EXECUTABLE}")
+    if(NOT _restart_outputs_mpiexec)
+        set(_restart_outputs_mpiexec "mpirun")
+    endif()
+    add_test(NAME test_restart_outputs
+             COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/test_restart_runs.py
+                     --cases outputs
+                     --nxyz 4
+                     --np ${_restart_outputs_np}
+                     --always-mpiexec
+                     --mpiexec ${_restart_outputs_mpiexec}
+                     --exe $<TARGET_FILE:mechanics>
+                     --compare-tool $<TARGET_FILE:compare_restart_checkpoints>
+                     --workdir ${CMAKE_BINARY_DIR}/test/restart_outputs
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/test)
+    set_tests_properties(test_restart_outputs PROPERTIES
+                         LABELS "restart"
+                         PROCESSORS ${_restart_outputs_np})
+
     # Restart tests on real runs (test_restart_runs.py): cyclic loading chained every 1 and 2
     # cycles, long monotonic tension chained halfway, a run with empty ranks, restarts from past
     # reference checkpoints, and a negative control. They take 10-15 minutes on 8 ranks, so they
@@ -282,7 +324,32 @@ if(ENABLE_AXOM)
         set_tests_properties(test_restart_runs PROPERTIES
                              LABELS "restart;long"
                              PROCESSORS ${_restart_runs_np}
+                             RESOURCE_LOCK restart_runs
                              TIMEOUT 3600)
+
+        # GPU builds also run the same tests on the device. Restored data is written on the
+        # host, so this checks that it reaches the device, and that GPU runs are bitwise
+        # reproducible across restarts. EA is the default since it is the fastest GPU assembly
+        # for these runs.
+        if(ENABLE_CUDA OR ENABLE_HIP)
+            set(EXACONSTIT_RESTART_RUN_TEST_GPU_ASSEMBLY "EA" CACHE STRING
+                "Assembly used by test_restart_runs_gpu (FULL, PA or EA)")
+            add_test(NAME test_restart_runs_gpu
+                     COMMAND ${PYTHON_EXECUTABLE} test_restart_runs.py
+                             --np ${_restart_runs_np}
+                             --rtmodel GPU
+                             --assembly ${EXACONSTIT_RESTART_RUN_TEST_GPU_ASSEMBLY}
+                             --mpiexec ${_restart_runs_mpiexec}
+                             --exe $<TARGET_FILE:mechanics>
+                             --compare-tool $<TARGET_FILE:compare_restart_checkpoints>
+                             --workdir ${CMAKE_BINARY_DIR}/test/restart_runs_gpu
+                     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/test)
+            set_tests_properties(test_restart_runs_gpu PROPERTIES
+                                 LABELS "restart;long;gpu"
+                                 PROCESSORS ${_restart_runs_np}
+                                 RESOURCE_LOCK restart_runs
+                                 TIMEOUT 7200)
+        endif()
     endif()
 endif()
 

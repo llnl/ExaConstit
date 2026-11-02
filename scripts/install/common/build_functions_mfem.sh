@@ -206,6 +206,12 @@ build_mfem() {
       -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS}"
       -DMFEM_USE_${GPU_BACKEND}=ON
       -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+      # Umpire, so that MFEM allocates from the same Umpire pools as SNLS and
+      # ExaCMech (ExaConstit's driver creates them and hands them to both)
+      -DMFEM_USE_UMPIRE=ON
+      -DUMPIRE_DIR="${UMPIRE_ROOT}"
+      -Dumpire_DIR="${UMPIRE_CMAKE_DIR}"
+      -Dfmt_DIR="${FMT_DIR}"
     )
 
     if [ "${GPU_BACKEND}" = "CUDA" ]; then

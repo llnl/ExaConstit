@@ -163,7 +163,10 @@ build_hdf5() {
     -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     -DCMAKE_C_COMPILER="${CMAKE_C_COMPILER}"
     -DCMAKE_C_FLAGS="${CMAKE_C_FLAGS}"
-    -DBUILD_SHARED_LIBS=ON
+    # Static only. With both, Conduit links hdf5-static and Axom hdf5-shared,
+    # so ExaConstit gets two copies of HDF5, and nvcc (the linker in CUDA
+    # builds) rejects the versioned libhdf5.so.<ver> that hdf5-shared names.
+    -DBUILD_SHARED_LIBS=OFF
     -DBUILD_STATIC_LIBS=ON
     -DBUILD_TESTING=OFF
     -DHDF5_ENABLE_PARALLEL=OFF
@@ -315,7 +318,12 @@ build_axom() {
 
   if [ "${BUILD_TYPE}" != "cpu" ]; then
     # Spin's GPU paths run through RAJA -> Umpire memory plumbing.
+    # Like AXOM_ENABLE_MPI, AXOM_ENABLE_CUDA / AXOM_ENABLE_HIP are gated on
+    # BLT's ENABLE_CUDA / ENABLE_HIP. Without those, Axom still defines
+    # AXOM_USE_CUDA/HIP but compiles its sources with the host compiler,
+    # which fails in axom::Array's device-aware code.
     CMAKE_ARGS+=(
+      -DENABLE_${GPU_BACKEND}=ON
       -DAXOM_ENABLE_${GPU_BACKEND}=ON
       -DCMAKE_${GPU_BACKEND}_ARCHITECTURES="${CMAKE_GPU_ARCHITECTURES}"
       -DCMAKE_${GPU_BACKEND}_COMPILER="${CMAKE_GPU_COMPILER}"
